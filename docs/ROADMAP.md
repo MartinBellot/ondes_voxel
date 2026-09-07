@@ -131,9 +131,12 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [ ] `ResourceLocation`, interning, hachage parfait
 - [ ] `Registry<T>` avec **les IDs numériques exacts de Mojang** 🔒
 - [ ] Test CI : égalité stricte contre `registries.json`, ordre inclus ⭐
+- [x] `.ovpack` binaire, mmap-able, sans pointeur — 131 744 octets, déterministe
+- [x] `BlockRegistry` : lookup bloc, propriétés, état par défaut, bloc d'un état
 - [ ] `BlockState` en SoA plat : flags, émission, occultation, formes, couleurs
-- [ ] **Arithmétique mixed-radix des propriétés** — sans elle la redstone est injouable 🔒
-- [ ] Test : `stateId(bloc, props)` == index dans `blocks.json`, 24 135 états ⭐
+- [x] **Arithmétique mixed-radix des propriétés** — un multiply, un add 🔒
+- [x] Test : les **24 135 états** correspondent au rapport de Mojang ⭐
+      *(`scripts/check_registry_parity.py`, relit le binaire depuis sa spec)*
 - [ ] `PalettedContainer` bit-exact : single-value, indirect 4-8 bits, direct 15 bits
 - [ ] Palette de biomes 4×4×4, 6 bits en direct
 - [ ] Tags (blocs, items, fluides, entités), résolution récursive

@@ -186,6 +186,9 @@ function(ov_add_test NAME)
     add_executable(${NAME} ${A_SOURCES})
     target_link_libraries(${NAME} PRIVATE ${A_DEPS} Catch2::Catch2WithMain ov_warnings)
     set_target_properties(${NAME} PROPERTIES FOLDER "tests")
+    # Tests that read generated data need to find it regardless of where the
+    # build directory is.
+    target_compile_definitions(${NAME} PRIVATE OV_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
     add_test(NAME ${NAME} COMMAND ${NAME})
     if(A_LABELS)
         set_tests_properties(${NAME} PROPERTIES LABELS "${A_LABELS}")
