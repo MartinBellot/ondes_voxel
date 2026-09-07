@@ -10,12 +10,12 @@
   },
   "last_updated": "2026-09-07",
   "current_milestone": "M0",
-  "current_task": "m0-allocators-and-pch",
+  "current_task": "m0-handles-hash-voxelshape",
   "milestones": {
     "M0": {
       "name": "Fondations",
       "status": "in_progress",
-      "done": 45,
+      "done": 46,
       "total": 63,
       "exit_criterion": "Le job CI linux-server-only refuse un include Vulkan planté volontairement ; NBT round-trip sur fichiers vanilla ; run/assets/ peuplé.",
       "blocked": [],

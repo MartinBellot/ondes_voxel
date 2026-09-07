@@ -7,6 +7,7 @@
 
 #define OV_LOG_CATEGORY "server"
 
+#include "ov/base/alloc_scope.hpp"
 #include "ov/base/assert.hpp"
 #include "ov/base/log.hpp"
 #include "ov/base/thread.hpp"
@@ -107,8 +108,10 @@ int main(int argc, char** argv) {
         const i32 ticks = clock.advance();
 
         for (i32 i = 0; i < ticks; ++i) {
-            // The world tick will live here. Everything inside must be
-            // deterministic and must not allocate in steady state.
+            // The world tick lives here. Everything inside must be
+            // deterministic, and must not allocate once running: in debug
+            // builds this guard aborts on the first allocation, naming it.
+            const NoAllocScope no_alloc{"server tick"};
         }
 
         if (clock.is_behind()) {
@@ -130,6 +133,11 @@ int main(int argc, char** argv) {
         }
     }
 
+    if constexpr (kAllocationTrackingEnabled) {
+        const auto stats = allocation_stats();
+        OV_LOG_INFO("allocations: {} ({} bytes), tick violations: {}", stats.allocations,
+                    stats.bytes, stats.violations);
+    }
     OV_LOG_INFO("stopped after {} ticks ({} overload events)", clock.tick_count(), behind_events);
     return 0;
 }

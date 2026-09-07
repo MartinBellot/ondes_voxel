@@ -127,7 +127,6 @@ jobs:
           - compiler: clang
             cc: clang
             cxx: clang++
-            extra_flags: -DCMAKE_CXX_FLAGS=-stdlib=libc++
     env:
       CC: ${{ matrix.cc }}
       CXX: ${{ matrix.cxx }}
@@ -135,16 +134,19 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install build tools
-        # libc++ for the clang job: the runner's clang 18 pairs with a libstdc++
-        # that does not provide std::expected. Each half is modern enough alone;
-        # together they are not. Every parser here returns std::expected because
-        # the decode path is hot and must not throw, so this is not negotiable at
-        # the call sites.
+        # A newer libstdc++ for the clang job, NOT libc++.
+        #
+        # The runner's clang 18 pairs with a libstdc++ that has no std::expected.
+        # Switching our code to libc++ looks like the fix and is not: vcpkg builds
+        # fmt with the default toolchain, so the link then mixes two standard
+        # library ABIs and fails on std::string symbols. Installing g++-14 brings
+        # a libstdc++ that clang picks up automatically, and everything stays on
+        # one ABI.
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build ccache
           if [ "${{ matrix.compiler }}" = "clang" ]; then
-            sudo apt-get install -y libc++-dev libc++abi-dev
+            sudo apt-get install -y g++-14
           fi
 
       - uses: actions/cache@v4
@@ -153,7 +155,7 @@ jobs:
           key: vcpkg-linux-${{ matrix.compiler }}-${{ hashFiles('vcpkg.json') }}
 
       - run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE" && ./scripts/bootstrap.sh
-      - run: cmake --preset linux-debug ${{ matrix.extra_flags }}
+      - run: cmake --preset linux-debug
       - run: cmake --build --preset linux-debug
       - run: ctest --preset linux-debug
 
@@ -188,7 +190,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build ccache libc++-dev libc++abi-dev
+          sudo apt-get install -y ninja-build ccache g++-14
       - uses: actions/cache@v4
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
@@ -198,9 +200,7 @@ jobs:
         env:
           CC: clang
           CXX: clang++
-        run: |
-          cmake --preset linux-debug -DOV_SANITIZER=${{ matrix.sanitizer }} \
-                -DCMAKE_CXX_FLAGS=-stdlib=libc++
+        run: cmake --preset linux-debug -DOV_SANITIZER=${{ matrix.sanitizer }}
       - run: cmake --build --preset linux-debug
       - run: ctest --preset linux-debug
 

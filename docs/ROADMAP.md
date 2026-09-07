@@ -46,7 +46,8 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [ ] `handle.hpp` — handles index + génération
 - [ ] `hash.hpp` — xxHash, hachage stable
 - [ ] Allocateurs : mimalloc global, pools par classe de taille, arènes par thread
-- [ ] Hook d'allocation qui `assert` si le tick alloue en régime établi
+- [x] `NoAllocScope` : hook d'allocation qui abandonne si le tick alloue 🔒
+      *(actif dans la vraie boucle de tick ; 100 ticks, 0 violation)*
 
 ### `ov_math` (L1)
 - [x] `vec.hpp` — `Vec3<T>`, `Direction` (numérotation du protocole)
