@@ -1,0 +1,85 @@
+cmake_minimum_required(VERSION 3.25)
+
+# vcpkg toolchain, if bootstrap.sh has cloned it and no toolchain was given.
+if(NOT DEFINED CMAKE_TOOLCHAIN_FILE AND EXISTS "${CMAKE_SOURCE_DIR}/vcpkg/scripts/buildsystems/vcpkg.cmake")
+    set(CMAKE_TOOLCHAIN_FILE "${CMAKE_SOURCE_DIR}/vcpkg/scripts/buildsystems/vcpkg.cmake"
+        CACHE STRING "vcpkg toolchain")
+endif()
+
+project(OndesVoxel
+    VERSION 0.0.1
+    DESCRIPTION "A C++ reimplementation of Minecraft Java Edition 1.20.1"
+    LANGUAGES CXX)
+
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
+
+# ── Options ─────────────────────────────────────────────────────────────────
+option(OV_BUILD_CLIENT "Build the renderer and the playable client" ON)
+option(OV_BUILD_TESTS  "Build unit tests and benchmarks"            ON)
+option(OV_WERROR       "Treat warnings as errors"                   ON)
+
+# LTO is deliberately OFF by default. A full-LTO link of this project exceeds
+# 6 GB and makes an 8 GB machine swap; it belongs in a release CI job only.
+# See risk R5 in docs/ARCHITECTURE.md — build velocity is what kills projects
+# this size, and it is the risk everyone treats as cosmetic.
+option(OV_LTO "Enable link-time optimization (release CI only)" OFF)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+
+if(NOT CMAKE_RUNTIME_OUTPUT_DIRECTORY)
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+endif()
+
+if(OV_LTO)
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT _ov_ipo OUTPUT _ov_ipo_msg)
+    if(_ov_ipo)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+    else()
+        message(WARNING "LTO requested but unsupported: ${_ov_ipo_msg}")
+    endif()
+endif()
+
+# ccache, if present. Non-negotiable for day-to-day velocity (risk R5).
+find_program(CCACHE_PROGRAM ccache)
+if(CCACHE_PROGRAM)
+    set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
+    message(STATUS "ccache: ${CCACHE_PROGRAM}")
+endif()
+
+include(OvWarnings)
+include(OvSanitizers)
+include(OvModule)
+
+# ── Third-party ─────────────────────────────────────────────────────────────
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
+find_package(fmt CONFIG REQUIRED)
+
+if(OV_BUILD_TESTS)
+    find_package(Catch2 3 CONFIG REQUIRED)
+    include(CTest)
+    include(Catch)
+endif()
+
+# ── Modules ─────────────────────────────────────────────────────────────────
+add_subdirectory(src/ov_base)
+add_subdirectory(src/ov_math)
+
+# ── Apps ────────────────────────────────────────────────────────────────────
+add_subdirectory(apps/ov_dedicated)
+
+# ── Summary ─────────────────────────────────────────────────────────────────
+message(STATUS "")
+message(STATUS "Ondes VOXEL ${PROJECT_VERSION} — target: Minecraft Java Edition 1.20.1 (protocol 763)")
+message(STATUS "  client ....... ${OV_BUILD_CLIENT}")
+message(STATUS "  tests ........ ${OV_BUILD_TESTS}")
+message(STATUS "  werror ....... ${OV_WERROR}")
+message(STATUS "  lto .......... ${OV_LTO}")
+message(STATUS "  sanitizer .... ${OV_SANITIZER}")
+message(STATUS "")

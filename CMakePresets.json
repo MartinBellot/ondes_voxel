@@ -1,0 +1,120 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "$comment": "The client feature pulls GLFW, Vulkan and VMA. It is added here at M5, when the renderer starts; before then it would cost a long first build for nothing (risk R5).",
+        "VCPKG_MANIFEST_FEATURES": "tests"
+      }
+    },
+    {
+      "name": "headless",
+      "hidden": true,
+      "inherits": "base",
+      "cacheVariables": {
+        "OV_BUILD_CLIENT": "OFF",
+        "VCPKG_MANIFEST_FEATURES": "tests"
+      }
+    },
+
+    {
+      "name": "macos-debug",
+      "displayName": "macOS · Debug",
+      "inherits": "base",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "macos-release",
+      "displayName": "macOS · RelWithDebInfo",
+      "inherits": "base",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    },
+    {
+      "name": "macos-asan",
+      "displayName": "macOS · ASan + UBSan",
+      "inherits": "base",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "OV_SANITIZER": "address" }
+    },
+    {
+      "name": "macos-tsan",
+      "displayName": "macOS · TSan (single-writer invariant)",
+      "inherits": "base",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "OV_SANITIZER": "thread" }
+    },
+
+    {
+      "name": "linux-debug",
+      "displayName": "Linux · Debug",
+      "inherits": "base",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" },
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "linux-server-only",
+      "displayName": "Linux · headless server, NO Vulkan SDK (layering lock #3)",
+      "inherits": "headless",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" },
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    },
+    {
+      "name": "linux-release",
+      "displayName": "Linux · Release + LTO",
+      "inherits": "base",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" },
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "OV_LTO": "ON" }
+    },
+
+    {
+      "name": "windows-debug",
+      "displayName": "Windows · Debug",
+      "inherits": "base",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "windows-release",
+      "displayName": "Windows · RelWithDebInfo",
+      "inherits": "base",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    }
+  ],
+
+  "buildPresets": [
+    { "name": "macos-debug",       "configurePreset": "macos-debug",       "jobs": 4 },
+    { "name": "macos-release",     "configurePreset": "macos-release",     "jobs": 4 },
+    { "name": "macos-asan",        "configurePreset": "macos-asan",        "jobs": 4 },
+    { "name": "macos-tsan",        "configurePreset": "macos-tsan",        "jobs": 4 },
+    { "name": "linux-debug",       "configurePreset": "linux-debug" },
+    { "name": "linux-server-only", "configurePreset": "linux-server-only" },
+    { "name": "linux-release",     "configurePreset": "linux-release" },
+    { "name": "windows-debug",     "configurePreset": "windows-debug" },
+    { "name": "windows-release",   "configurePreset": "windows-release" }
+  ],
+
+  "testPresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+    },
+    { "name": "macos-debug",       "inherits": "base", "configurePreset": "macos-debug" },
+    { "name": "macos-release",     "inherits": "base", "configurePreset": "macos-release" },
+    { "name": "macos-asan",        "inherits": "base", "configurePreset": "macos-asan" },
+    { "name": "linux-debug",       "inherits": "base", "configurePreset": "linux-debug" },
+    { "name": "linux-server-only", "inherits": "base", "configurePreset": "linux-server-only" },
+    { "name": "windows-debug",     "inherits": "base", "configurePreset": "windows-debug" }
+  ]
+}

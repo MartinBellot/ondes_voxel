@@ -1,0 +1,61 @@
+Ondes VOXEL
+Copyright 2026 The Ondes VOXEL Authors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+================================================================================
+NOT AN OFFICIAL MINECRAFT PRODUCT
+================================================================================
+
+Ondes VOXEL is an independent, clean-room reimplementation. It is NOT approved
+by or associated with Mojang Studios or Microsoft.
+
+"Minecraft" is a trademark of Mojang Synergies AB. Ondes VOXEL contains no
+Minecraft source code, textures, sounds, models, fonts, or other assets.
+
+Ondes VOXEL does not ship game assets. It loads resource packs and game assets
+from a Minecraft installation that the user already owns, on their own machine.
+Nothing is redistributed.
+
+================================================================================
+THIRD-PARTY ASSETS (loaded at runtime, never redistributed)
+================================================================================
+
+Faithful 32x
+  https://faithfulpack.net/
+  Copyright (c) Faithful Resource Pack — Faithful License, Version 3
+  Used as the default resource pack when supplied by the user in
+  ./ressourcepacks/. Textures only (block, item, entity, GUI, particle, font,
+  environment, painting, mob effect, map, trims and model textures).
+  The pack's LICENSE.txt is distributed unmodified inside the pack directory.
+
+  Per the Faithful License, Ondes VOXEL is never monetized in any form: no
+  paywall, no monetized download link, no marketplace listing.
+
+Minecraft: Java Edition assets
+  Copyright (c) Mojang Studios / Microsoft. All rights reserved.
+  Block models, blockstates, sounds, language files and fonts are extracted at
+  runtime by tools/ov_assetimport from the user's own local installation
+  (PrismLauncher, MultiMC, or the official launcher). They are written to ./run/
+  which is excluded from version control and never distributed.
+
+================================================================================
+THIRD-PARTY DOCUMENTATION
+================================================================================
+
+Protocol, chunk format, NBT and save format documentation is derived from the
+Minecraft Wiki (https://minecraft.wiki), including content merged from the
+former wiki.vg, licensed CC BY-SA 3.0.
+
+Packet schema data is derived from PrismarineJS/minecraft-data
+(https://github.com/PrismarineJS/minecraft-data), licensed MIT.

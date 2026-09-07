@@ -1,0 +1,36 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "ondes-voxel",
+  "version-string": "0.0.1",
+  "description": "Ondes VOXEL - a C++ reimplementation of Minecraft Java Edition 1.20.1",
+  "homepage": "https://github.com/ondes-voxel/ondes-voxel",
+  "license": "Apache-2.0",
+
+  "$comment-deps": "Dependencies are added milestone by milestone, never up front. A first build on an 8 GB M2 compiles every port from source; see risk R5 in docs/ARCHITECTURE.md. The 'client' feature is the physical barrier that keeps rendering out of the headless server: the linux-server-only CI job configures WITHOUT it, on an image that has no Vulkan SDK.",
+
+  "$comment-current": "M0 needs formatting only. mimalloc, xxhash, libdeflate, simdjson, entt, enkits, asio and openssl are added at the milestone that first uses them.",
+
+  "dependencies": [
+    "fmt"
+  ],
+
+  "features": {
+    "tests": {
+      "description": "Unit tests, benchmarks and fuzzing harnesses",
+      "dependencies": [
+        "catch2",
+        "benchmark"
+      ]
+    },
+    "client": {
+      "description": "Rendering, windowing and audio. MUST NOT be required by ov_dedicated.",
+      "dependencies": [
+        "glfw3",
+        "volk",
+        "vulkan-headers",
+        "vulkan-memory-allocator",
+        "libspng"
+      ]
+    }
+  }
+}

@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Negative tests for the project's own guard rails.
+#
+# check_layers.py and check_assets.py are what keep two irreversible mistakes
+# out of the repository. A guard that has never been observed to fire is not a
+# guard — it is a script that prints "ok". This deliberately plants each
+# violation, asserts the check rejects it, and removes it again.
+#
+# Run in CI on every push, alongside the checks themselves.
+set -uo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+PASS=0
+FAIL=0
+
+# Restores the tree even if a check aborts unexpectedly.
+cleanup() {
+    git checkout -- src apps 2>/dev/null || true
+    rm -f "$ROOT/tests/fixtures/.enforcement_probe.png"
+}
+trap cleanup EXIT
+
+expect_rejected() {
+    local description="$1"
+    shift
+    if "$@" >/dev/null 2>&1; then
+        printf '\033[0;31m  ✗ NOT CAUGHT\033[0m  %s\n' "$description"
+        FAIL=$((FAIL + 1))
+    else
+        printf '\033[0;32m  ✓ rejected\033[0m   %s\n' "$description"
+        PASS=$((PASS + 1))
+    fi
+    cleanup
+}
+
+expect_accepted() {
+    local description="$1"
+    shift
+    if "$@" >/dev/null 2>&1; then
+        printf '\033[0;32m  ✓ accepted\033[0m   %s\n' "$description"
+        PASS=$((PASS + 1))
+    else
+        printf '\033[0;31m  ✗ FALSE ALARM\033[0m %s\n' "$description"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+echo "Guard rail negative tests"
+echo
+
+echo "check_layers.py"
+expect_accepted "a clean tree passes" python3 scripts/check_layers.py
+
+printf '#include "ov/world/chunk.hpp"\n' >> src/ov_math/src/math.cpp
+expect_rejected "ov_math including a higher layer" python3 scripts/check_layers.py
+
+printf '#include "ov/sim/level.hpp"\n' >> src/ov_math/src/math.cpp
+expect_rejected "a module reaching into ov_sim" python3 scripts/check_layers.py
+
+printf '#include <vulkan/vulkan.h>\n' >> apps/ov_dedicated/src/main.cpp
+expect_rejected "Vulkan in the headless server" python3 scripts/check_layers.py
+
+printf 'target_link_libraries(ov_math PUBLIC ov_base)\n' >> src/ov_math/CMakeLists.txt
+expect_rejected "target_link_libraries bypassing ov_add_library" python3 scripts/check_layers.py
+
+echo
+echo "check_assets.py"
+expect_accepted "a clean tree passes" python3 scripts/check_assets.py
+
+# Staged, not merely present: an untracked png is fine, a committed one is not.
+mkdir -p tests/fixtures
+printf '\x89PNG\r\n\x1a\n' > tests/fixtures/.enforcement_probe.png
+git add -f tests/fixtures/.enforcement_probe.png 2>/dev/null
+expect_rejected "a staged .png" python3 scripts/check_assets.py --staged
+git rm --cached -q tests/fixtures/.enforcement_probe.png 2>/dev/null || true
+rm -f tests/fixtures/.enforcement_probe.png
+
+echo
+if [ "$FAIL" -gt 0 ]; then
+    printf '\033[0;31m%d of %d guard rail tests failed\033[0m\n' "$FAIL" "$((PASS + FAIL))"
+    echo
+    echo "A guard rail that does not fire is worse than none: it produces confidence"
+    echo "without protection. Fix the check before shipping anything else."
+    exit 1
+fi
+
+printf '\033[0;32mall %d guard rail tests passed\033[0m\n' "$PASS"

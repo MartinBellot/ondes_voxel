@@ -1,0 +1,43 @@
+---
+Language: Cpp
+BasedOnStyle: Google
+
+ColumnLimit: 100
+IndentWidth: 4
+AccessModifierOffset: -4
+UseTab: Never
+
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: true
+
+# Registry and dispatch tables are far easier to scan when the columns line up.
+AlignConsecutiveAssignments: Consecutive
+AlignConsecutiveDeclarations: Consecutive
+AlignAfterOpenBracket: Align
+AlignTrailingComments: true
+
+BinPackArguments: true
+BinPackParameters: true
+DerivePointerAlignment: false
+PointerAlignment: Left
+
+# Include order: own header, then ov headers, then third-party, then std.
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: '^"ov/'
+    Priority: 2
+  - Regex: '^<(fmt|catch2|benchmark|entt|simdjson|vulkan|GLFW|volk)'
+    Priority: 3
+  - Regex: '^<.*\.h>'
+    Priority: 4
+  - Regex: '^<.*>'
+    Priority: 5
+  - Regex: '.*'
+    Priority: 1
+
+SeparateDefinitionBlocks: Always
+SpaceAfterTemplateKeyword: false
+FixNamespaceComments: true
+ShortNamespaceLines: 0

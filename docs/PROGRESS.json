@@ -1,0 +1,111 @@
+{
+  "$schema_version": 1,
+  "$comment": "État machine-lisible du projet. Mis à jour à CHAQUE tâche terminée, avant le commit. C'est le premier fichier lu au début d'une session de travail. La roadmap détaillée est dans docs/ROADMAP.md ; un test CI vérifie que les deux concordent.",
+  "project": "Ondes VOXEL",
+  "target": {
+    "game": "Minecraft Java Edition",
+    "version": "1.20.1",
+    "protocol": 763,
+    "pack_format": 15
+  },
+  "last_updated": "2026-09-07",
+  "current_milestone": "M0",
+  "current_task": "m0-ci-workflows",
+  "milestones": {
+    "M0": {
+      "name": "Fondations",
+      "status": "in_progress",
+      "done": 20,
+      "total": 49,
+      "exit_criterion": "Le job CI linux-server-only refuse un include Vulkan planté volontairement ; NBT round-trip sur fichiers vanilla ; run/assets/ peuplé.",
+      "blocked": [],
+      "notes": "Build, layering, verrous d'architecture et boucle de tick valides et prouves. Restent : CI en conditions reelles, ov_io, ov_nbt, ov-assetimport."
+    },
+    "M1": {
+      "name": "Protocole 763",
+      "status": "not_started",
+      "done": 0,
+      "total": 14,
+      "exit_criterion": "Le serveur apparaît dans la liste des serveurs du client vanilla, MOTD et icône corrects ; round-trip octet à octet de tous les paquets ; fuzz du décodeur sans crash.",
+      "blocked": []
+    },
+    "M2": {
+      "name": "Registres et données",
+      "status": "not_started",
+      "done": 0,
+      "total": 17,
+      "exit_criterion": "Égalité stricte contre blocks.json sur les 26 000 états ; .ovpack chargé en < 10 ms ; vecteurs RNG conformes.",
+      "blocked": [
+        "Nécessite tools/vanilla/server-1.20.1.jar pour le data generator officiel (à télécharger depuis minecraft.net)."
+      ]
+    },
+    "M3": {
+      "name": "Tranche verticale",
+      "status": "not_started",
+      "done": 0,
+      "total": 15,
+      "exit_criterion": "Un client Minecraft vanilla 1.20.1 non modifié se connecte, marche, casse et pose un bloc — sans une ligne de Vulkan.",
+      "blocked": []
+    },
+    "M4": {
+      "name": "Monde persistant",
+      "status": "not_started",
+      "done": 0,
+      "total": 10,
+      "exit_criterion": "Round-trip croisé : notre sauvegarde s'ouvre dans Minecraft vanilla et réciproquement, sans perte.",
+      "blocked": []
+    },
+    "M5": {
+      "name": "Client Ondes VOXEL",
+      "status": "not_started",
+      "done": 0,
+      "total": 26,
+      "exit_criterion": "Deux clients pour un même serveur ; p99 de frame time <= 20 ms à 12 chunks sur M2 ; golden images vertes sur lavapipe.",
+      "blocked": [
+        "Nécessite le SDK Vulkan / MoltenVK, non installé."
+      ]
+    },
+    "M6": {
+      "name": "Contenu complet",
+      "status": "not_started",
+      "done": 0,
+      "total": 68,
+      "exit_criterion": "Une batterie world_test par sous-système ; parité statistique worldgen sur 1000 seeds ; matrice protocole à 100 %.",
+      "blocked": []
+    },
+    "M7": {
+      "name": "Distribution",
+      "status": "not_started",
+      "done": 0,
+      "total": 7,
+      "exit_criterion": "Paquets signes pour macOS, Windows et Linux produits par la CI, installables depuis une release.",
+      "blocked": []
+    }
+  },
+  "metrics": {
+    "$comment": "null = pas encore mesuré. Renseigné par la CI, jamais à la main.",
+    "coverage": null,
+    "packets_763": "0/130",
+    "blockstate_parity": null,
+    "tps": 20.0,
+    "frame_p99_ms": null,
+    "worker_threads": 4,
+    "clean_build_seconds": null,
+    "incremental_rebuild_seconds": null
+  },
+  "environment": {
+    "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",
+    "host": "macOS Darwin 25.2, Apple M2 (4P+4E), 8 GB RAM",
+    "compiler": "Apple clang 17.0.0",
+    "cmake": "4.4.3",
+    "ninja": "1.13.2",
+    "vulkan_sdk": null,
+    "vanilla_1_20_1_instance": true,
+    "vanilla_server_jar": false,
+    "resource_packs": [
+      "Faithful 32x (pack_format 15)"
+    ],
+    "vanilla_1_20_1_client_jar": "PrismLauncher/libraries/com/mojang/minecraft/1.20.1/minecraft-1.20.1-client.jar",
+    "vanilla_asset_index": "5.json (3598/3598 objets présents sur disque)"
+  }
+}

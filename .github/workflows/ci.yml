@@ -1,0 +1,195 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-cache
+
+jobs:
+  # The cheapest job, run first: it needs no compiler and catches the two
+  # mistakes that cannot be undone once pushed to a public repository.
+  guard-rails:
+    name: Guard rails
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: No game assets in the repository
+        run: python3 scripts/check_assets.py
+
+      - name: Layering (real #include graph)
+        run: python3 scripts/check_layers.py
+
+      - name: The guard rails actually fire
+        # A check that has never been observed to reject anything is not a
+        # check. This plants each violation and asserts it is caught.
+        run: bash scripts/test_enforcement.sh
+
+      - name: ROADMAP and PROGRESS agree
+        run: python3 scripts/check_progress.py
+
+  # Layering lock #3, and the reason it is the only one that cannot be worked
+  # around: this image has no Vulkan SDK, so a rendering include in the server
+  # does not fail a policy check — it fails to compile.
+  linux-server-only:
+    name: Linux · headless server (no Vulkan SDK)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build ccache
+
+      - name: Assert the image really has no Vulkan SDK
+        # If a future runner image starts shipping Vulkan, this job would keep
+        # passing while silently testing nothing at all.
+        run: |
+          if [ -f /usr/include/vulkan/vulkan.h ] || [ -n "${VULKAN_SDK:-}" ]; then
+            echo "::error::A Vulkan SDK is present. This job's guarantee is void."
+            exit 1
+          fi
+          echo "No Vulkan SDK present — the headless guarantee is meaningful."
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-linux-${{ hashFiles('vcpkg.json') }}
+
+      - run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE" && ./scripts/bootstrap.sh
+      - run: cmake --preset linux-server-only
+      - run: cmake --build --preset linux-server-only
+      - run: ctest --preset linux-server-only
+
+      - name: The dedicated server links against no rendering library
+        run: |
+          BIN=build/linux-server-only/bin/ov_dedicated
+          if ldd "$BIN" | grep -Ei 'vulkan|glfw|GL\.so|EGL'; then
+            echo "::error::ov_dedicated links a rendering library."
+            exit 1
+          fi
+          echo "ov_dedicated is clean."
+
+      - name: It ticks at 20 Hz
+        run: |
+          START=$(date +%s%N)
+          ./build/linux-server-only/bin/ov_dedicated --ticks=100
+          ELAPSED_MS=$(( ($(date +%s%N) - START) / 1000000 ))
+          echo "100 ticks in ${ELAPSED_MS} ms (expected ~5000)"
+          if [ "$ELAPSED_MS" -lt 4500 ] || [ "$ELAPSED_MS" -gt 6500 ]; then
+            echo "::error::Tick rate is off: ${ELAPSED_MS} ms for 100 ticks."
+            exit 1
+          fi
+
+  macos:
+    name: macOS · ${{ matrix.preset }}
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [macos-debug, macos-release]
+    steps:
+      - uses: actions/checkout@v4
+
+      - run: brew install ninja ccache
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-macos-${{ hashFiles('vcpkg.json') }}
+
+      - run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE" && ./scripts/bootstrap.sh
+      - run: cmake --preset ${{ matrix.preset }}
+      - run: cmake --build --preset ${{ matrix.preset }}
+      - run: ctest --preset ${{ matrix.preset }}
+
+  linux:
+    name: Linux · ${{ matrix.compiler }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - compiler: gcc
+            cc: gcc
+            cxx: g++
+          - compiler: clang
+            cc: clang
+            cxx: clang++
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build ccache
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-linux-${{ matrix.compiler }}-${{ hashFiles('vcpkg.json') }}
+      - run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE" && ./scripts/bootstrap.sh
+      - run: cmake --preset linux-debug
+      - run: cmake --build --preset linux-debug
+      - run: ctest --preset linux-debug
+
+  windows:
+    name: Windows · MSVC
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-windows-${{ hashFiles('vcpkg.json') }}
+      - name: Bootstrap vcpkg
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git vcpkg
+          .\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+      - uses: ilammy/msvc-dev-cmd@v1
+      - run: cmake --preset windows-debug
+      - run: cmake --build --preset windows-debug
+      - run: ctest --preset windows-debug
+
+  sanitizers:
+    name: Sanitizers · ${{ matrix.sanitizer }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address, thread]
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build ccache
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-linux-clang-${{ hashFiles('vcpkg.json') }}
+      - run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE" && ./scripts/bootstrap.sh
+      - name: Configure
+        env:
+          CC: clang
+          CXX: clang++
+        run: cmake --preset linux-debug -DOV_SANITIZER=${{ matrix.sanitizer }}
+      - run: cmake --build --preset linux-debug
+      - run: ctest --preset linux-debug
+
+  format:
+    name: clang-format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          find src apps tools -type f \( -name '*.cpp' -o -name '*.hpp' \) 2>/dev/null \
+            | xargs -r clang-format --dry-run --Werror

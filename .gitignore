@@ -1,0 +1,34 @@
+# ── Assets et données : JAMAIS commités (voir CLAUDE.md § Règles juridiques) ──
+# Resource packs fournis par l'utilisateur (Faithful 32x, packs Mojang, etc.)
+/ressourcepacks/
+# Sortie de ov-assetimport : assets extraits du jar client vanilla
+/run/
+# Sortie du data generator officiel Mojang
+/data/vanilla/*/generated/
+/data/vanilla/*/*.json
+# Jars fournis par l'utilisateur
+*.jar
+
+# ── Caches binaires générés (le hash est commité, pas le cache) ──
+*.ovpack
+
+# ── Build ──
+/build/
+/out/
+/cmake-build-*/
+CMakeUserPresets.json
+compile_commands.json
+.cache/
+
+# ── vcpkg ──
+/vcpkg/
+/vcpkg_installed/
+
+# ── Outils et OS ──
+.DS_Store
+.idea/
+.vscode/
+!.vscode/extensions.json
+*.swp
+perf.data*
+*.dSYM/
