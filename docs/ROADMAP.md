@@ -105,9 +105,12 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] Framing par longueur, avec bascule de compression en cours de connexion 🔒
       *(le cas sous le seuil garde le framing compressé, longueur interne à 0)*
 - [ ] Chiffrement AES/CFB8, secret partagé 16 octets
-- [ ] Authentification Mojang : RSA, hash SHA-1, `sessionserver.mojang.com/hasJoined`
-- [ ] Mode offline (UUID hors ligne déterministe)
-- [x] Machine à états par connexion : Handshake → Status ✓ / Login (à venir)
+- [x] **Mode hors-ligne uniquement** — décision produit, voir `docs/ARCHITECTURE.md` § 8 🔒
+- [x] UUID hors-ligne déterministe, vérifié contre `UUID.nameUUIDFromBytes` de Java
+- [x] MD5 (requis par l'UUID v3), vecteurs RFC 1321
+- [x] Machine à états par connexion : Handshake → Status ✓ / Login ✓
+- [x] Login hors-ligne : Login Start, validation du nom, Disconnect explicatif
+- [ ] Login Success + passage à l'état Play *(attend le monde, M3)*
 - [x] **Status : MOTD, nombre de joueurs, ping ⭐** — vérifié par un client écrit
       depuis la spec : JSON conforme, pong à écho correct
 - [ ] Les ~130 paquets Play, round-trip octet à octet

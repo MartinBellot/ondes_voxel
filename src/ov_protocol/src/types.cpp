@@ -1,5 +1,7 @@
 #include "ov/protocol/types.hpp"
 
+#include "ov/base/md5.hpp"
+
 #include <charconv>
 #include <cmath>
 #include <cstdio>
@@ -117,6 +119,27 @@ std::expected<Uuid, TypeError> Uuid::parse(std::string_view text) {
         return std::unexpected{TypeError::BadUtf8};
     }
     return Uuid{*high, *low};
+}
+
+Uuid Uuid::offline_player(std::string_view name) {
+    std::string source{"OfflinePlayer:"};
+    source += name;
+
+    auto digest = md5(source);
+
+    // Version 3 and the RFC 4122 variant, set in place over the digest. Java's
+    // UUID.nameUUIDFromBytes does exactly this, and skipping it produces an id
+    // that looks plausible and matches nothing.
+    digest[6] = static_cast<u8>((digest[6] & 0x0F) | 0x30);
+    digest[8] = static_cast<u8>((digest[8] & 0x3F) | 0x80);
+
+    u64 high = 0;
+    u64 low  = 0;
+    for (u32 i = 0; i < 8; ++i) {
+        high = (high << 8) | digest[i];
+        low  = (low << 8) | digest[i + 8];
+    }
+    return Uuid{high, low};
 }
 
 TypeResult<std::string> read_string(io::ByteReader& reader, u32 max_length) {

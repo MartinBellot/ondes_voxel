@@ -15,6 +15,7 @@
 #include "ov/math/block_pos.hpp"
 #include "ov/protocol/framing.hpp"
 #include "ov/protocol/listener.hpp"
+#include "ov/protocol/login.hpp"
 #include "ov/protocol/status.hpp"
 #include "ov/protocol/varint.hpp"
 
@@ -222,11 +223,41 @@ int main(int argc, char** argv) {
                 return false;
             }
 
-            case ConnectionState::Login:
-                // Login arrives with M1's authentication work. Until then a
-                // client is told plainly rather than left hanging.
-                OV_LOG_INFO("{} tried to log in; not implemented yet", connection->peer_address());
-                return false;
+            case ConnectionState::Login: {
+                if (packet_id != static_cast<i32>(net::LoginPacket::Start)) {
+                    return false;
+                }
+                const auto login = net::parse_login_start(body);
+                if (!login) {
+                    return false;
+                }
+
+                if (!net::is_valid_player_name(login->name)) {
+                    // Refused with a reason the client displays. Login is the
+                    // one place a server can explain itself: anywhere later, a
+                    // disconnect is just a disconnect.
+                    send_packet(static_cast<i32>(net::LoginPacket::Disconnect),
+                                net::encode_login_disconnect("Invalid player name"));
+                    return true;
+                }
+
+                // Offline mode: the identity comes from the name, never from
+                // the client. See docs/ARCHITECTURE.md § 8.
+                const net::Uuid uuid = net::Uuid::offline_player(login->name);
+                OV_LOG_INFO("{} logging in as {} ({})", connection->peer_address(), login->name,
+                            uuid.to_string());
+
+                // The world cannot receive a player yet — chunk streaming and
+                // the Play state arrive with M3. Saying so beats leaving the
+                // client waiting for a Join Game that never comes, which from
+                // the inside is indistinguishable from a hung server.
+                send_packet(static_cast<i32>(net::LoginPacket::Disconnect),
+                            net::encode_login_disconnect(
+                                "Ondes VOXEL — the world is not implemented yet.\n"
+                                "The protocol works: you reached this through a real "
+                                "handshake and login."));
+                return true;
+            }
         }
         return false;
     });

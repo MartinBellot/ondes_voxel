@@ -276,3 +276,21 @@ assumé, et il est documenté dans `PARITY.md`.
 
 **Le rendu identique à vanilla.** Nous ne distribuons aucun asset ; l'apparence
 dépend du resource pack fourni par le joueur. C'est le second écart assumé.
+
+**L'authentification Mojang.** Le serveur tourne en **mode hors-ligne**, comme
+un `online-mode=false` vanilla. Concrètement : pas de chiffrement AES/RSA de la
+session, pas d'appel HTTPS à `sessionserver.mojang.com`, et donc pas de
+dépendance OpenSSL.
+
+Un client vanilla se connecte sans difficulté à un serveur en mode hors-ligne —
+le critère de sortie de M3 reste donc entièrement atteignable. L'identité d'un
+joueur est son **UUID hors-ligne**, un UUID v3 sur `OfflinePlayer:<nom>`,
+identique à ce que calcule vanilla. C'est sous cet identifiant que sont classées
+ses données, donc il doit correspondre exactement, et il est vérifié contre la
+sortie de `UUID.nameUUIDFromBytes` du JDK.
+
+Conséquence à énoncer clairement : **n'importe qui peut se connecter sous
+n'importe quel nom.** C'est le comportement attendu d'un serveur hors-ligne, et
+c'est adapté à un usage local ou en réseau de confiance ; ça ne l'est pas pour
+un serveur public. Si cela change un jour, l'authentification s'ajoute dans la
+phase de login sans toucher au reste du protocole.

@@ -51,8 +51,12 @@ struct Uuid {
     /// Parse the hyphenated form, or the 32-character form without hyphens.
     [[nodiscard]] static std::expected<Uuid, TypeError> parse(std::string_view text);
 
-    // Uuid::offline_player arrives with the authentication work: it is a
-    // version 3 UUID over "OfflinePlayer:<name>", which needs MD5.
+    /// The offline-mode identity for a player name.
+    ///
+    /// A version 3 UUID over the bytes of "OfflinePlayer:<name>", exactly as
+    /// vanilla computes it. Player data is filed under this, so it has to match
+    /// or an offline world forgets who its players are between restarts.
+    [[nodiscard]] static Uuid offline_player(std::string_view name);
 };
 
 // ── Reading ─────────────────────────────────────────────────────────────────

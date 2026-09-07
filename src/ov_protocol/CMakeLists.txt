@@ -7,6 +7,7 @@ ov_add_library(ov_protocol
     SOURCES
         src/framing.cpp
         src/listener.cpp
+        src/login.cpp
         src/status.cpp
         src/types.cpp
         src/varint.cpp
@@ -22,8 +23,10 @@ ov_add_library(ov_protocol
 ov_add_test(test_ov_protocol
     SOURCES
         tests/test_framing.cpp
+        tests/test_login.cpp
         tests/test_status.cpp
         tests/test_types.cpp
+        tests/test_uuid_offline.cpp
         tests/test_varint.cpp
     DEPS ov_protocol
     LABELS unit
