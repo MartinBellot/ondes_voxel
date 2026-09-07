@@ -99,7 +99,9 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [ ] `data/protocol/763.json` — schéma des paquets (dérivé de minecraft-data, MIT) 🔒
 - [ ] `ov-pktgen` : **génération** des encodeurs, décodeurs, dumps de debug et
       harnais de fuzz. Écrire 250 paquets à la main est 2 mois de dette 🔒
-- [ ] Types : VarInt (≤ 5 o), VarLong (≤ 10 o), chaînes, UUID, position, angle
+- [x] VarInt (≤ 5 o) et VarLong (≤ 10 o) — table de la spec vérifiée 🔒
+- [x] Chaînes UTF-8 validées, UUID, angle ; limites imposées avant allocation 🔒
+- [ ] Position empaquetée (26/26/12 bits), NBT réseau
 - [ ] Framing par longueur, seuil de compression zlib
 - [ ] Chiffrement AES/CFB8, secret partagé 16 octets
 - [ ] Authentification Mojang : RSA, hash SHA-1, `sessionserver.mojang.com/hasJoined`

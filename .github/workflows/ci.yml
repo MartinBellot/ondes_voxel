@@ -134,23 +134,28 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install build tools
-        # A newer libstdc++ for the clang job, NOT libc++.
+        # clang 19 for the clang job, and the reason is worth writing down
+        # because it cost several rounds to find.
         #
-        # The runner's clang 18 pairs with a libstdc++ that has no std::expected.
-        # Switching our code to libc++ looks like the fix and is not: vcpkg builds
-        # fmt with the default toolchain, so the link then mixes two standard
-        # library ABIs and fails on std::string symbols. Installing g++-14 brings
-        # a libstdc++ that clang picks up automatically, and everything stays on
-        # one ABI.
+        # libstdc++'s <expected> is guarded by __cpp_concepts >= 202002L. Clang
+        # 18 defines __cpp_concepts as 201907L — the original C++20 value,
+        # before CWG2560 — so the header compiles to nothing and std::expected
+        # simply does not exist. It is not a libstdc++ version problem: 12, 13
+        # and 14 were all installed and all failed identically. Clang 19 bumped
+        # the macro.
+        #
+        # Two things that look like the fix and are not. Installing a newer g++
+        # changes nothing, because the guard is on the compiler's macro.
+        # Switching to libc++ mixes two standard library ABIs, since vcpkg
+        # builds fmt with the default toolchain, and the link then fails on
+        # std::string symbols.
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build ccache
           if [ "${{ matrix.compiler }}" = "clang" ]; then
-            sudo apt-get install -y g++-14
-            # Clang does not pick the newest libstdc++ on its own — the runner
-            # has 12, 13 and 14 installed and it selected one without
-            # std::expected. Naming it is the only reliable way.
-            echo "CXXFLAGS=--gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/14" >> "$GITHUB_ENV"
+            wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 19
+            echo "CC=clang-19" >> "$GITHUB_ENV"
+            echo "CXX=clang++-19" >> "$GITHUB_ENV"
           fi
 
       - name: Report what the toolchain actually provides
@@ -167,11 +172,8 @@ jobs:
           printf '#include <expected>\nint main(){ std::expected<int,int> e{1}; return *e - 1; }\n' > /tmp/probe.cpp
           echo "default:"
           $CXX -std=c++23 /tmp/probe.cpp -o /tmp/probe 2>&1 | head -5 || true
-          for V in 14 13; do
-            echo "with gcc $V:"
-            $CXX -std=c++23 --gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/$V \
-                 /tmp/probe.cpp -o /tmp/probe 2>&1 | head -5 || true
-          done
+          echo "── __cpp_concepts (libstdc++ needs >= 202002L for <expected>) ──"
+          $CXX -std=c++23 -dM -E -x c++ /dev/null | grep -E "__cpp_concepts" || true
 
       - uses: actions/cache@v4
         with:
@@ -214,8 +216,9 @@ jobs:
       - uses: actions/checkout@v4
       - run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build ccache g++-14
-          echo "CXXFLAGS=--gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/14" >> "$GITHUB_ENV"
+          sudo apt-get install -y ninja-build ccache
+          # See the Linux job for why clang 19 specifically.
+          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 19
       - uses: actions/cache@v4
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
@@ -223,8 +226,8 @@ jobs:
       - run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE" && ./scripts/bootstrap.sh
       - name: Configure
         env:
-          CC: clang
-          CXX: clang++
+          CC: clang-19
+          CXX: clang++-19
         run: cmake --preset linux-debug -DOV_SANITIZER=${{ matrix.sanitizer }}
       - run: cmake --build --preset linux-debug
       - run: ctest --preset linux-debug

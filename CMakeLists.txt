@@ -77,12 +77,13 @@ add_subdirectory(src/ov_base)
 add_subdirectory(src/ov_math)
 add_subdirectory(src/ov_io)
 add_subdirectory(src/ov_nbt)
+add_subdirectory(src/ov_protocol)
 
 # ── Checks ──────────────────────────────────────────────────────────────────
 # Compiles every public header on its own. Catches the header that only works
 # because something else included <string_view> first — which compiles on
 # libc++ and fails on libstdc++.
-ov_add_header_selftest(MODULES ov_base ov_math ov_io ov_nbt)
+ov_add_header_selftest(MODULES ov_base ov_math ov_io ov_nbt ov_protocol)
 
 # ── Apps ────────────────────────────────────────────────────────────────────
 add_subdirectory(apps/ov_dedicated)

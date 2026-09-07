@@ -9,8 +9,8 @@
     "pack_format": 15
   },
   "last_updated": "2026-09-07",
-  "current_milestone": "M0",
-  "current_task": "m0-handles-hash-voxelshape",
+  "current_milestone": "M1",
+  "current_task": "m1-packet-framing-and-status",
   "milestones": {
     "M0": {
       "name": "Fondations",
@@ -19,13 +19,13 @@
       "total": 63,
       "exit_criterion": "Le job CI linux-server-only refuse un include Vulkan planté volontairement ; NBT round-trip sur fichiers vanilla ; run/assets/ peuplé.",
       "blocked": [],
-      "notes": "NBT, Anvil, ZIP, compression et ov-assetimport terminés et validés sur données réelles. Restent : allocateurs, PCH, benchmark de rebuild, et le job CI linux-clang (bloqué : std::expected absent avec clang+libstdc++ sur le runner)."
+      "notes": "Fondations terminées pour ce dont M1 a besoin. Restent handle.hpp, hash.hpp, VoxelShape, atlas procédural et VFS — aucun ne bloque, ils viendront quand un module les utilisera."
     },
     "M1": {
       "name": "Protocole 763",
-      "status": "not_started",
-      "done": 0,
-      "total": 14,
+      "status": "in_progress",
+      "done": 2,
+      "total": 16,
       "exit_criterion": "Le serveur apparaît dans la liste des serveurs du client vanilla, MOTD et icône corrects ; round-trip octet à octet de tous les paquets ; fuzz du décodeur sans crash.",
       "blocked": []
     },
