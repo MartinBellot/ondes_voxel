@@ -190,6 +190,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: |
+
+      - name: Install the pinned clang-format
+        # Pinned, not whatever the runner ships. clang-format changes its output
+        # between releases, so an unpinned one turns this gate into noise that
+        # fails on version skew rather than on anything a contributor did.
+        # The same version is installed locally by scripts/bootstrap.sh.
+        run: |
+          VERSION=$(cat .clang-format-version)
+          echo "Using clang-format $VERSION"
+          pipx install "clang-format==$VERSION"
+
+      - name: Check formatting
+        run: |
           find src apps tools -type f \( -name '*.cpp' -o -name '*.hpp' \) 2>/dev/null \
             | xargs -r clang-format --dry-run --Werror
