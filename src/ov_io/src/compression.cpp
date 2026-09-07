@@ -33,7 +33,7 @@ using CompressorPtr   = std::unique_ptr<libdeflate_compressor, CompressorDeleter
            (static_cast<usize>(tail[2]) << 16) | (static_cast<usize>(tail[3]) << 24);
 }
 
-enum class Container { Gzip, Zlib };
+enum class Container { Gzip, Zlib, Deflate };
 
 [[nodiscard]] CompressionResult<std::vector<u8>> decompress_with(std::span<const u8> input,
                                                                  usize limit, Container container) {
@@ -140,9 +140,17 @@ namespace {
         return std::unexpected{CompressionError::OutOfMemory};
     }
 
-    const usize bound = container == Container::Gzip
-                            ? libdeflate_gzip_compress_bound(compressor.get(), input.size())
-                            : libdeflate_zlib_compress_bound(compressor.get(), input.size());
+    const usize bound = [&] {
+        switch (container) {
+            case Container::Gzip:
+                return libdeflate_gzip_compress_bound(compressor.get(), input.size());
+            case Container::Zlib:
+                return libdeflate_zlib_compress_bound(compressor.get(), input.size());
+            case Container::Deflate:
+                return libdeflate_deflate_compress_bound(compressor.get(), input.size());
+        }
+        return usize{0};
+    }();
 
     std::vector<u8> output;
     try {
@@ -151,12 +159,20 @@ namespace {
         return std::unexpected{CompressionError::OutOfMemory};
     }
 
-    const usize produced =
-        container == Container::Gzip
-            ? libdeflate_gzip_compress(compressor.get(), input.data(), input.size(), output.data(),
-                                       output.size())
-            : libdeflate_zlib_compress(compressor.get(), input.data(), input.size(), output.data(),
-                                       output.size());
+    const usize produced = [&] {
+        switch (container) {
+            case Container::Gzip:
+                return libdeflate_gzip_compress(compressor.get(), input.data(), input.size(),
+                                                output.data(), output.size());
+            case Container::Zlib:
+                return libdeflate_zlib_compress(compressor.get(), input.data(), input.size(),
+                                                output.data(), output.size());
+            case Container::Deflate:
+                return libdeflate_deflate_compress(compressor.get(), input.data(), input.size(),
+                                                   output.data(), output.size());
+        }
+        return usize{0};
+    }();
 
     if (produced == 0) {
         return std::unexpected{CompressionError::Corrupt};
@@ -166,6 +182,37 @@ namespace {
 }
 
 }  // namespace
+
+CompressionResult<std::vector<u8>> deflate_decompress(std::span<const u8> input,
+                                                      usize               uncompressed_size) {
+    if (input.empty() && uncompressed_size != 0) {
+        return std::unexpected{CompressionError::Corrupt};
+    }
+
+    DecompressorPtr decompressor{libdeflate_alloc_decompressor()};
+    if (!decompressor) {
+        return std::unexpected{CompressionError::OutOfMemory};
+    }
+
+    std::vector<u8> output;
+    try {
+        output.resize(uncompressed_size);
+    } catch (const std::bad_alloc&) {
+        return std::unexpected{CompressionError::OutOfMemory};
+    }
+
+    usize      produced = 0;
+    const auto result   = libdeflate_deflate_decompress(
+        decompressor.get(), input.data(), input.size(), output.data(), output.size(), &produced);
+    if (result != LIBDEFLATE_SUCCESS || produced != uncompressed_size) {
+        return std::unexpected{CompressionError::Corrupt};
+    }
+    return output;
+}
+
+CompressionResult<std::vector<u8>> deflate_compress(std::span<const u8> input, int level) {
+    return compress_with(input, level, Container::Deflate);
+}
 
 CompressionResult<std::vector<u8>> gzip_compress(std::span<const u8> input, int level) {
     return compress_with(input, level, Container::Gzip);

@@ -5,6 +5,7 @@ ov_add_library(ov_io
         src/compression.cpp
         src/file.cpp
         src/modified_utf8.cpp
+        src/zip.cpp
     DEPS
         ov_base
     PRIVATE_DEPS
@@ -17,6 +18,7 @@ ov_add_test(test_ov_io
         tests/test_byte_writer.cpp
         tests/test_compression.cpp
         tests/test_modified_utf8.cpp
+        tests/test_zip.cpp
     DEPS ov_io
     LABELS unit
 )

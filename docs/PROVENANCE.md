@@ -158,12 +158,14 @@ sauvegarde Minecraft (2026-09-07) :
 | `servers.dat` (NBT non compressé) | ✅ octet-identique |
 | `mfix_stronghold_cache_v2.nbt` (gzip) | ✅ octet-identique |
 | **14 fichiers région, 2900 chunks, 795 277 tags** | ✅ **2900/2900 octet-identiques** |
+| `minecraft-1.20.1-client.jar` (ZIP, 23 Mo) | ✅ **20 953/20 953 entrées extraites**, 41 206 169 octets, en 1,2 s |
 
 Toutes les régions utilisaient le schéma **zlib (2)**, conformément à la
 documentation. Reproductible avec :
 ```bash
 ov-inspect nbt    <monde>/level.dat --verify
 ov-inspect region <monde>/region/r.0.0.mca --verify
+ov-inspect zip    <prism>/libraries/com/mojang/minecraft/1.20.1/minecraft-1.20.1-client.jar --verify
 ```
 
 ### Chiffres mesurés (et non estimés)
@@ -177,3 +179,19 @@ ov-inspect region <monde>/region/r.0.0.mca --verify
 | Items | 1255 · Entités 124 · Fluides 5 · Block entities 41 |
 | Sons 1474 · Particules 95 · Effets 33 · Enchantements **39** · Potions 43 |
 | Blocs ayant `default` ≠ premier ID | 484 sur 1003 — le défaut est une donnée à part |
+
+### Contenu du jar client 1.20.1
+
+Mesuré, et non supposé — c'est ce que `ov-assetimport` doit aller chercher, un
+resource pack ne contenant que des textures.
+
+| Sous-arbre | Entrées |
+|---|---|
+| `assets/minecraft/blockstates/` | **1005** |
+| `assets/minecraft/models/block/` | **2016** |
+| `assets/minecraft/models/item/` | **1675** |
+| `assets/minecraft/textures/block/` | 977 |
+| `assets/minecraft/font/` | 7 |
+| `assets/minecraft/lang/` | 1 (`en_us.json` ; les autres langues sont dans l'index d'assets) |
+| `data/minecraft/` | **5887** — le jar client embarque aussi le datapack vanilla |
+| **Total** | 20 953 entrées, toutes deflatées, 41 Mo décompressés |

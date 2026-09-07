@@ -64,6 +64,19 @@ inline constexpr int kDefaultCompressionLevel = 6;
 [[nodiscard]] CompressionResult<std::vector<u8>> zlib_compress(
     std::span<const u8> input, int level = kDefaultCompressionLevel);
 
+/// Raw DEFLATE, with no zlib or gzip wrapper.
+///
+/// This is what a ZIP entry stores, so it is what jars, resource packs and
+/// datapacks need. Unlike the wrapped formats it carries neither a length nor a
+/// checksum, so the exact output size must come from elsewhere — in a ZIP, from
+/// the central directory. A mismatch is reported rather than grown into: it
+/// means the archive contradicts itself, and guessing would hide that.
+[[nodiscard]] CompressionResult<std::vector<u8>> deflate_decompress(std::span<const u8> input,
+                                                                    usize uncompressed_size);
+
+[[nodiscard]] CompressionResult<std::vector<u8>> deflate_compress(
+    std::span<const u8> input, int level = kDefaultCompressionLevel);
+
 /// True if the data begins with the gzip magic number.
 [[nodiscard]] bool looks_like_gzip(std::span<const u8> data) noexcept;
 

@@ -15,8 +15,8 @@
     "M0": {
       "name": "Fondations",
       "status": "in_progress",
-      "done": 32,
-      "total": 56,
+      "done": 35,
+      "total": 59,
       "exit_criterion": "Le job CI linux-server-only refuse un include Vulkan planté volontairement ; NBT round-trip sur fichiers vanilla ; run/assets/ peuplé.",
       "blocked": [],
       "notes": "NBT, régions Anvil, compression et UTF-8 modifié terminés et validés sur un vrai monde (2900 chunks octet-identiques). Restent : ov-assetimport, allocateurs, PCH, CI en conditions réelles."
@@ -91,7 +91,8 @@
     "worker_threads": 4,
     "clean_build_seconds": null,
     "incremental_rebuild_seconds": null,
-    "nbt_roundtrip": "2900/2900 chunks, 795277 tags, octet-identiques (monde réel)"
+    "nbt_roundtrip": "2900/2900 chunks, 795277 tags, octet-identiques (monde réel)",
+    "zip_extraction": "20953/20953 entrées du jar client 1.20.1, 41 Mo"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",

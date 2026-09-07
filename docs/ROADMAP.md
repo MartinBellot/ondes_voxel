@@ -55,7 +55,10 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [ ] Raycast DDA sur grille de voxels
 
 ### `ov_io` (L2) et `ov_nbt` (L3)
-- [ ] VFS : dossier et zip, priorité de pile de packs
+- [x] Lecteur ZIP (jars, resource packs, datapacks) — deflate brut, sans dépendance
+- [x] Anti-Zip-Slip : toute entrée `../` fait rejeter l'archive entière 🔒
+- [x] Zip64, chiffrement et méthodes exotiques **refusés**, jamais mal gérés
+- [ ] VFS : empilage dossier + zip selon la priorité des packs
 - [x] Lecture de fichier bornée, écriture atomique (temp + rename)
 - [x] NBT binaire : les 13 types (0-12), big-endian, gzip et zlib
 - [x] **UTF-8 modifié** de Java : `\0` en C0 80, paires de substitution 🔒

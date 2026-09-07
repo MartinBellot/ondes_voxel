@@ -11,6 +11,7 @@
 #include "ov/base/log.hpp"
 #include "ov/io/compression.hpp"
 #include "ov/io/file.hpp"
+#include "ov/io/zip.hpp"
 #include "ov/nbt/binary.hpp"
 #include "ov/nbt/region.hpp"
 #include "ov/nbt/tag.hpp"
@@ -280,12 +281,86 @@ int inspect_region(const std::filesystem::path& path, bool verify) {
     return failed == 0 ? 0 : 1;
 }
 
+int inspect_zip(const std::filesystem::path& path, bool verify) {
+    const auto archive = io::ZipArchive::open(path);
+    if (!archive) {
+        fmt::print(stderr, "{}: {}\n", path.string(), io::to_string(archive.error()));
+        return 1;
+    }
+
+    usize stored             = 0;
+    usize deflated           = 0;
+    usize directories        = 0;
+    u64   uncompressed_total = 0;
+    for (const auto& entry : archive->entries()) {
+        if (entry.is_directory()) {
+            ++directories;
+            continue;
+        }
+        (entry.method == 8 ? deflated : stored)++;
+        uncompressed_total += entry.uncompressed_size;
+    }
+
+    fmt::print("{}\n", path.filename().string());
+    fmt::print("  size ........... {} bytes\n", archive->byte_size());
+    fmt::print("  entries ........ {} ({} deflated, {} stored, {} directories)\n",
+               archive->entry_count(), deflated, stored, directories);
+    fmt::print("  uncompressed ... {} bytes\n", uncompressed_total);
+
+    // The subtrees that matter to ov-assetimport. A resource pack carries only
+    // textures; models, blockstates, fonts and language files come from the jar.
+    for (const char* prefix :
+         {"assets/minecraft/blockstates/", "assets/minecraft/models/block/",
+          "assets/minecraft/models/item/", "assets/minecraft/textures/block/",
+          "assets/minecraft/font/", "assets/minecraft/lang/", "data/minecraft/"}) {
+        const auto found = archive->list(prefix);
+        if (!found.empty()) {
+            fmt::print("    {:38s} {}\n", prefix, found.size());
+        }
+    }
+
+    if (!verify) {
+        return 0;
+    }
+
+    // Extract everything. On a 23 MB jar that is some 10 000 entries, which is
+    // a far better exercise of the reader than any archive we could build by
+    // hand in a test.
+    usize extracted = 0;
+    usize failed    = 0;
+    u64   bytes     = 0;
+    for (const auto& entry : archive->entries()) {
+        if (entry.is_directory()) {
+            continue;
+        }
+        const auto content = archive->read(entry.name);
+        if (!content) {
+            ++failed;
+            if (failed <= 5) {
+                fmt::print("    {} failed: {}\n", entry.name, io::to_string(content.error()));
+            }
+            continue;
+        }
+        if (content->size() != entry.uncompressed_size) {
+            ++failed;
+            continue;
+        }
+        ++extracted;
+        bytes += content->size();
+    }
+
+    fmt::print("  extraction ..... {}{}/{} entries, {} bytes\033[0m\n",
+               failed == 0 ? "\033[0;32m" : "\033[0;31m", extracted, extracted + failed, bytes);
+    return failed == 0 ? 0 : 1;
+}
+
 void print_usage() {
     fmt::print(
         "ov-inspect — read Minecraft's binary formats\n"
         "\n"
         "  ov-inspect nbt    <file> [--tree] [--verify] [--depth=N]\n"
         "  ov-inspect region <file.mca> [--verify]\n"
+        "  ov-inspect zip    <file.jar|.zip> [--verify]\n"
         "\n"
         "  --tree      print the tag tree\n"
         "  --verify    decode, re-encode, and compare the bytes\n"
@@ -308,7 +383,7 @@ int main(int argc, char** argv) {
     }
 
     const std::string_view command{argv[1]};
-    if (command != "nbt" && command != "region") {
+    if (command != "nbt" && command != "region" && command != "zip") {
         fmt::print(stderr, "unknown command '{}'\n", command);
         print_usage();
         return 1;
@@ -334,6 +409,9 @@ int main(int argc, char** argv) {
 
     if (command == "region") {
         return inspect_region(argv[2], verify);
+    }
+    if (command == "zip") {
+        return inspect_zip(argv[2], verify);
     }
     return inspect_nbt(argv[2], tree, verify, max_depth);
 }
