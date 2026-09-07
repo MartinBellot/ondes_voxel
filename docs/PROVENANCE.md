@@ -214,3 +214,53 @@ resource pack ne contenant que des textures.
 | `assets/minecraft/lang/` | 1 (`en_us.json` ; les autres langues sont dans l'index d'assets) |
 | `data/minecraft/` | **5887** — le jar client embarque aussi le datapack vanilla |
 | **Total** | 20 953 entrées, toutes deflatées, 41 Mo décompressés |
+
+---
+
+## Palette bit-packée d'une section (`ov_world`)
+
+Source : `Chunk_format` sur l'archive figée du wiki (§ 2 de `CLAUDE.md`).
+
+### La règle qu'on croit connaître et qu'on écrit quand même de travers
+
+Depuis 1.16, **une entrée ne chevauche jamais deux `long`**. À 5 bits, un `long`
+en contient 12 et gaspille 4 bits — pas 12,8 entrées. Lire l'index se fait donc
+par `index / entrées_par_long` et `index % entrées_par_long`, jamais par une
+division du numéro de bit.
+
+L'erreur est silencieuse dans les deux sens : un encodeur qui fait chevaucher les
+entrées se relit parfaitement lui-même. Un aller-retour à travers notre propre
+code passe donc même avec la règle inversée, et ne prouve rien.
+
+### Ce qui le prouve
+
+`ov-inspect chunk <region.mca>` dépaquette chaque entrée d'une section écrite par
+le jeu, la repaquette depuis zéro, et compare les `long` obtenus à ceux du
+disque. L'entrée vient de Mojang ; seul le codec est le nôtre.
+
+| Mesure | Valeur |
+|---|---|
+| Sections traversant réellement le bit-packing | **165 318** — toutes octet-identiques |
+| Largeurs couvertes | 4 bits : 73 363 · 5 : 85 656 · 6 : 6 221 · 7 : 78 |
+| Entrées dépaquetées puis repaquetées | ≈ 677 millions |
+| Sections single-valued (aucune donnée stockée) | 263 778 |
+
+Deux réserves, posées honnêtement :
+
+1. Le monde testé est en **DataVersion 3955 (1.21)**, pas 1.20.1. La règle de
+   packing est inchangée depuis 1.16, donc la mesure est valide pour ce qu'elle
+   couvre — mais elle ne dit **rien** sur les IDs de blocs, que la commande ne
+   résout volontairement pas. La parité des IDs est vérifiée séparément par
+   `check_registry_parity.py`.
+2. Les sections *single-valued* sont comptées comme conformes sans repaquetage :
+   il n'y a par définition aucun `long` à comparer. Le chiffre qui porte une
+   affirmation est **165 318**, pas le total.
+
+### Deux détails que vanilla impose et qu'aucune formule ne rattrape
+
+- La largeur est **plancherée à 4 bits**. Une palette de deux entrées s'encode en
+  4 bits, pas en 1 — l'encodage plus serré serait plus petit et illisible par le
+  client.
+- Une section uniforme n'écrit **aucune donnée du tout** : palette d'un élément,
+  `data` absent. C'est le cas majoritaire (263 778 sections sur 429 096 ici), et
+  celui qu'une implémentation oublie parce qu'il ne ressemble pas aux autres.

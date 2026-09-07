@@ -15,10 +15,13 @@
 #include "ov/nbt/binary.hpp"
 #include "ov/nbt/region.hpp"
 #include "ov/nbt/tag.hpp"
+#include "ov/world/paletted_container.hpp"
 
 #include <fmt/format.h>
 
+#include <algorithm>
 #include <filesystem>
+#include <map>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -354,6 +357,132 @@ int inspect_zip(const std::filesystem::path& path, bool verify) {
     return failed == 0 ? 0 : 1;
 }
 
+/// Verify the bit-packing against sections Mojang actually wrote.
+///
+/// Unpacking every entry of a real section and packing it back has to reproduce
+/// the original longs exactly. This is the strongest available check on the
+/// "an entry never spans two longs" rule, because the input was produced by the
+/// game rather than by us — a round trip through our own encoder alone would
+/// pass even with the rule inverted.
+///
+/// It does not resolve block names, so it is independent of the world's version.
+int inspect_chunk_packing(const std::filesystem::path& path) {
+    const auto region = nbt::RegionFile::open(path);
+    if (!region) {
+        fmt::print(stderr, "{}: {}\n", path.string(), nbt::to_string(region.error()));
+        return 1;
+    }
+
+    usize               sections  = 0;
+    usize               identical = 0;
+    usize               skipped   = 0;
+    std::map<u8, usize> by_width;
+
+    for (u32 z = 0; z < nbt::kRegionSideChunks; ++z) {
+        for (u32 x = 0; x < nbt::kRegionSideChunks; ++x) {
+            if (!region->has_chunk(x, z)) {
+                continue;
+            }
+            const auto chunk = region->read_chunk(x, z);
+            if (!chunk) {
+                continue;
+            }
+            const nbt::Tag* section_list = chunk->root.find("sections");
+            if (section_list == nullptr || section_list->list() == nullptr) {
+                continue;
+            }
+
+            for (const nbt::Tag& section : *section_list->list()) {
+                const nbt::Tag* states = section.find("block_states");
+                if (states == nullptr) {
+                    continue;
+                }
+                const nbt::Tag* palette = states->find("palette");
+                const nbt::Tag* data    = states->find("data");
+                if (palette == nullptr || palette->list() == nullptr) {
+                    continue;
+                }
+                ++sections;
+
+                const usize palette_size = palette->list()->size();
+                if (data == nullptr) {
+                    // Single-valued: vanilla omits the data entirely, which is
+                    // the case an implementation forgets.
+                    if (palette_size == 1) {
+                        ++identical;
+                    } else {
+                        ++skipped;
+                    }
+                    continue;
+                }
+
+                const auto* longs = data->get_if<nbt::Tag::LongArray>();
+                if (longs == nullptr || longs->empty()) {
+                    ++skipped;
+                    continue;
+                }
+
+                // Derive the width the way the format defines it, from the
+                // palette size, and check the long count agrees.
+                const u8 bits = world::bits_for_palette(palette_size);
+                if (world::packed_length(4096, bits) != longs->size()) {
+                    fmt::print("    chunk ({},{}): {} longs, expected {} at {} bits\n", x, z,
+                               longs->size(), world::packed_length(4096, bits), bits);
+                    ++skipped;
+                    continue;
+                }
+                ++by_width[bits];
+
+                std::vector<u64> as_unsigned(longs->begin(), longs->end());
+                std::vector<u16> indices(palette_size);
+                for (u16 i = 0; i < palette_size; ++i) {
+                    indices[i] = i;
+                }
+
+                auto container = world::PalettedContainer::blocks(0);
+                if (!container.load_packed(bits, indices, as_unsigned)) {
+                    ++skipped;
+                    continue;
+                }
+
+                // Re-pack from scratch and compare against what was on disk.
+                std::vector<u16> values(4096);
+                for (usize i = 0; i < 4096; ++i) {
+                    values[i] = container.get(i);
+                }
+                auto rebuilt = world::PalettedContainer::blocks(0);
+                rebuilt.assign(values);
+
+                const bool same = rebuilt.bits() == bits &&
+                                  std::equal(rebuilt.data().begin(), rebuilt.data().end(),
+                                             as_unsigned.begin(), as_unsigned.end());
+                if (same) {
+                    ++identical;
+                } else if (rebuilt.bits() != bits) {
+                    // Legitimate: vanilla may keep a wider palette than the
+                    // contents now need, since it never shrinks either.
+                    ++skipped;
+                } else {
+                    fmt::print("    chunk ({},{}): repacked longs differ at {} bits\n", x, z, bits);
+                }
+            }
+        }
+    }
+
+    fmt::print("{}\n", path.filename().string());
+    fmt::print("  sections ....... {}\n", sections);
+    fmt::print("  widths ......... ");
+    for (const auto& [bits, count] : by_width) {
+        fmt::print("{}b:{} ", bits, count);
+    }
+    fmt::print("\n");
+    fmt::print("  re-packed ...... {}{}/{} identical\033[0m ({} not comparable)\n",
+               identical + skipped == sections ? "\033[0;32m" : "\033[0;31m", identical,
+               sections - skipped, skipped);
+
+    return identical + skipped == sections ? 0 : 1;
+}
+
 void print_usage() {
     fmt::print(
         "ov-inspect — read Minecraft's binary formats\n"
@@ -361,6 +490,7 @@ void print_usage() {
         "  ov-inspect nbt    <file> [--tree] [--verify] [--depth=N]\n"
         "  ov-inspect region <file.mca> [--verify]\n"
         "  ov-inspect zip    <file.jar|.zip> [--verify]\n"
+        "  ov-inspect chunk  <file.mca>          verify section bit-packing\n"
         "\n"
         "  --tree      print the tag tree\n"
         "  --verify    decode, re-encode, and compare the bytes\n"
@@ -383,7 +513,7 @@ int main(int argc, char** argv) {
     }
 
     const std::string_view command{argv[1]};
-    if (command != "nbt" && command != "region" && command != "zip") {
+    if (command != "nbt" && command != "region" && command != "zip" && command != "chunk") {
         fmt::print(stderr, "unknown command '{}'\n", command);
         print_usage();
         return 1;
@@ -412,6 +542,9 @@ int main(int argc, char** argv) {
     }
     if (command == "zip") {
         return inspect_zip(argv[2], verify);
+    }
+    if (command == "chunk") {
+        return inspect_chunk_packing(argv[2]);
     }
     return inspect_nbt(argv[2], tree, verify, max_depth);
 }

@@ -5,4 +5,5 @@ ov_add_executable(ov_inspect
         src/main.cpp
     DEPS
         ov_nbt
+        ov_world
 )

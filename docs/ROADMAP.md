@@ -137,8 +137,8 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] **Arithmétique mixed-radix des propriétés** — un multiply, un add 🔒
 - [x] Test : les **24 135 états** correspondent au rapport de Mojang ⭐
       *(`scripts/check_registry_parity.py`, relit le binaire depuis sa spec)*
-- [ ] `PalettedContainer` bit-exact : single-value, indirect 4-8 bits, direct 15 bits
-- [ ] Palette de biomes 4×4×4, 6 bits en direct
+- [x] `PalettedContainer` bit-exact : single-value, indirect 4-8 bits, direct 15 bits
+- [x] Palette de biomes 4×4×4, 6 bits en direct
 - [ ] Tags (blocs, items, fluides, entités), résolution récursive
 - [ ] Chargeur de datapack `pack_format` 15, empilable
 - [ ] `ov-datac` → cache `.ovpack` mmap, position-independent, zéro pointeur
