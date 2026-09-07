@@ -102,7 +102,8 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] VarInt (≤ 5 o) et VarLong (≤ 10 o) — table de la spec vérifiée 🔒
 - [x] Chaînes UTF-8 validées, UUID, angle ; limites imposées avant allocation 🔒
 - [ ] Position empaquetée (26/26/12 bits), NBT réseau
-- [ ] Framing par longueur, seuil de compression zlib
+- [x] Framing par longueur, avec bascule de compression en cours de connexion 🔒
+      *(le cas sous le seuil garde le framing compressé, longueur interne à 0)*
 - [ ] Chiffrement AES/CFB8, secret partagé 16 octets
 - [ ] Authentification Mojang : RSA, hash SHA-1, `sessionserver.mojang.com/hasJoined`
 - [ ] Mode offline (UUID hors ligne déterministe)

@@ -5,6 +5,7 @@
 ov_add_library(ov_protocol
     LAYER 7
     SOURCES
+        src/framing.cpp
         src/types.cpp
         src/varint.cpp
     DEPS
@@ -13,6 +14,7 @@ ov_add_library(ov_protocol
 
 ov_add_test(test_ov_protocol
     SOURCES
+        tests/test_framing.cpp
         tests/test_types.cpp
         tests/test_varint.cpp
     DEPS ov_protocol
