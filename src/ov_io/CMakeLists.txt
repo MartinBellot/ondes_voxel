@@ -9,7 +9,10 @@ ov_add_library(ov_io
     DEPS
         ov_base
     PRIVATE_DEPS
-        libdeflate::libdeflate_static
+        # vcpkg exposes one or the other depending on the triplet: static on
+        # Linux and macOS, shared on Windows. Picking one by name breaks the
+        # other platform at configure time.
+        $<IF:$<TARGET_EXISTS:libdeflate::libdeflate_shared>,libdeflate::libdeflate_shared,libdeflate::libdeflate_static>
 )
 
 ov_add_test(test_ov_io

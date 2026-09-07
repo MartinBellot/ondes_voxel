@@ -15,7 +15,7 @@
     "M0": {
       "name": "Fondations",
       "status": "in_progress",
-      "done": 35,
+      "done": 36,
       "total": 59,
       "exit_criterion": "Le job CI linux-server-only refuse un include Vulkan planté volontairement ; NBT round-trip sur fichiers vanilla ; run/assets/ peuplé.",
       "blocked": [],

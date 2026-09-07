@@ -28,10 +28,12 @@
 #include "ov/math/block_pos.hpp"
 #include "ov/nbt/binary.hpp"
 
+#include <array>
 #include <expected>
 #include <filesystem>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <vector>
 
 namespace ov::nbt {

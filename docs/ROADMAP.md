@@ -31,7 +31,8 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] `scripts/check_assets.py` — refuse tout asset de jeu dans le dépôt
 - [x] `scripts/test_enforcement.sh` — **prouve que les verrous se déclenchent**
 - [ ] Job CI `linux-server-only`, sans SDK Vulkan sur l'image ⭐🔒
-- [ ] Job CI `headers-only` en `-fsyntax-only` (headers self-contained)
+- [x] Auto-test des headers publics : un TU par header, compilé seul
+      *(dans CMake, donc actif dans tous les jobs et en local)*
 
 ### `ov_base` (L0)
 - [x] `platform.hpp` — plateforme, compilateur, ligne de cache (128 o sur M2)
