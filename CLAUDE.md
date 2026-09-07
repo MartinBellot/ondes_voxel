@@ -106,10 +106,14 @@ cmake --preset macos-debug && cmake --build --preset macos-debug
 ctest --preset macos-debug        # tests unitaires + intégration
 ctest -L bench                    # benchmarks non-régression
 
-./scripts/check_layers.py         # graphe de dépendances
+./scripts/check_layers.py         # graphe de dépendances (verrou #2)
 ./scripts/check_assets.py         # aucun asset commité
-./scripts/run_parity.sh           # parité golden vs vanilla (nécessite server.jar 1.20.1)
+./scripts/check_progress.py       # ROADMAP.md et PROGRESS.json concordent
+./scripts/test_enforcement.sh     # prouve que les garde-fous se déclenchent
 ```
+
+À venir : `scripts/run_parity.sh` (parité golden vs vanilla) arrive en M2, avec
+`tools/ov_parity` — il nécessite `tools/vanilla/server-1.20.1.jar`.
 
 ---
 
