@@ -8,7 +8,9 @@ ov_add_library(ov_math
 
 ov_add_test(test_ov_math
     SOURCES
+        tests/test_aabb.cpp
         tests/test_block_pos.cpp
+        tests/test_raycast.cpp
         tests/test_vec.cpp
     DEPS ov_math
     LABELS unit

@@ -147,6 +147,10 @@ jobs:
           sudo apt-get install -y ninja-build ccache
           if [ "${{ matrix.compiler }}" = "clang" ]; then
             sudo apt-get install -y g++-14
+            # Clang does not pick the newest libstdc++ on its own — the runner
+            # has 12, 13 and 14 installed and it selected one without
+            # std::expected. Naming it is the only reliable way.
+            echo "CXXFLAGS=--gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/14" >> "$GITHUB_ENV"
           fi
 
       - name: Report what the toolchain actually provides
@@ -161,7 +165,13 @@ jobs:
           ls -d /usr/include/c++/* 2>/dev/null || true
           echo "── does std::expected compile? ──"
           printf '#include <expected>\nint main(){ std::expected<int,int> e{1}; return *e - 1; }\n' > /tmp/probe.cpp
-          $CXX -std=c++23 /tmp/probe.cpp -o /tmp/probe 2>&1 | head -20 || true
+          echo "default:"
+          $CXX -std=c++23 /tmp/probe.cpp -o /tmp/probe 2>&1 | head -5 || true
+          for V in 14 13; do
+            echo "with gcc $V:"
+            $CXX -std=c++23 --gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/$V \
+                 /tmp/probe.cpp -o /tmp/probe 2>&1 | head -5 || true
+          done
 
       - uses: actions/cache@v4
         with:
@@ -205,6 +215,7 @@ jobs:
       - run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build ccache g++-14
+          echo "CXXFLAGS=--gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/14" >> "$GITHUB_ENV"
       - uses: actions/cache@v4
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
