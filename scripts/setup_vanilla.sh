@@ -99,19 +99,39 @@ fi
 
 # ── Server jar ───────────────────────────────────────────────────────────────
 head_ "Server $TARGET_VERSION (for the official data generator)"
+
+# Identified by the version.json inside the jar, not by its filename. A jar
+# named "server-1.20.1.jar" that is actually 1.21 would otherwise sail through
+# and produce registry IDs that are wrong in a way nothing else would catch.
+jar_version() {
+    unzip -p "$1" version.json 2>/dev/null |
+        tr -d ' \n' | grep -oE '"id":"[^"]+"' | head -1 | cut -d'"' -f4
+}
+
 SERVER_JAR=""
-for path in "$ROOT/tools/vanilla/server-${TARGET_VERSION}.jar" \
-            "$ROOT/server.jar" \
-            "$(find "$LAUNCHER" -name "*${TARGET_VERSION}*server*.jar" 2>/dev/null | head -1)"; do
-    if [ -n "$path" ] && [ -f "$path" ]; then
-        SERVER_JAR="$path"
+while IFS= read -r candidate; do
+    [ -n "$candidate" ] || continue
+    version="$(jar_version "$candidate")"
+    if [ "$version" = "$TARGET_VERSION" ]; then
+        SERVER_JAR="$candidate"
+        proto="$(unzip -p "$candidate" version.json 2>/dev/null | tr -d ' \n' |
+                 grep -oE '"protocol_version":[0-9]+' | grep -oE '[0-9]+')"
+        packv="$(unzip -p "$candidate" version.json 2>/dev/null | tr -d ' \n' |
+                 grep -oE '"data":[0-9]+' | grep -oE '[0-9]+' | head -1)"
+        ok "$(basename "$candidate") — version $version, protocol $proto, pack_format $packv"
+        if [ "$proto" != "763" ]; then
+            miss "  expected protocol 763, got $proto"
+            SERVER_JAR=""
+        fi
         break
+    elif [ -n "$version" ]; then
+        miss "$(basename "$candidate") is version $version, not $TARGET_VERSION"
     fi
-done
+done < <(find "$ROOT/tools/vanilla" "$ROOT" -maxdepth 1 -name "*.jar" 2>/dev/null;
+         find "$ROOT/tools/vanilla" -name "*.jar" 2>/dev/null)
 
 if [ -n "$SERVER_JAR" ]; then
     FOUND_SERVER="$SERVER_JAR"
-    ok "$SERVER_JAR"
 else
     miss "no $TARGET_VERSION server jar"
 fi

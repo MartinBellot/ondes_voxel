@@ -146,7 +146,7 @@ faut pas concevoir un DSL de comportement de blocs.
 
 | Vraiment data-driven (JSON) | Code C++ |
 |---|---|
-| recettes, loot tables, tags, advancements, prédicats, item modifiers | comportement des blocs — ~1000 types, mais **80 % dérivent de ~20 archétypes** |
+| recettes, loot tables, tags, advancements, prédicats, item modifiers | comportement des blocs — 1003 types, mais **80 % dérivent de ~20 archétypes** |
 | worldgen : `density_function`, `noise_router`, `surface_rules`, `multi_noise` — un **interpréteur d'expressions**, à implémenter comme tel | IA et logique d'entités |
 | modèles et blockstates (assets **client**, pas datapack) | redstone, fluides, physique |
 

@@ -99,13 +99,17 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 
 ## M2 — Registres et données
 
-- [ ] `ov-datagen` : `server.jar --all` → `data/vanilla/1.20.1/` (jamais commité)
+- [x] `ov-datagen` : `server.jar --all` → `data/vanilla/1.20.1/` (jamais commité)
+- [x] Ordre des propriétés **déduit des IDs**, jamais lu dans `blocks.json` 🔒
+      *(4 blocs y divergent — voir `docs/PROVENANCE.md`)*
+- [x] `first_id` par registre (`mob_effect` est 1-based) 🔒
+- [x] `MANIFEST.sha256` committé — CI vérifie sans redistribuer de données Mojang
 - [ ] `ResourceLocation`, interning, hachage parfait
 - [ ] `Registry<T>` avec **les IDs numériques exacts de Mojang** 🔒
 - [ ] Test CI : égalité stricte contre `registries.json`, ordre inclus ⭐
 - [ ] `BlockState` en SoA plat : flags, émission, occultation, formes, couleurs
 - [ ] **Arithmétique mixed-radix des propriétés** — sans elle la redstone est injouable 🔒
-- [ ] Test : `stateId(bloc, props)` == index dans `blocks.json`, 26 000 états ⭐
+- [ ] Test : `stateId(bloc, props)` == index dans `blocks.json`, 24 135 états ⭐
 - [ ] `PalettedContainer` bit-exact : single-value, indirect 4-8 bits, direct 15 bits
 - [ ] Palette de biomes 4×4×4, 6 bits en direct
 - [ ] Tags (blocs, items, fluides, entités), résolution récursive
@@ -145,7 +149,7 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [ ] Écriture Anvil : allocation de secteurs, compactage, timestamps
 - [ ] `level.dat` : gzip, racine `Data`, écriture sûre via `level.dat_old`
 - [ ] `DataVersion`, refus explicite des versions non supportées
-- [ ] Les ~20 archétypes de blocs dont dérivent ~80 % des ~1000 types
+- [ ] Les ~20 archétypes de blocs dont dérivent ~80 % des 1003 types
 - [ ] Casse et pose : durées, outils corrects, Silk Touch, Fortune
 - [ ] Inventaire, conteneurs, shift-click, drag, hotbar
 - [ ] Mode créatif, sélection d'items
@@ -332,7 +336,7 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       hydratation, os, composteur, abeilles et pollinisation, mode amour,
       croissance, croisement de chevaux et lamas, apprivoisement, tonte, traite,
       pêche, sniffer et graines anciennes
-- [ ] **Enchantement** : table, coût XP, lapis, étagères, **37 enchantements**,
+- [ ] **Enchantement** : table, coût XP, lapis, étagères, **39 enchantements**,
       enclume (combinaison, réparation, renommage, coûts, « trop cher »), meule,
       mending, livres enchantés
 - [ ] **Alchimie** : support de brassage, blaze powder, verrue du Nether, tous

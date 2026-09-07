@@ -1,0 +1,10 @@
+# Ondes VOXEL — registry data manifest
+#
+# Hashes of the normalized data derived from the official 1.20.1 server jar.
+# The data itself is never committed; this file lets CI prove a regenerated
+# dataset is byte-identical without redistributing any of Mojang's content.
+#
+# version 1.20.1  protocol 763  pack_format 15
+
+146e4a4fbb095dc92c8cbf145275d5d65c69eed808d6d7aba92ecfe3f1d4f927  normalized/blocks.json
+f18a230f4c4d7888da6c85b5175741eab54f1ddb792c7c2d291710f79e92a9bc  normalized/registries.json

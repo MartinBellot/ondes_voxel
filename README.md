@@ -34,7 +34,7 @@ l'inventaire complet des features dans [`docs/ROADMAP.md`](docs/ROADMAP.md).
 |---|---|---|
 | **M0** Fondations | le job `linux-server-only` refuse un include Vulkan planté | 🟡 en cours |
 | **M1** Protocole 763 | le serveur apparaît dans la liste des serveurs du client vanilla | ⚪ |
-| **M2** Registres | les 26 000 blockstates ont les IDs exacts de vanilla | ⚪ |
+| **M2** Registres | les 24 135 blockstates ont les IDs exacts de vanilla | ⚪ |
 | **M3** Tranche verticale | **un client vanilla se connecte et on y joue — sans Vulkan** | ⚪ |
 | **M4** Monde persistant | round-trip de sauvegarde croisé avec Minecraft | ⚪ |
 | **M5** Client Ondes VOXEL | deux clients pour un serveur · p99 ≤ 20 ms à 12 chunks | ⚪ |

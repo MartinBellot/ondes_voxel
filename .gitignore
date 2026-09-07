@@ -5,6 +5,7 @@
 /run/
 # Sortie du data generator officiel Mojang
 /data/vanilla/*/generated/
+/data/vanilla/*/normalized/
 /data/vanilla/*/*.json
 # Jars fournis par l'utilisateur
 *.jar

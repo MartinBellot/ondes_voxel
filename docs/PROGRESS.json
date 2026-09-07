@@ -10,7 +10,7 @@
   },
   "last_updated": "2026-09-07",
   "current_milestone": "M0",
-  "current_task": "m0-ci-workflows",
+  "current_task": "m0-ov-io-ov-nbt",
   "milestones": {
     "M0": {
       "name": "Fondations",
@@ -31,13 +31,12 @@
     },
     "M2": {
       "name": "Registres et données",
-      "status": "not_started",
-      "done": 0,
-      "total": 17,
-      "exit_criterion": "Égalité stricte contre blocks.json sur les 26 000 états ; .ovpack chargé en < 10 ms ; vecteurs RNG conformes.",
-      "blocked": [
-        "Nécessite tools/vanilla/server-1.20.1.jar pour le data generator officiel (à télécharger depuis minecraft.net)."
-      ]
+      "status": "in_progress",
+      "done": 4,
+      "total": 20,
+      "exit_criterion": "Égalité stricte contre blocks.json sur les 24 135 états ; .ovpack chargé en < 10 ms ; vecteurs RNG conformes.",
+      "blocked": [],
+      "notes": "Data generator officiel exécuté et normalisé. 1003 blocs / 24135 blockstates. Deux pièges du dataset identifiés et neutralisés (ordre des propriétés, mob_effect 1-based)."
     },
     "M3": {
       "name": "Tranche verticale",
@@ -86,7 +85,7 @@
     "$comment": "null = pas encore mesuré. Renseigné par la CI, jamais à la main.",
     "coverage": null,
     "packets_763": "0/130",
-    "blockstate_parity": null,
+    "blockstate_parity": "24135/24135 états conformes au mixed-radix dérivé",
     "tps": 20.0,
     "frame_p99_ms": null,
     "worker_threads": 4,
@@ -101,7 +100,7 @@
     "ninja": "1.13.2",
     "vulkan_sdk": null,
     "vanilla_1_20_1_instance": true,
-    "vanilla_server_jar": false,
+    "vanilla_server_jar": "tools/vanilla/server.jar — 1.20.1, protocole 763, SHA-1 84194a2f286ef7c14ed7ce0090dba59902951553",
     "resource_packs": [
       "Faithful 32x (pack_format 15)"
     ],

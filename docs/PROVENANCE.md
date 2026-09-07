@@ -85,3 +85,57 @@ Une ligne par système non trivial, ajoutée au moment de son implémentation.
 | Index de section YZX | `ov_math` | `Chunk_format` | `(y * 16 + z) * 16 + x`. Partagé par Anvil et le paquet de chunk. |
 | Slot de région | `ov_math` | `Region_file_format` | Table de 1024 entrées indexée z-major : `(z % 32) * 32 + (x % 32)`. |
 | Limites de construction | `ov_math` | `Chunk_format` | Overworld y ∈ [-64, 319] depuis 1.18, sections -4 à 19. Impose la division plancher. |
+| Registres et blockstates | `ov_datagen` | data generator officiel, `server.jar` 1.20.1 (SHA-1 `84194a2f286ef7c14ed7ce0090dba59902951553`) | Voir les deux pièges ci-dessous. |
+
+---
+
+## Pièges mesurés dans les données officielles
+
+Deux comportements du dataset 1.20.1 qui cassent silencieusement une
+implémentation naïve. Tous deux vérifiés sur les données réelles, pas déduits.
+
+### L'ordre des propriétés dans `blocks.json` n'est pas l'ordre des IDs
+
+Les 24 135 blockstates sont bien un nombre en **base mixte** sur les propriétés
+du bloc, poids fort en tête, avec des IDs contigus par bloc — c'est ce qui rend
+l'accès aux propriétés arithmétique et O(1), et ce dont dépend la jouabilité de
+la redstone.
+
+Mais l'ordre des clés imprimé dans `blocks.json` **n'est pas** celui qu'utilise
+cette arithmétique. Quatre blocs sur 1003 divergent :
+
+| Bloc | Ordre dans le fichier | Ordre réel |
+|---|---|---|
+| `minecraft:chest` | `type, facing, waterlogged` | `facing, type, waterlogged` |
+| `minecraft:trapped_chest` | `type, facing, waterlogged` | `facing, type, waterlogged` |
+| `minecraft:moving_piston` | `type, facing` | `facing, type` |
+| `minecraft:piston_head` | `type, facing, short` | `facing, short, type` |
+
+Se fier à l'ordre du fichier donne des IDs faux **pour ces quatre blocs
+seulement**. Rien ne le détecte avant qu'un client vanilla ne se connecte et que
+quelques coffres ne deviennent autre chose — un symptôme qui coûte des semaines
+à faire remonter jusqu'ici.
+
+`tools/ov_datagen` ne lit donc jamais cet ordre : il le **déduit** des IDs
+d'états et vérifie les 24 135 états contre la permutation trouvée.
+
+### `minecraft:mob_effect` est 1-based
+
+Tous les registres sont des plages denses, mais un seul ne commence pas à zéro :
+`mob_effect` va de 1 (`speed`) à 33 (`darkness`), parce que l'ID 0 signifie
+« aucun effet » dans les paquets qui en transportent un.
+
+Un `protocol_id == index` générique décalerait **tous** les effets de statut d'un
+cran. La sortie normalisée porte donc un `first_id` explicite par registre.
+
+### Chiffres mesurés (et non estimés)
+
+| Grandeur | Valeur réelle |
+|---|---|
+| Blocs | **1003** |
+| Blockstates | **24 135** — IDs 0 à 24134, contigus, tiennent sur `u16` |
+| `minecraft:air` | id **0** (permet à `memset(0)` de produire une section vide) |
+| Bloc au plus d'états | `redstone_wire`, **1296** |
+| Items | 1255 · Entités 124 · Fluides 5 · Block entities 41 |
+| Sons 1474 · Particules 95 · Effets 33 · Enchantements **39** · Potions 43 |
+| Blocs ayant `default` ≠ premier ID | 484 sur 1003 — le défaut est une donnée à part |
