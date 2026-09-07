@@ -1,0 +1,25 @@
+{
+  "$comment": "Build-time history. Compared per machine: wall-clock from a laptop and from a CI runner are different measurements. The number that matters is per_tu_seconds, which header weight drives and which should stay flat as files are added.",
+  "runs": [
+    {
+      "date": "2026-09-07",
+      "commit": "91f3bd6",
+      "machine": "Darwin arm64",
+      "translation_units": 30,
+      "clean_seconds": 6.5,
+      "header_touch_seconds": 5.33,
+      "single_source_seconds": 0.75,
+      "per_tu_seconds": 0.2167
+    },
+    {
+      "date": "2026-09-07",
+      "commit": "91f3bd6",
+      "machine": "Darwin arm64",
+      "translation_units": 30,
+      "clean_seconds": 6.79,
+      "header_touch_seconds": 5.86,
+      "single_source_seconds": 0.71,
+      "per_tu_seconds": 0.2263
+    }
+  ]
+}

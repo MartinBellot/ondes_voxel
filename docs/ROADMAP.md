@@ -22,8 +22,10 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] `cmake/OvWarnings.cmake` — warnings-as-errors, `-ffp-contract=off` 🔒
 - [x] `cmake/OvSanitizers.cmake` — ASan/UBSan/TSan
 - [x] LTO désactivé par défaut (un link full-LTO dépasse 6 Go — risque R5) 🔒
-- [ ] En-têtes précompilées par bibliothèque
-- [ ] Benchmark du temps de rebuild, avec seuil bloquant en CI (risque R5)
+- [x] `bench_headers.py` — poids préprocessé, **déterministe**, seuil à 10 % (risque R5) 🔒
+- [x] `bench_build.sh` — temps mural, informatif (trop bruité pour un seuil)
+- [ ] Brancher `bench_headers.py` en CI
+- [ ] En-têtes précompilées — **mesuré comme inutile à 30 TU**, à revoir vers 200
 
 ### Verrous d'architecture 🔒
 - [x] `cmake/OvModule.cmake` — `ov_add_library`, couches, arêtes interdites

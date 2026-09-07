@@ -15,13 +15,13 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 #elif OV_PLATFORM_WINDOWS
-#define WIN32_LEAN_AND_MEAN
-// windows.h defines min and max as macros, which turns any later std::min<T>
-// into std::(...) and produces an error pointing at the call site rather than
-// at the include. Every translation unit that reaches windows.h needs this.
-#define NOMINMAX
-// Only windows.h: it pulls in processthreadsapi.h itself, and including that
-// directly invites clang-format to sort it ahead of windows.h, which it needs.
+// NOMINMAX and WIN32_LEAN_AND_MEAN come from OvWarnings.cmake, for every MSVC
+// target rather than per file — defining them again here is a C4005 macro
+// redefinition warning, which is an error under /WX.
+//
+// Only windows.h is included: it pulls in processthreadsapi.h itself, and
+// including that directly invites clang-format to sort it ahead of windows.h,
+// which it depends on.
 #include <windows.h>
 #endif
 

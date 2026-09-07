@@ -15,8 +15,8 @@
     "M0": {
       "name": "Fondations",
       "status": "in_progress",
-      "done": 43,
-      "total": 61,
+      "done": 45,
+      "total": 63,
       "exit_criterion": "Le job CI linux-server-only refuse un include Vulkan planté volontairement ; NBT round-trip sur fichiers vanilla ; run/assets/ peuplé.",
       "blocked": [],
       "notes": "NBT, Anvil, ZIP, compression et ov-assetimport terminés et validés sur données réelles. Restent : allocateurs, PCH, benchmark de rebuild, et le job CI linux-clang (bloqué : std::expected absent avec clang+libstdc++ sur le runner)."
@@ -89,11 +89,13 @@
     "tps": 20.0,
     "frame_p99_ms": null,
     "worker_threads": 4,
-    "clean_build_seconds": null,
-    "incremental_rebuild_seconds": null,
+    "clean_build_seconds": 6.5,
+    "incremental_rebuild_seconds": 5.33,
     "nbt_roundtrip": "2900/2900 chunks, 795277 tags, octet-identiques (monde réel)",
     "zip_extraction": "20953/20953 entrées du jar client 1.20.1, 41 Mo",
-    "assets_imported": "8671 fichiers (3398 Faithful 32x, 5131 jar client, 142 langues)"
+    "assets_imported": "8671 fichiers (3398 Faithful 32x, 5131 jar client, 142 langues)",
+    "header_lines_total": 2204084,
+    "translation_units": 30
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",

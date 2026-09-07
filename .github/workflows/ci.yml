@@ -127,18 +127,33 @@ jobs:
           - compiler: clang
             cc: clang
             cxx: clang++
+            extra_flags: -DCMAKE_CXX_FLAGS=-stdlib=libc++
     env:
       CC: ${{ matrix.cc }}
       CXX: ${{ matrix.cxx }}
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y ninja-build ccache
+
+      - name: Install build tools
+        # libc++ for the clang job: the runner's clang 18 pairs with a libstdc++
+        # that does not provide std::expected. Each half is modern enough alone;
+        # together they are not. Every parser here returns std::expected because
+        # the decode path is hot and must not throw, so this is not negotiable at
+        # the call sites.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build ccache
+          if [ "${{ matrix.compiler }}" = "clang" ]; then
+            sudo apt-get install -y libc++-dev libc++abi-dev
+          fi
+
       - uses: actions/cache@v4
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
           key: vcpkg-linux-${{ matrix.compiler }}-${{ hashFiles('vcpkg.json') }}
+
       - run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE" && ./scripts/bootstrap.sh
-      - run: cmake --preset linux-debug
+      - run: cmake --preset linux-debug ${{ matrix.extra_flags }}
       - run: cmake --build --preset linux-debug
       - run: ctest --preset linux-debug
 
@@ -171,7 +186,9 @@ jobs:
         sanitizer: [address, thread]
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y ninja-build ccache
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build ccache libc++-dev libc++abi-dev
       - uses: actions/cache@v4
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
@@ -181,7 +198,9 @@ jobs:
         env:
           CC: clang
           CXX: clang++
-        run: cmake --preset linux-debug -DOV_SANITIZER=${{ matrix.sanitizer }}
+        run: |
+          cmake --preset linux-debug -DOV_SANITIZER=${{ matrix.sanitizer }} \
+                -DCMAKE_CXX_FLAGS=-stdlib=libc++
       - run: cmake --build --preset linux-debug
       - run: ctest --preset linux-debug
 
