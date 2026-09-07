@@ -47,7 +47,7 @@ struct RayHit {
 /// `max_distance` is in blocks; vanilla's reach is 4.5 in survival and 5 in
 /// creative. The origin's own block is tested first, since a player standing
 /// inside a block should hit it immediately.
-template <typename SolidPredicate>
+template<typename SolidPredicate>
 [[nodiscard]] std::optional<RayHit> raycast_voxels(const Vec3d& origin, const Vec3d& direction,
                                                    f64 max_distance, SolidPredicate is_solid) {
     // A zero-length direction has no ray to walk; returning nothing beats
@@ -99,20 +99,23 @@ template <typename SolidPredicate>
 
         if (next_x <= next_y && next_x <= next_z) {
             travelled = next_x;
-            if (travelled > max_distance) return std::nullopt;
+            if (travelled > max_distance)
+                return std::nullopt;
             x += step_x;
             next_x += delta_x;
             // Entered through the face opposite the direction of travel.
             entered_face = step_x > 0 ? Direction::West : Direction::East;
         } else if (next_y <= next_z) {
             travelled = next_y;
-            if (travelled > max_distance) return std::nullopt;
+            if (travelled > max_distance)
+                return std::nullopt;
             y += step_y;
             next_y += delta_y;
             entered_face = step_y > 0 ? Direction::Down : Direction::Up;
         } else {
             travelled = next_z;
-            if (travelled > max_distance) return std::nullopt;
+            if (travelled > max_distance)
+                return std::nullopt;
             z += step_z;
             next_z += delta_z;
             entered_face = step_z > 0 ? Direction::North : Direction::South;

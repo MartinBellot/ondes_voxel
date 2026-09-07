@@ -63,12 +63,11 @@ struct AABB {
     /// The box covering everywhere this one passes through while moving by
     /// `delta`. Used to decide which blocks are worth testing at all.
     [[nodiscard]] constexpr AABB swept(const Vec3d& delta) const noexcept {
-        return AABB{Vec3d{delta.x < 0 ? min.x + delta.x : min.x,
-                          delta.y < 0 ? min.y + delta.y : min.y,
-                          delta.z < 0 ? min.z + delta.z : min.z},
-                    Vec3d{delta.x > 0 ? max.x + delta.x : max.x,
-                          delta.y > 0 ? max.y + delta.y : max.y,
-                          delta.z > 0 ? max.z + delta.z : max.z}};
+        return AABB{
+            Vec3d{delta.x < 0 ? min.x + delta.x : min.x, delta.y < 0 ? min.y + delta.y : min.y,
+                  delta.z < 0 ? min.z + delta.z : min.z},
+            Vec3d{delta.x > 0 ? max.x + delta.x : max.x, delta.y > 0 ? max.y + delta.y : max.y,
+                  delta.z > 0 ? max.z + delta.z : max.z}};
     }
 
     /// True when the two boxes share volume. Touching faces do not count.
@@ -90,8 +89,10 @@ struct AABB {
     /// because this is the hottest code in entity movement and the explicit
     /// version is what a profiler can read.
     [[nodiscard]] constexpr f64 clip_x(const AABB& other, f64 delta) const noexcept {
-        if (max.y <= other.min.y || min.y >= other.max.y) return delta;
-        if (max.z <= other.min.z || min.z >= other.max.z) return delta;
+        if (max.y <= other.min.y || min.y >= other.max.y)
+            return delta;
+        if (max.z <= other.min.z || min.z >= other.max.z)
+            return delta;
 
         // Moving forward: the obstacle is ahead when its near face is at or
         // past this box's far face, and the gap between them is how far this
@@ -106,8 +107,10 @@ struct AABB {
     }
 
     [[nodiscard]] constexpr f64 clip_y(const AABB& other, f64 delta) const noexcept {
-        if (max.x <= other.min.x || min.x >= other.max.x) return delta;
-        if (max.z <= other.min.z || min.z >= other.max.z) return delta;
+        if (max.x <= other.min.x || min.x >= other.max.x)
+            return delta;
+        if (max.z <= other.min.z || min.z >= other.max.z)
+            return delta;
 
         // Moving forward: the obstacle is ahead when its near face is at or
         // past this box's far face, and the gap between them is how far this
@@ -122,8 +125,10 @@ struct AABB {
     }
 
     [[nodiscard]] constexpr f64 clip_z(const AABB& other, f64 delta) const noexcept {
-        if (max.x <= other.min.x || min.x >= other.max.x) return delta;
-        if (max.y <= other.min.y || min.y >= other.max.y) return delta;
+        if (max.x <= other.min.x || min.x >= other.max.x)
+            return delta;
+        if (max.y <= other.min.y || min.y >= other.max.y)
+            return delta;
 
         // Moving forward: the obstacle is ahead when its near face is at or
         // past this box's far face, and the gap between them is how far this

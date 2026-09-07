@@ -54,9 +54,9 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] `block_pos.hpp` — `BlockPos` / `ChunkPos` / `SectionPos`, division plancher
 - [x] Index de section YZX vérifié par `static_assert` 🔒
 - [ ] Matrices, quaternions, transformations
-- [ ] `AABB` et tests d'intersection
+- [x] `AABB` : intersection, balayage, **clipping par axe** (Y puis X puis Z) 🔒
 - [ ] `VoxelShape` — union de boîtes, pool dédupliqué
-- [ ] Raycast DDA sur grille de voxels
+- [x] Raycast DDA (Amanatides & Woo) — bloc **et face** d'entrée 🔒
 
 ### `ov_io` (L2) et `ov_nbt` (L3)
 - [x] Lecteur ZIP (jars, resource packs, datapacks) — deflate brut, sans dépendance
