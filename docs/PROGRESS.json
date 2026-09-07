@@ -10,16 +10,16 @@
   },
   "last_updated": "2026-09-07",
   "current_milestone": "M0",
-  "current_task": "m0-assetimport",
+  "current_task": "m0-allocators-and-pch",
   "milestones": {
     "M0": {
       "name": "Fondations",
       "status": "in_progress",
-      "done": 36,
-      "total": 59,
+      "done": 43,
+      "total": 61,
       "exit_criterion": "Le job CI linux-server-only refuse un include Vulkan planté volontairement ; NBT round-trip sur fichiers vanilla ; run/assets/ peuplé.",
       "blocked": [],
-      "notes": "NBT, régions Anvil, compression et UTF-8 modifié terminés et validés sur un vrai monde (2900 chunks octet-identiques). Restent : ov-assetimport, allocateurs, PCH, CI en conditions réelles."
+      "notes": "NBT, Anvil, ZIP, compression et ov-assetimport terminés et validés sur données réelles. Restent : allocateurs, PCH, benchmark de rebuild, et le job CI linux-clang (bloqué : std::expected absent avec clang+libstdc++ sur le runner)."
     },
     "M1": {
       "name": "Protocole 763",
@@ -92,7 +92,8 @@
     "clean_build_seconds": null,
     "incremental_rebuild_seconds": null,
     "nbt_roundtrip": "2900/2900 chunks, 795277 tags, octet-identiques (monde réel)",
-    "zip_extraction": "20953/20953 entrées du jar client 1.20.1, 41 Mo"
+    "zip_extraction": "20953/20953 entrées du jar client 1.20.1, 41 Mo",
+    "assets_imported": "8671 fichiers (3398 Faithful 32x, 5131 jar client, 142 langues)"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",

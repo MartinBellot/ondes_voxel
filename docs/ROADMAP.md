@@ -78,12 +78,14 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] `ov-inspect nbt|region --verify`
 
 ### Assets
-- [ ] `ov-assetimport` : détection PrismLauncher / MultiMC / launcher officiel
-- [ ] Vérification de version, message d'erreur actionnable si absente
-- [ ] Extraction du jar client : `models/`, `blockstates/`, `font/`, `lang/`
-- [ ] Résolution des sons via `assets/indexes/*.json` → `objects/<hash>`
-- [ ] Empilage des packs de `ressourcepacks/` selon la priorité vanilla
-- [ ] Manifeste de provenance par fichier → `docs/ASSETS.md`
+- [x] `ov-assetimport` : détection PrismLauncher / MultiMC / launcher officiel
+- [x] Version lue dans le `version.json` du jar, jamais dans son nom de fichier 🔒
+- [x] Message d'erreur actionnable si la version est absente
+- [x] Extraction du jar client : `models/`, `blockstates/`, `font/`, `lang/`
+- [x] Résolution via `assets/indexes/*.json` → `objects/<hash>` (142 langues)
+- [ ] Sons : `--sounds` implémenté, non activé par défaut (inutile avant M9)
+- [x] Empilage des packs selon la priorité vanilla, dossiers **et** zips
+- [x] Manifeste de provenance par fichier → `run/assets/PROVENANCE.tsv`
 - [ ] `ov-assetgen` : atlas procédural (démarrage sans aucun asset externe)
 - [ ] `scripts/setup_vanilla.sh` — guide l'installation de 1.20.1 et du server.jar
 

@@ -52,6 +52,9 @@ if(CCACHE_PROGRAM)
     message(STATUS "ccache: ${CCACHE_PROGRAM}")
 endif()
 
+include(OvCompilerCheck)
+ov_check_cxx23_support()
+
 include(OvWarnings)
 include(OvSanitizers)
 include(OvModule)
@@ -86,6 +89,7 @@ add_subdirectory(apps/ov_dedicated)
 
 # ── Tools ───────────────────────────────────────────────────────────────────
 add_subdirectory(tools/ov_inspect)
+add_subdirectory(tools/ov_assetimport)
 
 # ── Summary ─────────────────────────────────────────────────────────────────
 message(STATUS "")
