@@ -105,7 +105,7 @@ u32 RegionFile::timestamp(u32 local_x, u32 local_z) const noexcept {
 usize RegionFile::chunk_count() const noexcept {
     usize count = 0;
     for (const auto& location : locations_) {
-        count += location.present() ? 1 : 0;
+        count += location.present() ? usize{1} : usize{0};
     }
     return count;
 }

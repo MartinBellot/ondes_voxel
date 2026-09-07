@@ -1,6 +1,10 @@
 #include "ov/io/file.hpp"
 
+#include "ov/base/platform.hpp"
+
 #include <cstdio>
+#include <memory>
+#include <string>
 #include <system_error>
 
 namespace ov::io {
@@ -15,6 +19,22 @@ struct FileCloser {
 };
 
 using FilePtr = std::unique_ptr<std::FILE, FileCloser>;
+
+/// Open a path, whatever the platform spells paths in.
+///
+/// On Windows std::filesystem::path::c_str() is const wchar_t*, so fopen does
+/// not take it. Going through path.string() would compile, but it converts to
+/// the active code page and throws or mangles on anything outside it — and the
+/// paths this opens are a player's Minecraft folder and their user directory,
+/// which routinely contain accented characters. _wfopen keeps them intact.
+[[nodiscard]] FilePtr open_file(const std::filesystem::path& path, const char* mode) {
+#if OV_PLATFORM_WINDOWS
+    const std::wstring wide_mode(mode, mode + std::char_traits<char>::length(mode));
+    return FilePtr{::_wfopen(path.c_str(), wide_mode.c_str())};
+#else
+    return FilePtr{std::fopen(path.c_str(), mode)};
+#endif
+}
 
 }  // namespace
 
@@ -39,7 +59,7 @@ FileResult<std::vector<u8>> read_file(const std::filesystem::path& path, usize l
         return std::unexpected{FileError::TooLarge};
     }
 
-    FilePtr file{std::fopen(path.c_str(), "rb")};
+    FilePtr file{open_file(path, "rb")};
     if (!file) {
         return std::unexpected{FileError::NotFound};
     }
@@ -56,7 +76,7 @@ FileResult<void> write_file_atomic(const std::filesystem::path& path, std::span<
     temp += ".tmp";
 
     {
-        FilePtr file{std::fopen(temp.c_str(), "wb")};
+        FilePtr file{open_file(temp, "wb")};
         if (!file) {
             return std::unexpected{FileError::PermissionDenied};
         }
