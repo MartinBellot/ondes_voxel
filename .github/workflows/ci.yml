@@ -149,6 +149,20 @@ jobs:
             sudo apt-get install -y g++-14
           fi
 
+      - name: Report what the toolchain actually provides
+        # Printed rather than guessed at. Which libstdc++ clang picks is not
+        # obvious — installing a newer g++ does not by itself make clang use its
+        # headers — and the configure check only says the feature is missing.
+        run: |
+          echo "── compiler ──"
+          $CXX --version
+          echo "── gcc installations visible to clang ──"
+          $CXX -v -E -x c++ /dev/null 2>&1 | grep -iE "selected gcc|gcc install" || true
+          ls -d /usr/include/c++/* 2>/dev/null || true
+          echo "── does std::expected compile? ──"
+          printf '#include <expected>\nint main(){ std::expected<int,int> e{1}; return *e - 1; }\n' > /tmp/probe.cpp
+          $CXX -std=c++23 /tmp/probe.cpp -o /tmp/probe 2>&1 | head -20 || true
+
       - uses: actions/cache@v4
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
