@@ -1,3 +1,4 @@
+#include "ov/base/resource_location.hpp"
 #include "ov/registry/block_states.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -278,4 +279,29 @@ TEST_CASE("a corrupt pack is rejected", "[registry][blockstates][malformed]") {
     wrong_version[3] = 'K';
     wrong_version[4] = 99;
     REQUIRE(BlockRegistry::from_bytes(wrong_version).error() == RegistryError::VersionMismatch);
+}
+
+TEST_CASE("every block name Mojang produced is a valid resource location",
+          "[registry][blockstates][resource]") {
+    // The parser was written from the documented character rules, not from the
+    // data. Running the real 1003 names through it is what turns "the rules as
+    // I read them" into "the rules the game actually follows" — a single name
+    // with a character the spec omits would fail here rather than in a datapack
+    // six months from now.
+    if (loaded_registry() == nullptr) {
+        SKIP("no registry pack — run tools/ov_datagen/datagen.py");
+    }
+
+    const auto* reg = loaded_registry();
+    for (u16 block = 0; block < reg->block_count(); ++block) {
+        const std::string_view name = reg->block_name(BlockId{block});
+
+        const auto location = ResourceLocation::parse(name);
+        REQUIRE(location.has_value());
+
+        // The names are stored fully qualified, so the canonical form has to
+        // come back byte for byte — nothing is being normalised away.
+        REQUIRE(location->full() == name);
+        REQUIRE(location->is_vanilla());
+    }
 }

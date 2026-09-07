@@ -264,3 +264,41 @@ Deux réserves, posées honnêtement :
 - Une section uniforme n'écrit **aucune donnée du tout** : palette d'un élément,
   `data` absent. C'est le cas majoritaire (263 778 sections sur 429 096 ici), et
   celui qu'une implémentation oublie parce qu'il ne ressemble pas aux autres.
+
+---
+
+## `ResourceLocation` (`ov_base`)
+
+Source : page *Resource location* du wiki, jeux de caractères vérifiés ensuite
+contre les **1003 noms de blocs** produits par le data generator.
+
+| Règle | Détail |
+|---|---|
+| Namespace | `[a-z0-9_.-]` — pas de `/`, pas de majuscule |
+| Chemin | `[a-z0-9_.-/]` |
+| Namespace absent | vaut `minecraft` |
+| Deux-points en tête | `:stone` est `minecraft:stone`, **pas** une erreur |
+| Deuxième deux-points | caractère de chemin invalide, pas un second séparateur |
+
+Les jeux de caractères sont écrits en dur plutôt que dérivés de `std::isalnum`,
+qui dépend de la locale : un identifiant devant correspondre octet pour octet à
+celui de Mojang ne peut pas dépendre de la configuration de la machine.
+
+### Le piège : la validité n'est pas une garantie de chemin de fichier
+
+`.` et `/` sont **tous deux** des caractères de chemin légaux. Donc
+`minecraft:../../etc/passwd` est un identifiant parfaitement conforme — et
+vanilla l'accepte également. Un test le fixe **comme cas passant**, précisément
+pour que personne n'en déduise l'inverse : avoir parsé un identifiant
+n'autorise pas à le concaténer à un répertoire. Tout ce qui résout une
+`ResourceLocation` vers un fichier doit valider le chemin séparément
+(`io::is_safe_archive_path`).
+
+C'est le même piège que Zip Slip, à un étage au-dessus.
+
+### Écart assumé au plan
+
+Le plan rangeait ce type dans `ov_registry` (couche 5). Il vit dans `ov_base`
+(couche 0) : le chargeur de datapack appartient à `ov_data` (couche 4), donc
+**sous** `ov_registry`, et manipule ces identifiants en permanence. Le graphe ne
+remonte jamais ; le type n'ayant aucune dépendance, le descendre ne coûte rien.

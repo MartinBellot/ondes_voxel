@@ -5,6 +5,7 @@ ov_add_library(ov_base
         src/assert.cpp
         src/log.cpp
         src/md5.cpp
+        src/resource_location.cpp
         src/thread.cpp
         src/time.cpp
     DEPS
@@ -16,6 +17,7 @@ ov_add_test(test_ov_base
     SOURCES
         tests/test_alloc_scope.cpp
         tests/test_md5.cpp
+        tests/test_resource_location.cpp
         tests/test_time.cpp
         tests/test_types.cpp
         tests/test_thread.cpp

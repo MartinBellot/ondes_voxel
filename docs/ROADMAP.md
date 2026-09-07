@@ -128,7 +128,8 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       *(4 blocs y divergent — voir `docs/PROVENANCE.md`)*
 - [x] `first_id` par registre (`mob_effect` est 1-based) 🔒
 - [x] `MANIFEST.sha256` committé — CI vérifie sans redistribuer de données Mojang
-- [ ] `ResourceLocation`, interning, hachage parfait
+- [x] `ResourceLocation` : validation stricte, forme canonique, ordre par namespace
+- [ ] Interning des identifiants et hachage parfait
 - [ ] `Registry<T>` avec **les IDs numériques exacts de Mojang** 🔒
 - [ ] Test CI : égalité stricte contre `registries.json`, ordre inclus ⭐
 - [x] `.ovpack` binaire, mmap-able, sans pointeur — 131 744 octets, déterministe
