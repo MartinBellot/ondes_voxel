@@ -6,6 +6,15 @@ if(MSVC)
         /W4 /permissive- /Zc:preprocessor /Zc:__cplusplus /utf-8 /EHsc
         /wd4324  # structure padded due to alignas — intentional, see false sharing
     )
+    target_compile_definitions(ov_warnings INTERFACE
+        # MSVC deprecates fopen, fwrite and friends in favour of the _s
+        # variants, which exist nowhere else. The portable functions are used
+        # deliberately and their results are checked; the warning is noise.
+        _CRT_SECURE_NO_WARNINGS
+        # Keep windows.h from defining min/max as macros anywhere it is reached.
+        NOMINMAX
+        WIN32_LEAN_AND_MEAN
+    )
     if(OV_WERROR)
         target_compile_options(ov_warnings INTERFACE /WX)
     endif()

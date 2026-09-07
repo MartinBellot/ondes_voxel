@@ -7,6 +7,12 @@
 
 #define OV_LOG_CATEGORY "server"
 
+#include "ov/base/assert.hpp"
+#include "ov/base/log.hpp"
+#include "ov/base/thread.hpp"
+#include "ov/base/time.hpp"
+#include "ov/math/block_pos.hpp"
+
 #include <fmt/format.h>
 
 #include <atomic>
@@ -14,12 +20,6 @@
 #include <csignal>
 #include <string_view>
 #include <thread>
-
-#include "ov/base/assert.hpp"
-#include "ov/base/log.hpp"
-#include "ov/base/thread.hpp"
-#include "ov/base/time.hpp"
-#include "ov/math/block_pos.hpp"
 
 namespace {
 
@@ -49,9 +49,10 @@ Options parse_args(int argc, char** argv) {
             // Bounded runs make the server usable from tests and CI without a
             // watchdog around it. from_chars, not strtoll: a string_view is not
             // null-terminated and strtoll would read past the end of it.
-            const std::string_view value = arg.substr(8);
+            const std::string_view value  = arg.substr(8);
             ov::i64                parsed = 0;
-            const auto [ptr, ec] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+            const auto [ptr, ec] =
+                std::from_chars(value.data(), value.data() + value.size(), parsed);
             if (ec == std::errc{} && ptr == value.data() + value.size() && parsed >= 0) {
                 options.run_ticks = parsed;
             } else {
@@ -112,7 +113,8 @@ int main(int argc, char** argv) {
 
         if (clock.is_behind()) {
             ++behind_events;
-            OV_LOG_WARN("can't keep up — is the server overloaded? (running behind, dropped ticks)");
+            OV_LOG_WARN(
+                "can't keep up — is the server overloaded? (running behind, dropped ticks)");
         }
 
         if (options.run_ticks >= 0 && clock.tick_count() >= options.run_ticks) {

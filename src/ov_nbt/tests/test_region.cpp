@@ -1,11 +1,11 @@
-#include "ov/nbt/region.hpp"
-
-#include <catch2/catch_test_macros.hpp>
-#include <vector>
-
 #include "ov/io/byte_writer.hpp"
 #include "ov/io/compression.hpp"
 #include "ov/nbt/binary.hpp"
+#include "ov/nbt/region.hpp"
+
+#include <catch2/catch_test_macros.hpp>
+
+#include <vector>
 
 using namespace ov;
 using namespace ov::nbt;
@@ -28,15 +28,9 @@ public:
 
         std::vector<u8> payload;
         switch (scheme) {
-            case ChunkCompression::Gzip:
-                payload = io::gzip_compress(raw).value();
-                break;
-            case ChunkCompression::Zlib:
-                payload = io::zlib_compress(raw).value();
-                break;
-            case ChunkCompression::None:
-                payload = raw;
-                break;
+            case ChunkCompression::Gzip: payload = io::gzip_compress(raw).value(); break;
+            case ChunkCompression::Zlib: payload = io::zlib_compress(raw).value(); break;
+            case ChunkCompression::None: payload = raw; break;
         }
 
         // Chunk data starts on a sector boundary.
@@ -170,8 +164,7 @@ TEST_CASE("all three 1.20.1 compression schemes are readable", "[nbt][region]") 
     }
 }
 
-TEST_CASE("a file not padded to a sector boundary is still readable",
-          "[nbt][region]") {
+TEST_CASE("a file not padded to a sector boundary is still readable", "[nbt][region]") {
     // Real region files are not padded out to their last chunk's allocation. A
     // save from an actual world measured 1819235 bytes — 444.15 sectors — with
     // its final chunk allocated through sector 445. An implementation that
@@ -192,15 +185,14 @@ TEST_CASE("a file not padded to a sector boundary is still readable",
     REQUIRE(region->read_chunk(1, 0).has_value());
 }
 
-TEST_CASE("an offset past the end of the file is rejected",
-          "[nbt][region][malformed]") {
+TEST_CASE("an offset past the end of the file is rejected", "[nbt][region][malformed]") {
     // The cheapest way to make a parser read memory it does not own.
     std::vector<u8> data(kRegionHeaderSize + kSectorSize, 0);
     const u32       entry = (9999u << 8) | 1u;
-    data[0] = static_cast<u8>(entry >> 24);
-    data[1] = static_cast<u8>(entry >> 16);
-    data[2] = static_cast<u8>(entry >> 8);
-    data[3] = static_cast<u8>(entry);
+    data[0]               = static_cast<u8>(entry >> 24);
+    data[1]               = static_cast<u8>(entry >> 16);
+    data[2]               = static_cast<u8>(entry >> 8);
+    data[3]               = static_cast<u8>(entry);
 
     const auto region = RegionFile::open(std::move(data));
     REQUIRE_FALSE(region.has_value());
@@ -212,18 +204,17 @@ TEST_CASE("an offset inside the header is rejected", "[nbt][region][malformed]")
     // would have the parser reading the location table as chunk data.
     std::vector<u8> data(kRegionHeaderSize + kSectorSize, 0);
     const u32       entry = (1u << 8) | 1u;
-    data[0] = static_cast<u8>(entry >> 24);
-    data[1] = static_cast<u8>(entry >> 16);
-    data[2] = static_cast<u8>(entry >> 8);
-    data[3] = static_cast<u8>(entry);
+    data[0]               = static_cast<u8>(entry >> 24);
+    data[1]               = static_cast<u8>(entry >> 16);
+    data[2]               = static_cast<u8>(entry >> 8);
+    data[3]               = static_cast<u8>(entry);
 
     const auto region = RegionFile::open(std::move(data));
     REQUIRE_FALSE(region.has_value());
     REQUIRE(region.error() == RegionError::OffsetOutOfRange);
 }
 
-TEST_CASE("a declared length larger than the data is rejected",
-          "[nbt][region][malformed]") {
+TEST_CASE("a declared length larger than the data is rejected", "[nbt][region][malformed]") {
     RegionBuilder builder;
     builder.add_chunk(0, 0, sample_chunk(0, 0));
     auto data = builder.take();
@@ -254,15 +245,14 @@ TEST_CASE("a zero length is rejected", "[nbt][region][malformed]") {
     REQUIRE(region->read_chunk(0, 0).error() == RegionError::BadChunkLength);
 }
 
-TEST_CASE("compression schemes newer than 1.20.1 are refused by name",
-          "[nbt][region][malformed]") {
+TEST_CASE("compression schemes newer than 1.20.1 are refused by name", "[nbt][region][malformed]") {
     // LZ4 (4) arrived in 24w04a and custom (127) in 24w05a. Encountering one
     // means the file came from a newer version, which is worth saying rather
     // than failing somewhere deeper.
     for (const u8 scheme : {u8{4}, u8{127}, u8{0}, u8{99}}) {
         RegionBuilder builder;
         builder.add_chunk(0, 0, sample_chunk(0, 0));
-        auto data = builder.take();
+        auto data                 = builder.take();
         data[2 * kSectorSize + 4] = scheme;
 
         const auto region = RegionFile::open(std::move(data));

@@ -21,14 +21,14 @@
 //   arrays stay inline, which is the overwhelming majority of tags in a chunk.
 #pragma once
 
+#include "ov/base/types.hpp"
+
 #include <memory>
 #include <span>
 #include <string>
 #include <string_view>
 #include <variant>
 #include <vector>
-
-#include "ov/base/types.hpp"
 
 namespace ov::nbt {
 
@@ -52,7 +52,7 @@ enum class TagType : u8 {
 inline constexpr u8 kTagTypeCount = 13;
 
 [[nodiscard]] std::string_view to_string(TagType type) noexcept;
-[[nodiscard]] bool is_valid_tag_type(u8 raw) noexcept;
+[[nodiscard]] bool             is_valid_tag_type(u8 raw) noexcept;
 
 struct ListData;
 struct CompoundData;
@@ -72,16 +72,16 @@ public:
     Tag(Tag&& other) noexcept;
     Tag& operator=(Tag&& other) noexcept;
 
-    Tag(i8 value) noexcept;                 // NOLINT(*-explicit-constructor)
-    Tag(i16 value) noexcept;                // NOLINT(*-explicit-constructor)
-    Tag(i32 value) noexcept;                // NOLINT(*-explicit-constructor)
-    Tag(i64 value) noexcept;                // NOLINT(*-explicit-constructor)
-    Tag(f32 value) noexcept;                // NOLINT(*-explicit-constructor)
-    Tag(f64 value) noexcept;                // NOLINT(*-explicit-constructor)
-    Tag(std::string value);                 // NOLINT(*-explicit-constructor)
-    Tag(ByteArray value);                   // NOLINT(*-explicit-constructor)
-    Tag(IntArray value);                    // NOLINT(*-explicit-constructor)
-    Tag(LongArray value);                   // NOLINT(*-explicit-constructor)
+    Tag(i8 value) noexcept;   // NOLINT(*-explicit-constructor)
+    Tag(i16 value) noexcept;  // NOLINT(*-explicit-constructor)
+    Tag(i32 value) noexcept;  // NOLINT(*-explicit-constructor)
+    Tag(i64 value) noexcept;  // NOLINT(*-explicit-constructor)
+    Tag(f32 value) noexcept;  // NOLINT(*-explicit-constructor)
+    Tag(f64 value) noexcept;  // NOLINT(*-explicit-constructor)
+    Tag(std::string value);   // NOLINT(*-explicit-constructor)
+    Tag(ByteArray value);     // NOLINT(*-explicit-constructor)
+    Tag(IntArray value);      // NOLINT(*-explicit-constructor)
+    Tag(LongArray value);     // NOLINT(*-explicit-constructor)
 
     /// A list must be built with its element type, since an empty list still
     /// declares one on disk.
@@ -92,6 +92,7 @@ public:
     [[nodiscard]] static Tag make_bool(bool value) noexcept;
 
     [[nodiscard]] TagType type() const noexcept;
+
     [[nodiscard]] bool is_end() const noexcept { return type() == TagType::End; }
 
     // ── Scalar and array access ─────────────────────────────────────────────
@@ -99,12 +100,12 @@ public:
     // untrusted: a field that "must" be an int may not be one, and the caller
     // has to be able to find that out.
 
-    template <typename T>
+    template<typename T>
     [[nodiscard]] const T* get_if() const noexcept {
         return std::get_if<T>(&value_);
     }
 
-    template <typename T>
+    template<typename T>
     [[nodiscard]] T* get_if() noexcept {
         return std::get_if<T>(&value_);
     }
@@ -115,9 +116,9 @@ public:
     /// versions more than once, and refusing to read a TAG_Int where a TAG_Byte
     /// was expected would fail on real worlds. Returns fallback for non-numeric
     /// tags.
-    [[nodiscard]] i64 as_i64(i64 fallback = 0) const noexcept;
-    [[nodiscard]] f64 as_f64(f64 fallback = 0.0) const noexcept;
-    [[nodiscard]] bool as_bool(bool fallback = false) const noexcept;
+    [[nodiscard]] i64              as_i64(i64 fallback = 0) const noexcept;
+    [[nodiscard]] f64              as_f64(f64 fallback = 0.0) const noexcept;
+    [[nodiscard]] bool             as_bool(bool fallback = false) const noexcept;
     [[nodiscard]] std::string_view as_string(std::string_view fallback = {}) const noexcept;
 
     // ── List access ─────────────────────────────────────────────────────────
@@ -163,7 +164,8 @@ public:
     /// Children for a list or compound, elements for an array or string,
     /// 0 otherwise.
     [[nodiscard]] usize size() const noexcept;
-    [[nodiscard]] bool  empty() const noexcept { return size() == 0; }
+
+    [[nodiscard]] bool empty() const noexcept { return size() == 0; }
 
     /// Structural equality, order included for compounds.
     [[nodiscard]] bool operator==(const Tag& other) const noexcept;
@@ -171,9 +173,9 @@ public:
 private:
     // std::monostate stands for TAG_End. Lists and compounds are boxed because
     // std::variant needs complete alternatives and they contain Tags.
-    using Value = std::variant<std::monostate, i8, i16, i32, i64, f32, f64, ByteArray,
-                               std::string, std::unique_ptr<ListData>,
-                               std::unique_ptr<CompoundData>, IntArray, LongArray>;
+    using Value =
+        std::variant<std::monostate, i8, i16, i32, i64, f32, f64, ByteArray, std::string,
+                     std::unique_ptr<ListData>, std::unique_ptr<CompoundData>, IntArray, LongArray>;
 
     Value value_;
 };

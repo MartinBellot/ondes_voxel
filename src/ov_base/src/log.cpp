@@ -1,5 +1,7 @@
 #include "ov/base/log.hpp"
 
+#include "ov/base/thread.hpp"
+
 #include <fmt/chrono.h>
 #include <fmt/color.h>
 
@@ -9,12 +11,10 @@
 #include <mutex>
 #include <string>
 
-#include "ov/base/thread.hpp"
-
 #if OV_PLATFORM_WINDOWS
-#    include <io.h>
+#include <io.h>
 #else
-#    include <unistd.h>
+#include <unistd.h>
 #endif
 
 namespace ov {
@@ -31,10 +31,10 @@ constexpr std::string_view level_name(LogLevel level) noexcept {
     switch (level) {
         case LogLevel::Trace: return "TRACE";
         case LogLevel::Debug: return "DEBUG";
-        case LogLevel::Info:  return "INFO ";
-        case LogLevel::Warn:  return "WARN ";
+        case LogLevel::Info: return "INFO ";
+        case LogLevel::Warn: return "WARN ";
         case LogLevel::Error: return "ERROR";
-        case LogLevel::Off:   return "OFF  ";
+        case LogLevel::Off: return "OFF  ";
     }
     return "?????";
 }
@@ -43,10 +43,10 @@ fmt::text_style level_style(LogLevel level) noexcept {
     switch (level) {
         case LogLevel::Trace: return fg(fmt::terminal_color::bright_black);
         case LogLevel::Debug: return fg(fmt::terminal_color::cyan);
-        case LogLevel::Info:  return fg(fmt::terminal_color::green);
-        case LogLevel::Warn:  return fg(fmt::terminal_color::yellow);
+        case LogLevel::Info: return fg(fmt::terminal_color::green);
+        case LogLevel::Warn: return fg(fmt::terminal_color::yellow);
         case LogLevel::Error: return fg(fmt::terminal_color::red) | fmt::emphasis::bold;
-        case LogLevel::Off:   return {};
+        case LogLevel::Off: return {};
     }
     return {};
 }
@@ -66,7 +66,9 @@ bool stderr_is_tty() noexcept {
 
 namespace detail {
 
-LogLevel log_threshold() noexcept { return g_threshold.load(std::memory_order_relaxed); }
+LogLevel log_threshold() noexcept {
+    return g_threshold.load(std::memory_order_relaxed);
+}
 
 void log_write(LogLevel level, std::string_view category, std::string_view message) noexcept {
     const auto  timestamp = std::chrono::system_clock::now();
@@ -99,12 +101,18 @@ void set_log_level(LogLevel level) noexcept {
 }
 
 LogLevel parse_log_level(std::string_view name) noexcept {
-    if (name == "trace") return LogLevel::Trace;
-    if (name == "debug") return LogLevel::Debug;
-    if (name == "info")  return LogLevel::Info;
-    if (name == "warn")  return LogLevel::Warn;
-    if (name == "error") return LogLevel::Error;
-    if (name == "off")   return LogLevel::Off;
+    if (name == "trace")
+        return LogLevel::Trace;
+    if (name == "debug")
+        return LogLevel::Debug;
+    if (name == "info")
+        return LogLevel::Info;
+    if (name == "warn")
+        return LogLevel::Warn;
+    if (name == "error")
+        return LogLevel::Error;
+    if (name == "off")
+        return LogLevel::Off;
     return LogLevel::Info;
 }
 

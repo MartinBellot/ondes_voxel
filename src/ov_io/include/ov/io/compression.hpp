@@ -15,11 +15,11 @@
 // so every entry point takes an explicit output cap.
 #pragma once
 
+#include "ov/base/types.hpp"
+
 #include <expected>
 #include <span>
 #include <vector>
-
-#include "ov/base/types.hpp"
 
 namespace ov::io {
 
@@ -34,7 +34,7 @@ enum class CompressionError {
 
 [[nodiscard]] std::string_view to_string(CompressionError error) noexcept;
 
-template <typename T>
+template<typename T>
 using CompressionResult = std::expected<T, CompressionError>;
 
 /// Default ceiling for decompressed output.
@@ -52,8 +52,8 @@ inline constexpr usize kDefaultDecompressLimit = 64ull * 1024 * 1024;
 
 /// Decompress by sniffing the container. gzip starts with 1F 8B; zlib's first
 /// byte has a low nibble of 8 and the first two bytes are a multiple of 31.
-[[nodiscard]] CompressionResult<std::vector<u8>> decompress(
-    std::span<const u8> input, usize limit = kDefaultDecompressLimit);
+[[nodiscard]] CompressionResult<std::vector<u8>> decompress(std::span<const u8> input,
+                                                            usize limit = kDefaultDecompressLimit);
 
 /// 1 is fastest, 12 is smallest. 6 matches what vanilla writes.
 inline constexpr int kDefaultCompressionLevel = 6;

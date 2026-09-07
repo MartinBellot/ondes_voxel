@@ -2,6 +2,7 @@
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+
 #include <type_traits>
 
 using namespace ov;
@@ -74,8 +75,7 @@ TEST_CASE("direction offsets point the right way", "[math][vec]") {
     STATIC_REQUIRE(direction_offset(Direction::East) == Vec3i{1, 0, 0});
 }
 
-TEST_CASE("direction names round-trip and match the vanilla spelling",
-          "[math][vec]") {
+TEST_CASE("direction names round-trip and match the vanilla spelling", "[math][vec]") {
     // These strings are parsed out of blockstate files and written into NBT.
     // They are data format, not debug output.
     REQUIRE(direction_name(Direction::Down) == "down");
@@ -92,8 +92,7 @@ TEST_CASE("direction names round-trip and match the vanilla spelling",
     REQUIRE_FALSE(direction_from_name("Up").has_value());  // case-sensitive, like vanilla
 }
 
-TEST_CASE("opposite() is consistent with the offsets it claims to mirror",
-          "[math][vec]") {
+TEST_CASE("opposite() is consistent with the offsets it claims to mirror", "[math][vec]") {
     // opposite() flips the low bit, which is only correct because the enum is
     // laid out in opposing pairs. This test is what keeps that from being
     // folklore that someone breaks by reordering the enum.

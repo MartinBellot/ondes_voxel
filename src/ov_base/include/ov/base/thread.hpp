@@ -12,9 +12,9 @@
 //   the 20 TPS guarantee.
 #pragma once
 
-#include <string_view>
-
 #include "ov/base/platform.hpp"
+
+#include <string_view>
 
 namespace ov {
 

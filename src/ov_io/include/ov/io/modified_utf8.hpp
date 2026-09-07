@@ -16,13 +16,13 @@
 // or an item name, and then a chunk fails to round-trip.
 #pragma once
 
+#include "ov/base/types.hpp"
+#include "ov/io/byte_reader.hpp"
+
 #include <expected>
 #include <span>
 #include <string>
 #include <string_view>
-
-#include "ov/base/types.hpp"
-#include "ov/io/byte_reader.hpp"
 
 namespace ov::io {
 

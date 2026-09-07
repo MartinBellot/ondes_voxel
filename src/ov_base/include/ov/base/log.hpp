@@ -5,12 +5,12 @@
 // OV_LOG_TRACE in the tick loop must not format its arguments.
 #pragma once
 
+#include "ov/base/platform.hpp"
+
 #include <fmt/base.h>
 #include <fmt/format.h>
 
 #include <string_view>
-
-#include "ov/base/platform.hpp"
 
 namespace ov {
 
@@ -43,7 +43,7 @@ void set_log_level(LogLevel level) noexcept;
 /// stops file logging. Returns false if the file could not be opened.
 bool set_log_file(std::string_view path) noexcept;
 
-template <typename... Args>
+template<typename... Args>
 void log_at(LogLevel level, std::string_view category, fmt::format_string<Args...> fmt_str,
             Args&&... args) noexcept {
     try {
@@ -59,18 +59,18 @@ void log_at(LogLevel level, std::string_view category, fmt::format_string<Args..
 // Each translation unit defines OV_LOG_CATEGORY before including this header,
 // or falls back to the module name.
 #if !defined(OV_LOG_CATEGORY)
-#    define OV_LOG_CATEGORY "ov"
+#define OV_LOG_CATEGORY "ov"
 #endif
 
-#define OV_LOG_IMPL(level, ...)                                          \
-    do {                                                                 \
-        if (::ov::detail::log_threshold() <= (level)) {                  \
-            ::ov::log_at((level), OV_LOG_CATEGORY, __VA_ARGS__);         \
-        }                                                                \
+#define OV_LOG_IMPL(level, ...)                                  \
+    do {                                                         \
+        if (::ov::detail::log_threshold() <= (level)) {          \
+            ::ov::log_at((level), OV_LOG_CATEGORY, __VA_ARGS__); \
+        }                                                        \
     } while (false)
 
 #define OV_LOG_TRACE(...) OV_LOG_IMPL(::ov::LogLevel::Trace, __VA_ARGS__)
 #define OV_LOG_DEBUG(...) OV_LOG_IMPL(::ov::LogLevel::Debug, __VA_ARGS__)
-#define OV_LOG_INFO(...)  OV_LOG_IMPL(::ov::LogLevel::Info, __VA_ARGS__)
-#define OV_LOG_WARN(...)  OV_LOG_IMPL(::ov::LogLevel::Warn, __VA_ARGS__)
+#define OV_LOG_INFO(...) OV_LOG_IMPL(::ov::LogLevel::Info, __VA_ARGS__)
+#define OV_LOG_WARN(...) OV_LOG_IMPL(::ov::LogLevel::Warn, __VA_ARGS__)
 #define OV_LOG_ERROR(...) OV_LOG_IMPL(::ov::LogLevel::Error, __VA_ARGS__)

@@ -1,8 +1,7 @@
+#include "ov/io/byte_reader.hpp"
 #include "ov/io/byte_writer.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
-#include "ov/io/byte_reader.hpp"
 
 using namespace ov;
 using namespace ov::io;

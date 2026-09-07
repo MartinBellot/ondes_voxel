@@ -1,6 +1,7 @@
 #include "ov/math/block_pos.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+
 #include <cstdint>
 #include <unordered_map>
 #include <vector>
@@ -68,8 +69,7 @@ TEST_CASE("local coordinates stay inside the section", "[math][pos]") {
     }
 }
 
-TEST_CASE("section_index is YZX-ordered and covers 0..4095 exactly once",
-          "[math][pos]") {
+TEST_CASE("section_index is YZX-ordered and covers 0..4095 exactly once", "[math][pos]") {
     // YZX is not a preference: it is the layout of both the Anvil block array
     // and the network chunk packet. A different order means transposing on
     // every chunk read and write.
@@ -159,9 +159,9 @@ TEST_CASE("view distance uses Chebyshev distance, not Euclidean", "[math][pos]")
 
 TEST_CASE("ChunkPos works as an unordered_map key", "[math][pos]") {
     std::unordered_map<ChunkPos, int> chunks;
-    chunks[ChunkPos{0, 0}]   = 1;
-    chunks[ChunkPos{-1, 5}]  = 2;
-    chunks[ChunkPos{0, 0}]   = 3;
+    chunks[ChunkPos{0, 0}]  = 1;
+    chunks[ChunkPos{-1, 5}] = 2;
+    chunks[ChunkPos{0, 0}]  = 3;
 
     REQUIRE(chunks.size() == 2);
     REQUIRE(chunks.at(ChunkPos{0, 0}) == 3);

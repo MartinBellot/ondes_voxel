@@ -5,33 +5,54 @@
 // what turns a one-line edit into a four-minute rebuild (risk R5).
 #pragma once
 
+#include "ov/base/types.hpp"
+
 #include <cmath>
 #include <optional>
 #include <string_view>
 
-#include "ov/base/types.hpp"
-
 namespace ov {
 
-template <typename T>
+template<typename T>
 struct Vec3 {
     T x{};
     T y{};
     T z{};
 
     constexpr Vec3() noexcept = default;
+
     constexpr Vec3(T x_, T y_, T z_) noexcept : x{x_}, y{y_}, z{z_} {}
 
     friend constexpr bool operator==(const Vec3&, const Vec3&) noexcept = default;
 
     constexpr Vec3 operator+(const Vec3& o) const noexcept { return {x + o.x, y + o.y, z + o.z}; }
+
     constexpr Vec3 operator-(const Vec3& o) const noexcept { return {x - o.x, y - o.y, z - o.z}; }
+
     constexpr Vec3 operator*(T s) const noexcept { return {x * s, y * s, z * s}; }
+
     constexpr Vec3 operator-() const noexcept { return {-x, -y, -z}; }
 
-    constexpr Vec3& operator+=(const Vec3& o) noexcept { x += o.x; y += o.y; z += o.z; return *this; }
-    constexpr Vec3& operator-=(const Vec3& o) noexcept { x -= o.x; y -= o.y; z -= o.z; return *this; }
-    constexpr Vec3& operator*=(T s) noexcept { x *= s; y *= s; z *= s; return *this; }
+    constexpr Vec3& operator+=(const Vec3& o) noexcept {
+        x += o.x;
+        y += o.y;
+        z += o.z;
+        return *this;
+    }
+
+    constexpr Vec3& operator-=(const Vec3& o) noexcept {
+        x -= o.x;
+        y -= o.y;
+        z -= o.z;
+        return *this;
+    }
+
+    constexpr Vec3& operator*=(T s) noexcept {
+        x *= s;
+        y *= s;
+        z *= s;
+        return *this;
+    }
 
     [[nodiscard]] constexpr T dot(const Vec3& o) const noexcept {
         return x * o.x + y * o.y + z * o.z;
@@ -73,12 +94,12 @@ inline constexpr u8 kDirectionCount = 6;
 
 [[nodiscard]] constexpr Vec3i direction_offset(Direction d) noexcept {
     switch (d) {
-        case Direction::Down:  return {0, -1, 0};
-        case Direction::Up:    return {0, 1, 0};
+        case Direction::Down: return {0, -1, 0};
+        case Direction::Up: return {0, 1, 0};
         case Direction::North: return {0, 0, -1};
         case Direction::South: return {0, 0, 1};
-        case Direction::West:  return {-1, 0, 0};
-        case Direction::East:  return {1, 0, 0};
+        case Direction::West: return {-1, 0, 0};
+        case Direction::East: return {1, 0, 0};
     }
     return {};
 }

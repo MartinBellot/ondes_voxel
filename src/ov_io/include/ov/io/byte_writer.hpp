@@ -5,13 +5,13 @@
 // bytes on the way out.
 #pragma once
 
+#include "ov/base/types.hpp"
+
 #include <bit>
 #include <cstring>
 #include <span>
 #include <string_view>
 #include <vector>
-
-#include "ov/base/types.hpp"
 
 namespace ov::io {
 
@@ -24,16 +24,23 @@ public:
     explicit ByteWriter(usize reserve) { buffer_.reserve(reserve); }
 
     void write_u8(u8 value) { buffer_.push_back(value); }
+
     void write_i8(i8 value) { buffer_.push_back(static_cast<u8>(value)); }
 
     void write_u16(u16 value) { write_big_endian(value); }
+
     void write_i16(i16 value) { write_big_endian(value); }
+
     void write_u32(u32 value) { write_big_endian(value); }
+
     void write_i32(i32 value) { write_big_endian(value); }
+
     void write_u64(u64 value) { write_big_endian(value); }
+
     void write_i64(i64 value) { write_big_endian(value); }
 
     void write_f32(f32 value) { write_big_endian(std::bit_cast<u32>(value)); }
+
     void write_f64(f64 value) { write_big_endian(std::bit_cast<u64>(value)); }
 
     void write_bytes(std::span<const u8> bytes) {
@@ -45,15 +52,18 @@ public:
     }
 
     [[nodiscard]] usize size() const noexcept { return buffer_.size(); }
-    [[nodiscard]] bool  empty() const noexcept { return buffer_.empty(); }
+
+    [[nodiscard]] bool empty() const noexcept { return buffer_.empty(); }
 
     [[nodiscard]] std::span<const u8> data() const noexcept { return buffer_; }
+
     [[nodiscard]] const std::vector<u8>& buffer() const noexcept { return buffer_; }
 
     /// Hand the buffer over, leaving this writer empty.
     [[nodiscard]] std::vector<u8> take() noexcept { return std::move(buffer_); }
 
     void clear() noexcept { buffer_.clear(); }
+
     void reserve(usize capacity) { buffer_.reserve(capacity); }
 
     /// Overwrite bytes already written. Needed by length-prefixed framing, where
@@ -70,11 +80,11 @@ private:
     // this stays explicit because the region-file and packet paths depend on
     // it being exactly this and nothing else.
     [[nodiscard]] static constexpr u32 byteswap_u32(u32 v) noexcept {
-        return ((v & 0x000000FFu) << 24) | ((v & 0x0000FF00u) << 8) |
-               ((v & 0x00FF0000u) >> 8) | ((v & 0xFF000000u) >> 24);
+        return ((v & 0x000000FFu) << 24) | ((v & 0x0000FF00u) << 8) | ((v & 0x00FF0000u) >> 8) |
+               ((v & 0xFF000000u) >> 24);
     }
 
-    template <typename T>
+    template<typename T>
     void write_big_endian(T value) {
         if constexpr (std::endian::native == std::endian::little && sizeof(T) > 1) {
             value = std::byteswap(value);

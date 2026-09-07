@@ -1,8 +1,8 @@
 #include "ov/nbt/binary.hpp"
 
-#include <algorithm>
-
 #include "ov/io/modified_utf8.hpp"
+
+#include <algorithm>
 
 namespace ov::nbt {
 namespace {
@@ -13,8 +13,8 @@ using io::ByteWriter;
 /// Translate an io-level read failure into an NBT-level one.
 constexpr NbtError from_io(io::ReadError error) noexcept {
     switch (error) {
-        case io::ReadError::OutOfBounds:       return NbtError::UnexpectedEnd;
-        case io::ReadError::InvalidLength:     return NbtError::LengthTooLarge;
+        case io::ReadError::OutOfBounds: return NbtError::UnexpectedEnd;
+        case io::ReadError::InvalidLength: return NbtError::LengthTooLarge;
         case io::ReadError::MalformedEncoding: return NbtError::MalformedString;
     }
     return NbtError::UnexpectedEnd;
@@ -72,13 +72,13 @@ NbtResult<Tag> read_list(ByteReader& reader, u32 depth) {
     // check is skipped for them; the per-element reads still bound themselves.
     const usize element_hint = [&]() -> usize {
         switch (element_type) {
-            case TagType::Byte:   return 1;
-            case TagType::Short:  return 2;
+            case TagType::Byte: return 1;
+            case TagType::Short: return 2;
             case TagType::Int:
-            case TagType::Float:  return 4;
+            case TagType::Float: return 4;
             case TagType::Long:
             case TagType::Double: return 8;
-            default:              return 0;
+            default: return 0;
         }
     }();
 
@@ -142,56 +142,62 @@ NbtResult<Tag> read_payload(ByteReader& reader, TagType type, u32 depth) {
     }
 
     switch (type) {
-        case TagType::End:
-            return Tag{};
+        case TagType::End: return Tag{};
 
         case TagType::Byte:
-            return reader.read_i8().transform([](i8 v) { return Tag{v}; })
-                .transform_error(from_io);
+            return reader.read_i8().transform([](i8 v) { return Tag{v}; }).transform_error(from_io);
         case TagType::Short:
-            return reader.read_i16().transform([](i16 v) { return Tag{v}; })
+            return reader.read_i16()
+                .transform([](i16 v) { return Tag{v}; })
                 .transform_error(from_io);
         case TagType::Int:
-            return reader.read_i32().transform([](i32 v) { return Tag{v}; })
+            return reader.read_i32()
+                .transform([](i32 v) { return Tag{v}; })
                 .transform_error(from_io);
         case TagType::Long:
-            return reader.read_i64().transform([](i64 v) { return Tag{v}; })
+            return reader.read_i64()
+                .transform([](i64 v) { return Tag{v}; })
                 .transform_error(from_io);
         case TagType::Float:
-            return reader.read_f32().transform([](f32 v) { return Tag{v}; })
+            return reader.read_f32()
+                .transform([](f32 v) { return Tag{v}; })
                 .transform_error(from_io);
         case TagType::Double:
-            return reader.read_f64().transform([](f64 v) { return Tag{v}; })
+            return reader.read_f64()
+                .transform([](f64 v) { return Tag{v}; })
                 .transform_error(from_io);
 
         case TagType::ByteArray: {
             const auto count = read_length(reader, 1);
-            if (!count) return std::unexpected{count.error()};
+            if (!count)
+                return std::unexpected{count.error()};
             const auto bytes = reader.read_bytes(*count);
-            if (!bytes) return std::unexpected{from_io(bytes.error())};
+            if (!bytes)
+                return std::unexpected{from_io(bytes.error())};
             return Tag{Tag::ByteArray{bytes->begin(), bytes->end()}};
         }
 
         case TagType::String: {
             auto text = read_string(reader);
-            if (!text) return std::unexpected{text.error()};
+            if (!text)
+                return std::unexpected{text.error()};
             return Tag{std::move(*text)};
         }
 
-        case TagType::List:
-            return read_list(reader, depth);
+        case TagType::List: return read_list(reader, depth);
 
-        case TagType::Compound:
-            return read_compound(reader, depth);
+        case TagType::Compound: return read_compound(reader, depth);
 
         case TagType::IntArray: {
             const auto count = read_length(reader, 4);
-            if (!count) return std::unexpected{count.error()};
+            if (!count)
+                return std::unexpected{count.error()};
             Tag::IntArray values;
             values.reserve(*count);
             for (usize i = 0; i < *count; ++i) {
                 const auto value = reader.read_i32();
-                if (!value) return std::unexpected{from_io(value.error())};
+                if (!value)
+                    return std::unexpected{from_io(value.error())};
                 values.push_back(*value);
             }
             return Tag{std::move(values)};
@@ -199,12 +205,14 @@ NbtResult<Tag> read_payload(ByteReader& reader, TagType type, u32 depth) {
 
         case TagType::LongArray: {
             const auto count = read_length(reader, 8);
-            if (!count) return std::unexpected{count.error()};
+            if (!count)
+                return std::unexpected{count.error()};
             Tag::LongArray values;
             values.reserve(*count);
             for (usize i = 0; i < *count; ++i) {
                 const auto value = reader.read_i64();
-                if (!value) return std::unexpected{from_io(value.error())};
+                if (!value)
+                    return std::unexpected{from_io(value.error())};
                 values.push_back(*value);
             }
             return Tag{std::move(values)};
@@ -231,13 +239,13 @@ void write_string(ByteWriter& writer, std::string_view text) {
 
 std::string_view to_string(NbtError error) noexcept {
     switch (error) {
-        case NbtError::UnexpectedEnd:     return "unexpected end of data";
-        case NbtError::UnknownTagType:    return "unknown tag type";
-        case NbtError::NegativeLength:    return "negative length";
-        case NbtError::LengthTooLarge:    return "length exceeds available data";
-        case NbtError::TooDeep:           return "nesting too deep";
-        case NbtError::RootNotCompound:   return "root tag is not a compound";
-        case NbtError::MalformedString:   return "malformed modified UTF-8 string";
+        case NbtError::UnexpectedEnd: return "unexpected end of data";
+        case NbtError::UnknownTagType: return "unknown tag type";
+        case NbtError::NegativeLength: return "negative length";
+        case NbtError::LengthTooLarge: return "length exceeds available data";
+        case NbtError::TooDeep: return "nesting too deep";
+        case NbtError::RootNotCompound: return "root tag is not a compound";
+        case NbtError::MalformedString: return "malformed modified UTF-8 string";
         case NbtError::HeterogeneousList: return "list elements have mixed types";
     }
     return "unknown NBT error";
@@ -291,26 +299,13 @@ NbtResult<Tag> read_unnamed(ByteReader& reader) {
 
 void write_payload(const Tag& tag, ByteWriter& writer) {
     switch (tag.type()) {
-        case TagType::End:
-            break;
-        case TagType::Byte:
-            writer.write_i8(*tag.get_if<i8>());
-            break;
-        case TagType::Short:
-            writer.write_i16(*tag.get_if<i16>());
-            break;
-        case TagType::Int:
-            writer.write_i32(*tag.get_if<i32>());
-            break;
-        case TagType::Long:
-            writer.write_i64(*tag.get_if<i64>());
-            break;
-        case TagType::Float:
-            writer.write_f32(*tag.get_if<f32>());
-            break;
-        case TagType::Double:
-            writer.write_f64(*tag.get_if<f64>());
-            break;
+        case TagType::End: break;
+        case TagType::Byte: writer.write_i8(*tag.get_if<i8>()); break;
+        case TagType::Short: writer.write_i16(*tag.get_if<i16>()); break;
+        case TagType::Int: writer.write_i32(*tag.get_if<i32>()); break;
+        case TagType::Long: writer.write_i64(*tag.get_if<i64>()); break;
+        case TagType::Float: writer.write_f32(*tag.get_if<f32>()); break;
+        case TagType::Double: writer.write_f64(*tag.get_if<f64>()); break;
 
         case TagType::ByteArray: {
             const auto& bytes = *tag.get_if<Tag::ByteArray>();
@@ -319,9 +314,7 @@ void write_payload(const Tag& tag, ByteWriter& writer) {
             break;
         }
 
-        case TagType::String:
-            write_string(writer, *tag.get_if<std::string>());
-            break;
+        case TagType::String: write_string(writer, *tag.get_if<std::string>()); break;
 
         case TagType::List: {
             const auto& items = *tag.list();

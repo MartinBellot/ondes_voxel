@@ -1,22 +1,22 @@
 #include "ov/nbt/region.hpp"
 
-#include <algorithm>
-
 #include "ov/io/byte_reader.hpp"
 #include "ov/io/compression.hpp"
 #include "ov/io/file.hpp"
+
+#include <algorithm>
 
 namespace ov::nbt {
 
 std::string_view to_string(RegionError error) noexcept {
     switch (error) {
-        case RegionError::TruncatedHeader:     return "region header is truncated";
-        case RegionError::OffsetOutOfRange:    return "chunk offset points past end of file";
-        case RegionError::BadChunkLength:      return "chunk length does not fit its sectors";
-        case RegionError::UnsupportedScheme:   return "unsupported compression scheme";
+        case RegionError::TruncatedHeader: return "region header is truncated";
+        case RegionError::OffsetOutOfRange: return "chunk offset points past end of file";
+        case RegionError::BadChunkLength: return "chunk length does not fit its sectors";
+        case RegionError::UnsupportedScheme: return "unsupported compression scheme";
         case RegionError::DecompressionFailed: return "chunk decompression failed";
-        case RegionError::InvalidNbt:          return "chunk NBT is invalid";
-        case RegionError::ChunkAbsent:         return "chunk is not present in this region";
+        case RegionError::InvalidNbt: return "chunk NBT is invalid";
+        case RegionError::ChunkAbsent: return "chunk is not present in this region";
     }
     return "unknown region error";
 }
@@ -110,8 +110,7 @@ usize RegionFile::chunk_count() const noexcept {
     return count;
 }
 
-std::optional<ChunkCompression> RegionFile::chunk_compression(u32 local_x,
-                                                              u32 local_z) const {
+std::optional<ChunkCompression> RegionFile::chunk_compression(u32 local_x, u32 local_z) const {
     if (!has_chunk(local_x, local_z)) {
         return std::nullopt;
     }
@@ -164,16 +163,17 @@ RegionResult<std::vector<u8>> RegionFile::read_chunk_bytes(u32 local_x, u32 loca
     switch (static_cast<ChunkCompression>(*scheme_byte)) {
         case ChunkCompression::Gzip: {
             auto result = io::gzip_decompress(*payload);
-            if (!result) return std::unexpected{RegionError::DecompressionFailed};
+            if (!result)
+                return std::unexpected{RegionError::DecompressionFailed};
             return std::move(*result);
         }
         case ChunkCompression::Zlib: {
             auto result = io::zlib_decompress(*payload);
-            if (!result) return std::unexpected{RegionError::DecompressionFailed};
+            if (!result)
+                return std::unexpected{RegionError::DecompressionFailed};
             return std::move(*result);
         }
-        case ChunkCompression::None:
-            return std::vector<u8>{payload->begin(), payload->end()};
+        case ChunkCompression::None: return std::vector<u8>{payload->begin(), payload->end()};
     }
 
     // Schemes 4 (LZ4) and 127 (custom) postdate 1.20.1. Reading one would mean

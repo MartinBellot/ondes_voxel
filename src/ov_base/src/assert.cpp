@@ -1,10 +1,10 @@
 #include "ov/base/assert.hpp"
 
-#include <cstdio>
-#include <cstdlib>
-
 #include "ov/base/log.hpp"
 #include "ov/base/thread.hpp"
+
+#include <cstdio>
+#include <cstdlib>
 
 namespace ov::detail {
 
@@ -23,9 +23,8 @@ void assert_failed(std::string_view expr, std::string_view file, int line,
                  "  function : %.*s\n"
                  "  thread   : %.*s\n"
                  "════════════════════════════════════════════════════════════════\n\n",
-                 static_cast<int>(expr.size()), expr.data(),
-                 static_cast<int>(message.size()), message.data(),
-                 static_cast<int>(file.size()), file.data(), line,
+                 static_cast<int>(expr.size()), expr.data(), static_cast<int>(message.size()),
+                 message.data(), static_cast<int>(file.size()), file.data(), line,
                  static_cast<int>(function.size()), function.data(),
                  static_cast<int>(current_thread_name().size()), current_thread_name().data());
     std::fflush(stderr);

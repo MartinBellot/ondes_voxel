@@ -21,6 +21,22 @@ done
 printf '    cmake %s\n    ninja %s\n' \
     "$(cmake --version | head -1 | awk '{print $3}')" "$(ninja --version)"
 
+CF_VERSION="$(cat "$ROOT/.clang-format-version" 2>/dev/null || echo unknown)"
+if command -v clang-format >/dev/null 2>&1; then
+    HAVE="$(clang-format --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+    if [ "$HAVE" = "$CF_VERSION" ]; then
+        printf '    clang-format %s\n' "$HAVE"
+    else
+        warn "clang-format $HAVE found, but the project pins $CF_VERSION"
+        warn "  clang-format output changes between releases; a different one will"
+        warn "  reformat files and fail CI. Install the pinned version:"
+        warn "      pipx install clang-format==$CF_VERSION"
+    fi
+else
+    warn "clang-format not found. Install the pinned version:"
+    warn "    pipx install clang-format==$CF_VERSION"
+fi
+
 if command -v ccache >/dev/null 2>&1; then
     printf '    ccache %s\n' "$(ccache --version | head -1 | awk '{print $3}')"
 else

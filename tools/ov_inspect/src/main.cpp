@@ -8,13 +8,6 @@
 
 #define OV_LOG_CATEGORY "inspect"
 
-#include <fmt/format.h>
-
-#include <filesystem>
-#include <string>
-#include <string_view>
-#include <vector>
-
 #include "ov/base/log.hpp"
 #include "ov/io/compression.hpp"
 #include "ov/io/file.hpp"
@@ -22,18 +15,26 @@
 #include "ov/nbt/region.hpp"
 #include "ov/nbt/tag.hpp"
 
+#include <fmt/format.h>
+
+#include <filesystem>
+#include <string>
+#include <string_view>
+#include <vector>
+
 namespace {
 
 using namespace ov;
 
 constexpr usize kMaxPreviewElements = 8;
 
-std::string indent_of(int depth) { return std::string(static_cast<usize>(depth) * 2, ' '); }
+std::string indent_of(int depth) {
+    return std::string(static_cast<usize>(depth) * 2, ' ');
+}
 
 void print_tag(const nbt::Tag& tag, std::string_view name, int depth, int max_depth) {
-    const std::string pad = indent_of(depth);
-    const std::string label =
-        name.empty() ? std::string{} : fmt::format("{}: ", name);
+    const std::string pad   = indent_of(depth);
+    const std::string label = name.empty() ? std::string{} : fmt::format("{}: ", name);
 
     switch (tag.type()) {
         case nbt::TagType::Compound: {
@@ -64,32 +65,18 @@ void print_tag(const nbt::Tag& tag, std::string_view name, int depth, int max_de
             break;
         }
 
-        case nbt::TagType::String:
-            fmt::print("{}{}\"{}\"\n", pad, label, tag.as_string());
-            break;
+        case nbt::TagType::String: fmt::print("{}{}\"{}\"\n", pad, label, tag.as_string()); break;
 
-        case nbt::TagType::ByteArray:
-            fmt::print("{}{}byte[{}]\n", pad, label, tag.size());
-            break;
-        case nbt::TagType::IntArray:
-            fmt::print("{}{}int[{}]\n", pad, label, tag.size());
-            break;
-        case nbt::TagType::LongArray:
-            fmt::print("{}{}long[{}]\n", pad, label, tag.size());
-            break;
+        case nbt::TagType::ByteArray: fmt::print("{}{}byte[{}]\n", pad, label, tag.size()); break;
+        case nbt::TagType::IntArray: fmt::print("{}{}int[{}]\n", pad, label, tag.size()); break;
+        case nbt::TagType::LongArray: fmt::print("{}{}long[{}]\n", pad, label, tag.size()); break;
 
         case nbt::TagType::Float:
-        case nbt::TagType::Double:
-            fmt::print("{}{}{}\n", pad, label, tag.as_f64());
-            break;
+        case nbt::TagType::Double: fmt::print("{}{}{}\n", pad, label, tag.as_f64()); break;
 
-        case nbt::TagType::End:
-            fmt::print("{}{}<end>\n", pad, label);
-            break;
+        case nbt::TagType::End: fmt::print("{}{}<end>\n", pad, label); break;
 
-        default:
-            fmt::print("{}{}{}\n", pad, label, tag.as_i64());
-            break;
+        default: fmt::print("{}{}{}\n", pad, label, tag.as_i64()); break;
     }
 }
 
@@ -118,11 +105,8 @@ void collect(const nbt::Tag& tag, usize depth, Stats& stats) {
                 collect(item, depth + 1, stats);
             }
             break;
-        case nbt::TagType::String:
-            ++stats.strings;
-            break;
-        default:
-            break;
+        case nbt::TagType::String: ++stats.strings; break;
+        default: break;
     }
 }
 
@@ -148,8 +132,7 @@ int inspect_nbt(const std::filesystem::path& path, bool tree, bool verify, int m
     } else {
         auto decompressed = io::decompress(*raw);
         if (!decompressed) {
-            fmt::print(stderr, "{}: {}\n", path.string(),
-                       io::to_string(decompressed.error()));
+            fmt::print(stderr, "{}: {}\n", path.string(), io::to_string(decompressed.error()));
             return 1;
         }
         data = std::move(*decompressed);

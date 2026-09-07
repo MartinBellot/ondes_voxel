@@ -14,23 +14,29 @@ static_assert(BlockPos{15, 15, 15}.section_index() == kSectionVolume - 1);
 
 std::string_view direction_name(Direction d) noexcept {
     switch (d) {
-        case Direction::Down:  return "down";
-        case Direction::Up:    return "up";
+        case Direction::Down: return "down";
+        case Direction::Up: return "up";
         case Direction::North: return "north";
         case Direction::South: return "south";
-        case Direction::West:  return "west";
-        case Direction::East:  return "east";
+        case Direction::West: return "west";
+        case Direction::East: return "east";
     }
     return "down";
 }
 
 std::optional<Direction> direction_from_name(std::string_view name) noexcept {
-    if (name == "down")  return Direction::Down;
-    if (name == "up")    return Direction::Up;
-    if (name == "north") return Direction::North;
-    if (name == "south") return Direction::South;
-    if (name == "west")  return Direction::West;
-    if (name == "east")  return Direction::East;
+    if (name == "down")
+        return Direction::Down;
+    if (name == "up")
+        return Direction::Up;
+    if (name == "north")
+        return Direction::North;
+    if (name == "south")
+        return Direction::South;
+    if (name == "west")
+        return Direction::West;
+    if (name == "east")
+        return Direction::East;
     return std::nullopt;
 }
 

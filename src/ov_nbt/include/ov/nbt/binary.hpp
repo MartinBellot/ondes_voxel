@@ -15,14 +15,14 @@
 // parser is exposed to region files and to the network.
 #pragma once
 
-#include <expected>
-#include <span>
-#include <string>
-
 #include "ov/base/types.hpp"
 #include "ov/io/byte_reader.hpp"
 #include "ov/io/byte_writer.hpp"
 #include "ov/nbt/tag.hpp"
+
+#include <expected>
+#include <span>
+#include <string>
 
 namespace ov::nbt {
 
@@ -47,7 +47,7 @@ enum class NbtError {
 
 [[nodiscard]] std::string_view to_string(NbtError error) noexcept;
 
-template <typename T>
+template<typename T>
 using NbtResult = std::expected<T, NbtError>;
 
 /// A parsed NBT document: the root tag plus its name, which vanilla usually
@@ -77,7 +77,7 @@ inline constexpr u32 kMaxNestingDepth = 512;
 
 /// Serialize to uncompressed binary NBT.
 [[nodiscard]] std::vector<u8> write(const Document& document);
-void write(const Document& document, io::ByteWriter& writer);
+void                          write(const Document& document, io::ByteWriter& writer);
 
 /// Serialize a payload with no type byte and no name.
 void write_payload(const Tag& tag, io::ByteWriter& writer);

@@ -50,7 +50,7 @@ void append_modified(std::string& out, u32 cp) {
 
 /// Decode one standard-UTF-8 code point, advancing `index`.
 u32 next_utf8(std::string_view text, usize& index) noexcept {
-    const auto byte = static_cast<u8>(text[index]);
+    const auto  byte = static_cast<u8>(text[index]);
     const usize left = text.size() - index;
 
     auto continuation = [&](usize offset) -> u32 {
@@ -67,8 +67,8 @@ u32 next_utf8(std::string_view text, usize& index) noexcept {
         return cp;
     }
     if ((byte & 0xF0) == 0xE0 && left >= 3) {
-        const u32 cp = (static_cast<u32>(byte & 0x0F) << 12) | (continuation(1) << 6) |
-                       continuation(2);
+        const u32 cp =
+            (static_cast<u32>(byte & 0x0F) << 12) | (continuation(1) << 6) | continuation(2);
         index += 3;
         return cp;
     }
@@ -109,8 +109,8 @@ ReadResult<std::string> decode_modified_utf8(std::span<const u8> bytes) {
             if (i + 1 >= bytes.size() || (bytes[i + 1] & 0xC0) != 0x80) {
                 return std::unexpected{ReadError::MalformedEncoding};
             }
-            const u32 cp = (static_cast<u32>(byte & 0x1F) << 6) |
-                           static_cast<u32>(bytes[i + 1] & 0x3F);
+            const u32 cp =
+                (static_cast<u32>(byte & 0x1F) << 6) | static_cast<u32>(bytes[i + 1] & 0x3F);
             append_utf8(out, cp);
             i += 2;
             continue;

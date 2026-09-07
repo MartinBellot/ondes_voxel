@@ -1,6 +1,7 @@
 #include "ov/base/types.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+
 #include <type_traits>
 #include <unordered_set>
 
@@ -8,7 +9,9 @@ using namespace ov;
 
 namespace {
 struct BlockStateTag {};
+
 struct ItemTag {};
+
 using BlockStateId = Id<BlockStateTag, u16>;
 using ItemId       = Id<ItemTag, u16>;
 }  // namespace

@@ -20,17 +20,17 @@ using FilePtr = std::unique_ptr<std::FILE, FileCloser>;
 
 std::string_view to_string(FileError error) noexcept {
     switch (error) {
-        case FileError::NotFound:         return "file not found";
+        case FileError::NotFound: return "file not found";
         case FileError::PermissionDenied: return "permission denied";
-        case FileError::TooLarge:         return "file too large";
-        case FileError::IoFailure:        return "I/O failure";
+        case FileError::TooLarge: return "file too large";
+        case FileError::IoFailure: return "I/O failure";
     }
     return "unknown file error";
 }
 
 FileResult<std::vector<u8>> read_file(const std::filesystem::path& path, usize limit) {
     std::error_code ec;
-    const auto size = std::filesystem::file_size(path, ec);
+    const auto      size = std::filesystem::file_size(path, ec);
     if (ec) {
         return std::unexpected{std::filesystem::exists(path) ? FileError::PermissionDenied
                                                              : FileError::NotFound};
@@ -51,8 +51,7 @@ FileResult<std::vector<u8>> read_file(const std::filesystem::path& path, usize l
     return data;
 }
 
-FileResult<void> write_file_atomic(const std::filesystem::path& path,
-                                   std::span<const u8> data) {
+FileResult<void> write_file_atomic(const std::filesystem::path& path, std::span<const u8> data) {
     std::filesystem::path temp = path;
     temp += ".tmp";
 
@@ -61,8 +60,7 @@ FileResult<void> write_file_atomic(const std::filesystem::path& path,
         if (!file) {
             return std::unexpected{FileError::PermissionDenied};
         }
-        if (!data.empty() &&
-            std::fwrite(data.data(), 1, data.size(), file.get()) != data.size()) {
+        if (!data.empty() && std::fwrite(data.data(), 1, data.size(), file.get()) != data.size()) {
             std::filesystem::remove(temp);
             return std::unexpected{FileError::IoFailure};
         }

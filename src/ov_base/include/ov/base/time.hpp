@@ -5,21 +5,23 @@
 // only the loop that drives it looks at a real clock.
 #pragma once
 
-#include <chrono>
-
 #include "ov/base/types.hpp"
+
+#include <chrono>
 
 namespace ov {
 
-using Clock    = std::chrono::steady_clock;
+using Clock     = std::chrono::steady_clock;
 using TimePoint = Clock::time_point;
 using Duration  = Clock::duration;
 
 /// Minecraft runs at 20 ticks per second: one tick is exactly 50 ms.
-inline constexpr i64 kTicksPerSecond = 20;
-inline constexpr auto kTickDuration  = std::chrono::milliseconds{1000 / kTicksPerSecond};
+inline constexpr i64  kTicksPerSecond = 20;
+inline constexpr auto kTickDuration   = std::chrono::milliseconds{1000 / kTicksPerSecond};
 
-[[nodiscard]] inline TimePoint now() noexcept { return Clock::now(); }
+[[nodiscard]] inline TimePoint now() noexcept {
+    return Clock::now();
+}
 
 [[nodiscard]] inline f64 to_millis(Duration d) noexcept {
     return std::chrono::duration<f64, std::milli>{d}.count();

@@ -33,17 +33,18 @@ using isize = std::ptrdiff_t;
 ///
 /// Deliberately not implicitly convertible to its underlying type: `.value()`
 /// is explicit at every point where the raw number escapes.
-template <typename Tag, typename Repr>
+template<typename Tag, typename Repr>
 class Id {
 public:
     using repr_type = Repr;
 
     constexpr Id() noexcept = default;
+
     constexpr explicit Id(Repr v) noexcept : value_(v) {}
 
     [[nodiscard]] constexpr Repr value() const noexcept { return value_; }
 
-    friend constexpr bool operator==(Id, Id) noexcept = default;
+    friend constexpr bool operator==(Id, Id) noexcept  = default;
     friend constexpr auto operator<=>(Id, Id) noexcept = default;
 
 private:
@@ -53,7 +54,7 @@ private:
 }  // namespace ov
 
 // Hash support, so strong ids can key unordered containers without ceremony.
-template <typename Tag, typename Repr>
+template<typename Tag, typename Repr>
 struct std::hash<ov::Id<Tag, Repr>> {
     [[nodiscard]] std::size_t operator()(ov::Id<Tag, Repr> id) const noexcept {
         return std::hash<Repr>{}(id.value());

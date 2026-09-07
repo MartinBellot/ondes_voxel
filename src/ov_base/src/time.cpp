@@ -16,7 +16,7 @@ i32 TickClock::advance() noexcept {
     // A backwards steady_clock should be impossible; clamp rather than let a
     // negative duration underflow the accumulator.
     const Duration elapsed = current > last_ ? current - last_ : Duration::zero();
-    last_ = current;
+    last_                  = current;
     accumulator_ += elapsed;
 
     i32 ticks = 0;

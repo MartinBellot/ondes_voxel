@@ -12,13 +12,13 @@
 // it.
 #pragma once
 
+#include "ov/base/types.hpp"
+
 #include <bit>
 #include <cstring>
 #include <expected>
 #include <span>
 #include <string_view>
-
-#include "ov/base/types.hpp"
 
 namespace ov::io {
 
@@ -33,7 +33,7 @@ enum class ReadError {
 
 [[nodiscard]] std::string_view to_string(ReadError error) noexcept;
 
-template <typename T>
+template<typename T>
 using ReadResult = std::expected<T, ReadError>;
 
 class ByteReader {
@@ -41,11 +41,16 @@ public:
     explicit ByteReader(std::span<const u8> data) noexcept : data_{data} {}
 
     [[nodiscard]] usize position() const noexcept { return position_; }
-    [[nodiscard]] usize size() const noexcept { return data_.size(); }
-    [[nodiscard]] usize remaining() const noexcept { return data_.size() - position_; }
-    [[nodiscard]] bool  exhausted() const noexcept { return position_ >= data_.size(); }
 
-    void seek(usize position) noexcept { position_ = position < data_.size() ? position : data_.size(); }
+    [[nodiscard]] usize size() const noexcept { return data_.size(); }
+
+    [[nodiscard]] usize remaining() const noexcept { return data_.size() - position_; }
+
+    [[nodiscard]] bool exhausted() const noexcept { return position_ >= data_.size(); }
+
+    void seek(usize position) noexcept {
+        position_ = position < data_.size() ? position : data_.size();
+    }
 
     [[nodiscard]] ReadResult<void> skip(usize count) noexcept {
         if (count > remaining()) {
@@ -67,22 +72,36 @@ public:
     }
 
     [[nodiscard]] ReadResult<u16> read_u16() noexcept { return read_big_endian<u16>(); }
+
     [[nodiscard]] ReadResult<i16> read_i16() noexcept { return read_big_endian<i16>(); }
+
     [[nodiscard]] ReadResult<u32> read_u32() noexcept { return read_big_endian<u32>(); }
+
     [[nodiscard]] ReadResult<i32> read_i32() noexcept { return read_big_endian<i32>(); }
+
     [[nodiscard]] ReadResult<u64> read_u64() noexcept { return read_big_endian<u64>(); }
+
     [[nodiscard]] ReadResult<i64> read_i64() noexcept { return read_big_endian<i64>(); }
 
     /// IEEE-754 in big-endian byte order, which is what NBT and the protocol use.
     [[nodiscard]] ReadResult<f32> read_f32() noexcept {
-        return read_big_endian<u32>().transform(
-            [](u32 bits) { return std::bit_cast<f32>(bits); });
+        return read_big_endian<u32>().transform([](u32 bits) { return std::bit_cast<f32>(bits); });
     }
 
     [[nodiscard]] ReadResult<f64> read_f64() noexcept {
-        return read_big_endian<u64>().transform(
-            [](u64 bits) { return std::bit_cast<f64>(bits); });
+        return read_big_endian<u64>().transform([](u64 bits) { return std::bit_cast<f64>(bits); });
     }
+
+    // ── Little-endian ───────────────────────────────────────────────────────
+    // ZIP is the one format here that is little-endian, and jars, resource
+    // packs and datapacks are all ZIP. Kept separate and explicitly named so
+    // that nothing reads a ZIP field with the big-endian accessors by reflex.
+
+    [[nodiscard]] ReadResult<u16> read_u16_le() noexcept { return read_little_endian<u16>(); }
+
+    [[nodiscard]] ReadResult<u32> read_u32_le() noexcept { return read_little_endian<u32>(); }
+
+    [[nodiscard]] ReadResult<u64> read_u64_le() noexcept { return read_little_endian<u64>(); }
 
     /// A view into the underlying buffer. Valid only while that buffer lives;
     /// no copy is made, which is what keeps chunk parsing cheap.
@@ -101,7 +120,7 @@ public:
     }
 
 private:
-    template <typename T>
+    template<typename T>
     [[nodiscard]] ReadResult<T> read_big_endian() noexcept {
         if (remaining() < sizeof(T)) {
             return std::unexpected{ReadError::OutOfBounds};
@@ -110,6 +129,20 @@ private:
         std::memcpy(&value, data_.data() + position_, sizeof(T));
         position_ += sizeof(T);
         if constexpr (std::endian::native == std::endian::little && sizeof(T) > 1) {
+            value = std::byteswap(value);
+        }
+        return value;
+    }
+
+    template<typename T>
+    [[nodiscard]] ReadResult<T> read_little_endian() noexcept {
+        if (remaining() < sizeof(T)) {
+            return std::unexpected{ReadError::OutOfBounds};
+        }
+        T value{};
+        std::memcpy(&value, data_.data() + position_, sizeof(T));
+        position_ += sizeof(T);
+        if constexpr (std::endian::native == std::endian::big && sizeof(T) > 1) {
             value = std::byteswap(value);
         }
         return value;

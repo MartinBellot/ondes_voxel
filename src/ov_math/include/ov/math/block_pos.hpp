@@ -45,7 +45,9 @@ struct BlockPos {
     i32 z{};
 
     constexpr BlockPos() noexcept = default;
+
     constexpr BlockPos(i32 x_, i32 y_, i32 z_) noexcept : x{x_}, y{y_}, z{z_} {}
+
     constexpr explicit BlockPos(const Vec3i& v) noexcept : x{v.x}, y{v.y}, z{v.z} {}
 
     friend constexpr bool operator==(const BlockPos&, const BlockPos&) noexcept = default;
@@ -60,11 +62,14 @@ struct BlockPos {
     }
 
     [[nodiscard]] constexpr BlockPos above(i32 n = 1) const noexcept { return {x, y + n, z}; }
+
     [[nodiscard]] constexpr BlockPos below(i32 n = 1) const noexcept { return {x, y - n, z}; }
 
     /// Coordinates within the containing section, each in [0, 16).
     [[nodiscard]] constexpr i32 local_x() const noexcept { return floor_mod(x, kSectionSize); }
+
     [[nodiscard]] constexpr i32 local_y() const noexcept { return floor_mod(y, kSectionSize); }
+
     [[nodiscard]] constexpr i32 local_z() const noexcept { return floor_mod(z, kSectionSize); }
 
     /// Index into a section's 4096-entry block array.
@@ -77,7 +82,7 @@ struct BlockPos {
         return (local_y() * kSectionSize + local_z()) * kSectionSize + local_x();
     }
 
-    [[nodiscard]] constexpr ChunkPos to_chunk() const noexcept;
+    [[nodiscard]] constexpr ChunkPos   to_chunk() const noexcept;
     [[nodiscard]] constexpr SectionPos to_section() const noexcept;
 };
 
@@ -87,16 +92,19 @@ struct ChunkPos {
     i32 z{};
 
     constexpr ChunkPos() noexcept = default;
+
     constexpr ChunkPos(i32 x_, i32 z_) noexcept : x{x_}, z{z_} {}
 
     friend constexpr bool operator==(const ChunkPos&, const ChunkPos&) noexcept = default;
 
     /// World-space block coordinate of the column's minimum corner.
     [[nodiscard]] constexpr i32 min_block_x() const noexcept { return x * kSectionSize; }
+
     [[nodiscard]] constexpr i32 min_block_z() const noexcept { return z * kSectionSize; }
 
     /// Which region file holds this chunk. Regions are 32x32 chunks.
     [[nodiscard]] constexpr i32 region_x() const noexcept { return floor_div(x, 32); }
+
     [[nodiscard]] constexpr i32 region_z() const noexcept { return floor_div(z, 32); }
 
     /// Slot within the region header's 1024-entry table, indexed z-major.
@@ -130,6 +138,7 @@ struct SectionPos {
     i32 z{};
 
     constexpr SectionPos() noexcept = default;
+
     constexpr SectionPos(i32 x_, i32 y_, i32 z_) noexcept : x{x_}, y{y_}, z{z_} {}
 
     friend constexpr bool operator==(const SectionPos&, const SectionPos&) noexcept = default;
@@ -152,7 +161,7 @@ constexpr SectionPos BlockPos::to_section() const noexcept {
 
 }  // namespace ov
 
-template <>
+template<>
 struct std::hash<ov::ChunkPos> {
     [[nodiscard]] std::size_t operator()(const ov::ChunkPos& p) const noexcept {
         return std::hash<ov::u64>{}(p.packed());

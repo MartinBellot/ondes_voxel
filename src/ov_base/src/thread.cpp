@@ -1,24 +1,28 @@
 #include "ov/base/thread.hpp"
 
+#include "ov/base/log.hpp"
+
 #include <algorithm>
 #include <string>
 #include <thread>
 
-#include "ov/base/log.hpp"
-
 #if OV_PLATFORM_MACOS
-#    include <pthread.h>
-#    include <sys/qos.h>
+#include <pthread.h>
+#include <sys/qos.h>
 #elif OV_PLATFORM_LINUX
-#    include <pthread.h>
-#    include <sys/resource.h>
-#    include <sys/syscall.h>
-#    include <unistd.h>
+#include <pthread.h>
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 #elif OV_PLATFORM_WINDOWS
-#    define WIN32_LEAN_AND_MEAN
-#    include <windows.h>
-
-#    include <processthreadsapi.h>
+#define WIN32_LEAN_AND_MEAN
+// windows.h defines min and max as macros, which turns any later std::min<T>
+// into std::(...) and produces an error pointing at the call site rather than
+// at the include. Every translation unit that reaches windows.h needs this.
+#define NOMINMAX
+// Only windows.h: it pulls in processthreadsapi.h itself, and including that
+// directly invites clang-format to sort it ahead of windows.h, which it needs.
+#include <windows.h>
 #endif
 
 namespace ov {
@@ -35,10 +39,10 @@ qos_class_t to_qos(ThreadRole role) noexcept {
         // lower and the scheduler parks it on an efficiency core under load,
         // which reads as unexplained TPS loss.
         case ThreadRole::Interactive:
-        case ThreadRole::Tick:       return QOS_CLASS_USER_INTERACTIVE;
-        case ThreadRole::Network:    return QOS_CLASS_USER_INITIATED;
+        case ThreadRole::Tick: return QOS_CLASS_USER_INTERACTIVE;
+        case ThreadRole::Network: return QOS_CLASS_USER_INITIATED;
         case ThreadRole::Worker:
-        case ThreadRole::Io:         return QOS_CLASS_UTILITY;
+        case ThreadRole::Io: return QOS_CLASS_UTILITY;
         case ThreadRole::Background: return QOS_CLASS_BACKGROUND;
     }
     return QOS_CLASS_DEFAULT;
@@ -49,10 +53,10 @@ qos_class_t to_qos(ThreadRole role) noexcept {
 int to_nice(ThreadRole role) noexcept {
     switch (role) {
         case ThreadRole::Interactive:
-        case ThreadRole::Tick:       return -5;
-        case ThreadRole::Network:    return -2;
+        case ThreadRole::Tick: return -5;
+        case ThreadRole::Network: return -2;
         case ThreadRole::Worker:
-        case ThreadRole::Io:         return 0;
+        case ThreadRole::Io: return 0;
         case ThreadRole::Background: return 10;
     }
     return 0;
@@ -63,10 +67,10 @@ int to_nice(ThreadRole role) noexcept {
 int to_priority(ThreadRole role) noexcept {
     switch (role) {
         case ThreadRole::Interactive:
-        case ThreadRole::Tick:       return THREAD_PRIORITY_ABOVE_NORMAL;
-        case ThreadRole::Network:    return THREAD_PRIORITY_NORMAL;
+        case ThreadRole::Tick: return THREAD_PRIORITY_ABOVE_NORMAL;
+        case ThreadRole::Network: return THREAD_PRIORITY_NORMAL;
         case ThreadRole::Worker:
-        case ThreadRole::Io:         return THREAD_PRIORITY_NORMAL;
+        case ThreadRole::Io: return THREAD_PRIORITY_NORMAL;
         case ThreadRole::Background: return THREAD_PRIORITY_BELOW_NORMAL;
     }
     return THREAD_PRIORITY_NORMAL;
@@ -103,7 +107,7 @@ void set_thread_role(std::string_view name, ThreadRole role) noexcept {
         OV_LOG_WARN("failed to set QoS class for thread '{}' (errno {})", name, rc);
     }
 #elif OV_PLATFORM_LINUX
-    const auto tid = static_cast<::id_t>(::syscall(SYS_gettid));
+    const auto tid = static_cast< ::id_t>(::syscall(SYS_gettid));
     if (::setpriority(PRIO_PROCESS, tid, to_nice(role)) != 0) {
         // Lowering nice needs privileges; failing is expected and harmless.
         OV_LOG_DEBUG("could not set nice level for thread '{}'", name);

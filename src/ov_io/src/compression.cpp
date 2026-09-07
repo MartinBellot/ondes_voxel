@@ -9,9 +9,7 @@ namespace ov::io {
 namespace {
 
 struct DecompressorDeleter {
-    void operator()(libdeflate_decompressor* p) const noexcept {
-        libdeflate_free_decompressor(p);
-    }
+    void operator()(libdeflate_decompressor* p) const noexcept { libdeflate_free_decompressor(p); }
 };
 
 struct CompressorDeleter {
@@ -38,8 +36,7 @@ using CompressorPtr   = std::unique_ptr<libdeflate_compressor, CompressorDeleter
 enum class Container { Gzip, Zlib };
 
 [[nodiscard]] CompressionResult<std::vector<u8>> decompress_with(std::span<const u8> input,
-                                                                 usize limit,
-                                                                 Container container) {
+                                                                 usize limit, Container container) {
     if (input.empty()) {
         return std::unexpected{CompressionError::Corrupt};
     }
@@ -65,7 +62,7 @@ enum class Container { Gzip, Zlib };
             return std::unexpected{CompressionError::OutOfMemory};
         }
 
-        usize produced = 0;
+        usize      produced = 0;
         const auto result =
             container == Container::Gzip
                 ? libdeflate_gzip_decompress(decompressor.get(), input.data(), input.size(),
@@ -94,8 +91,8 @@ enum class Container { Gzip, Zlib };
 
 std::string_view to_string(CompressionError error) noexcept {
     switch (error) {
-        case CompressionError::Corrupt:     return "corrupt compressed stream";
-        case CompressionError::TooLarge:    return "decompressed size exceeds limit";
+        case CompressionError::Corrupt: return "corrupt compressed stream";
+        case CompressionError::TooLarge: return "decompressed size exceeds limit";
         case CompressionError::OutOfMemory: return "out of memory";
     }
     return "unknown compression error";
@@ -112,7 +109,7 @@ bool looks_like_zlib(std::span<const u8> data) noexcept {
     // CMF low nibble is the compression method: 8 is deflate. The two header
     // bytes together are a multiple of 31.
     const bool deflate_method = (data[0] & 0x0F) == 0x08;
-    const u32  header = (static_cast<u32>(data[0]) << 8) | data[1];
+    const u32  header         = (static_cast<u32>(data[0]) << 8) | data[1];
     return deflate_method && (header % 31) == 0;
 }
 
@@ -136,18 +133,16 @@ CompressionResult<std::vector<u8>> decompress(std::span<const u8> input, usize l
 
 namespace {
 
-[[nodiscard]] CompressionResult<std::vector<u8>> compress_with(std::span<const u8> input,
-                                                               int level,
+[[nodiscard]] CompressionResult<std::vector<u8>> compress_with(std::span<const u8> input, int level,
                                                                Container container) {
     CompressorPtr compressor{libdeflate_alloc_compressor(std::clamp(level, 1, 12))};
     if (!compressor) {
         return std::unexpected{CompressionError::OutOfMemory};
     }
 
-    const usize bound =
-        container == Container::Gzip
-            ? libdeflate_gzip_compress_bound(compressor.get(), input.size())
-            : libdeflate_zlib_compress_bound(compressor.get(), input.size());
+    const usize bound = container == Container::Gzip
+                            ? libdeflate_gzip_compress_bound(compressor.get(), input.size())
+                            : libdeflate_zlib_compress_bound(compressor.get(), input.size());
 
     std::vector<u8> output;
     try {
@@ -158,10 +153,10 @@ namespace {
 
     const usize produced =
         container == Container::Gzip
-            ? libdeflate_gzip_compress(compressor.get(), input.data(), input.size(),
-                                       output.data(), output.size())
-            : libdeflate_zlib_compress(compressor.get(), input.data(), input.size(),
-                                       output.data(), output.size());
+            ? libdeflate_gzip_compress(compressor.get(), input.data(), input.size(), output.data(),
+                                       output.size())
+            : libdeflate_zlib_compress(compressor.get(), input.data(), input.size(), output.data(),
+                                       output.size());
 
     if (produced == 0) {
         return std::unexpected{CompressionError::Corrupt};

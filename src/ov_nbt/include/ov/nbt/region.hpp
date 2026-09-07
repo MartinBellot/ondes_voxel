@@ -24,15 +24,15 @@
 // an error.
 #pragma once
 
+#include "ov/base/types.hpp"
+#include "ov/math/block_pos.hpp"
+#include "ov/nbt/binary.hpp"
+
 #include <expected>
 #include <filesystem>
 #include <optional>
 #include <span>
 #include <vector>
-
-#include "ov/base/types.hpp"
-#include "ov/math/block_pos.hpp"
-#include "ov/nbt/binary.hpp"
 
 namespace ov::nbt {
 
@@ -53,7 +53,7 @@ enum class RegionError {
 
 [[nodiscard]] std::string_view to_string(RegionError error) noexcept;
 
-template <typename T>
+template<typename T>
 using RegionResult = std::expected<T, RegionError>;
 
 /// Compression schemes, as stored in the byte before each chunk's payload.
@@ -96,12 +96,10 @@ public:
 
     /// The raw decompressed bytes, before NBT parsing. Used by the round-trip
     /// check, which has to compare against exactly what was on disk.
-    [[nodiscard]] RegionResult<std::vector<u8>> read_chunk_bytes(u32 local_x,
-                                                                 u32 local_z) const;
+    [[nodiscard]] RegionResult<std::vector<u8>> read_chunk_bytes(u32 local_x, u32 local_z) const;
 
     /// Which scheme a stored chunk uses.
-    [[nodiscard]] std::optional<ChunkCompression> chunk_compression(u32 local_x,
-                                                                    u32 local_z) const;
+    [[nodiscard]] std::optional<ChunkCompression> chunk_compression(u32 local_x, u32 local_z) const;
 
     /// Number of chunks actually present, out of 1024.
     [[nodiscard]] usize chunk_count() const noexcept;
@@ -122,7 +120,7 @@ private:
         return static_cast<usize>(local_z) * kRegionSideChunks + local_x;
     }
 
-    std::vector<u8>                       data_;
+    std::vector<u8>                         data_;
     std::array<Location, kRegionChunkCount> locations_{};
     std::array<u32, kRegionChunkCount>      timestamps_{};
 };

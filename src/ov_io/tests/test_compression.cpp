@@ -1,6 +1,7 @@
 #include "ov/io/compression.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+
 #include <numeric>
 #include <string>
 #include <vector>
@@ -14,7 +15,9 @@ std::vector<u8> bytes_of(std::string_view text) {
     return {text.begin(), text.end()};
 }
 
-std::span<const u8> span_of(const std::vector<u8>& v) { return {v.data(), v.size()}; }
+std::span<const u8> span_of(const std::vector<u8>& v) {
+    return {v.data(), v.size()};
+}
 
 }  // namespace
 
@@ -70,7 +73,7 @@ TEST_CASE("large incompressible data round-trips", "[io][compression]") {
     // than the input. The bound has to account for that rather than assume
     // compression always shrinks.
     std::vector<u8> original(300'000);
-    u32 state = 12345;
+    u32             state = 12345;
     for (auto& byte : original) {
         state = state * 1664525u + 1013904223u;
         byte  = static_cast<u8>(state >> 24);
@@ -123,13 +126,12 @@ TEST_CASE("truncated input is rejected", "[io][compression][malformed]") {
     for (usize length = 1; length < compressed.size(); length += 3) {
         const std::vector<u8> partial{compressed.begin(),
                                       compressed.begin() + static_cast<isize>(length)};
-        const auto result = gzip_decompress(span_of(partial));
+        const auto            result = gzip_decompress(span_of(partial));
         REQUIRE_FALSE(result.has_value());
     }
 }
 
-TEST_CASE("garbage is not mistaken for a compressed stream",
-          "[io][compression][malformed]") {
+TEST_CASE("garbage is not mistaken for a compressed stream", "[io][compression][malformed]") {
     const std::vector<u8> garbage{0x00, 0x01, 0x02, 0x03, 0x04};
     REQUIRE(decompress(span_of(garbage)).error() == CompressionError::Corrupt);
     REQUIRE(gzip_decompress(span_of(garbage)).error() == CompressionError::Corrupt);
@@ -138,8 +140,7 @@ TEST_CASE("garbage is not mistaken for a compressed stream",
     REQUIRE(decompress(span_of(empty)).error() == CompressionError::Corrupt);
 }
 
-TEST_CASE("a decompression bomb is refused, not allocated",
-          "[io][compression][malformed]") {
+TEST_CASE("a decompression bomb is refused, not allocated", "[io][compression][malformed]") {
     // 8 MiB of zeros compresses to a few kilobytes. A region file could carry
     // one that claims to expand to gigabytes; without the cap, reading someone
     // else's world would be enough to take the server down.
@@ -157,8 +158,7 @@ TEST_CASE("a decompression bomb is refused, not allocated",
     REQUIRE(allowed->size() == zeros.size());
 }
 
-TEST_CASE("a lying gzip size hint does not bypass the cap",
-          "[io][compression][malformed]") {
+TEST_CASE("a lying gzip size hint does not bypass the cap", "[io][compression][malformed]") {
     // gzip stores its uncompressed size in the last four bytes. It is
     // attacker-controlled, so it may size the first allocation but must never
     // be trusted as permission to exceed the caller's limit.
