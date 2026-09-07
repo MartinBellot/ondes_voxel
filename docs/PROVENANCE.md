@@ -171,6 +171,22 @@ ov-inspect region <monde>/region/r.0.0.mca --verify
 ov-inspect zip    <prism>/libraries/com/mojang/minecraft/1.20.1/minecraft-1.20.1-client.jar --verify
 ```
 
+### Le parseur NBT ne peut pas être récursif
+
+La limite de profondeur de 512 reprend celle de vanilla, et elle existe pour
+empêcher un fichier hostile de faire déborder la pile. Elle ne suffisait pas :
+un parseur **récursif** à 508 niveaux déborde la pile de **1 Mo** que Windows
+donne à un thread — exactement le crash que la limite devait prévenir, à une
+profondeur qu'elle autorisait encore. Découvert par le job CI Windows ; macOS et
+Linux, avec 8 Mo de pile, passaient.
+
+Baisser la limite aurait signifié rejeter des fichiers que vanilla accepte. Le
+parseur utilise donc une **pile explicite sur le tas** : la profondeur ne coûte
+plus rien à la pile d'appel, et la limite reste celle de vanilla.
+
+Vérifié avec `ulimit -s 1024` : profondeur 508 acceptée et ré-encodée à
+l'identique, profondeur 5000 rejetée par `nesting too deep`.
+
 ### Chiffres mesurés (et non estimés)
 
 | Grandeur | Valeur réelle |

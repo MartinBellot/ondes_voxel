@@ -1,8 +1,10 @@
 #include "ov/nbt/binary.hpp"
 
+#include "ov/base/platform.hpp"
 #include "ov/io/modified_utf8.hpp"
 
 #include <algorithm>
+#include <vector>
 
 namespace ov::nbt {
 namespace {
@@ -56,91 +58,11 @@ NbtResult<std::string> read_string(ByteReader& reader) {
     return std::move(*decoded);
 }
 
-NbtResult<Tag> read_payload(ByteReader& reader, TagType type, u32 depth);
-
-NbtResult<Tag> read_list(ByteReader& reader, u32 depth) {
-    const auto raw_type = reader.read_u8();
-    if (!raw_type) {
-        return std::unexpected{from_io(raw_type.error())};
-    }
-    if (!is_valid_tag_type(*raw_type)) {
-        return std::unexpected{NbtError::UnknownTagType};
-    }
-    const auto element_type = static_cast<TagType>(*raw_type);
-
-    // Element size is unknown for variable-length types, so the cheap bound
-    // check is skipped for them; the per-element reads still bound themselves.
-    const usize element_hint = [&]() -> usize {
-        switch (element_type) {
-            case TagType::Byte: return 1;
-            case TagType::Short: return 2;
-            case TagType::Int:
-            case TagType::Float: return 4;
-            case TagType::Long:
-            case TagType::Double: return 8;
-            default: return 0;
-        }
-    }();
-
-    const auto count = read_length(reader, element_hint);
-    if (!count) {
-        return std::unexpected{count.error()};
-    }
-
-    // A TAG_End element type with a non-zero count is malformed: there is no
-    // payload to read, so the file is lying about its own size.
-    if (element_type == TagType::End && *count > 0) {
-        return std::unexpected{NbtError::UnknownTagType};
-    }
-
-    Tag list = Tag::make_list(element_type);
-    list.list()->reserve(std::min<usize>(*count, 1024));
-    for (usize i = 0; i < *count; ++i) {
-        auto element = read_payload(reader, element_type, depth + 1);
-        if (!element) {
-            return std::unexpected{element.error()};
-        }
-        list.list()->push_back(std::move(*element));
-    }
-    return list;
-}
-
-NbtResult<Tag> read_compound(ByteReader& reader, u32 depth) {
-    Tag compound = Tag::make_compound();
-    for (;;) {
-        const auto raw_type = reader.read_u8();
-        if (!raw_type) {
-            return std::unexpected{from_io(raw_type.error())};
-        }
-        if (!is_valid_tag_type(*raw_type)) {
-            return std::unexpected{NbtError::UnknownTagType};
-        }
-        const auto type = static_cast<TagType>(*raw_type);
-        if (type == TagType::End) {
-            break;
-        }
-
-        auto name = read_string(reader);
-        if (!name) {
-            return std::unexpected{name.error()};
-        }
-        auto value = read_payload(reader, type, depth + 1);
-        if (!value) {
-            return std::unexpected{value.error()};
-        }
-        compound.compound()->push_back(CompoundEntry{std::move(*name), std::move(*value)});
-    }
-    return compound;
-}
-
-NbtResult<Tag> read_payload(ByteReader& reader, TagType type, u32 depth) {
-    // Recursion here mirrors the file's own nesting, so an unbounded file would
-    // otherwise overflow this thread's stack — a crash reachable from a region
-    // file or a packet.
-    if (depth > kMaxNestingDepth) {
-        return std::unexpected{NbtError::TooDeep};
-    }
-
+/// Read a payload that cannot itself contain other tags.
+///
+/// Split out from the nesting machinery below so that the loop only ever has to
+/// deal with lists and compounds.
+NbtResult<Tag> read_scalar_payload(ByteReader& reader, TagType type) {
     switch (type) {
         case TagType::End: return Tag{};
 
@@ -184,10 +106,6 @@ NbtResult<Tag> read_payload(ByteReader& reader, TagType type, u32 depth) {
             return Tag{std::move(*text)};
         }
 
-        case TagType::List: return read_list(reader, depth);
-
-        case TagType::Compound: return read_compound(reader, depth);
-
         case TagType::IntArray: {
             const auto count = read_length(reader, 4);
             if (!count)
@@ -217,9 +135,180 @@ NbtResult<Tag> read_payload(ByteReader& reader, TagType type, u32 depth) {
             }
             return Tag{std::move(values)};
         }
+
+        case TagType::List:
+        case TagType::Compound:
+            // Handled by the loop; reaching here would be a programming error.
+            return std::unexpected{NbtError::UnknownTagType};
+    }
+    return std::unexpected{NbtError::UnknownTagType};
+}
+
+/// Read the element type and count of a list, with the bounds checks.
+struct ListHeader {
+    TagType element_type{TagType::End};
+    usize   count{0};
+};
+
+NbtResult<ListHeader> read_list_header(ByteReader& reader) {
+    const auto raw_type = reader.read_u8();
+    if (!raw_type) {
+        return std::unexpected{from_io(raw_type.error())};
+    }
+    if (!is_valid_tag_type(*raw_type)) {
+        return std::unexpected{NbtError::UnknownTagType};
+    }
+    const auto element_type = static_cast<TagType>(*raw_type);
+
+    // Element size is known for the fixed-width types, which lets a hostile
+    // count be rejected before anything is reserved.
+    const usize element_hint = [&]() -> usize {
+        switch (element_type) {
+            case TagType::Byte: return 1;
+            case TagType::Short: return 2;
+            case TagType::Int:
+            case TagType::Float: return 4;
+            case TagType::Long:
+            case TagType::Double: return 8;
+            default: return 0;
+        }
+    }();
+
+    const auto count = read_length(reader, element_hint);
+    if (!count) {
+        return std::unexpected{count.error()};
     }
 
-    return std::unexpected{NbtError::UnknownTagType};
+    // TAG_End has no payload, so a list claiming to hold some is lying about
+    // its own size.
+    if (element_type == TagType::End && *count > 0) {
+        return std::unexpected{NbtError::UnknownTagType};
+    }
+    return ListHeader{element_type, *count};
+}
+
+/// One level of nesting, held on an explicit stack.
+struct Frame {
+    Tag         tag;   // the list or compound being filled
+    std::string name;  // what it will be called in its parent
+    bool        in_list{false};
+    TagType     element_type{TagType::End};
+    usize       remaining{0};  // list elements still to read
+};
+
+/// Parse a list or compound payload without recursing.
+///
+/// This used to recurse, mirroring the file's own nesting, and a file 508 levels
+/// deep overflowed the 1 MB stack Windows gives a thread — the exact crash the
+/// depth limit exists to prevent, just at a depth the limit still allowed.
+/// Lowering the limit would have meant rejecting files vanilla accepts, so the
+/// nesting lives on the heap instead and the limit stays at vanilla's 512.
+NbtResult<Tag> read_container(ByteReader& reader, TagType type) {
+    std::vector<Frame> stack;
+    stack.reserve(16);
+
+    auto push = [&](TagType container, std::string name) -> NbtResult<void> {
+        if (stack.size() >= kMaxNestingDepth) {
+            return std::unexpected{NbtError::TooDeep};
+        }
+        if (container == TagType::Compound) {
+            stack.push_back(Frame{Tag::make_compound(), std::move(name), false, TagType::End, 0});
+            return {};
+        }
+        auto header = read_list_header(reader);
+        if (!header) {
+            return std::unexpected{header.error()};
+        }
+        stack.push_back(Frame{Tag::make_list(header->element_type), std::move(name), true,
+                              header->element_type, header->count});
+        return {};
+    };
+
+    if (const auto pushed = push(type, {}); !pushed) {
+        return std::unexpected{pushed.error()};
+    }
+
+    while (true) {
+        Frame& frame    = stack.back();
+        bool   finished = false;
+
+        if (frame.in_list) {
+            if (frame.remaining == 0) {
+                finished = true;
+            } else {
+                --frame.remaining;
+                const TagType element = frame.element_type;
+                if (element == TagType::List || element == TagType::Compound) {
+                    if (const auto pushed = push(element, {}); !pushed) {
+                        return std::unexpected{pushed.error()};
+                    }
+                    continue;
+                }
+                auto value = read_scalar_payload(reader, element);
+                if (!value) {
+                    return std::unexpected{value.error()};
+                }
+                frame.tag.list()->push_back(std::move(*value));
+            }
+        } else {
+            const auto raw_type = reader.read_u8();
+            if (!raw_type) {
+                return std::unexpected{from_io(raw_type.error())};
+            }
+            if (!is_valid_tag_type(*raw_type)) {
+                return std::unexpected{NbtError::UnknownTagType};
+            }
+            const auto entry_type = static_cast<TagType>(*raw_type);
+
+            if (entry_type == TagType::End) {
+                finished = true;
+            } else {
+                auto name = read_string(reader);
+                if (!name) {
+                    return std::unexpected{name.error()};
+                }
+                if (entry_type == TagType::List || entry_type == TagType::Compound) {
+                    if (const auto pushed = push(entry_type, std::move(*name)); !pushed) {
+                        return std::unexpected{pushed.error()};
+                    }
+                    continue;
+                }
+                auto value = read_scalar_payload(reader, entry_type);
+                if (!value) {
+                    return std::unexpected{value.error()};
+                }
+                frame.tag.compound()->push_back(CompoundEntry{std::move(*name), std::move(*value)});
+            }
+        }
+
+        if (!finished) {
+            continue;
+        }
+
+        // This level is complete: hand it to its parent, or return it if it is
+        // the root.
+        Frame done = std::move(stack.back());
+        stack.pop_back();
+        if (stack.empty()) {
+            return std::move(done.tag);
+        }
+
+        Frame& parent = stack.back();
+        if (parent.in_list) {
+            parent.tag.list()->push_back(std::move(done.tag));
+        } else {
+            parent.tag.compound()->push_back(
+                CompoundEntry{std::move(done.name), std::move(done.tag)});
+        }
+    }
+}
+
+NbtResult<Tag> read_payload(ByteReader& reader, TagType type, u32 depth) {
+    OV_UNUSED(depth);
+    if (type == TagType::List || type == TagType::Compound) {
+        return read_container(reader, type);
+    }
+    return read_scalar_payload(reader, type);
 }
 
 void write_string(ByteWriter& writer, std::string_view text) {
