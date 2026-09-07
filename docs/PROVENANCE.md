@@ -128,6 +128,44 @@ Tous les registres sont des plages denses, mais un seul ne commence pas à zéro
 Un `protocol_id == index` générique décalerait **tous** les effets de statut d'un
 cran. La sortie normalisée porte donc un `first_id` explicite par registre.
 
+### Les fichiers région ne sont pas complétés jusqu'à la frontière de secteur
+
+Un fichier `.mca` alloue à chaque chunk un nombre entier de secteurs de 4096
+octets, indiqué dans l'en-tête. La lecture naïve de la documentation conduit à
+valider `offset + sector_count ≤ taille_fichier / 4096` — et cette validation
+**rejette des mondes parfaitement valides**.
+
+Mesuré sur une vraie sauvegarde : `r.0.0.mca` fait **1 819 235 octets**, soit
+444,15 secteurs, alors que son dernier chunk est alloué jusqu'au secteur **445**.
+Le fichier s'arrête au milieu du secteur alloué. La charge utile, elle, est
+intacte.
+
+La règle correcte : le `sector_count` est une **allocation**, pas une promesse
+de contenu. Ce qu'il faut valider, c'est que la **longueur déclarée** du chunk
+tient dans ce qui existe réellement — `min(alloué, disponible)`.
+
+Verrouillé par le test « a file not padded to a sector boundary is still
+readable » dans `src/ov_nbt/tests/test_region.cpp`.
+
+### Preuve de correction sur données réelles
+
+`ov-inspect` décode, ré-encode et compare octet à octet. Exécuté sur une vraie
+sauvegarde Minecraft (2026-09-07) :
+
+| Fichier | Résultat |
+|---|---|
+| `level.dat` (gzip, 4257 tags, profondeur 11) | ✅ octet-identique |
+| `servers.dat` (NBT non compressé) | ✅ octet-identique |
+| `mfix_stronghold_cache_v2.nbt` (gzip) | ✅ octet-identique |
+| **14 fichiers région, 2900 chunks, 795 277 tags** | ✅ **2900/2900 octet-identiques** |
+
+Toutes les régions utilisaient le schéma **zlib (2)**, conformément à la
+documentation. Reproductible avec :
+```bash
+ov-inspect nbt    <monde>/level.dat --verify
+ov-inspect region <monde>/region/r.0.0.mca --verify
+```
+
 ### Chiffres mesurés (et non estimés)
 
 | Grandeur | Valeur réelle |

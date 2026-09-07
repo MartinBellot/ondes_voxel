@@ -10,16 +10,16 @@
   },
   "last_updated": "2026-09-07",
   "current_milestone": "M0",
-  "current_task": "m0-ov-io-ov-nbt",
+  "current_task": "m0-assetimport",
   "milestones": {
     "M0": {
       "name": "Fondations",
       "status": "in_progress",
-      "done": 20,
-      "total": 49,
+      "done": 32,
+      "total": 56,
       "exit_criterion": "Le job CI linux-server-only refuse un include Vulkan planté volontairement ; NBT round-trip sur fichiers vanilla ; run/assets/ peuplé.",
       "blocked": [],
-      "notes": "Build, layering, verrous d'architecture et boucle de tick valides et prouves. Restent : CI en conditions reelles, ov_io, ov_nbt, ov-assetimport."
+      "notes": "NBT, régions Anvil, compression et UTF-8 modifié terminés et validés sur un vrai monde (2900 chunks octet-identiques). Restent : ov-assetimport, allocateurs, PCH, CI en conditions réelles."
     },
     "M1": {
       "name": "Protocole 763",
@@ -90,7 +90,8 @@
     "frame_p99_ms": null,
     "worker_threads": 4,
     "clean_build_seconds": null,
-    "incremental_rebuild_seconds": null
+    "incremental_rebuild_seconds": null,
+    "nbt_roundtrip": "2900/2900 chunks, 795277 tags, octet-identiques (monde réel)"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",

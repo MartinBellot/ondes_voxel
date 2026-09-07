@@ -119,7 +119,7 @@ ctest -L bench                    # benchmarks non-régression
 
 ## 5. Conventions de code
 
-- **C++20.** Namespace `ov::` + sous-namespace par module (`ov::world`, `ov::net`…).
+- **C++23.** Namespace `ov::` + sous-namespace par module (`ov::world`, `ov::net`…).
 - Fichiers en `snake_case.hpp` / `.cpp` · types en `PascalCase` · fonctions et variables en
   `snake_case` · membres privés suffixés `_`.
 - **Code, identifiants, commentaires et messages de commit en anglais.** Docs en français.

@@ -24,7 +24,7 @@ option(OV_WERROR       "Treat warnings as errors"                   ON)
 # this size, and it is the risk everyone treats as cosmetic.
 option(OV_LTO "Enable link-time optimization (release CI only)" OFF)
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -60,6 +60,7 @@ include(OvModule)
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 find_package(fmt CONFIG REQUIRED)
+find_package(libdeflate CONFIG REQUIRED)
 
 if(OV_BUILD_TESTS)
     find_package(Catch2 3 CONFIG REQUIRED)
@@ -70,9 +71,14 @@ endif()
 # ── Modules ─────────────────────────────────────────────────────────────────
 add_subdirectory(src/ov_base)
 add_subdirectory(src/ov_math)
+add_subdirectory(src/ov_io)
+add_subdirectory(src/ov_nbt)
 
 # ── Apps ────────────────────────────────────────────────────────────────────
 add_subdirectory(apps/ov_dedicated)
+
+# ── Tools ───────────────────────────────────────────────────────────────────
+add_subdirectory(tools/ov_inspect)
 
 # ── Summary ─────────────────────────────────────────────────────────────────
 message(STATUS "")

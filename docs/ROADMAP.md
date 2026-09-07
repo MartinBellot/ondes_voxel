@@ -56,14 +56,22 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 
 ### `ov_io` (L2) et `ov_nbt` (L3)
 - [ ] VFS : dossier et zip, priorité de pile de packs
-- [ ] Fichiers mappés en mémoire, écriture atomique (temp + rename)
-- [ ] NBT binaire : les 13 types (0-12), big-endian, gzip et zlib
+- [x] Lecture de fichier bornée, écriture atomique (temp + rename)
+- [x] NBT binaire : les 13 types (0-12), big-endian, gzip et zlib
+- [x] **UTF-8 modifié** de Java : `\0` en C0 80, paires de substitution 🔒
+- [x] Compounds à ordre préservé → round-trip **octet-identique** 🔒
+- [x] Garde de profondeur (512) : un fichier hostile ne déborde pas la pile
+- [x] Bornes sur les longueurs : rejet **avant** allocation
+- [x] Plafond de décompression : refus des bombes zip
 - [ ] SNBT (texte) : lecture et écriture
 - [ ] Chemins NBT (`Inventory[0].id`) pour la commande `/data`
-- [ ] Fichiers région `.mca` : en-tête 8 KiB, 1024 offsets + timestamps
-- [ ] Compression : 1 GZip, **2 Zlib (défaut)**, 3 aucune (pas de LZ4 en 1.20.1)
+- [x] Fichiers région `.mca` : en-tête 8 KiB, 1024 offsets + timestamps
+- [x] Les fichiers réels ne sont **pas** alignés sur le secteur (voir PROVENANCE) 🔒
+- [x] Compression : 1 GZip, **2 Zlib (défaut)**, 3 aucune (pas de LZ4 en 1.20.1)
 - [ ] Fichiers `.mcc` pour les chunks dépassant 1 Mo
-- [ ] Round-trip NBT sur de vrais fichiers vanilla ⭐
+- [x] Round-trip NBT sur de vrais fichiers vanilla ⭐
+      *(2900 chunks / 795 277 tags, octet-identiques — voir `docs/PROVENANCE.md`)*
+- [x] `ov-inspect nbt|region --verify`
 
 ### Assets
 - [ ] `ov-assetimport` : détection PrismLauncher / MultiMC / launcher officiel
