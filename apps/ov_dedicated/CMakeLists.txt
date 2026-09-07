@@ -8,5 +8,6 @@ ov_add_executable(ov_dedicated
     SOURCES
         src/main.cpp
     DEPS
-        ov_math  # brings ov_base transitively; listing both makes ld warn
+        ov_protocol  # brings ov_io, ov_math and ov_base transitively
+        ov_math
 )

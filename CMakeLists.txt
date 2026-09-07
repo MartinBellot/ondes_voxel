@@ -65,6 +65,7 @@ set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 find_package(fmt CONFIG REQUIRED)
 find_package(libdeflate CONFIG REQUIRED)
+find_package(asio CONFIG REQUIRED)
 
 if(OV_BUILD_TESTS)
     find_package(Catch2 3 CONFIG REQUIRED)

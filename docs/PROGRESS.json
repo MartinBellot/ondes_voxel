@@ -10,7 +10,7 @@
   },
   "last_updated": "2026-09-07",
   "current_milestone": "M1",
-  "current_task": "m1-packet-framing-and-status",
+  "current_task": "m1-login-and-encryption",
   "milestones": {
     "M0": {
       "name": "Fondations",
@@ -24,7 +24,7 @@
     "M1": {
       "name": "Protocole 763",
       "status": "in_progress",
-      "done": 3,
+      "done": 5,
       "total": 16,
       "exit_criterion": "Le serveur apparaît dans la liste des serveurs du client vanilla, MOTD et icône corrects ; round-trip octet à octet de tous les paquets ; fuzz du décodeur sans crash.",
       "blocked": []
@@ -84,7 +84,7 @@
   "metrics": {
     "$comment": "null = pas encore mesuré. Renseigné par la CI, jamais à la main.",
     "coverage": null,
-    "packets_763": "0/130",
+    "packets_763": "status: 4/4 (handshake, request, response, ping/pong)",
     "blockstate_parity": "24135/24135 états conformes au mixed-radix dérivé",
     "tps": 20.0,
     "frame_p99_ms": null,

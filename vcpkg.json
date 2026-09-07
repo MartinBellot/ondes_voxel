@@ -6,10 +6,11 @@
   "homepage": "https://github.com/MartinBellot/ondes_voxel",
   "license": "Apache-2.0",
   "$comment-deps": "Dependencies are added milestone by milestone, never up front. A first build on an 8 GB M2 compiles every port from source; see risk R5 in docs/ARCHITECTURE.md. The 'client' feature is the physical barrier that keeps rendering out of the headless server: the linux-server-only CI job configures WITHOUT it, on an image that has no Vulkan SDK.",
-  "$comment-current": "M0 needs formatting and DEFLATE. mimalloc, xxhash, simdjson, entt, enkits, asio and openssl are added at the milestone that first uses them.",
+  "$comment-current": "M0 needed formatting and DEFLATE; M1 adds asio for sockets. asio is header-only and template-heavy, so it stays inside .cpp files behind PIMPL — see risk R5. mimalloc, xxhash, simdjson, entt, enkits and openssl arrive at the milestone that first uses them.",
   "dependencies": [
     "fmt",
-    "libdeflate"
+    "libdeflate",
+    "asio"
   ],
   "features": {
     "tests": {

@@ -115,13 +115,21 @@ def main() -> int:
 
     status = 0
     if baseline and not args.update:
-        previous = baseline["total"]
-        growth = (total - previous) / previous * 100
-        print(f"\n  baseline ............. {previous:,}  ({growth:+.1f}%)")
+        # Compared on the mean, not the total. The total grows honestly as files
+        # are added — adding twelve tests to the suite is not a regression. What
+        # header weight drives is the cost of *each* translation unit, and that
+        # is what should stay flat.
+        previous_mean = baseline["mean"]
+        growth        = (mean - previous_mean) / previous_mean * 100
+        print(f"\n  baseline mean ........ {previous_mean:,}  ({growth:+.1f}%)")
+        print(f"  baseline total ....... {baseline['total']:,}  "
+              f"({(total - baseline['total']) / baseline['total'] * 100:+.1f}%, "
+              f"{baseline['translation_units'] if 'translation_units' in baseline else '?'} "
+              f"-> {len(measurements)} units)")
 
         if growth > args.threshold:
             status = 1
-            print(f"\n\033[0;31mHeader weight grew {growth:.1f}%, over the "
+            print(f"\n\033[0;31mPer-unit header weight grew {growth:.1f}%, over the "
                   f"{args.threshold:.0f}% budget.\033[0m\n")
 
             # Point at the specific files, since "the build got slower" is not
@@ -145,10 +153,13 @@ def main() -> int:
             json.dump({
                 "$comment": "Lines of source after preprocessing, per translation unit. "
                             "Deterministic, unlike wall-clock build time, and it is what "
-                            "actually drives compile time. Refresh with --update when a "
-                            "growth is deliberate.",
+                            "actually drives compile time. The gate compares 'mean': the "
+                            "total grows honestly as files are added, so comparing it "
+                            "fails on a large test suite rather than on a heavy header. "
+                            "Refresh with --update when a growth is deliberate.",
                 "total": total,
                 "mean": mean,
+                "translation_units": len(measurements),
                 "files": measurements,
             }, f, indent=2)
             f.write("\n")

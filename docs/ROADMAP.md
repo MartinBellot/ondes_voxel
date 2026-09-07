@@ -107,8 +107,9 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [ ] Chiffrement AES/CFB8, secret partagé 16 octets
 - [ ] Authentification Mojang : RSA, hash SHA-1, `sessionserver.mojang.com/hasJoined`
 - [ ] Mode offline (UUID hors ligne déterministe)
-- [ ] États : Handshake → Status / Login → Play
-- [ ] Status : MOTD, favicon, nombre de joueurs, ping ⭐ *(premier signal fort)*
+- [x] Machine à états par connexion : Handshake → Status ✓ / Login (à venir)
+- [x] **Status : MOTD, nombre de joueurs, ping ⭐** — vérifié par un client écrit
+      depuis la spec : JSON conforme, pong à écho correct
 - [ ] Les ~130 paquets Play, round-trip octet à octet
 - [ ] Métadonnées d'entité (index / type / valeur)
 - [ ] Format de chunk **réseau** — palette bit-packée, **distinct du disque** 🔒
