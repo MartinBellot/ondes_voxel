@@ -1,38 +1,52 @@
-// The terrain vertex, packed into eight bytes.
+// The terrain vertex, packed into twelve bytes.
 //
-// Eight bytes is a budget, not a preference. A render distance of 12 chunks is
-// roughly 600 sections, and a section of ordinary terrain meshes to a few
-// thousand quads; at 16 bytes a vertex the working set stops fitting in the
-// arena and every camera movement becomes an upload spike. The upload spike,
-// not the steady-state frame rate, is what the milestone's p99 target is
-// about.
+// The plan said eight, and eight is what this was until the fields were
+// actually counted against a real atlas. The arithmetic:
 //
-// So every field below had to earn its bits, and two of them are compromises
-// that are written down rather than discovered later:
+//     position, 3 axes ....... 33 bits   1/64 of a block over 32 blocks
+//     atlas u, v ............. 22 bits   half a texel on a 1024 atlas
+//     sky + block light ....... 8 bits   vanilla's own 4 + 4
+//     ambient occlusion ....... 2 bits   vanilla's four levels
+//     facing .................. 3 bits   six directions, plus "unshaded"
+//     tint channel ............ 2 bits   none, grass, foliage, water
+//     ------------------------------------------------------------------
+//     total .................. 70 bits
 //
-//   * position is quantised to 1/64 of a block. The range is deliberately
-//     wider than a section, because the model format lets an element overhang
-//     its own block by a whole block in each direction.
-//   * texture coordinates are in sprite space at 1/8 of a sprite unit, which
-//     is 1/128 of a sprite. The scale is a power of two on purpose: 0 and 16
-//     are the two commonest coordinates in the whole corpus — every full-face
-//     quad uses them — and a scale that could not represent 16 exactly would
-//     shrink every ordinary block face by a fraction of a texel.
+// Eight bytes is 64. The first version fitted by giving the texture
+// coordinates eight bits each, which is enough for a sprite and nowhere near
+// enough for an atlas: 256 steps across a 1024-texel atlas puts every vertex on
+// a four-texel grid, and every block in the game would have sampled the wrong
+// part of its own texture. The bug was invisible in the packing tests, which
+// only ever asked whether a value survived the round trip, and appeared the
+// moment a real atlas rect went through it.
 //
-// What is NOT here is a vertex colour. Vanilla multiplies the biome tint into
-// it on the CPU; three more bytes would not fit. Instead `tint` names which of
-// three tint channels applies — grass, foliage, water — and the shader looks
-// the colour up. That is a real difference from vanilla's mechanism, chosen
-// for the byte budget, and it is only correct as long as a quad's tint is
-// constant across the quad, which for a single block it is.
+// Twelve bytes leaves 26 bits spare, which is not waste — it is where the
+// second uv for an overlay, or a normal for anything that is not axis-aligned,
+// will go without another format change.
+//
+// Eight bytes is still reachable, and it is worth writing down how, so that the
+// option is not lost: give each section a palette of the sprites it uses,
+// store a six-bit palette index and a sprite-local uv instead of an atlas one,
+// and move the tint into the palette entry where it belongs — a tint is a
+// property of a material, not of a vertex. That trades a dependent read in the
+// shader for four bytes a vertex, and whether it pays is a measurement nobody
+// has taken. Taking it before it is needed is how a renderer ends up with a
+// clever format and no picture.
 #pragma once
 
 #include "ov/base/types.hpp"
 #include "ov/math/vec.hpp"
 
+#include <array>
+
 namespace ov::render {
 
 /// Which biome-driven colour multiplies this vertex.
+///
+/// Vanilla multiplies the tint into a vertex colour on the CPU; three more
+/// bytes for that would not have fitted, so the channel is named and the shader
+/// looks the colour up. A real difference in mechanism, and correct as long as
+/// the tint is constant across a quad — which for one block it is.
 enum class TintChannel : u8 {
     None    = 0,
     Grass   = 1,
@@ -40,13 +54,14 @@ enum class TintChannel : u8 {
     Water   = 3,
 };
 
-/// A vertex before packing. Never stored in a buffer; it exists so that the
-/// packing rules have one place to be stated and tested.
+/// A vertex before packing. Never stored in a buffer; it exists so the packing
+/// rules have one place to be stated and tested.
 struct TerrainVertexAttributes {
-    /// Section-local position in blocks. Must lie within
+    /// Section-local position in blocks, within
     /// [kPositionMin, kPositionMax].
     Vec3f position{};
-    /// Sprite space, 0..16.
+    /// Atlas coordinates, normalised to 0..1, v downward. Already resolved
+    /// through the sprite's rect by the mesher.
     f32 u{};
     f32 v{};
     /// 0..15, as stored in a chunk's light arrays.
@@ -64,48 +79,43 @@ struct TerrainVertexAttributes {
 /// Position range, in blocks relative to the section origin.
 ///
 /// A section is 16 blocks; the extra eight on each side cover an element that
-/// overhangs, with room left over. The scale is exactly 64, so every multiple
-/// of 1/64 of a block — which is every coordinate an unrotated model can
-/// produce — survives the round trip untouched. The consequence is that the
-/// top of the range is one step short of 24, which costs nothing that a wider
-/// range would have bought.
+/// overhangs, with room left over. The scale is a power of two, so every
+/// coordinate a model can state — they are all multiples of 1/16 — survives the
+/// round trip exactly.
 inline constexpr f32 kPositionMin   = -8.0F;
-inline constexpr f32 kPositionScale = 64.0F;
-inline constexpr f32 kPositionMax   = kPositionMin + 2047.0F / kPositionScale;
-
-/// Sprite coordinate range and precision. 1/8 of a sprite unit, which puts 0,
-/// 16 and every half unit a model writes on an exact step.
-inline constexpr f32 kTexCoordScale = 8.0F;
-inline constexpr f32 kTexCoordMax   = 255.0F / kTexCoordScale;
+inline constexpr f32 kPositionScale = 2048.0F;
+inline constexpr f32 kPositionMax   = kPositionMin + 65535.0F / kPositionScale;
 
 /// The `facing` code that means "no directional shading". It reuses the two
-/// spare values of a three-bit direction field rather than costing a bit of
-/// its own.
+/// spare values of a three-bit direction field rather than costing a bit.
 inline constexpr u8 kFacingUnshaded = 6;
 
-/// Bit layout of the packed vertex, low bit first:
+/// Bit layout, low bit first. Word-aligned on purpose: no field straddles a
+/// 32-bit word, so the vertex shader unpacks it with six bitfieldExtract calls
+/// and no reassembly.
 ///
-///     0-10   x        11 bits
-///    11-21   y        11 bits
-///    22-32   z        11 bits
-///    33-40   u         8 bits   1/8 sprite unit
-///    41-48   v         8 bits
-///    49-52   sky      4 bits
-///    53-56   block    4 bits
-///    57-58   ao       2 bits
-///    59-61   facing   3 bits   0-5 a Direction, 6 unshaded
-///    62-63   tint     2 bits
+///     word 0    0-15   x        16 bits
+///              16-31   y        16 bits
+///     word 1    0-15   z        16 bits
+///              16-31   u        16 bits   normalised atlas coordinate
+///     word 2    0-15   v        16 bits
+///              16-19   sky       4 bits
+///              20-23   block     4 bits
+///              24-25   ao        2 bits
+///              26-28   facing    3 bits   0-5 a Direction, 6 unshaded
+///              29-30   tint      2 bits
+///                 31   spare     1 bit
 struct TerrainVertex {
-    u64 packed{0};
+    std::array<u32, 3> words{};
 
-    friend bool operator==(TerrainVertex, TerrainVertex) noexcept = default;
+    friend bool operator==(const TerrainVertex&, const TerrainVertex&) noexcept = default;
 };
 
-static_assert(sizeof(TerrainVertex) == 8, "the whole point of this type is that it is 8 bytes");
+static_assert(sizeof(TerrainVertex) == 12, "the vertex format is part of the memory budget");
 
 [[nodiscard]] TerrainVertex pack_vertex(const TerrainVertexAttributes& attributes) noexcept;
 
 /// Round-trips everything except the precision the packing deliberately drops.
-[[nodiscard]] TerrainVertexAttributes unpack_vertex(TerrainVertex vertex) noexcept;
+[[nodiscard]] TerrainVertexAttributes unpack_vertex(const TerrainVertex& vertex) noexcept;
 
 }  // namespace ov::render

@@ -59,6 +59,7 @@ include(OvWarnings)
 include(OvSanitizers)
 include(OvModule)
 include(OvHeaderSelfTest)
+include(OvShaders)
 
 # ── Third-party ─────────────────────────────────────────────────────────────
 set(THREADS_PREFER_PTHREAD_FLAG ON)
@@ -89,7 +90,14 @@ add_subdirectory(src/ov_gameplay)
 # OV_BUILD_CLIENT off, so the headless job never compiles a line of it — which
 # is what makes layering lock #3 a real guarantee rather than a policy check.
 if(OV_BUILD_CLIENT)
+    find_package(volk CONFIG REQUIRED)
+    find_package(VulkanHeaders CONFIG REQUIRED)
+    find_package(VulkanMemoryAllocator CONFIG REQUIRED)
+    find_package(glfw3 CONFIG REQUIRED)
+
+    add_subdirectory(src/ov_rhi)
     add_subdirectory(src/ov_render)
+    add_subdirectory(src/ov_client)
 endif()
 
 # ── Checks ──────────────────────────────────────────────────────────────────
@@ -98,12 +106,16 @@ endif()
 # libc++ and fails on libstdc++.
 set(OV_SELFTEST_MODULES ov_base ov_math ov_io ov_nbt ov_registry ov_world ov_protocol)
 if(OV_BUILD_CLIENT)
-    list(APPEND OV_SELFTEST_MODULES ov_render)
+    list(APPEND OV_SELFTEST_MODULES ov_rhi ov_render ov_client)
 endif()
 ov_add_header_selftest(MODULES ${OV_SELFTEST_MODULES})
 
 # ── Apps ────────────────────────────────────────────────────────────────────
 add_subdirectory(apps/ov_dedicated)
+
+if(OV_BUILD_CLIENT)
+    add_subdirectory(apps/ov_voxel)
+endif()
 
 # ── Tools ───────────────────────────────────────────────────────────────────
 add_subdirectory(tools/ov_inspect)

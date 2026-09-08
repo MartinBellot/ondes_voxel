@@ -63,7 +63,21 @@ set(OV_FORBID_ov_entity    ov_sim ov_server ov_netclient)
 set(OV_FORBID_ov_world     ov_protocol ov_entity ov_gameplay)
 
 # ov_rhi knows nothing about the game; ov_render knows nothing about windowing.
-set(OV_FORBID_ov_rhi       ${OV_ALL_MODULES})
+#
+# "Nothing about the game" was first written as ${OV_ALL_MODULES}, which also
+# forbade ov_base — and ov_base is not the game. It is fixed-width integers,
+# OV_ASSERT, and the log the Vulkan validation layers have to report through.
+# Forbidding it bought nothing and cost either a second set of integer aliases
+# or a renderer that cannot say why it failed to start.
+#
+# So ov_base is the single exception, and the list is written out rather than
+# computed: scripts/check_layers.py reads this line literally, and a
+# list(REMOVE_ITEM) after it would leave the two locks disagreeing about what
+# is allowed — which is worse than either rule on its own.
+set(OV_FORBID_ov_rhi
+    ov_math ov_io ov_nbt ov_data ov_registry ov_world ov_protocol
+    ov_entity ov_gameplay ov_worldgen ov_sim ov_server ov_netclient
+    ov_render ov_audio ov_client)
 set(OV_FORBID_ov_render    ov_client ov_server ov_sim ov_netclient)
 
 # ── ov_check_deps(<module> <deps...>) ───────────────────────────────────────

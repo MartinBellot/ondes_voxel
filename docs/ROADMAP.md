@@ -216,34 +216,37 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 ## M5 — Client Ondes VOXEL
 
 ### `ov_rhi` (L13)
-- [ ] Instance, device, swapchain, `VK_KHR_dynamic_rendering`
-- [ ] Handles opaques index + génération, jamais de pointeur
-- [ ] Buffers, images, samplers, VMA
-- [ ] Pipelines, `VkPipelineCache` persisté, SPIR-V compilé **hors-ligne**
-- [ ] Command lists, **barrières explicites** (pas de state tracker automatique)
-- [ ] `FrameContext` : ring de 2, pool de descripteurs et arène de staging
-- [ ] Timestamps GPU dès le départ
+- [x] Instance, device, swapchain, `VK_KHR_dynamic_rendering`
+- [x] Handles opaques index + génération, jamais de pointeur
+- [x] Buffers, images, samplers, VMA
+- [x] Pipelines, `VkPipelineCache` persisté, SPIR-V compilé **hors-ligne**
+- [x] Command lists, **barrières explicites** (pas de state tracker automatique)
+- [~] `FrameContext` : ring de 2, pool de descripteurs et arène de staging
+      *(ring et pool faits ; l'arène de staging reste — les uploads passent par
+      un buffer jetable, ce qui va pour le démarrage et pas pour une frame)*
+- [x] Timestamps GPU dès le départ
 - [ ] Handles de texture en `u32` — bindless **préparé, non implémenté** 🔒
 
 ### `ov_render` (L14)
-- [ ] Triangle → quad texturé → cube + profondeur + caméra
+- [x] Triangle → quad texturé → cube + profondeur + caméra
 - [x] **Pipeline blockstate → variant → model → parent → elements → faces →
       rotations → uvlock** *(1005 blockstates, 6081 références, 62227 quads,
       0 échec — `ov_modelbake run/assets`)*
-- [ ] Stitcher d'atlas, mips, animations `.mcmeta`
-- [ ] Mailleur **par face depuis le modèle**, occlusion ambiante par sommet
-      *(pas greedy : le plan se trompait, voir PROVENANCE — la règle AO et la
-      lumière lissée sont écrites et testées, le mailleur reste à faire)*
-- [x] Vertex packé 8 octets
+- [x] Stitcher d'atlas, mips, animations `.mcmeta` *(animations lues et
+      conservées, pas encore jouées)*
+- [x] Mailleur **par face depuis le modèle**, occlusion ambiante par sommet
+      *(pas greedy : le plan se trompait, voir PROVENANCE)*
+- [x] Vertex packé **12 octets** *(8 ne tient pas : 70 bits nécessaires, le
+      calcul est dans PROVENANCE — 8 bits d'`uv` n'adressent pas un atlas)*
 - [ ] Arène device-local 384 Mo, free-list en pages de 4 Ko
-- [ ] **Index buffer statique partagé** (supprime la mémoire d'index par section)
+- [x] **Index buffer statique partagé** (supprime la mémoire d'index par section)
 - [ ] Culling frustum CPU → `drawIndexedIndirect`, 4 draws pour le terrain
 - [ ] Passe translucide triée, index buffer mutable dédié
 - [ ] Plafond d'upload par frame (les spikes, pas le FPS moyen, sont le risque)
 - [ ] Ciel, soleil, lune, étoiles, nuages, brouillard, météo
 
 ### `ov_client` (L15) et `ov_audio` (L14)
-- [ ] Fenêtre GLFW, entrées, bindings de touches
+- [x] Fenêtre GLFW, entrées, bindings de touches
 - [ ] Serveur intégré sur son propre thread
 - [ ] Prédiction de mouvement et réconciliation
 - [ ] Interpolation d'entités
