@@ -78,6 +78,21 @@ struct EntityState {
     f32 health{0.0F};
     f32 max_health{0.0F};
 
+    /// Where this entity was last announced from, and whether it ever was.
+    ///
+    /// Movement deltas are computed against this rather than against the true
+    /// previous position, and that is not a detail. The wire quantises a delta
+    /// to 1/4096 of a block; a delta taken from the true position throws the
+    /// remainder away every single tick, and the error accumulates on the
+    /// client forever with nothing in the protocol to notice. Measured on our
+    /// own server: nine ticks of a fall already cost 0.000244, and a mob that
+    /// walks for a minute is standing somewhere it is not.
+    ///
+    /// Kept against what the client actually has, the residual is carried into
+    /// the next delta and the client never drifts by more than one quantum.
+    Vec3d broadcast_position{};
+    bool  broadcast_valid{false};
+
     /// Set by logic that wants this entity gone. Acted on at the end of the
     /// tick, never during it: removing an entity while the tick is iterating
     /// them is how a list gets modified underneath its own loop.

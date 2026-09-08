@@ -3411,3 +3411,108 @@ Le paquet `Update Attributes` d'un zombie porte
 pour le type, et exactement le double le plus proche du float `0.23f`. Les deux
 relevés — la commande et le fil — sont indépendants et **coïncident bit pour
 bit**. C'est ce qui justifie de stocker les attributs en f64 dans le pack.
+
+---
+
+## La chute d'un mob, lue dans son propre tag `Motion`
+
+La gravité et la traînée du **joueur** ont été ajustées sur les positions
+rapportées par un vrai client (plus haut dans ce fichier). Les réutiliser pour
+les mobs aurait été une supposition — plausible, donc la pire espèce. Elles ont
+donc été mesurées.
+
+`data get entity <mob> Motion` imprime la vitesse en doubles exacts. Un mob lâché
+de y = 300 tombe librement, et sa vitesse verticale suit
+
+    v(0) = 0,   v(n+1) = (v(n) − g)·d
+
+`scripts/measure_entity_fall.py` échantillonne `Motion` quarante fois pendant une
+chute, sans savoir à quel tick chaque échantillon correspond : un couple (g, d)
+candidat prédit une courbe, chaque échantillon est rapproché du point le plus
+proche, et le couple qui minimise le résidu gagne. Deux inconnues contre quarante
+échantillons : un mauvais couple ne peut pas passer.
+
+| entité | g | d | résidu (rms) | vitesse limite |
+|---|---|---|---|---|
+| zombie | 0,08000 | 0,98000 | 1,6 × 10⁻⁶ | −3,92 |
+| vache | 0,08000 | 0,98000 | 1,6 × 10⁻⁶ | −3,92 |
+| support d'armure | 0,08000 | 0,98000 | 1,6 × 10⁻⁶ | −3,92 |
+| **objet au sol** | **0,04000** | 0,98000 | **1,2 × 10⁻¹⁵** | **−1,96** |
+| flèche | 0,02086 | 0,99420 | 2,6 × 10⁻³ | — |
+
+Trois choses en sortent :
+
+1. **Un mob tombe comme le joueur.** 0,08 et 0,98, et le résidu est la
+   quantification de l'échantillonnage, pas un désaccord. Cela recoupe aussi
+   l'ajustement du joueur : 0,079998 et 0,980014 mesurés à travers le bruit d'un
+   client mesuraient bien ces deux constantes-là.
+2. **Une pile au sol tombe à la moitié de la gravité.** 0,04, avec un résidu de
+   10⁻¹⁵ — c'est-à-dire exact, pas un arrondi de 0,08. Sa vitesse limite est
+   −1,96 et non −3,92 ; utiliser les constantes ordinaires ferait tomber chaque
+   objet deux fois trop vite.
+3. **Une flèche ne suit pas ce modèle.** Son ajustement est trois ordres de
+   grandeur pire que celui d'un mob. Elle bouge sous d'autres règles, ces règles
+   ne sont pas implémentées, et `step_entity` produirait pour elle une trajectoire
+   plausible et fausse. C'est écrit dans l'en-tête plutôt que laissé à découvrir.
+
+### Le piège : `NoAI` coupe la physique, pas seulement le cerveau
+
+La première campagne a rendu **zéro échantillon** pour tous les mobs vivants. Un
+zombie invoqué avec `NoAI:1b` à y = 300 y reste, indéfiniment, `Motion` à plat.
+Le support d'armure et l'objet, qui ne sont pas des `Mob`, tombaient normalement —
+ce qui rendait le résultat cohérent et faux.
+
+Le banc de mesure des boîtes de collision, lui, **doit** garder `NoAI` (un mob
+qui marche ne se laisse pas bissecter). Les deux campagnes sont donc réglées
+différemment, et chacune dit pourquoi.
+
+---
+
+## Des mobs qu'un vrai client voit
+
+`ov_dedicated --mobs=zombie,cow,creeper,…` pose les mobs demandés devant le point
+d'apparition, trois blocs en l'air, trois secondes après le démarrage — assez
+tard pour qu'un client déjà connecté les voie apparaître **et tomber**, ce qui
+est aussi ce qui rend la chute observable de l'extérieur.
+
+`scripts/check_entities.py` branche sur notre serveur le même client sonde que le
+harnais de capture branche sur le jar vanilla. Même lecteur, mêmes attentes,
+serveur différent. Relevé sur huit types :
+
+```
+8 spawns, 8 métadonnées, 8 jeux d'attributs, 72 deltas de déplacement
+  minecraft:zombie    entité 1000000  type 118  vie 20  chute 9 ticks -> y=-60.0000
+  minecraft:cow       entité 1000001  type  18  vie 10  chute 9 ticks -> y=-60.0000
+  minecraft:creeper   entité 1000002  type  19  vie 20  chute 9 ticks -> y=-60.0000
+  minecraft:chicken   entité 1000003  type  15  vie  4  chute 9 ticks -> y=-60.0000
+  minecraft:enderman  entité 1000004  type  29  vie 40  chute 9 ticks -> y=-60.0000
+  minecraft:slime     entité 1000005  type  88  vie  1  chute 9 ticks -> y=-60.0000
+  minecraft:villager  entité 1000006  type 108  vie 20  chute 9 ticks -> y=-60.0000
+  minecraft:skeleton  entité 1000007  type  86  vie 20  chute 9 ticks -> y=-60.0000
+```
+
+Les ids de type sont ceux de Mojang, relus depuis le registre par le vérificateur
+lui-même ; les vies et les valeurs d'attribut sont comparées **à la campagne de
+mesure**, pas à une constante recopiée dans le test.
+
+### Un décalage de 0,000244 qui n'aurait jamais cessé de grandir
+
+La première exécution du vérificateur a rendu **y = −59,999756** pour les huit.
+L'écart vaut exactement 1/4096 — un quantum du paquet de delta.
+
+La cause n'est pas un arrondi inoffensif : le serveur calculait chaque delta
+depuis la **vraie** position précédente. Le paquet, lui, ne peut porter qu'un
+multiple de 1/4096, donc le reste était **jeté à chaque tick**. Neuf ticks de
+chute coûtaient déjà 0,000244 ; une minute de marche aurait mis le mob ailleurs
+que là où il est, et rien dans le protocole ne l'aurait signalé.
+
+Le correctif est de tenir, par entité, **la position que le client a
+effectivement** (`EntityState::broadcast_position`), de calculer le delta contre
+elle, et de l'avancer de ce qui a réellement été envoyé. Le reste est reporté sur
+le delta suivant. Le vérificateur retombe alors sur **y = −60,0000** exactement,
+et sa tolérance est désormais d'un quantum — bornée, et non cumulative.
+
+C'est la même leçon que la section « Absolu plutôt que relatif » plus haut, prise
+par l'autre bout : les entités joueur ont évité le problème en n'envoyant que des
+téléports absolus ; les mobs paient six octets au lieu de vingt-huit et doivent
+donc tenir le compte.

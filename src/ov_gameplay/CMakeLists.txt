@@ -8,10 +8,12 @@ ov_add_library(ov_gameplay
     SOURCES
         src/breaking.cpp
         src/collision.cpp
+        src/entity_physics.cpp
         src/physics.cpp
         src/connections.cpp
         src/loot.cpp
     DEPS
+        ov_entity
         ov_registry
         ov_math
 )
@@ -20,6 +22,7 @@ ov_add_test(test_ov_gameplay
     SOURCES
         tests/test_breaking.cpp
         tests/test_collision.cpp
+        tests/test_entity_physics.cpp
         tests/test_fluid_physics.cpp
         tests/test_physics.cpp
         tests/test_connections.cpp

@@ -406,6 +406,12 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [ ] **End** : îles principales, îles extérieures, passerelles, portail de sortie
 
 ### Entités et IA
+- [x] Physique d'entité : gravité, traînée, collision par la boîte mesurée
+      *(g et d **mesurés** dans le tag `Motion` d'un mob lâché de y = 300 :
+      0,08 / 0,98 pour un mob, **0,04 / 0,98 pour une pile au sol** — la moitié
+      de la gravité, ajustement exact. Une flèche ne suit pas ce modèle et
+      c'est dit plutôt que caché. Un client vanilla voit huit types apparaître
+      et tomber sur le sol au bloc près — `scripts/check_entities.py`)*
 - [x] ECS EnTT : handles et stockage ; comportement polymorphe 🔒
       *(`ov_entity` L8. EnTT en `PRIVATE_DEP` derrière un PIMPL, aucun
       en-tête public ne le nomme. Le tick parcourt l'ordre d'insertion et

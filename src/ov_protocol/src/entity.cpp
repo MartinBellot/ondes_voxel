@@ -242,6 +242,10 @@ bool fits_in_delta(f64 dx, f64 dy, f64 dz) noexcept {
     return fits(dx) && fits(dy) && fits(dz);
 }
 
+f64 quantised_delta(f64 blocks) noexcept {
+    return static_cast<f64>(delta_units(blocks)) / kDeltaUnitsPerBlock;
+}
+
 std::vector<u8> encode_entity_position(i32 entity_id, f64 dx, f64 dy, f64 dz, bool on_ground) {
     io::ByteWriter writer;
     write_varint(writer, entity_id);

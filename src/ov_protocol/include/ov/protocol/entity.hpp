@@ -243,6 +243,14 @@ struct SpawnEntity {
 /// eight blocks the other way.
 [[nodiscard]] bool fits_in_delta(f64 dx, f64 dy, f64 dz) noexcept;
 
+/// The distance a delta packet actually carries for a requested move.
+///
+/// Rounded to 1/4096, which is what the client will apply. A sender that
+/// computes its next delta from the true position rather than from this throws
+/// the remainder away every tick, and the client drifts with nothing in the
+/// protocol to notice.
+[[nodiscard]] f64 quantised_delta(f64 blocks) noexcept;
+
 /// Velocity, in blocks per tick. Clamped to what an i16 of 1/8000ths can hold.
 [[nodiscard]] std::vector<u8> encode_entity_velocity(i32 entity_id, f64 x, f64 y, f64 z);
 
