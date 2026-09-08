@@ -15,11 +15,13 @@
 #include "ov/nbt/binary.hpp"
 #include "ov/nbt/region.hpp"
 #include "ov/nbt/tag.hpp"
+#include "ov/world/light_array.hpp"
 #include "ov/world/paletted_container.hpp"
 
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <map>
 #include <string>
@@ -378,6 +380,22 @@ int inspect_chunk_packing(const std::filesystem::path& path) {
     usize               skipped   = 0;
     std::map<u8, usize> by_width;
 
+    // Light nibble order, settled by measurement rather than by argument.
+    //
+    // 2048 bytes hold 4096 cells, and the format says which half of a byte the
+    // even cell lives in. Reading it backwards swaps every pair of neighbours
+    // along x. No round trip detects that — the bytes still come back identical
+    // — and the result is a world lit in a fine checkerboard, which reads as a
+    // shader bug rather than a storage one.
+    //
+    // Real lighting varies smoothly, so the correct reading is the one giving
+    // the smaller step between neighbouring cells. This measures both on arrays
+    // the game itself wrote.
+    usize light_arrays        = 0;
+    usize low_nibble_smoother = 0;
+    f64   low_total           = 0.0;
+    f64   high_total          = 0.0;
+
     for (u32 z = 0; z < nbt::kRegionSideChunks; ++z) {
         for (u32 x = 0; x < nbt::kRegionSideChunks; ++x) {
             if (!region->has_chunk(x, z)) {
@@ -393,6 +411,52 @@ int inspect_chunk_packing(const std::filesystem::path& path) {
             }
 
             for (const nbt::Tag& section : *section_list->list()) {
+                for (const char* which : {"BlockLight", "SkyLight"}) {
+                    const nbt::Tag* tag = section.find(which);
+                    if (tag == nullptr) {
+                        continue;
+                    }
+                    const auto* bytes = tag->get_if<nbt::Tag::ByteArray>();
+                    if (bytes == nullptr || bytes->size() != world::kLightByteCount) {
+                        continue;
+                    }
+                    ++light_arrays;
+
+                    // Total step between cells adjacent along x, under each
+                    // reading. Row ends are skipped: those neighbours are not
+                    // adjacent in the world.
+                    f64   low   = 0.0;
+                    f64   high  = 0.0;
+                    usize pairs = 0;
+                    for (usize i = 0; i + 1 < world::kLightCellCount; ++i) {
+                        if ((i % 16) == 15) {
+                            continue;
+                        }
+                        auto cell = [&](usize k, bool swapped) {
+                            const auto byte = static_cast<u8>((*bytes)[k >> 1]);
+                            const u8   lo   = byte & 0xF;
+                            const u8   hi   = static_cast<u8>(byte >> 4);
+                            const bool even = (k & 1) == 0;
+                            return swapped ? (even ? hi : lo) : (even ? lo : hi);
+                        };
+                        low += std::abs(static_cast<f64>(cell(i, false)) -
+                                        static_cast<f64>(cell(i + 1, false)));
+                        high += std::abs(static_cast<f64>(cell(i, true)) -
+                                         static_cast<f64>(cell(i + 1, true)));
+                        ++pairs;
+                    }
+                    if (pairs == 0) {
+                        continue;
+                    }
+                    low /= static_cast<f64>(pairs);
+                    high /= static_cast<f64>(pairs);
+                    low_total += low;
+                    high_total += high;
+                    if (low <= high) {
+                        ++low_nibble_smoother;
+                    }
+                }
+
                 const nbt::Tag* states = section.find("block_states");
                 if (states == nullptr) {
                     continue;
@@ -476,6 +540,16 @@ int inspect_chunk_packing(const std::filesystem::path& path) {
         fmt::print("{}b:{} ", bits, count);
     }
     fmt::print("\n");
+    if (light_arrays > 0) {
+        const f64  low       = low_total / static_cast<f64>(light_arrays);
+        const f64  high      = high_total / static_cast<f64>(light_arrays);
+        const bool ours_wins = low_nibble_smoother * 2 > light_arrays;
+        fmt::print("  light arrays ... {}\n", light_arrays);
+        fmt::print(
+            "  nibble order ... {}even cell = low nibble\033[0m on {}/{} "
+            "(step {:.3f} vs {:.3f})\n",
+            ours_wins ? "\033[0;32m" : "\033[0;31m", low_nibble_smoother, light_arrays, low, high);
+    }
     fmt::print("  re-packed ...... {}{}/{} identical\033[0m ({} not comparable)\n",
                identical + skipped == sections ? "\033[0;32m" : "\033[0;31m", identical,
                sections - skipped, skipped);

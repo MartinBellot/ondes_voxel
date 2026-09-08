@@ -164,7 +164,7 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [ ] Pool de jobs enkiTS : pinned tasks + priorités
 - [ ] Générateur superflat
 - [ ] Moteur de lumière : ciel et bloc, propagation et suppression
-- [ ] Tableaux de lumière nullables à valeur uniforme (divise l'empreinte par 2)
+- [x] Tableaux de lumière nullables à valeur uniforme (divise l'empreinte par 2)
 - [ ] Heightmaps (WORLD_SURFACE, MOTION_BLOCKING, OCEAN_FLOOR)
 - [ ] Streaming de chunks selon la distance de vue
 - [ ] Physique du joueur : AABB, marche, saut, sprint, accroupissement, nage

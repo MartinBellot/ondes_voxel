@@ -496,3 +496,59 @@ avec sa propre implémentation**, puis compare au binaire. Un émetteur et un
 lecteur partageant un résolveur s'accordent quoi qu'il fasse ; seule une seconde
 traversée des mêmes sources peut dire que l'aplatissement est juste.
 305 tags, 4255 membres, identiques.
+
+---
+
+## Section de chunk et stockage de la lumière (`ov_world`)
+
+### L'ordre des indices
+
+**YZX** — `(y * 16 + z) * 16 + x` — parce que c'est ce qu'utilisent le format de
+fichier *et* le format réseau. XZY fonctionnerait parfaitement jusqu'au premier
+chunk écrit, et produirait ensuite un monde qui est sa propre transposition :
+chaque structure miroitée le long d'une diagonale, sans qu'aucune erreur
+n'apparaisse.
+
+### Les tableaux de lumière nullables
+
+Mesuré sur un chunk réel : **7 sections sur 24** portaient un tableau
+`BlockLight`, **2 sur 24** un `SkyLight`. Au-dessus du terrain le ciel est
+uniformément plein et la lumière de bloc uniformément nulle ; sous la roche les
+deux sont nulles. Un tableau entièrement uniforme ne stocke donc **rien** et se
+souvient de la valeur ; il ne se matérialise que si quelque chose varie.
+
+Le piège de la matérialisation : allouer un tampon rempli de zéros pour un
+tableau uniformément **plein** plonge la section dans le noir, et seulement les
+sections qu'on édite. On remplit avec la valeur implicite, pas avec zéro.
+
+### L'ordre des demi-octets, tranché par la mesure
+
+2048 octets portent 4096 cellules, et le format dit dans quelle moitié d'octet
+vit la cellule paire. Le lire à l'envers échange chaque paire de voisins le long
+de x. **Aucun aller-retour ne le détecte** — les octets ressortent identiques —
+et le résultat est un monde éclairé en fin damier, qui ressemble à un bug de
+shader et non de stockage.
+
+Un éclairage réel varie doucement, donc la bonne lecture est celle qui donne le
+plus petit écart entre cellules voisines. Mesuré par `ov-inspect chunk` sur les
+tableaux que le jeu a lui-même écrits :
+
+| Lecture | Écart moyen entre voisins | Gagne sur |
+|---|---|---|
+| cellule paire = demi-octet **bas** | **0,149** | **141 799 / 144 974** (97,8 %) |
+| cellule paire = demi-octet haut | 0,230 | 3 175 |
+
+Le contrôle est permanent dans `ov-inspect chunk`, pas une mesure jetable.
+
+### Le compte de blocs non-air
+
+C'est le champ « Block Count » du paquet de chunk, envoyé à chaque expédition.
+Il est maintenu **incrémentalement** : recompter 4096 entrées par section à
+chaque envoi dominerait le paquet. Un test compare le compte incrémental à un
+recomptage complet, parce qu'un compteur incrémental est précisément le genre
+qui dérive.
+
+Les **trois** blocs d'air comptent comme air : `air` (état 0), `void_air`
+(12817) et `cave_air` (12818), un seul état chacun — mesuré, pas supposé. Un
+client à qui l'on dit qu'une grotte est pleine la rend pleine. Les identifiants
+sont résolus depuis le registre, jamais écrits en dur.

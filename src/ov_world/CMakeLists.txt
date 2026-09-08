@@ -7,6 +7,8 @@
 ov_add_library(ov_world
     LAYER 6
     SOURCES
+        src/chunk_section.cpp
+        src/light_array.cpp
         src/paletted_container.cpp
     DEPS
         ov_registry
@@ -15,6 +17,7 @@ ov_add_library(ov_world
 
 ov_add_test(test_ov_world
     SOURCES
+        tests/test_chunk_section.cpp
         tests/test_paletted_container.cpp
     DEPS ov_world
     LABELS unit
