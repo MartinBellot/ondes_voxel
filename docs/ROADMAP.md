@@ -126,9 +126,12 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [~] Les ~130 paquets Play, round-trip octet à octet
       *(44 identifiants implémentés — ceux dont la tranche verticale a besoin.
       Le reste arrive avec les entités, l'inventaire complet et le son)*
-- [~] Métadonnées d'entité (index / type / valeur)
-      *(seulement celle de l'entité-objet, figée octet pour octet contre un
-      relevé du vrai serveur. L'encodeur générique attend les mobs)*
+- [x] Métadonnées d'entité (index / type / valeur)
+      *(`MetadataWriter` couvre les 28 types de valeur de 763, et la table
+      d'indices est **dérivée** plutôt que recopiée : un champ NBT à la fois sur
+      un zombie de référence, et l'index qui bouge est la réponse. Les indices
+      que rien n'a fait bouger sont absents plutôt que devinés — voir
+      `docs/PROVENANCE.md`)*
 - [x] Format de chunk **réseau** — palette bit-packée, **distinct du disque** 🔒
       *(et **relu** : `parse_chunk_data` est le miroir exact de l'encodeur, testé
       sur 24 chunks réels comparés cellule par cellule — blocs, biomes, les deux
@@ -414,8 +417,21 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [ ] **End** : îles principales, îles extérieures, passerelles, portail de sortie
 
 ### Entités et IA
-- [ ] ECS EnTT : handles et stockage ; comportement polymorphe 🔒
-- [ ] Attributs, modificateurs, équipement
+- [x] Physique d'entité : gravité, traînée, collision par la boîte mesurée
+      *(g et d **mesurés** dans le tag `Motion` d'un mob lâché de y = 300 :
+      0,08 / 0,98 pour un mob, **0,04 / 0,98 pour une pile au sol** — la moitié
+      de la gravité, ajustement exact. Une flèche ne suit pas ce modèle et
+      c'est dit plutôt que caché. Un client vanilla voit huit types apparaître
+      et tomber sur le sol au bloc près — `scripts/check_entities.py`)*
+- [x] ECS EnTT : handles et stockage ; comportement polymorphe 🔒
+      *(`ov_entity` L8. EnTT en `PRIVATE_DEP` derrière un PIMPL, aucun
+      en-tête public ne le nomme. Le tick parcourt l'ordre d'insertion et
+      pas une vue : l'ordre d'une vue est celui du stockage, et le
+      swap-and-pop d'une destruction le change — voir `docs/PROVENANCE.md`)*
+- [~] Attributs, modificateurs, équipement
+      *(les valeurs de base des 13 attributs relevées sur un vrai serveur
+      1.20.1 pour les 120 types mesurables — 622 valeurs — et une absence
+      reste une absence. Les modificateurs et l'équipement restent à faire)*
 - [ ] **33 effets de statut** : speed, slowness, haste, mining_fatigue, strength,
       instant_health, instant_damage, jump_boost, nausea, regeneration,
       resistance, fire_resistance, water_breathing, invisibility, blindness,

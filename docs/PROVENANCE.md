@@ -3295,3 +3295,351 @@ tournait encore depuis trois heures et demie, à se disputer la machine.
 Avec 28 zones réparties jusqu'à ±110 000 blocs, la mesure porte maintenant sur
 **7 821 312 cellules de biome et 38 biomes** : 99,972 % d'accord, et les 2197
 écarts sont toujours **tous** des égalités exactes.
+---
+
+## Entités : demander au jeu sa taille, ses yeux et ses attributs
+
+Trois nombres décident de tout ce qu'une entité peut faire, et **aucun des trois
+n'existe dans les rapports officiels** : la boîte de collision, la hauteur des
+yeux et la valeur de base de chaque attribut sont du code Java. Ce projet ne lit
+pas de code Java. Il a donc fallu les faire dire au jeu lui-même, avec des
+commandes — qui sont de la donnée documentée, pas de la source.
+
+`scripts/measure_entities.py` lance un vrai serveur 1.20.1 sur un port à lui,
+pose une entité de chaque type sur une grille espacée de 16 blocs, et pose trois
+questions.
+
+### La boîte : une bissection, et un étalon qui n'était pas supposé
+
+`execute positioned <p> if entity @e[…,dx=0,dy=0,dz=0]` réussit exactement quand
+le volume de sonde rencontre la boîte de l'entité. Bissecter cette frontière le
+long de +X et de +Y donne la demi-largeur et la hauteur.
+
+Le piège est que **la sémantique du volume `dx/dy/dz` n'est pas évidente** : la
+documentation le décrit tantôt comme un point, tantôt comme une boîte gonflée
+d'un bloc, et les deux lectures donnent des résultats plausibles. Plutôt que de
+trancher par la lecture, la sonde est **étalonnée** contre `minecraft:interaction`
+— la seule entité dont la largeur et la hauteur *sont* son NBT. Cinq tailles
+déclarées, mesurées exactement comme les mobs le seront ensuite :
+
+| déclaré | demi-largeur mesurée | sommet mesuré |
+|---|---|---|
+| 0,5 × 0,5 | 0,2500000 | 0,5000000 |
+| 1,0 × 2,0 | 0,5000000 | 2,0000000 |
+| 3,0 × 0,25 | 1,5000000 | 0,2500000 |
+| 2,0 × 1,0 | 1,0000000 | 1,0000000 |
+| 0,25 × 4,0 | 0,1250000 | 4,0000000 |
+
+Décalage moyen **−1,5 × 10⁻⁸**, dispersion **exactement nulle** sur les dix
+relevés. Le volume est donc un point, `width` est bien la largeur totale et non
+la demi-largeur, et la boîte monte des pieds vers le haut. Cinq tailles plutôt
+qu'une, parce qu'un décalage additif et un facteur d'échelle sont
+indiscernables sur un seul point.
+
+### Les yeux : un marqueur posé à l'ancre du regard
+
+`execute as <mob> at @s anchored eyes positioned ^ ^ ^ run summon
+minecraft:marker ~ ~ ~` pose un marqueur là où le jeu place les yeux ; la
+différence entre son `Pos` et celui du mob est la hauteur des yeux, à la
+dernière décimale que porte le double.
+
+**`as @s` n'est pas décoratif.** `anchored eyes` décale la position de l'entité
+qui *exécute*, pas de celle que `at` désigne. Lancée depuis la console avec le
+seul `at`, la commande n'a aucun `@s` à décaler : le marqueur tombe **aux pieds
+du mob**, la mesure rend 0,0 pour tout le monde, et rien ne signale l'erreur —
+c'est une mauvaise réponse qui a exactement l'allure d'une bonne.
+
+### Les attributs : les treize, demandés à chaque type
+
+`attribute <cible> <attribut> base get` imprime la valeur de base. La campagne
+demande **les treize** attributs du registre à chacun des types, si bien que la
+réponse porte aussi sur *quels* attributs un type possède. Un zombie n'a pas de
+`horse.jump_strength` et le serveur le dit ; une vache n'a pas d'`attack_damage`.
+Cette absence est stockée comme une absence : `attribute_base` rend `nullopt`, et
+jamais 0. « Ne frappe pas » et « frappe pour rien » sont deux choses différentes.
+
+622 valeurs sur 120 types.
+
+### Le piège qui a coûté 47 types
+
+Premier passage : **77 types sur 124**, et les 47 manquants étaient *exactement*
+les animaux — vache, poule, mouton, cheval, loup, poisson, villageois. La console
+répondait pourtant « Summoned new Cow » à chaque fois.
+
+La cause est `spawn-animals=false` dans `server.properties`, mis là par réflexe
+de banc de mesure. Ce réglage ne se contente pas de couper l'apparition
+naturelle : le serveur **supprime** les animaux à leur premier tick, y compris
+ceux invoqués à la main, y compris avec `PersistenceRequired:1b`. Le relevé
+perdait toute la classe `Animal` pendant que le journal affirmait le contraire.
+
+Le banc laisse donc les trois catégories d'apparition **actives**, et coupe
+l'apparition naturelle avec la règle `doMobSpawning`. Chaque entité mesurée porte
+un `Tags` unique, donc la faune du monde ne gêne pas.
+
+### Ce qui n'a pas pu être mesuré, et qui est nommé plutôt qu'arrondi
+
+**120 types sur 124.** Les quatre restants sont refusés par leur nom :
+
+| type | pourquoi |
+|---|---|
+| `minecraft:lightning_bolt` | vit un tick |
+| `minecraft:evoker_fangs` | vit une vingtaine de ticks, la bissection en demande des milliers |
+| `minecraft:fishing_bobber` | ne peut pas exister sans pêcheur |
+| `minecraft:player` | ne s'invoque pas |
+
+Trois hauteurs d'yeux manquent aussi (`marker`, `painting`, `eye_of_ender`), et
+un bit du pack le dit — plutôt qu'un zéro qui ressemblerait à une mesure.
+
+`EntityWorld::spawn` **refuse** un type sans boîte mesurée. Un mob à boîte nulle
+est un mob que rien ne peut jamais toucher, et c'est pire qu'un mob qui n'est pas
+apparu : seul le second le dit.
+
+### Ce que le pack stocke, et pourquoi en f64
+
+Les valeurs d'attribut sont stockées en **f64**. La vitesse d'un zombie n'est pas
+0,23 mais **0,23000000417232513** — le double le plus proche du float que le jeu
+tient. La faire passer par un f32 ne la ferait pas revenir, et le paquet Update
+Attributes porte justement un f64 sur le fil. Les dimensions, elles, sont en f32,
+comme le jeu les tient.
+
+Un détail qui se voit en test : la demi-largeur d'un zombie n'est pas 0,3 mais
+0,30000001192092896, parce que 0,6 est un f32. C'est ce nombre-là que la
+collision doit utiliser.
+
+### `ov_entity` : EnTT pour le stockage, et une vue qu'on ne crée pas
+
+Le module suit `docs/ARCHITECTURE.md` § 5 : EnTT pour les handles et le
+stockage, comportement polymorphe dans un `std::unique_ptr<IEntityLogic>`. EnTT
+est un **PRIVATE_DEP** et n'apparaît dans aucun en-tête public ; le registry vit
+derrière un PIMPL.
+
+Le plan avertit que `view()` et `group()` **mutent l'état interne** même en
+lecture et que le registry doit rester sur le thread de tick. Une deuxième raison
+s'y ajoute, et elle est plus contraignante : **l'ordre d'itération d'une vue est
+l'ordre du stockage, et le stockage est un swap-and-pop**. Détruire une entité y
+déplace la dernière à sa place ; deux exécutions de la même suite d'apparitions
+et de morts tiqueraient alors les mêmes entités dans des ordres différents, ce
+qui viole le déterminisme (CLAUDE.md § 2.5).
+
+Le tick parcourt donc une liste de handles en **ordre d'insertion**, et aucune
+vue n'est créée sur le chemin du tick — ce qui rend le piège de thread-safety
+inatteignable par la même occasion. Le test le vérifie : trois mobs, celui du
+milieu meurt, et le tick suivant visite toujours le premier avant le troisième.
+
+Deux autres propriétés sont tenues par des tests plutôt que par une intention :
+
+- un handle vers une entité morte **ne résout jamais** vers celle qui a pris sa
+  place — EnTT recycle les emplacements, et la génération portée dans le handle
+  est ce qui empêche des dégâts destinés à une vache morte d'atterrir sur le
+  cochon suivant ;
+- un id réseau n'est **jamais réutilisé** ;
+- une entité apparue *pendant* un tick n'est pas tiquée dans ce tick — sinon un
+  mob qui en engendre un par tick empêcherait le tick de finir.
+
+---
+
+## Les paquets d'entité : relevés sur le fil, indices compris
+
+`scripts/capture_entity_packets.py` fait joindre un client sonde écrit depuis la
+spec au vrai serveur 1.20.1, invoque des mobs à côté de lui depuis la console, et
+écrit ce qui arrive, octet par octet. Ce qui est figé en test
+(`src/ov_protocol/tests/test_entity_packets.cpp`) est ce que le jeu a produit.
+
+### La table d'indices n'est pas lue, elle est dérivée
+
+Un index de métadonnée faux **n'est pas une erreur** : c'est un mob qui rend avec
+la propriété d'un autre, sans un mot. C'est la raison pour laquelle il ne fallait
+pas la recopier depuis un résumé.
+
+Le relevé pose donc un zombie de référence, puis un zombie identique **plus un
+seul champ NBT**, et regarde quel index a changé :
+
+| champ NBT | index | type | valeur observée |
+|---|---|---|---|
+| `Glowing:1b` | 0 | byte | 64 → bit 0x40 |
+| `Air:123s` | 1 | varint | 123 |
+| `CustomName` | 2 | optional_component | le JSON tel quel |
+| `CustomNameVisible:1b` | 3 | boolean | vrai |
+| `Silent:1b` | 4 | boolean | vrai |
+| `NoGravity:1b` | 5 | boolean | vrai |
+| `TicksFrozen:123` | 7 | varint | 123 |
+| `Health:7.0f` | 9 | float | 7,0 |
+| `NoAI:1b` | 15 | byte | 1 |
+| `LeftHanded:1b` | 15 | byte | 2 |
+| `IsBaby:1b` | 16 | boolean | vrai |
+
+Les indices que rien n'a fait bouger sont **absents** de `ov/protocol/entity.hpp`
+plutôt que devinés : 6 (pose), 8 sur une entité vivante, et 10 à 14. Une
+constante plausible y produirait un mob correct à l'écran et faux au fond.
+
+Deux observations qui n'étaient pas demandées :
+
+- **vanilla n'envoie que ce qui diffère du défaut.** Un zombie invoqué sans rien
+  n'envoie qu'un champ, la santé — encore une fois, la santé est envoyée même à
+  sa valeur par défaut.
+- **un armor stand n'envoie pas l'index 15.** Il n'est pas un `Mob`. Une table
+  d'indices écrite « pour toutes les entités » aurait mis des drapeaux de mob sur
+  un support d'armure.
+
+### L'unité des paquets de déplacement, mesurée
+
+`Update Entity Position` porte un delta et pas une position. L'unité a été
+mesurée plutôt que lue : un zombie téléporté d'une distance connue, `Pos` relu
+des deux côtés.
+
+| déplacement | `dX` observé | rapport |
+|---|---|---|
+| +0,75 bloc | 3072 | 4096 |
+| −1,125 bloc | −4608 | 4096 |
+
+L'unité est donc **1/4096 de bloc**, et un i16 porte un peu moins de 8 blocs.
+La borne compte : 8 blocs exactement valent 32768, un de trop, et l'entité
+repartirait de huit blocs dans l'autre sens. `fits_in_delta` refuse à 8,0 et
+accepte à 7,999.
+
+### Un ordre de champs qui n'est pas le même d'un paquet à l'autre
+
+`Spawn Entity` écrit **pitch, puis yaw**, puis head yaw. `Update Entity Position
+and Rotation` écrit **yaw, puis pitch**. Ce n'est pas une erreur dans l'un des
+deux : les deux paquets sont réellement en désaccord, et les deux ordres viennent
+de captures. Deviner l'un depuis l'autre donne un mob tourné de travers.
+
+`Entity Event` (0x1C) est le seul paquet d'entité dont l'id est un **i32 fixe** et
+non un varint.
+
+### Les deux mesures se rejoignent
+
+Le paquet `Update Attributes` d'un zombie porte
+`minecraft:generic.movement_speed` et le f64 `3fcd70a3e0000000`, soit
+**0,23000000417232513**. C'est exactement ce que `attribute … base get` imprime
+pour le type, et exactement le double le plus proche du float `0.23f`. Les deux
+relevés — la commande et le fil — sont indépendants et **coïncident bit pour
+bit**. C'est ce qui justifie de stocker les attributs en f64 dans le pack.
+
+---
+
+## La chute d'un mob, lue dans son propre tag `Motion`
+
+La gravité et la traînée du **joueur** ont été ajustées sur les positions
+rapportées par un vrai client (plus haut dans ce fichier). Les réutiliser pour
+les mobs aurait été une supposition — plausible, donc la pire espèce. Elles ont
+donc été mesurées.
+
+`data get entity <mob> Motion` imprime la vitesse en doubles exacts. Un mob lâché
+de y = 300 tombe librement, et sa vitesse verticale suit
+
+    v(0) = 0,   v(n+1) = (v(n) − g)·d
+
+`scripts/measure_entity_fall.py` échantillonne `Motion` quarante fois pendant une
+chute, sans savoir à quel tick chaque échantillon correspond : un couple (g, d)
+candidat prédit une courbe, chaque échantillon est rapproché du point le plus
+proche, et le couple qui minimise le résidu gagne. Deux inconnues contre quarante
+échantillons : un mauvais couple ne peut pas passer.
+
+| entité | g | d | résidu (rms) | vitesse limite |
+|---|---|---|---|---|
+| zombie | 0,08000 | 0,98000 | 1,6 × 10⁻⁶ | −3,92 |
+| vache | 0,08000 | 0,98000 | 1,6 × 10⁻⁶ | −3,92 |
+| support d'armure | 0,08000 | 0,98000 | 1,6 × 10⁻⁶ | −3,92 |
+| **objet au sol** | **0,04000** | 0,98000 | **1,2 × 10⁻¹⁵** | **−1,96** |
+| flèche | 0,02086 | 0,99420 | 2,6 × 10⁻³ | — |
+
+Trois choses en sortent :
+
+1. **Un mob tombe comme le joueur.** 0,08 et 0,98, et le résidu est la
+   quantification de l'échantillonnage, pas un désaccord. Cela recoupe aussi
+   l'ajustement du joueur : 0,079998 et 0,980014 mesurés à travers le bruit d'un
+   client mesuraient bien ces deux constantes-là.
+2. **Une pile au sol tombe à la moitié de la gravité.** 0,04, avec un résidu de
+   10⁻¹⁵ — c'est-à-dire exact, pas un arrondi de 0,08. Sa vitesse limite est
+   −1,96 et non −3,92 ; utiliser les constantes ordinaires ferait tomber chaque
+   objet deux fois trop vite.
+3. **Une flèche ne suit pas ce modèle.** Son ajustement est trois ordres de
+   grandeur pire que celui d'un mob. Elle bouge sous d'autres règles, ces règles
+   ne sont pas implémentées, et `step_entity` produirait pour elle une trajectoire
+   plausible et fausse. C'est écrit dans l'en-tête plutôt que laissé à découvrir.
+
+### Le piège : `NoAI` coupe la physique, pas seulement le cerveau
+
+La première campagne a rendu **zéro échantillon** pour tous les mobs vivants. Un
+zombie invoqué avec `NoAI:1b` à y = 300 y reste, indéfiniment, `Motion` à plat.
+Le support d'armure et l'objet, qui ne sont pas des `Mob`, tombaient normalement —
+ce qui rendait le résultat cohérent et faux.
+
+Le banc de mesure des boîtes de collision, lui, **doit** garder `NoAI` (un mob
+qui marche ne se laisse pas bissecter). Les deux campagnes sont donc réglées
+différemment, et chacune dit pourquoi.
+
+---
+
+## Des mobs qu'un vrai client voit
+
+`ov_dedicated --mobs=zombie,cow,creeper,…` pose les mobs demandés devant le point
+d'apparition, trois blocs en l'air, trois secondes après le démarrage — assez
+tard pour qu'un client déjà connecté les voie apparaître **et tomber**, ce qui
+est aussi ce qui rend la chute observable de l'extérieur.
+
+`scripts/check_entities.py` branche sur notre serveur le même client sonde que le
+harnais de capture branche sur le jar vanilla. Même lecteur, mêmes attentes,
+serveur différent. Relevé sur huit types :
+
+```
+8 spawns, 8 métadonnées, 8 jeux d'attributs, 72 deltas de déplacement
+  minecraft:zombie    entité 1000000  type 118  vie 20  chute 9 ticks -> y=-60.0000
+  minecraft:cow       entité 1000001  type  18  vie 10  chute 9 ticks -> y=-60.0000
+  minecraft:creeper   entité 1000002  type  19  vie 20  chute 9 ticks -> y=-60.0000
+  minecraft:chicken   entité 1000003  type  15  vie  4  chute 9 ticks -> y=-60.0000
+  minecraft:enderman  entité 1000004  type  29  vie 40  chute 9 ticks -> y=-60.0000
+  minecraft:slime     entité 1000005  type  88  vie  1  chute 9 ticks -> y=-60.0000
+  minecraft:villager  entité 1000006  type 108  vie 20  chute 9 ticks -> y=-60.0000
+  minecraft:skeleton  entité 1000007  type  86  vie 20  chute 9 ticks -> y=-60.0000
+```
+
+Les ids de type sont ceux de Mojang, relus depuis le registre par le vérificateur
+lui-même ; les vies et les valeurs d'attribut sont comparées **à la campagne de
+mesure**, pas à une constante recopiée dans le test.
+
+### Un décalage de 0,000244 qui n'aurait jamais cessé de grandir
+
+La première exécution du vérificateur a rendu **y = −59,999756** pour les huit.
+L'écart vaut exactement 1/4096 — un quantum du paquet de delta.
+
+La cause n'est pas un arrondi inoffensif : le serveur calculait chaque delta
+depuis la **vraie** position précédente. Le paquet, lui, ne peut porter qu'un
+multiple de 1/4096, donc le reste était **jeté à chaque tick**. Neuf ticks de
+chute coûtaient déjà 0,000244 ; une minute de marche aurait mis le mob ailleurs
+que là où il est, et rien dans le protocole ne l'aurait signalé.
+
+Le correctif est de tenir, par entité, **la position que le client a
+effectivement** (`EntityState::broadcast_position`), de calculer le delta contre
+elle, et de l'avancer de ce qui a réellement été envoyé. Le reste est reporté sur
+le delta suivant. Le vérificateur retombe alors sur **y = −60,0000** exactement,
+et sa tolérance est désormais d'un quantum — bornée, et non cumulative.
+
+C'est la même leçon que la section « Absolu plutôt que relatif » plus haut, prise
+par l'autre bout : les entités joueur ont évité le problème en n'envoyant que des
+téléports absolus ; les mobs paient six octets au lieu de vingt-huit et doivent
+donc tenir le compte.
+
+### Le comportement passe par `IEntityLogic`, pas à côté
+
+Le serveur ne fait pas tomber les mobs lui-même : il appelle `EntityWorld::tick`,
+et c'est `gameplay::FallingMob` — un `IEntityLogic` — qui applique la physique.
+La distinction n'est pas cosmétique. Tout l'intérêt du composant polymorphe est
+qu'un zombie et une pile au sol diffèrent par **ce qu'ils font** et non par qui
+les appelle ; un serveur qui applique la physique à la main aurait un `if` par
+type au lieu d'un appel virtuel, et le premier mob qui doit faire autre chose
+casse la boucle.
+
+Le pont entre les couches est `TickContext::user`, un pointeur opaque que
+`ov_entity` (couche 8) ne peut pas nommer et que `ov_gameplay` (couche 9)
+récupère. C'est exactement l'idiome que `CollisionWorld` utilise déjà pour lire
+le monde, et c'est ce qui permet à la couche basse de tiquer du comportement
+écrit au-dessus d'elle sans qu'aucune des deux ne connaisse l'autre.
+
+Trois choses sont vérifiées plutôt que supposées : une pile au sol tombe
+**exactement de moitié** moins loin qu'un mob au même tick (même objet de
+comportement, constantes différentes) ; un tableau, qui n'a aucun composant de
+logique, ne bouge pas du tout — un pointeur nul et zéro appel virtuel ; et un
+appelant qui oublie de renseigner le contexte obtient un mob **immobile** plutôt
+qu'un mob qui traverse le sol faute de collision.

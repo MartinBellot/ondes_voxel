@@ -119,6 +119,59 @@ public:
     /// is the call the game actually makes, millions of times.
     [[nodiscard]] bool tag_contains(TagId tag, ProtocolId id) const noexcept;
 
+    // ── Entity types ────────────────────────────────────────────────────────
+    //
+    // A hitbox, an eye height and a set of attribute base values. None of the
+    // three is in any Mojang report — they are Java code — so all of them were
+    // measured on a running 1.20.1 server by scripts/measure_entities.py, which
+    // asks the game rather than a formula. See docs/PROVENANCE.md.
+
+    /// How big an entity of this type is, and where it looks from.
+    ///
+    /// `width` is the full width: the box runs from x - width/2 to x + width/2
+    /// on both horizontal axes, and from y to y + height vertically. Vanilla's
+    /// boxes are square in plan — there is no separate depth — which is why one
+    /// number covers both.
+    struct EntityTypeInfo {
+        f32 width{0.0F};
+        f32 height{0.0F};
+        f32 eye_height{0.0F};
+        /// False when the eye height could not be measured. Three types are in
+        /// that state: a marker has no body to look out of, a painting is moved
+        /// by the game when it is placed, and an eye of ender drifts away.
+        bool eye_measured{false};
+    };
+
+    /// The measured size of an entity type, or nullopt when it was never
+    /// measured.
+    ///
+    /// Four of the 124 types answer nullopt, and they are named rather than
+    /// rounded to zero: the lightning bolt exists for a single tick, evoker
+    /// fangs for about twenty, a fishing bobber cannot exist without an angler,
+    /// and a player cannot be summoned at all. A zero-sized box would make each
+    /// of them something nothing can ever hit, and nothing would say so.
+    [[nodiscard]] std::optional<EntityTypeInfo> entity_type(ProtocolId type) const noexcept;
+
+    /// One attribute a type owns, as an index into minecraft:attribute.
+    struct EntityAttribute {
+        ProtocolId attribute{0};
+        f64        base{0.0};
+    };
+
+    /// Every attribute this type owns, in the registry's order.
+    ///
+    /// Empty for a type that has none — an arrow, a boat, a painting — which is
+    /// different from a type whose attributes are all zero.
+    [[nodiscard]] std::vector<EntityAttribute> entity_attributes(ProtocolId type) const;
+
+    /// The base value of one attribute on one type, or nullopt when the type
+    /// does not have it.
+    ///
+    /// Nullopt and not zero: a cow has no attack damage, and answering 0.0
+    /// would make "does not attack" indistinguishable from "hits for nothing".
+    [[nodiscard]] std::optional<f64> attribute_base(ProtocolId type,
+                                                    ProtocolId attribute) const noexcept;
+
 private:
     Registries() = default;
 
@@ -136,12 +189,26 @@ private:
         u32              member_count;
     };
 
-    std::vector<u8>               data_;
-    std::vector<Entry>            registries_;
-    std::vector<std::string_view> entry_names_;
-    std::vector<Tag>              tags_;
-    std::span<const u8>           stack_sizes_;
-    std::span<const ProtocolId>   members_;
+    /// One entry per entity type, mirroring the pack record. Kept in a plain
+    /// struct rather than as a span over the file so that the public header
+    /// need not describe the on-disk layout.
+    struct EntityRecord {
+        f32 width;
+        f32 height;
+        f32 eye_height;
+        u32 attribute_first;
+        u8  attribute_count;
+        u8  measured;
+    };
+
+    std::vector<u8>                data_;
+    std::vector<Entry>             registries_;
+    std::vector<std::string_view>  entry_names_;
+    std::vector<Tag>               tags_;
+    std::span<const u8>            stack_sizes_;
+    std::span<const ProtocolId>    members_;
+    std::vector<EntityRecord>      entity_types_;
+    std::vector<EntityAttribute>   entity_attributes_;
 };
 
 }  // namespace ov::registry

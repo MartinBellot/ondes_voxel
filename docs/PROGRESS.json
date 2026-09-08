@@ -25,7 +25,7 @@
     "M1": {
       "name": "Protocole 763",
       "status": "in_progress",
-      "done": 12,
+      "done": 13,
       "total": 18,
       "exit_criterion": "Le serveur apparaît dans la liste des serveurs du client vanilla, MOTD et icône corrects ; round-trip octet à octet de tous les paquets ; fuzz du décodeur sans crash.",
       "blocked": [],
@@ -67,8 +67,8 @@
     "M6": {
       "name": "Contenu complet",
       "status": "in_progress",
-      "done": 4,
-      "total": 72,
+      "done": 6,
+      "total": 73,
       "exit_criterion": "Une batterie world_test par sous-système ; parité statistique worldgen sur 1000 seeds ; matrice protocole à 100 %.",
       "blocked": []
     },
@@ -84,7 +84,7 @@
   "metrics": {
     "$comment": "null = pas encore mesuré. Renseigné par la CI, jamais à la main.",
     "coverage": null,
-    "packets_763": "status 4/4, login 4/4 (start, disconnect, set_compression, success)",
+    "packets_763": "status 4/4, login 4/4 (start, disconnect, set_compression, success) ; 55 identifiants Play implementes, dont 13 paquets d'entite figes octet pour octet contre des captures du vrai serveur",
     "blockstate_parity": "24135/24135 états conformes au rapport officiel Mojang",
     "tps": 20.0,
     "frame_p99_ms": 5.91,
@@ -159,7 +159,16 @@
     "worldgen_harness": "tools/ov_parity compare notre generation au monde de reference. Il a d'abord donne 67 % : il lisait des chunks arretes a un statut partiel, dont le tableau de biomes vaut plains par defaut — ce qui faisait dire 'le jeu a choisi plains' a chaque desaccord. Filtre sur Status == minecraft:full, le meme code donne 99.912 %",
     "biome_coverage": "les 53 biomes de l'overworld sont dans la table et les 53 sont ATTEIGNABLES : sonder le centre de chacune des 7593 boites les produit tous. Un biome qu'une autre boite avalerait serait un biome que le monde ne peut pas contenir, quelle que soit la seed — et aucun terrain genere ne le revelerait. Le nether a ses 5 ; l'End n'a pas de table, c'est une regle fixe, et la demander echoue au lieu de rendre une table vide",
     "terrain_parity": "97.79 % d'accord solide/air sur 153600 blocs echantillonnes contre le monde genere par le vrai serveur. Les deux modes d'erreur sont mesures et separes : 1.20 % de pierre en trop (le jeu a de l'air, de l'eau et de la lave la ou nous avons de la pierre — grottes et aquiferes, non implementes) et 1.01 % de pierre manquante, concentree au-dessus de y=64, avec un decalage de surface centre sur -2 blocs dont la cause n'est pas localisee",
-    "reference_world_cost": "6 min 06 s pour 28 zones de 128 blocs, 118 fichiers de region. La premiere version prenait plus de 40 minutes : un forceload est permanent, donc le serveur tickait toutes les zones cumulees a chaque tick et la derniere etait generee pendant que 3388 chunks etaient tickes. Les zones sont maintenant retirees une fois sauvegardees"
+    "reference_world_cost": "6 min 06 s pour 28 zones de 128 blocs, 118 fichiers de region. La premiere version prenait plus de 40 minutes : un forceload est permanent, donc le serveur tickait toutes les zones cumulees a chaque tick et la derniere etait generee pendant que 3388 chunks etaient tickes. Les zones sont maintenant retirees une fois sauvegardees",
+    "entity_types": "120 des 124 types mesures sur un vrai serveur 1.20.1 : boite de collision par bissection d'un selecteur, hauteur des yeux par un marqueur pose a l'ancre du regard, 622 valeurs d'attribut par la commande attribute. La sonde est etalonnee contre minecraft:interaction, dont la largeur et la hauteur SONT le NBT : cinq tailles declarees, decalage -1.5e-08 et dispersion nulle. Les 4 restants (lightning_bolt, evoker_fangs, fishing_bobber, player) sont refuses par leur nom et jamais arrondis a zero",
+    "entity_storage": "EnTT en PRIVATE_DEP derriere un PIMPL ; le tick parcourt l'ordre d'insertion et non une vue, dont l'ordre est celui du stockage et change au swap-and-pop d'une destruction. Un handle vers une entite morte ne resout jamais vers celle qui a pris sa place, et un id reseau n'est jamais reutilise",
+    "measurement_trap_spawn_animals": "spawn-animals=false supprime les animaux a leur premier tick, invoques a la main et PersistenceRequired compris : le premier releve perdait 47 types pendant que la console disait 'Summoned new Cow'",
+    "entity_packets": "paquets d'entite releves sur un vrai serveur 1.20.1 par un client sonde : spawn 0x01, metadonnees 0x52, deltas 0x2B/0x2C/0x2D, velocite 0x54, attributs 0x6A, degats 0x18, retrait 0x3E. La table d'indices de metadonnees est DERIVEE et non recopiee — un champ NBT a la fois sur un zombie de reference — et les indices que rien n'a fait bouger (6, 8 vivant, 10 a 14) sont absents plutot que devines",
+    "entity_delta_units": "l'unite des paquets de deplacement mesuree : +0.75 bloc donne 3072 et -1.125 donne -4608, soit 1/4096 de bloc. Un i16 porte un peu moins de 8 blocs ; 8.0 exactement vaut 32768 et renverrait l'entite de huit blocs dans l'autre sens, donc fits_in_delta refuse a 8.0 et accepte a 7.999",
+    "attribute_cross_check": "les deux mesures independantes coincident bit pour bit : attribute base get imprime 0.23000000417232513 pour la vitesse d'un zombie, et le paquet 0x6A porte le f64 3fcd70a3e0000000 — la meme valeur, le double le plus proche du float 0.23f",
+    "entity_gravity": "mesuree dans le tag Motion du jeu, pas empruntee au joueur : zombie, vache et support d'armure donnent g=0.08000 d=0.98000 (residu 1.6e-06, vitesse limite -3.92) ; une pile au sol donne g=0.04000, la moitie, avec un residu de 1.2e-15 — exact, pas un arrondi. Une fleche ne suit pas ce modele (residu 2.6e-03) et n'est pas implementee. Piege : NoAI coupe la physique d'un Mob et pas seulement son cerveau — la premiere campagne a rendu zero echantillon pour tous les mobs vivants",
+    "mobs_online": "huit types poses par --mobs vus par le meme client sonde qui lit le jar vanilla : ids de type de Mojang, vies et valeurs d'attribut identiques a la campagne de mesure, 72 deltas de deplacement, chute de 9 ticks jusqu'a y=-60.0000 exactement",
+    "delta_drift": "le verificateur a d'abord rendu y=-59.999756, soit exactement un quantum de 1/4096 : le serveur calculait chaque delta depuis la vraie position et jetait le reste a chaque tick. Corrige en tenant la position que le client a effectivement et en l'avancant de ce qui a ete envoye ; l'erreur est desormais bornee a un quantum au lieu de s'accumuler"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",

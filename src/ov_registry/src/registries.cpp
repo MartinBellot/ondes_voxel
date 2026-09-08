@@ -129,7 +129,87 @@ std::expected<Registries, RegistryError> Registries::from_bytes(std::vector<u8> 
     }
     result.stack_sizes_ = std::span{stacks, header.item_count};
 
+    // ── Entity types ────────────────────────────────────────────────────────
+    const auto* entities =
+        pack_at<EntityTypeRecord>(data_view, header.entities_offset, header.entity_count);
+    if (entities == nullptr) {
+        return std::unexpected{RegistryError::Corrupt};
+    }
+    u32 attribute_total = 0;
+    for (u32 i = 0; i < header.entity_count; ++i) {
+        attribute_total = std::max<u32>(
+            attribute_total, u32{entities[i].attribute_first} + entities[i].attribute_count);
+    }
+    const auto* entity_attrs =
+        pack_at<EntityAttributeRecord>(data_view, header.entity_attrs_offset, attribute_total);
+    if (entity_attrs == nullptr) {
+        return std::unexpected{RegistryError::Corrupt};
+    }
+
+    result.entity_attributes_.reserve(attribute_total);
+    for (u32 i = 0; i < attribute_total; ++i) {
+        result.entity_attributes_.push_back(
+            EntityAttribute{static_cast<ProtocolId>(entity_attrs[i].attribute),
+                            entity_attrs[i].base});
+    }
+    result.entity_types_.reserve(header.entity_count);
+    for (u32 i = 0; i < header.entity_count; ++i) {
+        const EntityTypeRecord& record = entities[i];
+        result.entity_types_.push_back(EntityRecord{record.width, record.height,
+                                                    record.eye_height, record.attribute_first,
+                                                    record.attribute_count, record.measured});
+    }
+
     return result;
+}
+
+std::optional<Registries::EntityTypeInfo> Registries::entity_type(
+    ProtocolId type) const noexcept {
+    if (type < 0 || static_cast<usize>(type) >= entity_types_.size()) {
+        return std::nullopt;
+    }
+    const EntityRecord& record = entity_types_[static_cast<usize>(type)];
+    // Bit 0 is the only thing that says a box is real. Testing width != 0
+    // instead would work today and break the day a type is measured at zero
+    // width, which is exactly what a marker is.
+    if ((record.measured & 0b01) == 0) {
+        return std::nullopt;
+    }
+    return EntityTypeInfo{record.width, record.height, record.eye_height,
+                          (record.measured & 0b10) != 0};
+}
+
+std::vector<Registries::EntityAttribute> Registries::entity_attributes(ProtocolId type) const {
+    if (type < 0 || static_cast<usize>(type) >= entity_types_.size()) {
+        return {};
+    }
+    const EntityRecord& record = entity_types_[static_cast<usize>(type)];
+    const auto          first  = static_cast<usize>(record.attribute_first);
+    const auto          count  = static_cast<usize>(record.attribute_count);
+    if (first + count > entity_attributes_.size()) {
+        return {};
+    }
+    return std::vector<EntityAttribute>{entity_attributes_.begin() + static_cast<isize>(first),
+                                        entity_attributes_.begin() +
+                                            static_cast<isize>(first + count)};
+}
+
+std::optional<f64> Registries::attribute_base(ProtocolId type,
+                                              ProtocolId attribute) const noexcept {
+    if (type < 0 || static_cast<usize>(type) >= entity_types_.size()) {
+        return std::nullopt;
+    }
+    const EntityRecord& record = entity_types_[static_cast<usize>(type)];
+    for (usize i = 0; i < record.attribute_count; ++i) {
+        const usize index = static_cast<usize>(record.attribute_first) + i;
+        if (index >= entity_attributes_.size()) {
+            return std::nullopt;
+        }
+        if (entity_attributes_[index].attribute == attribute) {
+            return entity_attributes_[index].base;
+        }
+    }
+    return std::nullopt;
 }
 
 std::optional<TagId> Registries::find_tag(RegistryId       registry,

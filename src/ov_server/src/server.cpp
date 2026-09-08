@@ -31,6 +31,10 @@
 #include "ov/protocol/status.hpp"
 #include "ov/protocol/varint.hpp"
 #include "ov/registry/block_states.hpp"
+#include "ov/entity/world.hpp"
+#include "ov/gameplay/entity_physics.hpp"
+#include "ov/gameplay/mob_logic.hpp"
+#include "ov/protocol/entity.hpp"
 #include "ov/registry/registries.hpp"
 #include "ov/world/chunk.hpp"
 #include "ov/world/chunk_storage.hpp"
@@ -103,6 +107,14 @@ struct Options {
     /// the time the real game takes, which is the only mode where the break
     /// rules are exercised at all.
     bool survival = false;
+
+    /// Mobs to place near the spawn point, by registry name.
+    ///
+    /// A flag rather than a command because this server has no command parser
+    /// yet, and because the point of it is to have something a real client can
+    /// look at: `--mobs=zombie,cow,creeper` puts three of them on the ground in
+    /// front of the spawn.
+    std::vector<std::string> mobs;
 };
 
 /// Where a connection is in the protocol's state machine.
@@ -1032,6 +1044,26 @@ Options parse_args(int argc, char** argv) {
             options.record_motion = std::string{arg.substr(16)};
         } else if (arg == "--survival") {
             options.survival = true;
+        } else if (arg.starts_with("--mobs=")) {
+            std::string_view list = arg.substr(7);
+            while (!list.empty()) {
+                const auto  comma = list.find(',');
+                const auto  piece = list.substr(0, comma);
+                std::string name{piece};
+                if (!name.empty()) {
+                    // Bare names are accepted because typing the namespace on
+                    // a command line is friction with no upside; anything with
+                    // a colon is passed through as written.
+                    if (name.find(':') == std::string::npos) {
+                        name = "minecraft:" + name;
+                    }
+                    options.mobs.push_back(std::move(name));
+                }
+                if (comma == std::string_view::npos) {
+                    break;
+                }
+                list = list.substr(comma + 1);
+            }
         } else if (arg.starts_with("--port=")) {
             const auto value  = arg.substr(7);
             ov::i32    parsed = 0;
@@ -1076,6 +1108,7 @@ void print_help() {
         "  --ticks=<n>                                     stop after n ticks\n"
         "  --survival                                      survival mode: blocks take time\n"
         "  --record-motion=<file>                          log every reported position\n"
+        "  --mobs=<name,name,...>                          place mobs near the spawn point\n"
         "  --help, -h                                      this message\n"
         "\n"
         "Not an official Minecraft product. Not approved by or associated with Mojang.\n");
@@ -1288,6 +1321,33 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     std::unordered_map<std::string, SavedPlayer>       saved_players;
     std::mutex                                         players_mutex;
     std::atomic<i32>                                   next_entity_id{1};
+
+    // The mobs. Their wire ids start a million above the players' so that the
+    // two allocators cannot meet: EntityWorld hands out its own, and there is
+    // no shared counter to forget to bump. A client does not care what the
+    // numbers are, only that no two live entities share one.
+    std::optional<entity::EntityWorld> mobs;
+    if (registries) {
+        mobs.emplace(*registries, 1'000'000);
+    }
+
+    /// A uuid derived from the wire id rather than drawn at random.
+    ///
+    /// Determinism (CLAUDE.md principle 5): two runs of the same server must
+    /// produce the same world, and a random uuid would make every capture and
+    /// every replay differ in sixteen bytes. The client only needs it to be
+    /// unique, and this is — the mixing is SplitMix64's, which has no
+    /// collisions over a counter.
+    const auto uuid_for_entity = [](i32 network_id) {
+        auto mix = [](u64 z) {
+            z += 0x9E3779B97F4A7C15ULL;
+            z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+            z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+            return z ^ (z >> 31);
+        };
+        const auto id = static_cast<u64>(static_cast<u32>(network_id));
+        return net::Uuid{mix(id), mix(id ^ 0xA5A5A5A5A5A5A5A5ULL)};
+    };
 
     const world::ChunkCodecContext codec_context{
         blocks ? &*blocks : nullptr,
@@ -1644,6 +1704,64 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 nullptr, net::clientbound::kEntityMetadata,
                 net::encode_item_metadata(item.entity_id, item.stack.item_id, item.stack.count));
             ground_items.push_back(std::move(item));
+        }
+    };
+
+    /// The packets that make one mob appear.
+    ///
+    /// Three, in this order, and the order is what a real server sends: the
+    /// entity, then its metadata, then its attributes. A client told about an
+    /// entity it has no metadata for renders it — a mob is not an item, whose
+    /// whole appearance is its metadata — but its health bar and its speed come
+    /// from the two that follow.
+    const auto mob_packets = [&](const entity::EntityState& state,
+                                 const auto&                deliver) {
+        net::SpawnEntity spawn;
+        spawn.entity_id = state.network_id;
+        spawn.uuid      = state.uuid;
+        spawn.type      = state.type;
+        // The position the other clients already hold, not the true one.
+        //
+        // They differ by at most one 1/4096 quantum, and sending the true one
+        // would leave a client that joined mid-fall permanently that far from
+        // everyone else: it would anchor on the truth and then receive deltas
+        // computed against the quantised copy. Vanilla tracks a position per
+        // viewer; this server broadcasts to all of them at once, so the copy
+        // has to be the shared one.
+        const Vec3d anchor = state.broadcast_valid ? state.broadcast_position : state.position;
+        spawn.x            = anchor.x;
+        spawn.y            = anchor.y;
+        spawn.z            = anchor.z;
+        spawn.yaw       = state.yaw;
+        spawn.pitch     = state.pitch;
+        spawn.head_yaw  = state.head_yaw;
+        deliver(net::clientbound::kSpawnEntity, net::encode_spawn_entity(spawn));
+
+        net::MetadataWriter fields;
+        fields.float_value(net::metadata::kHealth, state.health);
+        deliver(net::clientbound::kEntityMetadata,
+                net::encode_entity_metadata(state.network_id, fields.take()));
+
+        // Every attribute the type owns, at the base value the game reports for
+        // it. Vanilla sends only the ones that differ from the client's own
+        // default; sending all of them is more traffic and never wrong.
+        if (registries) {
+            std::vector<net::AttributeValue> values;
+            const auto attribute_registry = registries->find("minecraft:attribute");
+            for (const auto& owned : registries->entity_attributes(state.type)) {
+                if (!attribute_registry) {
+                    break;
+                }
+                const std::string_view name =
+                    registries->entry_of(*attribute_registry, owned.attribute);
+                if (!name.empty()) {
+                    values.push_back(net::AttributeValue{name, owned.base});
+                }
+            }
+            if (!values.empty()) {
+                deliver(net::clientbound::kUpdateAttributes,
+                        net::encode_update_attributes(state.network_id, values));
+            }
         }
     };
 
@@ -2036,6 +2154,18 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         send_packet(net::clientbound::kEntityMetadata,
                                     net::encode_item_metadata(item.entity_id, item.stack.item_id,
                                                               item.stack.count));
+                    }
+
+                    // And the mobs. Same reason: an entity a client was never
+                    // told about is one it will happily walk through, and the
+                    // first packet it gets about it — a movement delta — is
+                    // dropped for naming an entity it does not have.
+                    if (mobs) {
+                        for (const entity::EntityHandle handle : mobs->handles()) {
+                            if (const entity::EntityState* mob = mobs->state(handle)) {
+                                mob_packets(*mob, send_packet);
+                            }
+                        }
                     }
 
                     players[connection.get()] = player;
@@ -2849,6 +2979,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
 
     TickClock clock;
     i64       behind_events = 0;
+    bool      mobs_placed   = false;
     auto      last_autosave = std::chrono::steady_clock::now();
 
     const auto should_stop = [&]() {
@@ -2877,6 +3008,117 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         if (watcher.connection) {
                             watcher.connection->send(*framed);
                         }
+                    }
+                }
+            }
+        }
+
+        // The mobs asked for on the command line, placed once.
+        //
+        // Three seconds in, not at start-up. The chunk under them has to exist
+        // before anything can fall onto it, and a client that connects while
+        // the server is starting should see them appear and drop rather than
+        // find them already standing there — which is also what makes the fall
+        // observable from outside at all.
+        if (!mobs_placed && mobs && blocks && clock.tick_count() >= 60) {
+            mobs_placed = true;
+            for (usize index = 0; index < options.mobs.size(); ++index) {
+                // A line in front of the spawn point, two blocks apart, three
+                // blocks up so the fall is visible rather than instantaneous.
+                const Vec3d where{static_cast<f64>(index) * 2.0 + 0.5,
+                                  static_cast<f64>(Superflat::kSurfaceY) + 4.0, 3.5};
+                const auto spawned = mobs->spawn(options.mobs[index], where, net::Uuid{});
+                if (!spawned) {
+                    OV_LOG_WARN("cannot spawn {}: {}", options.mobs[index],
+                                entity::to_string(spawned.error()));
+                    continue;
+                }
+                entity::EntityState* state = mobs->mutable_state(*spawned);
+                state->uuid                = uuid_for_entity(state->network_id);
+                state->broadcast_position  = state->position;
+                state->broadcast_valid     = true;
+                // Behaviour, in the one component that carries it. Falling is
+                // all any of them does so far, and it is the floor everything
+                // else will be built on rather than a placeholder.
+                mobs->set_logic(*spawned, std::make_unique<gameplay::FallingMob>());
+                OV_LOG_INFO("spawned {} as entity {} at {:.1f} {:.1f} {:.1f} "
+                            "({:.2f} wide, {:.2f} tall, {:.0f} health)",
+                            options.mobs[index], state->network_id, where.x, where.y, where.z,
+                            state->width, state->height, state->health);
+                const std::unique_lock lock{players_mutex, std::try_to_lock};
+                if (lock.owns_lock()) {
+                    mob_packets(*state, [&](i32 id, std::span<const u8> payload) {
+                        broadcast(nullptr, id, payload);
+                    });
+                }
+            }
+        }
+
+        // Mobs: gravity, collision, and only the movement that actually
+        // happened. A delta packet when the move fits in one — six bytes rather
+        // than twenty-eight — and a teleport when it does not.
+        if (mobs && blocks && !mobs->handles().empty()) {
+            std::unique_lock mob_lock{players_mutex, std::try_to_lock};
+            if (mob_lock.owns_lock()) {
+                const std::scoped_lock chunk_lock{chunk_mutex};
+                WorldView              view;
+                view.read = [&](i32 bx, i32 by, i32 bz) { return block_at({bx, by, bz}); };
+                const gameplay::CollisionWorld collisions{*blocks, &WorldView::look_up, &view};
+
+                // The behaviour runs here, through the entity world, rather
+                // than being applied to each state by hand: the whole point of
+                // IEntityLogic is that a zombie and a dropped stack differ in
+                // what they do, not in who calls them.
+                gameplay::MobContext mob_context{&collisions};
+                mobs->tick(entity::TickContext{clock.tick_count(), &mob_context});
+
+                for (const i32 gone : mobs->removed_ids()) {
+                    broadcast(nullptr, net::clientbound::kRemoveEntities,
+                              net::encode_remove_entity(gone));
+                }
+
+                for (const entity::EntityHandle handle : mobs->handles()) {
+                    entity::EntityState* state = mobs->mutable_state(handle);
+                    if (state == nullptr) {
+                        continue;
+                    }
+                    if (!state->broadcast_valid) {
+                        state->broadcast_position = state->position;
+                        state->broadcast_valid    = true;
+                    }
+                    // Against what the client has, not against where the mob
+                    // was. The wire quantises to 1/4096 and a delta taken from
+                    // the true position throws the remainder away every tick:
+                    // measured on this server, nine ticks of a fall already put
+                    // the client 0.000244 out, and nothing ever corrects it.
+                    const f64 dx = state->position.x - state->broadcast_position.x;
+                    const f64 dy = state->position.y - state->broadcast_position.y;
+                    const f64 dz = state->position.z - state->broadcast_position.z;
+                    // Below half a quantum the packet would carry a zero, and
+                    // broadcasting that twenty times a second for a mob standing
+                    // still is most of the traffic on a busy server.
+                    constexpr f64 kHalfQuantum = 0.5 / 4096.0;
+                    if (std::abs(dx) < kHalfQuantum && std::abs(dy) < kHalfQuantum &&
+                        std::abs(dz) < kHalfQuantum) {
+                        continue;
+                    }
+                    if (net::fits_in_delta(dx, dy, dz)) {
+                        broadcast(nullptr, net::clientbound::kEntityPosition,
+                                  net::encode_entity_position(state->network_id, dx, dy, dz,
+                                                              state->on_ground));
+                        // Advance by what was actually sent, so the remainder
+                        // is carried into the next delta rather than lost.
+                        state->broadcast_position.x += net::quantised_delta(dx);
+                        state->broadcast_position.y += net::quantised_delta(dy);
+                        state->broadcast_position.z += net::quantised_delta(dz);
+                    } else {
+                        broadcast(nullptr, net::clientbound::kEntityTeleport,
+                                  net::encode_entity_teleport(
+                                      state->network_id, state->position.x, state->position.y,
+                                      state->position.z, state->yaw, state->pitch,
+                                      state->on_ground));
+                        // A teleport is absolute, so the client is exactly here.
+                        state->broadcast_position = state->position;
                     }
                 }
             }
