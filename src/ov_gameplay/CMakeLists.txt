@@ -8,7 +8,10 @@ ov_add_library(ov_gameplay
     SOURCES
         src/breaking.cpp
         src/collision.cpp
+        src/damage.cpp
         src/entity_physics.cpp
+        src/experience.cpp
+        src/food.cpp
         src/mob_logic.cpp
         src/physics.cpp
         src/connections.cpp
@@ -23,7 +26,10 @@ ov_add_test(test_ov_gameplay
     SOURCES
         tests/test_breaking.cpp
         tests/test_collision.cpp
+        tests/test_damage.cpp
         tests/test_entity_physics.cpp
+        tests/test_experience.cpp
+        tests/test_food.cpp
         tests/test_mob_logic.cpp
         tests/test_fluid_physics.cpp
         tests/test_physics.cpp
