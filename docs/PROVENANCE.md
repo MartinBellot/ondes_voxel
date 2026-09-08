@@ -1927,3 +1927,61 @@ Deux décisions à assumer :
 
 Ces trois points se tranchent en une session dès que le renderer affiche un
 chunk, et ils sont listés ici pour ne pas être oubliés.
+
+---
+
+## Connexions : pourquoi la mesure ne suffit pas, et ce qu'elle a montré
+
+La règle qui décide si une clôture s'accroche à son voisin est, en vanilla,
+`(le voisin n'est pas une exception ET il présente une face pleine) OU c'est une
+clôture de la même famille OU c'est un portillon bien orienté`. La partie qui
+manque est la **face pleine**, et elle dérive de la forme de collision.
+
+Le prédicat composite, lui, se mesure : une clôture au centre d'une cellule, le
+même état sur ses quatre côtés, et les quatre booléens de la clôture donnent les
+quatre faces de cet état d'un coup
+(`scripts/measure_sturdy.py`). Le relevé sur les 23 569 états posables donne
+**23 358 faces**, dont 7 054 accrochent, sur **841 blocs**, et **zéro
+contradiction sur la quasi-totalité** — douze en tout, imputables au fait que le
+premier relevé tournait sans figer les ticks aléatoires, ce que le script fait
+désormais.
+
+**Et c'est le résultat qui a décidé de ne rien livrer.** Sur les 841 blocs
+touchés, 695 répondent la même chose sur tous leurs états et toutes leurs faces
+— mais **146 varient selon l'état**, et ce sont les escaliers, les portes, les
+trappes, les portillons, la tête de piston. C'est-à-dire exactement les blocs
+avec lesquels on construit. Une table par bloc serait juste 695 fois et fausse
+là où ça se voit du premier coup d'œil.
+
+La couverture par état est par ailleurs limitée à 6 281 des 23 569, pour une
+raison de principe : le jeu **ajuste** le voisin qu'on vient de poser — un
+escalier recalcule sa forme, une clôture ses connexions — donc un état comme
+`shape=inner_left` ne peut pas être dicté, seulement obtenu. Les réponses sont
+attribuées à l'état **observé**, jamais à celui demandé, et le reste n'est pas
+atteignable par ce montage.
+
+Les connexions attendent donc les formes de collision, qui sont déjà le blocage
+nommé du mouvement autoritatif. Le relevé est conservé : il servira d'oracle le
+jour où la règle sera écrite.
+
+---
+
+## Refuser un monde qu'on ne sait pas lire
+
+Un chunk illisible était jusqu'ici **remplacé** par du terrain généré, puis
+sauvegardé par-dessus. Sur un monde de joueur, c'est une perte de données que
+rien ne signale.
+
+Deux garde-fous, donc. Au démarrage, `level.dat` est lu et sa `DataVersion`
+comparée à 3465 : un monde d'une autre version fait refuser l'ouverture, avec la
+version trouvée dans le message. Et par chunk, un fichier présent mais illisible
+— mauvaise version, ou décodage en échec — sert du terrain généré pour que le
+joueur ne tombe pas dans un trou, mais la position est marquée **jamais
+réécrite**.
+
+Le piège pendant l'écriture : `level.dat` est gzippé et `nbt::read` attend du NBT
+brut. Lui passer les octets compressés échoue en silence, ce qui se lit comme
+« aucune version déclarée » — et le garde-fou refusait alors **tous** les mondes,
+y compris ceux qu'on venait d'écrire. C'est le test du cas positif qui l'a
+attrapé, pas celui du cas négatif, qui passait très bien.
+

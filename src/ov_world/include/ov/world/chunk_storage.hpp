@@ -46,6 +46,14 @@ struct ChunkCodecContext {
     AirStates air;
 };
 
+/// The DataVersion a chunk file declares, if it declares one.
+///
+/// Checked before anything else is read. A file from another version may use
+/// shapes this one does not have, and vanilla upgrades old saves through a
+/// converter this project does not implement — so the only honest answers are
+/// "this version" and "refuse".
+[[nodiscard]] std::optional<i32> chunk_data_version(const nbt::Document& document);
+
 /// Serialise a chunk to the Anvil chunk NBT.
 ///
 /// Light is written out because recomputing it on load is expensive and, with

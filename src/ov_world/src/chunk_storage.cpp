@@ -109,6 +109,14 @@ struct PackedContainer {
 
 }  // namespace
 
+std::optional<i32> chunk_data_version(const nbt::Document& document) {
+    const nbt::Tag* version = document.root.find("DataVersion");
+    if (version == nullptr) {
+        return std::nullopt;
+    }
+    return static_cast<i32>(version->as_i64());
+}
+
 nbt::Document to_nbt(const Chunk& chunk, const ChunkCodecContext& context) {
     nbt::Document document;
     document.name = "";

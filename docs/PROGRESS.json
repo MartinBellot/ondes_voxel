@@ -52,7 +52,7 @@
     "M4": {
       "name": "Monde persistant",
       "status": "in_progress",
-      "done": 12,
+      "done": 13,
       "total": 15,
       "exit_criterion": "Round-trip croisé : notre sauvegarde s'ouvre dans Minecraft vanilla et réciproquement, sans perte.",
       "blocked": []
@@ -133,7 +133,9 @@
     "loot_unsupported": "copy_name, copy_nbt, copy_state, set_contents et l'entree dynamic : refuses a la compilation et sans effet a l'execution, donc un coffre nomme retombe anonyme",
     "item_entities": "quatre paquets releves sur un vrai serveur (spawn 0x01, metadonnees 0x52 index 8 type 7, ramassage 0x67, retrait 0x3E) et figes octet pour octet en test ; casser un bloc en survie fait tomber son butin, qui se ramasse",
     "placement_states": "dalle doublee, porte a deux moities et lit a deux blocs : etats identiques a ceux du vrai serveur 1.20.1, releves par scripts/measure_placement.py puis rejoues chez nous",
-    "placement_blocked": "les connexions attendent le predicat de face pleine, qui est par etat et par face : une dalle basse n'accroche pas une cloture, la meme en double si"
+    "placement_blocked": "les connexions attendent le predicat de face pleine, qui est par etat et par face : une dalle basse n'accroche pas une cloture, la meme en double si",
+    "data_version_guard": "level.dat lu au demarrage et compare a 3465 ; un chunk present mais illisible sert du terrain genere et n'est jamais reecrit, ce qui detruisait sinon la sauvegarde",
+    "fence_connects": "23358 faces relevees sur 841 blocs : 695 repondent pareil sur tous leurs etats, 146 varient (escaliers, portes, trappes, portillons) — d'ou le refus de livrer une table par bloc ; les connexions attendent les formes de collision"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",

@@ -79,6 +79,11 @@ def main() -> int:
     # Le terrain d'abord, en une passe : chaque cellule a besoin d'un sol.
     width = min(len(cells), COLUMNS) * STRIDE
     depth = ((len(cells) - 1) // COLUMNS + 1) * STRIDE
+    # Sans cela, les feuillages se décomposent et les pousses grandissent
+    # pendant le relevé, et le même état répond deux fois différemment.
+    run("gamerule randomTickSpeed 0", "gamerule doFireTick false",
+        "gamerule doDaylightCycle false", "difficulty peaceful")
+    time.sleep(1.0)
     for z0 in range(-4, depth + 4, 64):
         run(f"forceload add -4 {z0} {width + 4} {min(z0 + 63, depth + 4)}")
     time.sleep(6.0)

@@ -194,7 +194,7 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] Lecture Anvil : sections, palettes, biomes, heightmaps, block entities
 - [x] Écriture Anvil : fichiers région, palettes par nom, écriture atomique : allocation de secteurs, compactage, timestamps
 - [x] `level.dat` : version Anvil, générateur, spawn, bordure, DragonFight : gzip, racine `Data`, écriture sûre via `level.dat_old`
-- [ ] `DataVersion`, refus explicite des versions non supportées
+- [x] `DataVersion` : refus explicite, et jamais de réécriture d'un chunk illisible
 - [x] Pose : dalles doubles, portes et lits à deux blocs, conventions mesurées
 - [ ] Connexions (clôtures, vitres, murets) et forme des escaliers : demandent la face pleine, par état
 - [x] Durées de cassage et outils corrects : vérifiés tick pour tick sur 985 des 996 blocs

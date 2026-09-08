@@ -14,6 +14,7 @@
 #include "ov/base/time.hpp"
 #include "ov/gameplay/breaking.hpp"
 #include "ov/gameplay/loot.hpp"
+#include "ov/io/compression.hpp"
 #include "ov/io/file.hpp"
 #include "ov/math/block_pos.hpp"
 #include "ov/math/random.hpp"
@@ -1064,6 +1065,34 @@ int main(int argc, char** argv) {
     std::error_code             directory_error;
     std::filesystem::create_directories(world_dir, directory_error);
 
+    // A save from another version is refused rather than opened. Vanilla
+    // upgrades old worlds through a converter this project does not have, and a
+    // newer one may use shapes it does not know — so opening either would mean
+    // reading a file we do not understand and, worse, writing it back.
+    if (const auto level_bytes = io::read_file(level_dir / "level.dat")) {
+        i32 stored = -1;
+        // level.dat is gzipped, and nbt::read takes plain NBT. Handing it the
+        // compressed bytes fails quietly, which reads as "no version declared"
+        // — and would refuse every world, including the ones we wrote.
+        const auto plain = io::gzip_decompress(*level_bytes);
+        if (const auto document = plain ? nbt::read(*plain) : nbt::read(*level_bytes)) {
+            if (const nbt::Tag* data = document->root.find("Data")) {
+                if (const nbt::Tag* version = data->find("DataVersion")) {
+                    stored = static_cast<i32>(version->as_i64());
+                }
+            }
+        }
+        if (stored != world::kDataVersion1201) {
+            OV_LOG_ERROR("{} was written by data version {}, and this is {} (Minecraft 1.20.1)",
+                         (level_dir / "level.dat").string(), stored, world::kDataVersion1201);
+            OV_LOG_ERROR(
+                "refusing to open it: there is no converter here, and writing it back "
+                "would damage the save");
+            return 1;
+        }
+        OV_LOG_INFO("world data version {} — Minecraft 1.20.1", stored);
+    }
+
     std::vector<std::string> biome_name_storage =
         codec_bytes ? biome_names_in_codec(*codec_bytes) : std::vector<std::string>{};
     std::vector<std::string_view> biome_names;
@@ -1075,7 +1104,13 @@ int main(int argc, char** argv) {
     std::mutex                            chunk_mutex;
     std::unordered_map<i64, world::Chunk> chunk_cache;
     std::unordered_set<i64>               dirty_chunks;
-    const auto                            chunk_key = [](i32 cx, i32 cz) {
+
+    // Chunks that exist on disk and could not be read. They are served as
+    // generated terrain so the player is not left in a hole, and never written
+    // back: overwriting a chunk we failed to understand would destroy the save
+    // we were asked to open.
+    std::unordered_set<i64> read_only_chunks;
+    const auto              chunk_key = [](i32 cx, i32 cz) {
         return (static_cast<i64>(cx) << 32) ^ static_cast<u32>(cz);
     };
 
@@ -1115,7 +1150,7 @@ int main(int argc, char** argv) {
     /// built.
     ///
     /// Caller holds chunk_mutex.
-    const auto chunk_at = [&](i32 cx, i32 cz) -> world::Chunk& {
+    const auto chunk_at = [&](i32 cx, i32 cz) -> world::Chunk& {  // NOLINT(misc-no-recursion)
         const i64 key = chunk_key(cx, cz);
         if (const auto it = chunk_cache.find(key); it != chunk_cache.end()) {
             return it->second;
@@ -1127,9 +1162,20 @@ int main(int argc, char** argv) {
             const auto local_z = static_cast<u32>(cz & 31);
             if (region->has_chunk(local_x, local_z)) {
                 if (const auto document = region->read_chunk(local_x, local_z)) {
-                    if (auto loaded = world::from_nbt(*document, codec_context)) {
-                        return chunk_cache.emplace(key, std::move(*loaded)).first->second;
+                    const auto version = world::chunk_data_version(*document);
+                    if (version == world::kDataVersion1201) {
+                        if (auto loaded = world::from_nbt(*document, codec_context)) {
+                            return chunk_cache.emplace(key, std::move(*loaded)).first->second;
+                        }
+                    } else {
+                        OV_LOG_ERROR("chunk {},{} was written by data version {} — this is {}", cx,
+                                     cz, version ? *version : -1, world::kDataVersion1201);
                     }
+                    // The chunk is on disk and could not be read. Whatever is
+                    // served in its place must never be written back: replacing
+                    // a chunk we failed to understand is how a save gets
+                    // destroyed by the program meant to open it.
+                    read_only_chunks.insert(key);
                 }
             }
         }
@@ -1145,6 +1191,9 @@ int main(int argc, char** argv) {
 
         std::map<std::pair<i32, i32>, std::vector<i64>> by_region;
         for (const i64 key : dirty_chunks) {
+            if (read_only_chunks.contains(key)) {
+                continue;
+            }
             const auto cx = static_cast<i32>(key >> 32);
             const auto cz = static_cast<i32>(static_cast<u32>(key & 0xFFFFFFFF));
             by_region[{cx >> 5, cz >> 5}].push_back(key);
