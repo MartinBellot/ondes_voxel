@@ -190,7 +190,7 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 > vrai serveur Minecraft 1.20.1 sans une erreur, et une sauvegarde réécrite par
 > lui se recharge chez nous avec les bons blocs.
 
-- [x] Lecture Anvil : sections, palettes, biomes, heightmaps *(block entities à venir)*
+- [x] Lecture Anvil : sections, palettes, biomes, heightmaps, block entities
 - [x] Écriture Anvil : fichiers région, palettes par nom, écriture atomique : allocation de secteurs, compactage, timestamps
 - [x] `level.dat` : version Anvil, générateur, spawn, bordure, DragonFight : gzip, racine `Data`, écriture sûre via `level.dat_old`
 - [ ] `DataVersion`, refus explicite des versions non supportées

@@ -18,6 +18,7 @@
 
 #include "ov/nbt/binary.hpp"
 #include "ov/registry/block_states.hpp"
+#include "ov/registry/registries.hpp"
 #include "ov/world/chunk.hpp"
 
 #include <optional>
@@ -35,6 +36,12 @@ struct ChunkCodecContext {
 
     /// Biome names indexed by the numeric id used in memory.
     std::span<const std::string_view> biome_names;
+
+    /// Needed to turn a block entity's stored **name** back into the numeric id
+    /// the wire carries. Disk names them, the protocol numbers them, and a
+    /// chunk loaded without this would be sent with every block entity typed as
+    /// whatever id zero happens to be.
+    const registry::Registries* registries{nullptr};
 
     AirStates air;
 };

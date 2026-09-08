@@ -12,6 +12,7 @@
 #pragma once
 
 #include "ov/math/block_pos.hpp"
+#include "ov/nbt/tag.hpp"
 #include "ov/world/chunk_section.hpp"
 #include "ov/world/heightmap.hpp"
 
@@ -55,6 +56,32 @@ struct WorldShape {
 /// before it is stored, so it lives in the generator's working state rather
 /// than here.
 inline constexpr usize kStoredHeightmapCount = 4;
+
+/// A block that carries data the block state cannot hold: a sign's text, a
+/// chest's contents, a spawner's mob.
+///
+/// Kept beside the sections rather than in them. A block entity is rare — a
+/// handful per chunk against 98304 blocks — and giving every cell room for one
+/// would cost more than the world itself.
+struct BlockEntity {
+    /// Chunk-local x and z, world y — the same convention as everything else
+    /// here, so a caller never has to remember which of the three is different.
+    u8  x{0};
+    i32 y{0};
+    u8  z{0};
+
+    /// The registry name, e.g. "minecraft:sign". Disk is name-based, so this is
+    /// what gets written there.
+    std::string type;
+
+    /// The same thing as a number, which is what the wire carries. Both are
+    /// kept because converting needs the registry and this struct does not have
+    /// one — and a block entity read from disk has to be sendable without one.
+    i32 type_id{0};
+
+    /// Everything else, as the format stores it.
+    nbt::Tag data;
+};
 
 class Chunk {
 public:
@@ -107,6 +134,22 @@ public:
     /// Non-air blocks across the whole column.
     [[nodiscard]] usize non_air_count() const noexcept;
 
+    [[nodiscard]] std::span<const BlockEntity> block_entities() const noexcept {
+        return block_entities_;
+    }
+
+    /// The block entity at a position, or nullptr.
+    [[nodiscard]] BlockEntity*       block_entity_at(usize x, i32 y, usize z) noexcept;
+    [[nodiscard]] const BlockEntity* block_entity_at(usize x, i32 y, usize z) const noexcept;
+
+    /// Add or replace the block entity at a position.
+    void set_block_entity(BlockEntity entity);
+
+    /// Remove it, if there is one. Called when the block itself changes: a
+    /// block entity outliving its block is a chest that cannot be opened and
+    /// cannot be removed.
+    void remove_block_entity(usize x, i32 y, usize z);
+
 private:
     [[nodiscard]] usize section_index_for_y(i32 y) const noexcept;
     [[nodiscard]] i32   scan_surface_down(usize x, usize z, i32 from_y) const noexcept;
@@ -118,6 +161,10 @@ private:
 
     /// Indexed by HeightmapType for the four stored kinds.
     std::array<Heightmap, kStoredHeightmapCount> heightmaps_;
+
+    /// Unordered: there are a handful per chunk, and keeping them sorted would
+    /// cost more than the linear scan it saves.
+    std::vector<BlockEntity> block_entities_;
 };
 
 }  // namespace ov::world

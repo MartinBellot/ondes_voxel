@@ -306,7 +306,19 @@ std::vector<u8> encode_chunk_data(const world::Chunk& chunk) {
     write_varint(writer, static_cast<i32>(sections.size()));
     writer.write_bytes(sections.data());
 
-    write_varint(writer, 0);  // block entities
+    // Block entities. The x and z are packed into one byte, four bits each,
+    // and they are chunk-local — writing world coordinates here puts every one
+    // of them in the wrong place without any error.
+    write_varint(writer, static_cast<i32>(chunk.block_entities().size()));
+    for (const world::BlockEntity& entity : chunk.block_entities()) {
+        writer.write_u8(static_cast<u8>(((entity.x & 15) << 4) | (entity.z & 15)));
+        writer.write_i16(static_cast<i16>(entity.y));
+        write_varint(writer, entity.type_id);
+        nbt::Document document;
+        document.name = "";
+        document.root = entity.data;
+        writer.write_bytes(nbt::write(document));
+    }
 
     // Light. The masks cover section_count + 2 entries: one below the world and
     // one above, because light spills past the build limits in both directions.
@@ -457,6 +469,49 @@ namespace {
 }
 
 }  // namespace
+
+std::vector<u8> encode_block_entity_data(WirePosition position, i32 type, const nbt::Tag& data) {
+    io::ByteWriter writer;
+    write_position(writer, position.x, position.y, position.z);
+    write_varint(writer, type);
+
+    nbt::Document document;
+    document.name = "";
+    document.root = data;
+    writer.write_bytes(nbt::write(document));
+    return writer.take();
+}
+
+std::vector<u8> encode_open_sign_editor(WirePosition position, bool front) {
+    io::ByteWriter writer;
+    write_position(writer, position.x, position.y, position.z);
+    writer.write_u8(front ? 1 : 0);
+    return writer.take();
+}
+
+std::optional<SignUpdate> parse_update_sign(std::span<const u8> payload) {
+    io::ByteReader reader{payload};
+    const auto     packed = reader.read_u64();
+    const auto     front  = reader.read_u8();
+    if (!packed || !front) {
+        return std::nullopt;
+    }
+
+    SignUpdate update;
+    update.position = unpack_position(*packed);
+    update.front    = *front != 0;
+    for (std::string& line : update.lines) {
+        // 384 is the cap the protocol puts on a sign line. A client is free to
+        // send whatever it likes, so the limit is enforced here rather than
+        // trusted.
+        const auto text = read_string(reader, 384);
+        if (!text) {
+            return std::nullopt;
+        }
+        line = *text;
+    }
+    return update;
+}
 
 WirePosition offset_by_face(WirePosition position, i32 face) noexcept {
     switch (face) {

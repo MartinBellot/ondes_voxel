@@ -1116,3 +1116,48 @@ J'ai écrit trois parseurs NBT jetables en Python avant d'admettre qu'ils étaie
 la partie la moins fiable de l'expérience — l'un d'eux a produit `glowstone = 0`
 et `stone = 3`, des valeurs assez plausibles pour être crues. Le lecteur du
 projet, lui, est vérifié octet à octet sur 17 879 chunks.
+
+---
+
+## Block entities
+
+Un block entity porte ce qu'un état de bloc ne peut pas contenir : le texte d'un
+panneau, le contenu d'un coffre. Ils sont rangés **à côté** des sections : il y en
+a une poignée par chunk contre 98 304 blocs, et réserver de la place dans chaque
+cellule coûterait plus que le monde lui-même.
+
+### Deux conventions à ne pas confondre
+
+| Destination | Coordonnées |
+|---|---|
+| Disque | **monde**, en trois champs `x`, `y`, `z` |
+| Fil | **locales au chunk**, x et z tassés dans un octet de 4+4 bits |
+
+Écrire l'une là où l'autre est attendue place chaque panneau et chaque coffre
+dans un autre chunk, silencieusement.
+
+### Le panneau de 1.20
+
+Les deux faces existent : un panneau écrit seulement au recto et enregistré sans
+`back_text` est refusé par le client. Et chaque ligne est un **composant de
+texte**, pas une chaîne : `hello` n'est pas valide là où `{"text":"hello"}` l'est.
+
+Un block entity ne survit jamais à son bloc : tout changement de bloc le supprime.
+Un block entity orphelin est un coffre qu'on ne peut ni ouvrir ni enlever.
+
+### Deux défauts trouvés en testant
+
+**Un interblocage.** Le gestionnaire de paquets *Play* tient déjà `players_mutex`
+pendant tout son corps ; le reprendre pour diffuser la mise à jour du panneau
+bloquait la connexion — `std::mutex` n'est pas récursif. De l'extérieur, ça
+ressemblait exactement à un paquet ignoré, et le serveur ne sauvegardait plus.
+
+**Un type d'entité à zéro.** Le disque nomme les block entities, le protocole les
+numérote. Un chunk rechargé repartait donc avec un `type_id` de 0 — et zéro est
+un identifiant **valide**, appartenant à un autre type. L'omission ne cassait
+rien de visible : elle re-typait tous les panneaux d'un chunk rechargé. Mon
+client de test ne validait pas ce champ ; il a fallu aller le lire pour le voir.
+
+Vérifié de bout en bout : poser, écrire (guillemet compris), sauvegarder, arrêter,
+redémarrer — le texte est sur disque, il repart dans le paquet de chunk, et le
+`type_id` vaut bien 7.

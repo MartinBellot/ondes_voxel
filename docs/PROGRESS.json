@@ -11,7 +11,7 @@
   },
   "last_updated": "2026-09-08",
   "current_milestone": "M3",
-  "current_task": "m3-block-entities",
+  "current_task": "m4-chests-and-containers",
   "milestones": {
     "M0": {
       "name": "Fondations",
@@ -52,7 +52,7 @@
     "M4": {
       "name": "Monde persistant",
       "status": "in_progress",
-      "done": 6,
+      "done": 7,
       "total": 10,
       "exit_criterion": "Round-trip croisé : notre sauvegarde s'ouvre dans Minecraft vanilla et réciproquement, sans perte.",
       "blocked": []
@@ -117,7 +117,8 @@
     "cross_load": "notre sauvegarde chargee par le vrai serveur 1.20.1 sans erreur ; chunk reecrit par lui (PostProcessing, isLightOn, structures, 25 sections) relu par nous avec les bons blocs",
     "placement_orientation": "conventions de facing mesurees sur 18 blocs poses par le vrai serveur 1.20.1 ; 11/11 reproduites a l'identique",
     "player_entities": "deux joueurs se voient : apparition dans les deux sens, teleport et rotation de tete a chaque mouvement, retrait a la deconnexion ; 20 paquets d'un joueur immobile -> 0 retransmission",
-    "light_emission_harness": "technique validee : setblock via la console vanilla puis lecture de BlockLight ; exact pour glowstone, stone, redstone_ore, respawn_anchor, furnace ; contamine pour d'autres etats"
+    "light_emission_harness": "technique validee : setblock via la console vanilla puis lecture de BlockLight ; exact pour glowstone, stone, redstone_ore, respawn_anchor, furnace ; contamine pour d'autres etats",
+    "block_entities": "panneaux de bout en bout : pose, ecriture, diffusion, sauvegarde Anvil, rechargement avec le bon type_id resolu depuis le registre"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",

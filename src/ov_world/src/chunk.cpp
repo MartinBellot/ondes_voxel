@@ -85,6 +85,11 @@ void Chunk::set_block(usize x, i32 y, usize z, registry::BlockStateId state) {
     }
     section->set_block(x, static_cast<usize>(y & 15), z, state);
 
+    // A block entity outliving its block is a chest that cannot be opened and
+    // cannot be removed. Any change to the block drops it; whoever placed the
+    // new block adds one back if it needs one.
+    remove_block_entity(x, y, z);
+
     // WORLD_SURFACE is the only heightmap maintainable today: it needs nothing
     // but air-ness. The other three need the block-state flag table, which the
     // official reports do not carry, so they are left untouched rather than
@@ -151,6 +156,38 @@ void Chunk::recompute_world_surface() noexcept {
             }
         }
     }
+}
+
+BlockEntity* Chunk::block_entity_at(usize x, i32 y, usize z) noexcept {
+    for (BlockEntity& entity : block_entities_) {
+        if (entity.x == x && entity.y == y && entity.z == z) {
+            return &entity;
+        }
+    }
+    return nullptr;
+}
+
+const BlockEntity* Chunk::block_entity_at(usize x, i32 y, usize z) const noexcept {
+    for (const BlockEntity& entity : block_entities_) {
+        if (entity.x == x && entity.y == y && entity.z == z) {
+            return &entity;
+        }
+    }
+    return nullptr;
+}
+
+void Chunk::set_block_entity(BlockEntity entity) {
+    if (BlockEntity* existing = block_entity_at(entity.x, entity.y, entity.z)) {
+        *existing = std::move(entity);
+        return;
+    }
+    block_entities_.push_back(std::move(entity));
+}
+
+void Chunk::remove_block_entity(usize x, i32 y, usize z) {
+    std::erase_if(block_entities_, [&](const BlockEntity& entity) {
+        return entity.x == x && entity.y == y && entity.z == z;
+    });
 }
 
 usize Chunk::non_air_count() const noexcept {

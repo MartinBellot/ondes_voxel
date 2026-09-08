@@ -17,12 +17,15 @@
 #pragma once
 
 #include "ov/base/types.hpp"
+#include "ov/nbt/tag.hpp"
 #include "ov/protocol/types.hpp"
 #include "ov/world/chunk.hpp"
 
+#include <array>
 #include <expected>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -48,6 +51,8 @@ inline constexpr i32 kPlayerInfoRemove    = 0x39;
 inline constexpr i32 kPlayerInfoUpdate    = 0x3A;
 inline constexpr i32 kEntityHeadRotation  = 0x42;
 inline constexpr i32 kEntityTeleport      = 0x68;
+inline constexpr i32 kBlockEntityData     = 0x08;
+inline constexpr i32 kOpenSignEditor      = 0x31;
 }  // namespace clientbound
 
 /// Serverbound Play packet ids, protocol 763.
@@ -64,7 +69,18 @@ inline constexpr i32 kPlayerAction         = 0x1D;
 inline constexpr i32 kSetHeldItem          = 0x28;
 inline constexpr i32 kSetCreativeSlot      = 0x2B;
 inline constexpr i32 kUseItemOn            = 0x31;
+inline constexpr i32 kUpdateSign           = 0x2E;
 }  // namespace serverbound
+
+/// A block position as it travels: 26 bits x, 26 bits z, 12 bits y, all signed.
+///
+/// Declared before everything else because both directions use it — the server
+/// names a block in an update, the client names one it clicked.
+struct WirePosition {
+    i32 x{0};
+    i32 y{0};
+    i32 z{0};
+};
 
 /// Everything the Login (play) packet needs that is not a fixed constant.
 struct LoginPlay {
@@ -133,6 +149,26 @@ struct LoginPlay {
 /// and the client disconnects with a decode error naming no field.
 [[nodiscard]] std::vector<u8> encode_chunk_data(const world::Chunk& chunk);
 
+/// Tell a client one block entity changed.
+///
+/// `type` is the numeric id from minecraft:block_entity_type — one of the
+/// registries the client hard-codes, so it is Mojang's number and not ours.
+[[nodiscard]] std::vector<u8> encode_block_entity_data(WirePosition position, i32 type,
+                                                       const nbt::Tag& data);
+
+/// Ask the client to open its sign editor. Sent when a sign is placed; without
+/// it a fresh sign can never be written on.
+[[nodiscard]] std::vector<u8> encode_open_sign_editor(WirePosition position, bool front);
+
+/// The four lines a player typed on one side of a sign.
+struct SignUpdate {
+    WirePosition               position;
+    bool                       front{true};
+    std::array<std::string, 4> lines;
+};
+
+[[nodiscard]] std::optional<SignUpdate> parse_update_sign(std::span<const u8> payload);
+
 // ── Serverbound ─────────────────────────────────────────────────────────────
 
 /// What the client told us about itself. Only the fields the server acts on.
@@ -161,13 +197,6 @@ struct PlayerMovement {
 
 [[nodiscard]] std::optional<i32> parse_confirm_teleport(std::span<const u8> payload);
 [[nodiscard]] std::optional<i64> parse_keep_alive(std::span<const u8> payload);
-
-/// A block position as it travels: 26 bits x, 26 bits z, 12 bits y, all signed.
-struct WirePosition {
-    i32 x{0};
-    i32 y{0};
-    i32 z{0};
-};
 
 /// Breaking a block.
 ///

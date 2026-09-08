@@ -219,8 +219,28 @@ nbt::Document to_nbt(const Chunk& chunk, const ChunkCodecContext& context) {
     }
     root.push_back(nbt::CompoundEntry{"Heightmaps", std::move(heightmaps)});
 
-    root.push_back(
-        nbt::CompoundEntry{"block_entities", nbt::Tag::make_list(nbt::TagType::Compound)});
+    // Block entities carry **world** coordinates on disk and chunk-local ones
+    // on the wire. Writing one convention where the other belongs puts every
+    // sign and chest in a different chunk, silently.
+    nbt::Tag entities = nbt::Tag::make_list(nbt::TagType::Compound);
+    for (const BlockEntity& entity : chunk.block_entities()) {
+        nbt::Tag stored = entity.data;
+        if (stored.compound() == nullptr) {
+            stored = nbt::Tag::make_compound();
+        }
+        const auto put = [&](std::string name, nbt::Tag value) {
+            std::erase_if(*stored.compound(),
+                          [&](const nbt::CompoundEntry& e) { return e.name == name; });
+            stored.compound()->push_back(nbt::CompoundEntry{std::move(name), std::move(value)});
+        };
+        put("id", nbt::Tag{entity.type});
+        put("x", nbt::Tag{chunk.position().x * 16 + static_cast<i32>(entity.x)});
+        put("y", nbt::Tag{entity.y});
+        put("z", nbt::Tag{chunk.position().z * 16 + static_cast<i32>(entity.z)});
+        put("keepPacked", nbt::Tag::make_bool(false));
+        entities.list()->push_back(std::move(stored));
+    }
+    root.push_back(nbt::CompoundEntry{"block_entities", std::move(entities)});
     root.push_back(nbt::CompoundEntry{"block_ticks", nbt::Tag::make_list(nbt::TagType::Compound)});
     root.push_back(nbt::CompoundEntry{"fluid_ticks", nbt::Tag::make_list(nbt::TagType::Compound)});
 
@@ -314,6 +334,38 @@ std::optional<Chunk> from_nbt(const nbt::Document& document, const ChunkCodecCon
                 const std::vector<u8> raw(bytes->begin(), bytes->end());
                 (void)section->block_light().load(raw);
             }
+        }
+    }
+
+    if (const nbt::Tag* entities = document.root.find("block_entities");
+        entities != nullptr && entities->list() != nullptr) {
+        for (const nbt::Tag& stored : *entities->list()) {
+            const nbt::Tag* id = stored.find("id");
+            const nbt::Tag* x  = stored.find("x");
+            const nbt::Tag* y  = stored.find("y");
+            const nbt::Tag* z  = stored.find("z");
+            if (id == nullptr || x == nullptr || y == nullptr || z == nullptr) {
+                continue;
+            }
+            BlockEntity entity;
+            entity.x    = static_cast<u8>(x->as_i64() & 15);
+            entity.y    = static_cast<i32>(y->as_i64());
+            entity.z    = static_cast<u8>(z->as_i64() & 15);
+            entity.type = std::string{id->as_string()};
+            entity.data = stored;
+
+            // The numeric id is not on disk, because disk is name-based, and
+            // the wire needs it. Resolving here rather than leaving it zero:
+            // zero is a valid id belonging to some other block entity, so the
+            // omission would not fail, it would mistype every sign and chest in
+            // a reloaded chunk.
+            if (context.registries != nullptr) {
+                if (const auto registry = context.registries->find("minecraft:block_entity_type")) {
+                    entity.type_id =
+                        context.registries->protocol_id(*registry, entity.type).value_or(0);
+                }
+            }
+            chunk.set_block_entity(std::move(entity));
         }
     }
 

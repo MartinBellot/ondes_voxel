@@ -516,6 +516,45 @@ struct Superflat {
     return state;
 }
 
+/// An empty sign, as 1.20 stores one.
+///
+/// Both faces exist since 1.20 — a sign written only on the front and saved
+/// without a `back_text` is refused by the client, which expects both. Each
+/// line is a **chat component**, not a bare string: "hello" alone is not valid
+/// where {"text":"hello"} is.
+[[nodiscard]] nbt::Tag empty_sign_text() {
+    nbt::Tag messages = nbt::Tag::make_list(nbt::TagType::String);
+    for (int i = 0; i < 4; ++i) {
+        messages.list()->push_back(nbt::Tag{std::string{R"({"text":""})"}});
+    }
+    nbt::Tag side = nbt::Tag::make_compound();
+    side.compound()->push_back(nbt::CompoundEntry{"messages", std::move(messages)});
+    side.compound()->push_back(nbt::CompoundEntry{"color", nbt::Tag{std::string{"black"}}});
+    side.compound()->push_back(nbt::CompoundEntry{"has_glowing_text", nbt::Tag::make_bool(false)});
+    return side;
+}
+
+[[nodiscard]] nbt::Tag new_sign_data() {
+    nbt::Tag data = nbt::Tag::make_compound();
+    data.compound()->push_back(nbt::CompoundEntry{"front_text", empty_sign_text()});
+    data.compound()->push_back(nbt::CompoundEntry{"back_text", empty_sign_text()});
+    data.compound()->push_back(nbt::CompoundEntry{"is_waxed", nbt::Tag::make_bool(false)});
+    return data;
+}
+
+/// Escape a line into a chat component. A player can type a quote.
+[[nodiscard]] std::string text_component(std::string_view line) {
+    std::string json = R"({"text":")";
+    for (const char c : line) {
+        if (c == '"' || c == '\\') {
+            json.push_back('\\');
+        }
+        json.push_back(c);
+    }
+    json += R"("})";
+    return json;
+}
+
 /// The numeric id a biome carries in the codec we sent.
 ///
 /// The client learns biome ids from our codec and from nowhere else, so a chunk
@@ -761,6 +800,8 @@ int main(int argc, char** argv) {
     const auto registries =
         registry::Registries::load(data_dir / "vanilla" / "1.20.1" / "registry.ovpack");
     const auto item_registry = registries ? registries->find("minecraft:item") : std::nullopt;
+    const auto block_entity_registry =
+        registries ? registries->find("minecraft:block_entity_type") : std::nullopt;
 
     Superflat superflat = world_available ? Superflat::from(*blocks) : Superflat{};
     if (world_available) {
@@ -825,6 +866,7 @@ int main(int argc, char** argv) {
     const world::ChunkCodecContext codec_context{
         blocks ? &*blocks : nullptr,
         biome_names,
+        registries ? &*registries : nullptr,
         superflat.air,
     };
 
@@ -1427,6 +1469,78 @@ int main(int argc, char** argv) {
                         const auto target = net::offset_by_face(place->position, place->face);
                         set_block_and_broadcast(
                             target, placed_state(*blocks, *held_block, *place, player.yaw));
+
+                        // A sign needs a block entity to hold its text, and the
+                        // editor has to be opened or it can never be written on.
+                        const std::string_view block_name = blocks->block_name(*held_block);
+                        if (block_name.ends_with("_sign") && registries && block_entity_registry) {
+                            const auto type_id =
+                                registries->protocol_id(*block_entity_registry, "minecraft:sign");
+                            const std::scoped_lock chunk_lock{chunk_mutex};
+                            world::Chunk& target_chunk = chunk_at(target.x >> 4, target.z >> 4);
+
+                            world::BlockEntity entity;
+                            entity.x       = static_cast<u8>(target.x & 15);
+                            entity.y       = target.y;
+                            entity.z       = static_cast<u8>(target.z & 15);
+                            entity.type    = "minecraft:sign";
+                            entity.type_id = type_id.value_or(0);
+                            entity.data    = new_sign_data();
+                            target_chunk.set_block_entity(std::move(entity));
+                            dirty_chunks.insert(chunk_key(target.x >> 4, target.z >> 4));
+
+                            send_packet(net::clientbound::kOpenSignEditor,
+                                        net::encode_open_sign_editor(target, true));
+                        }
+                        return true;
+                    }
+
+                    case net::serverbound::kUpdateSign: {
+                        const auto update = net::parse_update_sign(body);
+                        if (!update) {
+                            return false;
+                        }
+                        const std::scoped_lock chunk_lock{chunk_mutex};
+                        world::Chunk&          sign_chunk =
+                            chunk_at(update->position.x >> 4, update->position.z >> 4);
+                        world::BlockEntity* entity = sign_chunk.block_entity_at(
+                            static_cast<usize>(update->position.x & 15), update->position.y,
+                            static_cast<usize>(update->position.z & 15));
+                        if (entity == nullptr || entity->data.compound() == nullptr) {
+                            // The player wrote on something that is not a sign,
+                            // or on one this server never created. Ignored
+                            // rather than trusted into existence.
+                            return true;
+                        }
+
+                        nbt::Tag side = empty_sign_text();
+                        for (usize i = 0; i < update->lines.size(); ++i) {
+                            (*side.compound()->front().value.list())[i] =
+                                nbt::Tag{text_component(update->lines[i])};
+                        }
+                        const std::string_view field = update->front ? "front_text" : "back_text";
+                        for (auto& field_entry : *entity->data.compound()) {
+                            if (field_entry.name == field) {
+                                field_entry.value = std::move(side);
+                                break;
+                            }
+                        }
+
+                        dirty_chunks.insert(
+                            chunk_key(update->position.x >> 4, update->position.z >> 4));
+
+                        // Everyone, including the writer: their client shows the
+                        // text it typed, and confirming it is what keeps the two
+                        // from drifting.
+                        //
+                        // No lock taken here. The Play handler already holds
+                        // players_mutex for its whole body, and std::mutex is
+                        // not recursive — taking it again deadlocks the
+                        // connection, which looks exactly like the packet being
+                        // ignored.
+                        broadcast(nullptr, net::clientbound::kBlockEntityData,
+                                  net::encode_block_entity_data(update->position, entity->type_id,
+                                                                entity->data));
                         return true;
                     }
 
