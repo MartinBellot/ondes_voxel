@@ -1319,6 +1319,59 @@ int inspect_columns(const std::filesystem::path& directory) {
     return 0;
 }
 
+/// The shape a stair takes, replayed through the code that ships.
+///
+/// Reads "facing half side otherFacing otherHalf" lines and prints the shape.
+/// The corpus is 256 pairs measured on a real 1.20.1 server.
+int inspect_stairs(const std::filesystem::path& pack_path) {
+    auto blocks     = registry::BlockRegistry::load(pack_path);
+    auto registries = registry::Registries::load(pack_path);
+    if (!blocks || !registries) {
+        fmt::print(stderr, "cannot read {}\n", pack_path.string());
+        return 1;
+    }
+    const gameplay::Connections rules{*blocks, *registries};
+    const auto                  stairs = blocks->find_block("minecraft:oak_stairs");
+    if (!stairs) {
+        return 1;
+    }
+    const auto facing = blocks->find_property(*stairs, "facing");
+    const auto half   = blocks->find_property(*stairs, "half");
+    const auto shape  = blocks->find_property(*stairs, "shape");
+    const auto air    = blocks->default_state(*blocks->find_block("minecraft:air"));
+
+    const auto build = [&](std::string_view which, std::string_view level) {
+        registry::BlockStateId state = blocks->first_state(*stairs);
+        const auto set = [&](const registry::PropertyView& property, std::string_view value) {
+            const auto it = std::ranges::find(property.values, value);
+            if (it != property.values.end()) {
+                state = blocks->with_property(
+                    state, property, static_cast<u16>(std::distance(property.values.begin(), it)));
+            }
+        };
+        set(*facing, which);
+        set(*half, level);
+        return state;
+    };
+
+    std::string mine;
+    std::string my_half;
+    std::string side;
+    std::string theirs;
+    std::string their_half;
+    while (std::cin >> mine >> my_half >> side >> theirs >> their_half) {
+        std::array<registry::BlockStateId, 4> around{air, air, air, air};
+        for (usize i = 0; i < gameplay::kSideNames.size(); ++i) {
+            if (gameplay::kSideNames[i] == side) {
+                around[i] = build(theirs, their_half);
+            }
+        }
+        const auto result = rules.reshape(build(mine, my_half), around);
+        fmt::print("{}\n", blocks->property_value(result, *shape));
+    }
+    return 0;
+}
+
 /// Answer, for each "state face" pair, whether an oak fence reaches for it.
 ///
 /// The point is to replay the measurement through the code that ships rather
@@ -1436,6 +1489,7 @@ void print_usage() {
         "  ov-inspect heightmaps <region-dir> [--pack=P]  recompute them and compare\n"
         "  ov-inspect loot   <pack>              roll loot tables per 'block silk fortune tool n'\n"
         "  ov-inspect connects <pack>            does an oak fence reach, per 'state side'\n"
+        "  ov-inspect stairs <pack>              stair shape per 'facing half side f2 h2'\n"
         "  ov-inspect state  <region-dir>        full block state per 'x y z'\n"
         "\n"
         "  --tree      print the tag tree\n"
@@ -1461,7 +1515,7 @@ int main(int argc, char** argv) {
     const std::string_view command{argv[1]};
     if (command != "nbt" && command != "region" && command != "zip" && command != "chunk" &&
         command != "light" && command != "column" && command != "heightmaps" && command != "loot" &&
-        command != "state" && command != "connects") {
+        command != "state" && command != "connects" && command != "stairs") {
         fmt::print(stderr, "unknown command '{}'\n", command);
         print_usage();
         return 1;
@@ -1514,6 +1568,9 @@ int main(int argc, char** argv) {
     }
     if (command == "connects") {
         return inspect_connects(argv[2]);
+    }
+    if (command == "stairs") {
+        return inspect_stairs(argv[2]);
     }
     return inspect_nbt(argv[2], tree, verify, max_depth);
 }

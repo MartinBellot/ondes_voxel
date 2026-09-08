@@ -198,7 +198,8 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] Pose : dalles doubles, portes et lits à deux blocs, conventions mesurées
 - [x] Formes de collision par état, et faces pleines : 23358/23358 faces mesurées reproduites
 - [x] Connexions des clôtures, portillons, vitres et barreaux, dans les deux sens
-- [ ] Murets (`low`/`tall`/`up`) et forme des escaliers
+- [x] Forme des escaliers : 256 cas relevés en entier, plus le bloc qui annule le coin
+- [ ] Murets : `low`, `tall` et `up` dépendent de ce qu'il y a au-dessus
 - [x] Durées de cassage et outils corrects : vérifiés tick pour tick sur 985 des 996 blocs
 - [x] Tables de butin, Silk Touch et Fortune : tirages comparés à ceux du vrai serveur
 - [x] Entités objet : les butins tombent au sol et se ramassent *(sans gravité ni sauvegarde)*

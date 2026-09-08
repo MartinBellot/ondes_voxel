@@ -144,3 +144,69 @@ TEST_CASE("reshaping sets the four sides at once", "[gameplay][connections]") {
     // Anything that does not reshape comes back untouched.
     REQUIRE(loaded().rules->reshape(stone, {stone, stone, stone, stone}) == stone);
 }
+
+TEST_CASE("stairs take a corner, and one block cancels it", "[gameplay][connections][stairs]") {
+    if (!loaded().rules) {
+        SKIP("no registry pack");
+    }
+    const auto air = state_of("minecraft:air");
+
+    const auto stair = [&](std::string_view facing, std::string_view half) {
+        const auto block   = block_of("minecraft:oak_stairs");
+        const auto facings = loaded().blocks->find_property(block, "facing");
+        const auto halves  = loaded().blocks->find_property(block, "half");
+        REQUIRE(facings.has_value());
+        REQUIRE(halves.has_value());
+        auto       state = loaded().blocks->first_state(block);
+        const auto set   = [&](const registry::PropertyView& property, std::string_view value) {
+            const auto it = std::ranges::find(property.values, value);
+            REQUIRE(it != property.values.end());
+            state = loaded().blocks->with_property(
+                state, property, static_cast<u16>(std::distance(property.values.begin(), it)));
+        };
+        set(*facings, facing);
+        set(*halves, half);
+        return state;
+    };
+    const auto shape_of = [&](registry::BlockStateId state) {
+        const auto property =
+            loaded().blocks->find_property(block_of("minecraft:oak_stairs"), "shape");
+        REQUIRE(property.has_value());
+        return loaded().blocks->property_value(state, *property);
+    };
+    // Sides are ordered north, south, west, east.
+    const auto reshape = [&](registry::BlockStateId self, usize side,
+                             registry::BlockStateId neighbour, usize other = 4,
+                             registry::BlockStateId second = registry::BlockStateId{0}) {
+        std::array<registry::BlockStateId, 4> around{air, air, air, air};
+        around[side] = neighbour;
+        if (other < 4) {
+            around[other] = second;
+        }
+        return shape_of(loaded().rules->reshape(self, around));
+    };
+
+    const auto me = stair("north", "bottom");
+
+    // Facing north with a stair in front of it, turned across: an outer corner.
+    // Left or right follows the turn, counter-clockwise being left.
+    REQUIRE(reshape(me, 0, stair("west", "bottom")) == "outer_left");
+    REQUIRE(reshape(me, 0, stair("east", "bottom")) == "outer_right");
+
+    // Behind instead of in front, and the corner turns inward.
+    REQUIRE(reshape(me, 1, stair("west", "bottom")) == "inner_left");
+    REQUIRE(reshape(me, 1, stair("east", "bottom")) == "inner_right");
+
+    // The halves have to agree, and the facings have to cross.
+    REQUIRE(reshape(me, 0, stair("west", "top")) == "straight");
+    REQUIRE(reshape(me, 0, stair("south", "bottom")) == "straight");
+
+    // And a stair facing our way cancels the corner — from the side opposite
+    // the turn for an outer one, and from the side of the turn for an inner
+    // one. Exactly one of the two crossing directions does it, which is what
+    // the measurement showed: 32 corners cancelled and 32 kept.
+    REQUIRE(reshape(me, 0, stair("west", "bottom"), 3, stair("north", "bottom")) == "straight");
+    REQUIRE(reshape(me, 0, stair("west", "bottom"), 2, stair("north", "bottom")) == "outer_left");
+    REQUIRE(reshape(me, 1, stair("west", "bottom"), 2, stair("north", "bottom")) == "straight");
+    REQUIRE(reshape(me, 1, stair("west", "bottom"), 3, stair("north", "bottom")) == "inner_left");
+}

@@ -90,6 +90,8 @@ Connections::Connections(const registry::BlockRegistry& blocks, const registry::
             kinds_[index] = ConnectingKind::Pane;
         } else if (name.ends_with("_wall")) {
             kinds_[index] = ConnectingKind::Wall;
+        } else if (name.ends_with("_stairs")) {
+            kinds_[index] = ConnectingKind::Stairs;
         }
 
         refuses_[index]      = std::ranges::find(kRefused, name) != kRefused.end();
@@ -150,11 +152,134 @@ bool Connections::attaches(ConnectingKind kind, Side side,
     return blocks_->face_is_sturdy(neighbour, facing_back(side));
 }
 
+namespace {
+
+/// The side index of a compass name, in the order the properties list them.
+[[nodiscard]] std::optional<usize> side_index(std::string_view name) noexcept {
+    for (usize i = 0; i < kSideNames.size(); ++i) {
+        if (kSideNames[i] == name) {
+            return i;
+        }
+    }
+    return std::nullopt;
+}
+
+/// Turning left when looking down: north, west, south, east, north.
+[[nodiscard]] std::string_view counter_clockwise(std::string_view facing) noexcept {
+    if (facing == "north") {
+        return "west";
+    }
+    if (facing == "west") {
+        return "south";
+    }
+    if (facing == "south") {
+        return "east";
+    }
+    return "north";
+}
+
+[[nodiscard]] std::string_view opposite(std::string_view facing) noexcept {
+    if (facing == "north") {
+        return "south";
+    }
+    if (facing == "south") {
+        return "north";
+    }
+    if (facing == "west") {
+        return "east";
+    }
+    return "west";
+}
+
+}  // namespace
+
+registry::BlockStateId Connections::stair_shape(
+    registry::BlockStateId                       state,
+    const std::array<registry::BlockStateId, 4>& around) const noexcept {
+    const registry::BlockId block  = blocks_->block_of(state);
+    const auto              facing = blocks_->find_property(block, "facing");
+    const auto              half   = blocks_->find_property(block, "half");
+    const auto              shape  = blocks_->find_property(block, "shape");
+    if (!facing || !half || !shape) {
+        return state;
+    }
+    const std::string_view mine    = blocks_->property_value(state, *facing);
+    const std::string_view my_half = blocks_->property_value(state, *half);
+
+    /// Is this neighbour a stair of the same half whose facing crosses ours?
+    const auto crossing = [&](registry::BlockStateId neighbour) -> std::string_view {
+        const registry::BlockId other = blocks_->block_of(neighbour);
+        if (kind_of(other) != ConnectingKind::Stairs) {
+            return {};
+        }
+        const auto other_half   = blocks_->find_property(other, "half");
+        const auto other_facing = blocks_->find_property(other, "facing");
+        if (!other_half || !other_facing ||
+            blocks_->property_value(neighbour, *other_half) != my_half) {
+            return {};
+        }
+        const std::string_view theirs      = blocks_->property_value(neighbour, *other_facing);
+        const bool             mine_is_z   = mine == "north" || mine == "south";
+        const bool             theirs_is_z = theirs == "north" || theirs == "south";
+        return mine_is_z == theirs_is_z ? std::string_view{} : theirs;
+    };
+
+    /// A stair facing our way, on our half, in that direction, keeps the corner
+    /// from forming. Measured: exactly one of the two crossing directions does.
+    const auto blocked_from = [&](std::string_view direction) {
+        const auto index = side_index(direction);
+        if (!index) {
+            return false;
+        }
+        const registry::BlockStateId neighbour = around[*index];
+        const registry::BlockId      other     = blocks_->block_of(neighbour);
+        if (kind_of(other) != ConnectingKind::Stairs) {
+            return false;
+        }
+        const auto other_half   = blocks_->find_property(other, "half");
+        const auto other_facing = blocks_->find_property(other, "facing");
+        return other_half && other_facing &&
+               blocks_->property_value(neighbour, *other_half) == my_half &&
+               blocks_->property_value(neighbour, *other_facing) == mine;
+    };
+
+    const auto set_shape = [&](std::string_view value) {
+        const auto it = std::ranges::find(shape->values, value);
+        return it == shape->values.end()
+                   ? state
+                   : blocks_->with_property(
+                         state, *shape, static_cast<u16>(std::distance(shape->values.begin(), it)));
+    };
+
+    const auto front_index = side_index(mine);
+    const auto back_index  = side_index(opposite(mine));
+    if (!front_index || !back_index) {
+        return state;
+    }
+
+    // In front first, then behind: an outer corner wins over an inner one when
+    // both could apply.
+    if (const std::string_view theirs = crossing(around[*front_index]); !theirs.empty()) {
+        if (!blocked_from(opposite(theirs))) {
+            return set_shape(theirs == counter_clockwise(mine) ? "outer_left" : "outer_right");
+        }
+    }
+    if (const std::string_view theirs = crossing(around[*back_index]); !theirs.empty()) {
+        if (!blocked_from(theirs)) {
+            return set_shape(theirs == counter_clockwise(mine) ? "inner_left" : "inner_right");
+        }
+    }
+    return set_shape("straight");
+}
+
 registry::BlockStateId Connections::reshape(
     registry::BlockStateId                       state,
     const std::array<registry::BlockStateId, 4>& around) const noexcept {
     const registry::BlockId block = blocks_->block_of(state);
     const ConnectingKind    kind  = kind_of(block);
+    if (kind == ConnectingKind::Stairs) {
+        return stair_shape(state, around);
+    }
     if (kind != ConnectingKind::Fence && kind != ConnectingKind::NetherBrickFence &&
         kind != ConnectingKind::Pane) {
         return state;

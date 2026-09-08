@@ -2054,3 +2054,42 @@ côté au lieu de deux, et `low` contre `tall` dépend de ce qu'il y a au-dessus
 La **forme des escaliers** attend de même. Les deux sont maintenant à portée,
 puisque les formes sont là.
 
+---
+
+## Forme des escaliers : un espace assez petit pour être mesuré en entier
+
+Un escalier a cinq formes et il en change tout seul quand un escalier voisin
+apparaît. La règle est du code Java — mais l'espace des cas est petit et fermé,
+donc il a été relevé **exhaustivement** plutôt que déduit.
+
+`scripts/measure_stairs.py` pose l'escalier du centre puis le voisin — c'est le
+second qui déclenche le recalcul — et relit le centre. Quatre orientations, deux
+moitiés, quatre côtés, quatre orientations et deux moitiés pour le voisin :
+**256 cas, tous lus**. 224 restent droits ; les 32 autres se répartissent en
+quatre coins, huit chacun.
+
+Le motif est parfaitement régulier :
+
+* un coin ne se forme que si le voisin est **devant** ou **derrière**, sur la
+  **même moitié**, et **tourné en travers** ;
+* devant donne un coin sortant, derrière un coin rentrant ;
+* gauche ou droite suit le sens de la rotation, le sens antihoraire étant la
+  gauche — nord/ouest, sud/est, ouest/sud, est/nord.
+
+### Le troisième bloc
+
+Vanilla annule le coin quand un troisième escalier s'en mêle, et la première
+passe ne le voyait pas. Une seconde passe rejoue les 32 coins avec un escalier
+supplémentaire sur chacune des deux directions perpendiculaires : **32 coins
+empêchés, 32 conservés**. Exactement une des deux directions annule — celle
+opposée à la rotation pour un coin sortant, celle de la rotation pour un coin
+rentrant — et le bloc qui annule doit regarder dans notre direction, sur notre
+moitié.
+
+### Rejeu
+
+Le prototype et le code livré sont deux choses différentes, donc les 256 cas
+sont rejoués à travers le second par `ov-inspect stairs` : **256 / 256**. Le cas
+du troisième bloc, que cet outil ne monte pas, est couvert par un test unitaire
+qui reprend les quatre situations mesurées.
+

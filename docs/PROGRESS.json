@@ -11,7 +11,7 @@
   },
   "last_updated": "2026-09-08",
   "current_milestone": "M3",
-  "current_task": "m4-walls-and-stair-shapes",
+  "current_task": "m3-authoritative-movement",
   "milestones": {
     "M0": {
       "name": "Fondations",
@@ -52,8 +52,8 @@
     "M4": {
       "name": "Monde persistant",
       "status": "in_progress",
-      "done": 15,
-      "total": 17,
+      "done": 16,
+      "total": 18,
       "exit_criterion": "Round-trip croisé : notre sauvegarde s'ouvre dans Minecraft vanilla et réciproquement, sans perte.",
       "blocked": []
     },
@@ -137,7 +137,8 @@
     "data_version_guard": "level.dat lu au demarrage et compare a 3465 ; un chunk present mais illisible sert du terrain genere et n'est jamais reecrit, ce qui detruisait sinon la sauvegarde",
     "fence_connects": "23358 faces relevees sur 841 blocs : 695 repondent pareil sur tous leurs etats, 146 varient (escaliers, portes, trappes, portillons) — d'ou le refus de livrer une table par bloc ; les connexions attendent les formes de collision",
     "collision_shapes": "4327 formes, 12054 boites en unites de 1/32, par etat ; verifiees indirectement : la regle de connexion reconstruite a partir d'elles reproduit 23358/23358 faces mesurees sur un vrai serveur, et le rejeu par le code livre donne le meme chiffre",
-    "connection_rule": "clotures, portillons, vitres et barreaux ; liste d'exceptions derivee des ecarts plutot que recopiee (feuillages, shulker box, barriere, citrouilles, melon, target) et deux blocs dont la forme de support est pleine quand la collision ne l'est pas (mud, soul_sand)"
+    "connection_rule": "clotures, portillons, vitres et barreaux ; liste d'exceptions derivee des ecarts plutot que recopiee (feuillages, shulker box, barriere, citrouilles, melon, target) et deux blocs dont la forme de support est pleine quand la collision ne l'est pas (mud, soul_sand)",
+    "stair_shapes": "256 cas releves en entier sur un vrai serveur (4 orientations x 2 moities x 4 cotes x 4 x 2), plus 64 cas pour le troisieme bloc qui annule le coin : 32 empeches, 32 conserves ; rejeu par le code livre 256/256"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",

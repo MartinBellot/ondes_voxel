@@ -21,6 +21,7 @@
 
 #include <array>
 #include <optional>
+#include <string_view>
 #include <vector>
 
 namespace ov::gameplay {
@@ -44,6 +45,9 @@ enum class ConnectingKind : u8 {
     /// Walls have three values a side rather than two; they are recognised but
     /// not yet reshaped, because `low` and `tall` need what is above.
     Wall,
+    /// Stairs take one of five shapes depending on the stair in front of or
+    /// behind them.
+    Stairs,
 };
 
 class Connections {
@@ -61,6 +65,16 @@ public:
     /// Returns the state unchanged for anything that does not reshape, so a
     /// caller can run it over every placement without asking first.
     [[nodiscard]] registry::BlockStateId reshape(
+        registry::BlockStateId                       state,
+        const std::array<registry::BlockStateId, 4>& around) const noexcept;
+
+    /// The shape a stair takes given its four horizontal neighbours.
+    ///
+    /// Five shapes, and the rule was measured exhaustively — 256 pairs, then a
+    /// third pass for the block that keeps a corner from forming. A corner
+    /// needs a stair in front of or behind, on the same half, facing across;
+    /// and exactly one of the two crossing directions cancels it.
+    [[nodiscard]] registry::BlockStateId stair_shape(
         registry::BlockStateId                       state,
         const std::array<registry::BlockStateId, 4>& around) const noexcept;
 
