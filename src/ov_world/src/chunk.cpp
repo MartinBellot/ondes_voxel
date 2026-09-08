@@ -124,6 +124,12 @@ void Chunk::set_biome(usize x, i32 y, usize z, u16 biome) {
     section->set_biome(x, static_cast<usize>(y & 15), z, biome);
 }
 
+void Chunk::fill_biome(u16 biome) {
+    for (ChunkSection& section : sections_) {
+        section.fill_biome(biome);
+    }
+}
+
 Heightmap& Chunk::heightmap(HeightmapType type) noexcept {
     return heightmaps_[slot_for(type)];
 }

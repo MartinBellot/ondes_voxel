@@ -653,3 +653,71 @@ une approximation dans les fondations du moteur de lumière, exactement le genre
 d'erreur qui donne un monde qui a l'air juste et ne l'est pas.
 
 La source reste **à décider**. Elle doit être par état.
+
+---
+
+## L'état Play et le paquet de chunk (`ov_protocol`)
+
+### Méthode : capturer, pas se souvenir
+
+Les IDs de paquets ne se devinent pas et changent d'une version à l'autre. Trois
+sources ont été confrontées :
+
+| Source | Verdict |
+|---|---|
+| Page archivée du wiki, via résumé automatique | **fausse sur toute la ligne** — « Login (play) 0x01 », champs manquants |
+| `PrismarineJS/minecraft-data` (MIT) | correcte |
+| **Capture d'un vrai serveur 1.20.1** | correcte, et arbitre |
+
+Le vrai `server.jar` a été lancé localement et un client écrit depuis la spec
+s'y est connecté pour enregistrer ce qui arrive réellement. C'est ce qui a établi
+`Login (play) = 0x28`, `Chunk Data = 0x24`, `Set Center Chunk = 0x4E`,
+`Synchronize Position = 0x3C`.
+
+Ça a aussi tranché un doute que j'avais : `portalCooldown` **existe bien** en 763.
+Je soupçonnais un champ appartenant à 1.20.2 ; décoder la queue du vrai paquet a
+montré l'octet. Mon doute était infondé, et mesuré plutôt que débattu.
+
+### Comparaison directe avec vanilla
+
+Les deux serveurs tournant côte à côte, un même décodeur a lu les deux. Les
+charges de section sont **identiques** : mêmes largeurs de bits, mêmes tailles de
+palette, mêmes nombres de longs, mêmes octets aux mêmes offsets.
+
+Reste **non élucidé** : la charge de vanilla fait 23 octets de plus que la nôtre
+et sa queue contient des sections à biome 0. Le client accepte la nôtre, donc ce
+n'est pas bloquant, mais c'est écrit ici plutôt qu'arrondi.
+
+### Trois pièges que seule la comparaison a révélés
+
+**Les biomes n'ont pas la plage de bits des blocs.** Une palette de biomes fait
+1 à 3 bits ; **4 signifie direct**. Notre `PalettedContainer` plancherait à 4
+comme pour les blocs, et le client aurait lu des indices de palette comme des IDs
+de registre — chaque biome du chunk devenu un autre. Corrigé : la plage fait
+partie de l'identité du conteneur.
+
+**« Vide » veut dire tout à zéro, pas « non stocké ».** Une section uniformément
+*éclairée* doit quand même être écrite ; seule une section uniformément noire
+peut être omise. L'inverse rend le monde entièrement noir, sans erreur nulle part.
+
+**La lumière se pose par bloc, pas par section.** La surface d'un superflat est à
+y = -61, dans la section allant de -64 à -49. Une règle « section entièrement
+au-dessus de la surface » laisse noire précisément la section où le joueur se
+tient : le ciel est éclairé, le sol non. Symptôme observé en jeu, puis corrigé.
+
+### Le codec de registres
+
+Six registres ne sont pas codés en dur dans le client et lui sont envoyés en NBT
+au login. `tools/ov_datagen/codec.py` les construit depuis le datapack vanilla
+local avec un **schéma typé champ par champ** : JSON n'a qu'un type numérique,
+NBT en a six, et le décodeur du client est strict. `temperature` est un `float`,
+`coordinate_scale` un `double`, chaque booléen un `byte`. Une conversion qui
+déduit le type de la valeur produit un codec plausible, mal typé, et coupe la
+connexion sans message utile.
+
+Omettre un champ est sûr — les codecs du client ignorent ce qu'ils ne connaissent
+pas. En envoyer un du mauvais type ne l'est pas.
+
+Le serveur ne comprend jamais ce blob : il le recopie. Et il y **relit** l'id de
+`minecraft:plains` plutôt que de le coder en dur, parce que le client n'apprend
+les IDs de biomes que de ce codec-là.

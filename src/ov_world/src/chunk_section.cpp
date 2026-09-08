@@ -1,5 +1,7 @@
 #include "ov/world/chunk_section.hpp"
 
+#include <vector>
+
 namespace ov::world {
 namespace {
 
@@ -66,6 +68,13 @@ void ChunkSection::set_biome(usize x, usize y, usize z, u16 biome) {
         return;
     }
     biomes_.set(biome_index(x, y, z), biome);
+}
+
+void ChunkSection::fill_biome(u16 biome) {
+    // assign() picks the tightest representation, which for one distinct value
+    // is single-valued with no packed data at all — what vanilla writes.
+    const std::vector<u16> all(64, biome);
+    biomes_.assign(all);
 }
 
 bool ChunkSection::load_blocks(u8 bits, std::span<const u16> palette, std::span<const u64> data) {

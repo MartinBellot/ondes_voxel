@@ -64,6 +64,14 @@ bool LightArray::load(std::span<const u8> bytes) {
     return true;
 }
 
+std::vector<u8> LightArray::to_bytes() const {
+    if (!data_.empty()) {
+        return data_;
+    }
+    const u8 both = static_cast<u8>((uniform_ << 4) | uniform_);
+    return std::vector<u8>(kLightByteCount, both);
+}
+
 void LightArray::compact() {
     if (data_.empty()) {
         return;

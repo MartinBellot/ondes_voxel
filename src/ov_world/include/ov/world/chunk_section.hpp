@@ -69,6 +69,9 @@ public:
     [[nodiscard]] u16 get_biome(usize x, usize y, usize z) const noexcept;
     void              set_biome(usize x, usize y, usize z, u16 biome);
 
+    /// Make every cell the same biome, and say so in the representation.
+    void fill_biome(u16 biome);
+
     /// Non-air blocks. This is the wire's "block count" field verbatim.
     [[nodiscard]] u16 non_air_count() const noexcept { return non_air_count_; }
 

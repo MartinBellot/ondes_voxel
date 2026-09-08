@@ -11,7 +11,7 @@
   },
   "last_updated": "2026-09-08",
   "current_milestone": "M3",
-  "current_task": "m3-tick-loop-and-chunkmap",
+  "current_task": "m3-block-break-and-place",
   "milestones": {
     "M0": {
       "name": "Fondations",
@@ -42,7 +42,7 @@
     "M3": {
       "name": "Tranche verticale",
       "status": "in_progress",
-      "done": 3,
+      "done": 7,
       "total": 17,
       "exit_criterion": "Un client Minecraft vanilla 1.20.1 non modifié se connecte, marche, casse et pose un bloc — sans une ligne de Vulkan.",
       "blocked": [
@@ -106,7 +106,9 @@
     "tag_parity": "305 tags / 4255 membres, re-resolus independamment depuis les fichiers JSON bruts et identiques ; 108 fichiers de registres dynamiques reportes",
     "light_nibble_order": "ordre confirme par mesure sur 144974 tableaux de lumiere reels : cellule paire = demi-octet bas, plus lisse dans 97.8 % des cas",
     "heightmap_semantics": "4577023/4577024 colonnes recalculees depuis les blocs et identiques ; l'unique ecart est un bloc modde (create:crushing_wheel_controller)",
-    "chunk_replay": "4577024/4577024 colonnes : le heightmap maintenu bloc par bloc via Chunk::set_block n'a jamais devie du balayage complet, sur un monde reel"
+    "chunk_replay": "4577024/4577024 colonnes : le heightmap maintenu bloc par bloc via Chunk::set_block n'a jamais devie du balayage complet, sur un monde reel",
+    "m3_vertical_slice": "client vanilla 1.20.1 non modifie : connexion, spawn dans un superflat eclaire, deplacement. 289 chunks envoyes, tous decodes integralement.",
+    "chunk_packet": "encodage identique section par section a celui du vrai serveur vanilla (largeurs de bits, tailles de palette, nombres de longs, octets aux memes offsets)"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",

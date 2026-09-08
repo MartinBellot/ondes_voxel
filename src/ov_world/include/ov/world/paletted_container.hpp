@@ -15,8 +15,9 @@
 //
 //   single value   one id, no data at all. The common case by a wide margin —
 //                  most sections are entirely air or entirely stone.
-//   indirect       a palette, with indices packed at 4 to 8 bits. Below 4 the
-//                  width is forced up to 4; vanilla does the same.
+//   indirect       a palette, with indices packed at 4 to 8 bits for blocks and
+//                  1 to 3 for biomes. The two ranges are different and the
+//                  width is what a reader uses to tell the encodings apart.
 //   direct         no palette, ids packed at the registry's own width. 15 bits
 //                  for 24135 block states, 6 for the biomes.
 //
@@ -36,17 +37,28 @@ namespace ov::world {
 enum class PaletteKind : u8 {
     /// Every entry is the same value. No packed data is stored at all.
     SingleValue,
-    /// Indices into a small palette, 4 to 8 bits each.
+    /// Indices into a small palette: 4 to 8 bits for blocks, 1 to 3 for biomes.
     Indirect,
     /// Registry ids packed directly, no palette.
     Direct,
 };
 
-/// Below this, vanilla still pads the width up to 4 bits.
+/// Blocks: below this, vanilla still pads the width up to 4 bits.
 inline constexpr u8 kMinIndirectBits = 4;
 
-/// Above this, a palette costs more than it saves and the container goes direct.
+/// Blocks: above this, a palette costs more than it saves and the container
+/// goes direct.
 inline constexpr u8 kMaxIndirectBits = 8;
+
+/// Biomes use a *different* range, and this is not a detail.
+///
+/// A biome palette is 1 to 3 bits; four or more means direct. So padding a
+/// biome palette up to 4 bits the way blocks are padded does not merely waste
+/// space — the client reads the width to decide which encoding it is looking
+/// at, sees 4, and interprets palette indices as registry ids. Every biome in
+/// the chunk becomes a different one.
+inline constexpr u8 kMinBiomeIndirectBits = 1;
+inline constexpr u8 kMaxBiomeIndirectBits = 3;
 
 /// Width of a directly packed block state: 24135 states need 15 bits.
 inline constexpr u8 kDirectBlockBits = 15;
@@ -71,13 +83,26 @@ inline constexpr u8 kDirectBiomeBits = 6;
     return (count + per_long - 1) / per_long;
 }
 
-/// The smallest palette width that can index `size` distinct values.
-[[nodiscard]] constexpr u8 bits_for_palette(usize size) noexcept {
+/// The smallest palette width that can index `size` distinct values, before
+/// the per-kind minimum is applied.
+[[nodiscard]] constexpr u8 raw_bits_for_palette(usize size) noexcept {
     u8 bits = 1;
     while ((usize{1} << bits) < size) {
         ++bits;
     }
+    return bits;
+}
+
+/// The width a *block* palette uses for `size` entries.
+[[nodiscard]] constexpr u8 bits_for_palette(usize size) noexcept {
+    const u8 bits = raw_bits_for_palette(size);
     return bits < kMinIndirectBits ? kMinIndirectBits : bits;
+}
+
+/// The width a *biome* palette uses for `size` entries.
+[[nodiscard]] constexpr u8 bits_for_biome_palette(usize size) noexcept {
+    const u8 bits = raw_bits_for_palette(size);
+    return bits < kMinBiomeIndirectBits ? kMinBiomeIndirectBits : bits;
 }
 
 /// A section's worth of entries: 4096 blocks, or 64 biomes.
@@ -87,7 +112,13 @@ inline constexpr u8 kDirectBiomeBits = 6;
 class PalettedContainer {
 public:
     /// A container of `capacity` entries, all set to `value`.
-    PalettedContainer(usize capacity, u16 value, u8 direct_bits);
+    ///
+    /// `min_indirect_bits` and `max_indirect_bits` differ between blocks and
+    /// biomes, and the width is what tells a reader which encoding it is
+    /// looking at — so they are part of the container's identity rather than a
+    /// detail of the writer.
+    PalettedContainer(usize capacity, u16 value, u8 direct_bits, u8 min_indirect_bits,
+                      u8 max_indirect_bits);
 
     /// A block section: 4096 entries of air.
     [[nodiscard]] static PalettedContainer blocks(u16 fill = 0);
@@ -140,8 +171,12 @@ public:
 private:
     void repack(u8 new_bits, std::span<const u16> new_palette);
 
+    [[nodiscard]] u8 bits_for(usize palette_size) const noexcept;
+
     usize            capacity_{0};
     u8               direct_bits_{kDirectBlockBits};
+    u8               min_indirect_bits_{kMinIndirectBits};
+    u8               max_indirect_bits_{kMaxIndirectBits};
     u8               bits_{0};
     PaletteKind      kind_{PaletteKind::SingleValue};
     std::vector<u16> palette_;

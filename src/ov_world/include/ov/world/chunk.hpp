@@ -86,6 +86,15 @@ public:
     [[nodiscard]] u16 get_biome(usize x, i32 y, usize z) const noexcept;
     void              set_biome(usize x, i32 y, usize z, u16 biome);
 
+    /// Make the whole column one biome.
+    ///
+    /// Not the same as setting all 64 cells of every section: a palette never
+    /// shrinks, so writing over a container cell by cell leaves the value it
+    /// started with in the palette forever. That is harmless but it is not what
+    /// vanilla sends, and "all one biome" is a common enough case — a flat
+    /// world, a chunk well inside a biome — to deserve saying directly.
+    void fill_biome(u16 biome);
+
     [[nodiscard]] Heightmap&       heightmap(HeightmapType type) noexcept;
     [[nodiscard]] const Heightmap& heightmap(HeightmapType type) const noexcept;
 

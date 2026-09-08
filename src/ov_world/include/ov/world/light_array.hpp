@@ -62,6 +62,18 @@ public:
     /// short array would otherwise be read past on the first lookup.
     [[nodiscard]] bool load(std::span<const u8> bytes);
 
+    /// The 2048 packed bytes, materialising them if the array is uniform.
+    ///
+    /// The wire has no way to say "uniformly 15": a section is either sent with
+    /// its bytes or listed in the *empty* mask, and empty means all zero. So a
+    /// uniformly-lit section still has to be written out, and only a uniformly
+    /// dark one can be elided. Getting that backwards renders the world black.
+    [[nodiscard]] std::vector<u8> to_bytes() const;
+
+    /// True when the array can be left out of the packet entirely: uniform and
+    /// dark.
+    [[nodiscard]] bool is_absent() const noexcept { return data_.empty() && uniform_ == 0; }
+
     /// Drop the storage if every cell turned out to hold the same value.
     ///
     /// Worth calling after bulk lighting: a section that has been fully lit and

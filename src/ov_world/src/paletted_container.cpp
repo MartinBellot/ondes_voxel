@@ -42,19 +42,29 @@ void pack(std::span<u64> data, usize index, u8 bits, u16 value) noexcept {
 
 }  // namespace
 
-PalettedContainer::PalettedContainer(usize capacity, u16 value, u8 direct_bits)
+PalettedContainer::PalettedContainer(usize capacity, u16 value, u8 direct_bits,
+                                     u8 min_indirect_bits, u8 max_indirect_bits)
     : capacity_{capacity},
       direct_bits_{direct_bits},
+      min_indirect_bits_{min_indirect_bits},
+      max_indirect_bits_{max_indirect_bits},
       bits_{0},
       kind_{PaletteKind::SingleValue},
       palette_{value} {}
 
 PalettedContainer PalettedContainer::blocks(u16 fill) {
-    return PalettedContainer{kBlockCapacity, fill, kDirectBlockBits};
+    return PalettedContainer{kBlockCapacity, fill, kDirectBlockBits, kMinIndirectBits,
+                             kMaxIndirectBits};
 }
 
 PalettedContainer PalettedContainer::biomes(u16 fill) {
-    return PalettedContainer{kBiomeCapacity, fill, kDirectBiomeBits};
+    return PalettedContainer{kBiomeCapacity, fill, kDirectBiomeBits, kMinBiomeIndirectBits,
+                             kMaxBiomeIndirectBits};
+}
+
+u8 PalettedContainer::bits_for(usize palette_size) const noexcept {
+    const u8 bits = raw_bits_for_palette(palette_size);
+    return bits < min_indirect_bits_ ? min_indirect_bits_ : bits;
 }
 
 usize PalettedContainer::palette_size() const noexcept {
@@ -112,7 +122,7 @@ void PalettedContainer::set(usize index, u16 value) {
         // A second distinct value: the section stops being uniform and needs
         // real storage for the first time.
         std::vector<u16> palette{palette_.empty() ? u16{0} : palette_[0], value};
-        repack(bits_for_palette(palette.size()), palette);
+        repack(bits_for(palette.size()), palette);
         pack(data_, index, bits_, 1);
         return;
     }
@@ -127,8 +137,8 @@ void PalettedContainer::set(usize index, u16 value) {
         std::vector<u16> palette = palette_;
         palette.push_back(value);
 
-        const u8 needed = bits_for_palette(palette.size());
-        if (needed > kMaxIndirectBits) {
+        const u8 needed = bits_for(palette.size());
+        if (needed > max_indirect_bits_) {
             // The palette has outgrown its usefulness: past 256 entries the
             // indices cost as much as the ids themselves.
             repack(direct_bits_, {});
@@ -164,7 +174,7 @@ void PalettedContainer::assign(std::span<const u16> values) {
             continue;
         }
         distinct.push_back(value);
-        if (bits_for_palette(distinct.size()) > kMaxIndirectBits) {
+        if (bits_for(distinct.size()) > max_indirect_bits_) {
             overflowed = true;
             break;
         }
@@ -184,7 +194,7 @@ void PalettedContainer::assign(std::span<const u16> values) {
         palette_.clear();
     } else {
         kind_    = PaletteKind::Indirect;
-        bits_    = bits_for_palette(distinct.size());
+        bits_    = bits_for(distinct.size());
         palette_ = std::move(distinct);
     }
 
@@ -224,7 +234,7 @@ bool PalettedContainer::load_packed(u8 bits, std::span<const u16> palette,
     if (!palette.empty()) {
         // Indirect: every index the data can express must exist in the palette,
         // or a lookup would run off the end.
-        if (bits > kMaxIndirectBits || palette.size() > (usize{1} << bits)) {
+        if (bits > max_indirect_bits_ || palette.size() > (usize{1} << bits)) {
             return false;
         }
         for (usize i = 0; i < capacity_; ++i) {

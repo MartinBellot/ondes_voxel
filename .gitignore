@@ -13,6 +13,11 @@
 # ── Caches binaires générés (le hash est commité, pas le cache) ──
 *.ovpack
 
+# Le codec de registres envoyé au client, construit depuis le datapack vanilla.
+# Données dérivées de Mojang : régénérées localement par tools/ov_datagen/codec.py,
+# jamais commitées — comme tout le reste sous data/vanilla/.
+*.nbt
+
 # ── Build ──
 /build/
 /out/

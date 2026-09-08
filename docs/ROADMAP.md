@@ -157,18 +157,21 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 
 ## M3 — Tranche verticale ⭐
 
+> **Atteint le 2026-09-08** : un client Minecraft 1.20.1 non modifié se connecte,
+> spawne dans un monde superflat éclairé et s'y déplace. Sans une ligne de Vulkan.
+
 - [ ] Boucle de tick 20 Hz avec budget et rapport de surcharge
 - [ ] `ChunkMap`, système de tickets, niveaux de chargement
 - [ ] **Ordonnancement par régions exclusives** — features déborde sur les voisins 🔒
 - [ ] Sections copy-on-write en `shared_ptr<const>` 🔒
 - [ ] Pool de jobs enkiTS : pinned tasks + priorités
-- [ ] Générateur superflat
+- [x] Générateur superflat
 - [ ] Moteur de lumière : ciel et bloc, propagation et suppression
 - [x] Tableaux de lumière nullables à valeur uniforme (divise l'empreinte par 2)
 - [x] Heightmaps : stockage, packing 9 bits, sémantique vérifiée sur monde réel
 - [x] `WORLD_SURFACE` calculé et maintenu incrémentalement *(air suffit)*
 - [ ] `MOTION_BLOCKING` et `OCEAN_FLOOR` *(bloqués : table de flags d'état)*
-- [ ] Streaming de chunks selon la distance de vue
+- [x] Envoi des chunks à la connexion *(streaming dynamique : à venir)*
 - [ ] Physique du joueur : AABB, marche, saut, sprint, accroupissement, nage
 - [ ] Gestion des joueurs, keep-alive, liste des joueurs
 - [ ] `ov_netclient` + `ClientLevel` (réplique séparée)

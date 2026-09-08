@@ -12,24 +12,41 @@
 #include "ov/base/log.hpp"
 #include "ov/base/thread.hpp"
 #include "ov/base/time.hpp"
+#include "ov/io/file.hpp"
 #include "ov/math/block_pos.hpp"
+#include "ov/nbt/binary.hpp"
 #include "ov/protocol/framing.hpp"
 #include "ov/protocol/listener.hpp"
 #include "ov/protocol/login.hpp"
+#include "ov/protocol/play.hpp"
 #include "ov/protocol/status.hpp"
 #include "ov/protocol/varint.hpp"
+#include "ov/registry/block_states.hpp"
+#include "ov/world/chunk.hpp"
 
 #include <fmt/format.h>
 
 #include <atomic>
 #include <charconv>
+#include <chrono>
 #include <csignal>
+#include <filesystem>
 #include <mutex>
 #include <string_view>
 #include <thread>
 #include <unordered_map>
 
+// Where the locally generated vanilla data lives. The build defines this as an
+// absolute path; the fallback exists so the file still compiles on its own,
+// which the header and syntax checks rely on. A wrong value is not silent — the
+// path is printed when loading fails.
+#ifndef OV_DATA_DIR
+#define OV_DATA_DIR "data"
+#endif
+
 namespace {
+
+using namespace ov;
 
 std::atomic<bool> g_stop_requested{false};
 
@@ -53,7 +70,141 @@ struct Options {
 /// A packet id means different things in different states — 0x00 is Handshake,
 /// then Status Request, then Login Start — so the state has to be tracked per
 /// connection or the ids are ambiguous.
-enum class ConnectionState { Handshaking, Status, Login };
+enum class ConnectionState { Handshaking, Status, Login, Play };
+
+/// The superflat preset, bottom to top: bedrock, two dirt, one grass.
+///
+/// A generator rather than a stored world, so a fresh server needs no save
+/// files. It is also the one terrain whose block flags are known without the
+/// flag table: all four of these stop movement, so MOTION_BLOCKING can be set
+/// exactly rather than guessed.
+struct Superflat {
+    registry::BlockStateId bedrock{0};
+    registry::BlockStateId dirt{0};
+    registry::BlockStateId grass{0};
+    world::AirStates       air{};
+    u16                    biome{0};
+
+    /// The y of the topmost solid block. A player stands one above it.
+    static constexpr i32 kSurfaceY = -61;
+
+    [[nodiscard]] static Superflat from(const registry::BlockRegistry& blocks) {
+        const auto state_of = [&blocks](std::string_view name) {
+            const auto block = blocks.find_block(name);
+            return block ? blocks.default_state(*block) : registry::BlockStateId{0};
+        };
+        return Superflat{
+            state_of("minecraft:bedrock"),
+            state_of("minecraft:dirt"),
+            state_of("minecraft:grass_block"),
+            world::AirStates::from(blocks),
+            0,
+        };
+    }
+
+    [[nodiscard]] world::Chunk generate(ChunkPos position) const {
+        world::Chunk chunk{position, world::WorldShape::overworld(), air};
+
+        for (usize z = 0; z < 16; ++z) {
+            for (usize x = 0; x < 16; ++x) {
+                chunk.set_block(x, -64, z, bedrock);
+                chunk.set_block(x, -63, z, dirt);
+                chunk.set_block(x, -62, z, dirt);
+                chunk.set_block(x, kSurfaceY, z, grass);
+
+                // Every block here stops movement, so the two heightmaps
+                // coincide. Saying so is exact for this terrain; it is not a
+                // general rule and does not become one.
+                chunk.heightmap(world::HeightmapType::MotionBlocking).set_surface(x, z, kSurfaceY);
+            }
+        }
+
+        chunk.fill_biome(biome);
+
+        // Sky light, without a light engine: every block above the surface sees
+        // the sky at full strength, the surface itself and everything under it
+        // sees none. Exact for a flat world with no overhangs.
+        //
+        // Per **block**, not per section. The surface sits at y = -61, inside
+        // the section spanning -64 to -49 — so a per-section rule leaves the
+        // one section the player actually stands in dark, and the ground looks
+        // black while the sky above it is fine.
+        for (usize i = 0; i < chunk.shape().section_count(); ++i) {
+            const i32            section_bottom = chunk.shape().min_y + static_cast<i32>(i) * 16;
+            world::ChunkSection* section        = chunk.section_for_y(section_bottom);
+            if (section == nullptr) {
+                continue;
+            }
+
+            world::LightArray sky{0};
+            for (usize local_y = 0; local_y < 16; ++local_y) {
+                if (section_bottom + static_cast<i32>(local_y) <= kSurfaceY) {
+                    continue;
+                }
+                for (usize z = 0; z < 16; ++z) {
+                    for (usize x = 0; x < 16; ++x) {
+                        sky.set(world::section_index(x, local_y, z), world::kMaxLightLevel);
+                    }
+                }
+            }
+            // Sections entirely above or entirely below collapse back to a
+            // uniform value and store nothing; only the one straddling the
+            // surface keeps its 2 KiB.
+            sky.compact();
+            section->sky_light() = sky;
+        }
+        return chunk;
+    }
+};
+
+/// The numeric id a biome carries in the codec we sent.
+///
+/// The client learns biome ids from our codec and from nowhere else, so a chunk
+/// must name biomes by *our* index. Reading it back out of the codec rather
+/// than hard-coding a number keeps one source of truth: change the emitter and
+/// this follows, instead of the world quietly rendering in the wrong biome's
+/// colours.
+[[nodiscard]] std::optional<u16> biome_id_in_codec(std::span<const u8> codec,
+                                                   std::string_view    name) {
+    const auto document = nbt::read(codec);
+    if (!document) {
+        return std::nullopt;
+    }
+    const nbt::Tag* registry = document->root.find("minecraft:worldgen/biome");
+    if (registry == nullptr) {
+        return std::nullopt;
+    }
+    const nbt::Tag* value = registry->find("value");
+    if (value == nullptr || value->list() == nullptr) {
+        return std::nullopt;
+    }
+    for (const nbt::Tag& entry : *value->list()) {
+        const nbt::Tag* entry_name = entry.find("name");
+        const nbt::Tag* entry_id   = entry.find("id");
+        if (entry_name != nullptr && entry_id != nullptr && entry_name->as_string() == name) {
+            return static_cast<u16>(entry_id->as_i64());
+        }
+    }
+    return std::nullopt;
+}
+
+/// What the server tracks per connected player.
+struct Player {
+    /// Held so the tick thread can send keep-alives without going through the
+    /// packet handler. Dropped in on_disconnect, which is what keeps this from
+    /// pinning a closed socket forever.
+    net::ConnectionPtr connection;
+
+    i32  entity_id{0};
+    i32  pending_teleport{-1};
+    bool confirmed{false};
+    i64  last_keep_alive_sent_ms{0};
+    i64  keep_alive_id{0};
+    bool awaiting_keep_alive{false};
+    f64  x{0.5};
+    f64  y{static_cast<f64>(Superflat::kSurfaceY) + 1.0};
+    f64  z{0.5};
+};
 
 Options parse_args(int argc, char** argv) {
     Options options;
@@ -145,6 +296,51 @@ int main(int argc, char** argv) {
     status.description = options.motd;
     status.max_players = options.max_players;
 
+    // The data a player needs before they can be let in. Both are generated
+    // locally from the official jar and never committed; without them the
+    // server can still answer a ping, so a status-only server is a useful
+    // fallback rather than a fatal error.
+    const std::filesystem::path data_dir{OV_DATA_DIR};
+    const auto                  blocks =
+        registry::BlockRegistry::load(data_dir / "vanilla" / "1.20.1" / "registry.ovpack");
+    const auto codec_bytes = io::read_file(data_dir / "vanilla" / "1.20.1" / "registry_codec.nbt");
+
+    const bool world_available = blocks.has_value() && codec_bytes.has_value();
+    if (!world_available) {
+        OV_LOG_WARN("no registry pack or codec under {} — players can ping but not join",
+                    data_dir.string());
+        OV_LOG_WARN("run tools/ov_datagen/datagen.py, then ovpack.py and codec.py");
+    } else {
+        OV_LOG_INFO("registry: {} blocks, {} states; codec {} bytes", blocks->block_count(),
+                    blocks->state_count(), codec_bytes->size());
+    }
+
+    Superflat superflat = world_available ? Superflat::from(*blocks) : Superflat{};
+    if (world_available) {
+        const auto plains = biome_id_in_codec(*codec_bytes, "minecraft:plains");
+        if (!plains) {
+            OV_LOG_WARN(
+                "codec has no minecraft:plains — the world will render in "
+                "whichever biome sits at id 0");
+        } else {
+            superflat.biome = *plains;
+            OV_LOG_INFO("biome minecraft:plains is id {} in our codec", *plains);
+        }
+    }
+
+    // Chunks are generated once and reused. A superflat column is identical
+    // everywhere but its coordinates, so this is a cache of one shape rather
+    // than a world — the real ChunkMap arrives with the tick scheduler.
+    std::mutex                            chunk_mutex;
+    std::unordered_map<i64, world::Chunk> chunk_cache;
+    const auto                            chunk_key = [](i32 cx, i32 cz) {
+        return (static_cast<i64>(cx) << 32) ^ static_cast<u32>(cz);
+    };
+
+    std::unordered_map<const net::Connection*, Player> players;
+    std::mutex                                         players_mutex;
+    std::atomic<i32>                                   next_entity_id{1};
+
     // Per-connection protocol state. A packet id means different things in
     // different states, so this cannot be global.
     std::unordered_map<const net::Connection*, ConnectionState> states;
@@ -157,6 +353,10 @@ int main(int argc, char** argv) {
     });
 
     listener->on_disconnect([&](const net::ConnectionPtr& connection) {
+        {
+            const std::scoped_lock lock{players_mutex};
+            players.erase(connection.get());
+        }
         const std::scoped_lock lock{states_mutex};
         states.erase(connection.get());
         OV_LOG_DEBUG("{} disconnected", connection->peer_address());
@@ -247,16 +447,145 @@ int main(int argc, char** argv) {
                 OV_LOG_INFO("{} logging in as {} ({})", connection->peer_address(), login->name,
                             uuid.to_string());
 
-                // The world cannot receive a player yet — chunk streaming and
-                // the Play state arrive with M3. Saying so beats leaving the
-                // client waiting for a Join Game that never comes, which from
-                // the inside is indistinguishable from a hung server.
-                send_packet(static_cast<i32>(net::LoginPacket::Disconnect),
-                            net::encode_login_disconnect(
-                                "Ondes VOXEL — the world is not implemented yet.\n"
-                                "The protocol works: you reached this through a real "
-                                "handshake and login."));
+                if (!world_available) {
+                    // Saying so beats leaving the client waiting for a join
+                    // that never comes, which from the inside is
+                    // indistinguishable from a hung server.
+                    send_packet(static_cast<i32>(net::LoginPacket::Disconnect),
+                                net::encode_login_disconnect(
+                                    "Ondes VOXEL — no world data on this server.\n"
+                                    "The operator needs to run the data generator."));
+                    return true;
+                }
+
+                send_packet(static_cast<i32>(net::LoginPacket::Success),
+                            net::encode_login_success(uuid, login->name));
+
+                Player player;
+                player.entity_id = next_entity_id.fetch_add(1);
+                {
+                    const std::scoped_lock lock{states_mutex};
+                    states[connection.get()] = ConnectionState::Play;
+                }
+
+                // Login (play) first, and nothing before it: until the client
+                // has the registry codec it cannot make sense of a single
+                // other packet.
+                net::LoginPlay join;
+                join.entity_id           = player.entity_id;
+                join.game_mode           = 1;  // creative, so flying works without food
+                join.registry_codec      = *codec_bytes;
+                join.view_distance       = 10;
+                join.simulation_distance = 10;
+                send_packet(net::clientbound::kLoginPlay, net::encode_login_play(join));
+
+                send_packet(net::clientbound::kPlayerAbilities,
+                            net::encode_player_abilities(true, false, true, true, 0.05F, 0.1F));
+
+                player.pending_teleport = 1;
+                send_packet(net::clientbound::kSynchronizePosition,
+                            net::encode_synchronize_position(player.x, player.y, player.z, 0.0F,
+                                                             0.0F, player.pending_teleport));
+
+                send_packet(net::clientbound::kSetDefaultSpawn,
+                            net::encode_set_default_spawn(0, Superflat::kSurfaceY + 1, 0, 0.0F));
+
+                // The centre has to arrive before the chunks: a client that
+                // receives chunks with no centre keeps them and renders
+                // nothing.
+                send_packet(net::clientbound::kSetCenterChunk, net::encode_set_center_chunk(0, 0));
+
+                constexpr i32 kRadius = 8;
+                for (i32 cz = -kRadius; cz <= kRadius; ++cz) {
+                    for (i32 cx = -kRadius; cx <= kRadius; ++cx) {
+                        const i64              key = chunk_key(cx, cz);
+                        const std::scoped_lock lock{chunk_mutex};
+                        auto                   it = chunk_cache.find(key);
+                        if (it == chunk_cache.end()) {
+                            it = chunk_cache.emplace(key, superflat.generate(ChunkPos{cx, cz}))
+                                     .first;
+                        }
+                        send_packet(net::clientbound::kChunkDataAndLight,
+                                    net::encode_chunk_data(it->second));
+                    }
+                }
+
+                // Reason 13: "start waiting for level chunks". This is what
+                // takes the client off the loading screen.
+                send_packet(net::clientbound::kGameEvent, net::encode_game_event(13, 0.0F));
+
+                player.connection = connection;
+                {
+                    const std::scoped_lock lock{players_mutex};
+                    players[connection.get()] = player;
+                }
+                OV_LOG_INFO("{} joined at ({:.1f}, {:.1f}, {:.1f})", login->name, player.x,
+                            player.y, player.z);
                 return true;
+            }
+
+            case ConnectionState::Play: {
+                const std::scoped_lock lock{players_mutex};
+                const auto             it = players.find(connection.get());
+                if (it == players.end()) {
+                    return false;
+                }
+                Player& player = it->second;
+
+                switch (packet_id) {
+                    case net::serverbound::kConfirmTeleport: {
+                        const auto id = net::parse_confirm_teleport(body);
+                        if (id && *id == player.pending_teleport) {
+                            player.confirmed = true;
+                        }
+                        return true;
+                    }
+
+                    case net::serverbound::kKeepAlive: {
+                        const auto id = net::parse_keep_alive(body);
+                        // A reply carrying the wrong id means the client is
+                        // answering a keep-alive we did not send. Vanilla drops
+                        // the connection; so do we, rather than trusting it.
+                        if (!id || *id != player.keep_alive_id) {
+                            return false;
+                        }
+                        player.awaiting_keep_alive = false;
+                        return true;
+                    }
+
+                    case net::serverbound::kSetPlayerPosition:
+                    case net::serverbound::kSetPlayerPositionRot:
+                    case net::serverbound::kSetPlayerRotation:
+                    case net::serverbound::kSetPlayerOnGround: {
+                        const auto movement = net::parse_movement(packet_id, body);
+                        if (!movement) {
+                            return false;
+                        }
+                        // Believed as sent, for now. Server-authoritative
+                        // movement needs collision, which needs the block flag
+                        // table; accepting the client's word until then is a
+                        // stated gap rather than a silent one.
+                        if (movement->x) {
+                            player.x = *movement->x;
+                            player.y = *movement->y;
+                            player.z = *movement->z;
+                        }
+                        return true;
+                    }
+
+                    case net::serverbound::kClientInformation:
+                    case net::serverbound::kPluginMessage:
+                        // Read and ignored: neither changes anything the server
+                        // does yet, and refusing them would drop the player.
+                        return true;
+
+                    default:
+                        // Unknown play packets are ignored rather than fatal.
+                        // A client sends a dozen the server does not implement,
+                        // and disconnecting on the first one makes the world
+                        // unenterable.
+                        return true;
+                }
             }
         }
         return false;
@@ -283,6 +612,32 @@ int main(int argc, char** argv) {
             // deterministic, and must not allocate once running: in debug
             // builds this guard aborts on the first allocation, naming it.
             const NoAllocScope no_alloc{"server tick"};
+        }
+
+        // Keep-alive. The client drops a server that goes quiet, and vanilla
+        // sends one every fifteen seconds — ten leaves room for a slow link
+        // without being chatty. Outside the no-alloc scope on purpose: this
+        // builds a packet, and the tick body is where allocation is forbidden.
+        {
+            const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now().time_since_epoch())
+                                    .count();
+
+            const std::scoped_lock lock{players_mutex};
+            for (auto& [key, player] : players) {
+                if (now_ms - player.last_keep_alive_sent_ms < 10000) {
+                    continue;
+                }
+                player.last_keep_alive_sent_ms = now_ms;
+                player.keep_alive_id           = now_ms;
+                player.awaiting_keep_alive     = true;
+
+                if (const auto framed = net::encode_packet(
+                        net::clientbound::kKeepAlive, net::encode_keep_alive(player.keep_alive_id));
+                    framed && player.connection) {
+                    player.connection->send(*framed);
+                }
+            }
         }
 
         if (clock.is_behind()) {

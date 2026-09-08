@@ -172,22 +172,68 @@ TEST_CASE("assign picks the tightest representation", "[world][palette]") {
     }
 }
 
-TEST_CASE("a biome section is 64 cells at 6 bits", "[world][palette]") {
+TEST_CASE("a biome palette uses one to three bits, not four", "[world][palette][biome]") {
+    // Biomes do NOT share the block range, and this is not a space nicety: the
+    // client reads the width to decide which encoding it is looking at. Four
+    // bits means *direct* for biomes, so padding a small biome palette up to 4
+    // the way blocks are padded makes the client read palette indices as
+    // registry ids, and every biome in the chunk becomes a different one.
+    REQUIRE(bits_for_biome_palette(2) == 1);
+    REQUIRE(bits_for_biome_palette(3) == 2);
+    REQUIRE(bits_for_biome_palette(4) == 2);
+    REQUIRE(bits_for_biome_palette(5) == 3);
+    REQUIRE(bits_for_biome_palette(8) == 3);
+
+    // Blocks keep their own floor of four.
+    REQUIRE(bits_for_palette(2) == 4);
+    REQUIRE(bits_for_palette(8) == 4);
+}
+
+TEST_CASE("two biomes in a section pack at one bit", "[world][palette][biome]") {
     auto biomes = PalettedContainer::biomes(0);
     REQUIRE(biomes.capacity() == 64);
 
+    biomes.set(0, 1);
+    REQUIRE(biomes.kind() == PaletteKind::Indirect);
+    REQUIRE(biomes.bits() == 1);
+    REQUIRE(biomes.get(0) == 1);
+    REQUIRE(biomes.get(1) == 0);
+}
+
+TEST_CASE("past eight biomes a section goes direct at six bits", "[world][palette][biome]") {
+    // Three bits index eight entries, and the fill value is one of them — so
+    // seven *new* values fill the palette, and the eighth forces direct rather
+    // than a widen, because four bits is out of range for a biome.
+    auto biomes = PalettedContainer::biomes(0);
+    for (u16 i = 1; i <= 7; ++i) {
+        biomes.set(i, i);
+    }
+    REQUIRE(biomes.palette_size() == 8);
+    REQUIRE(biomes.kind() == PaletteKind::Indirect);
+    REQUIRE(biomes.bits() == 3);
+
+    biomes.set(9, 9);
+    REQUIRE(biomes.kind() == PaletteKind::Direct);
+    REQUIRE(biomes.bits() == kDirectBiomeBits);
+    REQUIRE(biomes.palette().empty());
+
+    for (u16 i = 1; i <= 7; ++i) {
+        REQUIRE(biomes.get(i) == i);
+    }
+    REQUIRE(biomes.get(9) == 9);
+}
+
+TEST_CASE("all 64 biomes in one section is a direct container", "[world][palette][biome]") {
+    auto biomes = PalettedContainer::biomes(0);
     for (usize i = 0; i < 64; ++i) {
         biomes.set(i, static_cast<u16>(i));
     }
-    // 64 distinct values still fits an indirect palette at 6 bits.
-    REQUIRE(biomes.kind() == PaletteKind::Indirect);
+    REQUIRE(biomes.kind() == PaletteKind::Direct);
     REQUIRE(biomes.bits() == 6);
     for (usize i = 0; i < 64; ++i) {
         REQUIRE(biomes.get(i) == static_cast<u16>(i));
     }
 }
-
-// ── Loading from disk and from the wire ─────────────────────────────────────
 
 TEST_CASE("packed data round-trips through load", "[world][palette]") {
     auto original = PalettedContainer::blocks(0);
