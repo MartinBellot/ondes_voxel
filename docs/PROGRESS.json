@@ -109,7 +109,8 @@
     "chunk_replay": "4577024/4577024 colonnes : le heightmap maintenu bloc par bloc via Chunk::set_block n'a jamais devie du balayage complet, sur un monde reel",
     "m3_vertical_slice": "client vanilla 1.20.1 non modifie : connexion, spawn dans un superflat eclaire, deplacement, cassage et pose de blocs.",
     "chunk_packet": "encodage identique section par section a celui du vrai serveur vanilla (largeurs de bits, tailles de palette, nombres de longs, octets aux memes offsets)",
-    "sky_light": "lumiere directe derivee de WORLD_SURFACE, recalculee a chaque edition ; verifie : creuser puis se reconnecter laisse le trou eclaire jusqu'au fond"
+    "sky_light": "lumiere directe derivee de WORLD_SURFACE, recalculee a chaque edition ; verifie : creuser puis se reconnecter laisse le trou eclaire jusqu'au fond",
+    "player_state": "position et rotation retenues entre sessions ; chunks centres sur le joueur a la reconnexion (verifie a 1234,-777 : chunk 77,-49)"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",

@@ -768,3 +768,17 @@ un puits est correctement éclairé, le dessous d'un surplomb ne l'est pas. Et
 « non-air » tient lieu d'« opaque », ce qui est juste pour tout bloc d'un monde
 plat et faux pour le verre. Les deux disparaissent avec le moteur de lumière et
 la table de flags.
+
+### La position du joueur, et son corollaire
+
+Retenir la position ne suffit pas : réapparaître à mille blocs de l'origine avec
+des chunks centrés sur le spawn fait tomber le joueur dans un monde vide. Les
+deux vont ensemble — **la position restaurée détermine le centre de l'envoi**.
+
+Elle est enregistrée à **chaque** mise à jour de mouvement, pas à la déconnexion :
+un client tué n'envoie jamais de fermeture propre, et perdre la position d'une
+session qui a planté est précisément le cas qu'on remarque.
+
+En mémoire seulement. Un redémarrage du serveur l'oublie, exactement comme il
+oublie les chunks — et n'en persister qu'une des deux replacerait quelqu'un à
+l'intérieur d'un bloc qui n'existe plus.

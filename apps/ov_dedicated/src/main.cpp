@@ -30,6 +30,7 @@
 #include <atomic>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <csignal>
 #include <filesystem>
 #include <mutex>
@@ -233,6 +234,24 @@ struct Player {
     f64                x{0.5};
     f64                y{static_cast<f64>(Superflat::kSurfaceY) + 1.0};
     f64                z{0.5};
+    f32                yaw{0.0F};
+    f32                pitch{0.0F};
+
+    /// The key this player is remembered under between sessions.
+    std::string identity;
+};
+
+/// Where a player was when they last left.
+///
+/// In memory only: a server restart forgets it, exactly as it forgets the
+/// chunks. Persisting one without the other would put someone back inside a
+/// block that no longer exists, so both wait for the Anvil work together.
+struct SavedPlayer {
+    f64 x{0.5};
+    f64 y{static_cast<f64>(Superflat::kSurfaceY) + 1.0};
+    f64 z{0.5};
+    f32 yaw{0.0F};
+    f32 pitch{0.0F};
 };
 
 Options parse_args(int argc, char** argv) {
@@ -393,6 +412,7 @@ int main(int argc, char** argv) {
     };
 
     std::unordered_map<const net::Connection*, Player> players;
+    std::unordered_map<std::string, SavedPlayer>       saved_players;
     std::mutex                                         players_mutex;
     std::atomic<i32>                                   next_entity_id{1};
 
@@ -573,6 +593,18 @@ int main(int argc, char** argv) {
 
                 Player player;
                 player.entity_id = next_entity_id.fetch_add(1);
+                player.identity  = uuid.to_string();
+                {
+                    const std::scoped_lock lock{players_mutex};
+                    if (const auto saved = saved_players.find(player.identity);
+                        saved != saved_players.end()) {
+                        player.x     = saved->second.x;
+                        player.y     = saved->second.y;
+                        player.z     = saved->second.z;
+                        player.yaw   = saved->second.yaw;
+                        player.pitch = saved->second.pitch;
+                    }
+                }
                 {
                     const std::scoped_lock lock{states_mutex};
                     states[connection.get()] = ConnectionState::Play;
@@ -593,9 +625,10 @@ int main(int argc, char** argv) {
                             net::encode_player_abilities(true, false, true, true, 0.05F, 0.1F));
 
                 player.pending_teleport = 1;
-                send_packet(net::clientbound::kSynchronizePosition,
-                            net::encode_synchronize_position(player.x, player.y, player.z, 0.0F,
-                                                             0.0F, player.pending_teleport));
+                send_packet(
+                    net::clientbound::kSynchronizePosition,
+                    net::encode_synchronize_position(player.x, player.y, player.z, player.yaw,
+                                                     player.pitch, player.pending_teleport));
 
                 send_packet(net::clientbound::kSetDefaultSpawn,
                             net::encode_set_default_spawn(0, Superflat::kSurfaceY + 1, 0, 0.0F));
@@ -603,11 +636,19 @@ int main(int argc, char** argv) {
                 // The centre has to arrive before the chunks: a client that
                 // receives chunks with no centre keeps them and renders
                 // nothing.
-                send_packet(net::clientbound::kSetCenterChunk, net::encode_set_center_chunk(0, 0));
+                // Centred on wherever the player actually is, not on the origin:
+                // someone who logs out a thousand blocks away and comes back to
+                // chunks around spawn falls through an empty world.
+                const i32 centre_x = static_cast<i32>(std::floor(player.x)) >> 4;
+                const i32 centre_z = static_cast<i32>(std::floor(player.z)) >> 4;
+                send_packet(net::clientbound::kSetCenterChunk,
+                            net::encode_set_center_chunk(centre_x, centre_z));
 
                 constexpr i32 kRadius = 8;
-                for (i32 cz = -kRadius; cz <= kRadius; ++cz) {
-                    for (i32 cx = -kRadius; cx <= kRadius; ++cx) {
+                for (i32 dz = -kRadius; dz <= kRadius; ++dz) {
+                    for (i32 dx = -kRadius; dx <= kRadius; ++dx) {
+                        const i32              cx  = centre_x + dx;
+                        const i32              cz  = centre_z + dz;
                         const i64              key = chunk_key(cx, cz);
                         const std::scoped_lock lock{chunk_mutex};
                         auto                   it = chunk_cache.find(key);
@@ -680,6 +721,16 @@ int main(int argc, char** argv) {
                             player.y = *movement->y;
                             player.z = *movement->z;
                         }
+                        if (movement->yaw) {
+                            player.yaw   = *movement->yaw;
+                            player.pitch = *movement->pitch;
+                        }
+                        // Remembered on every update rather than on disconnect:
+                        // a client that is killed never sends a clean close, and
+                        // losing the last position of a crashed session is the
+                        // case people actually notice.
+                        saved_players[player.identity] =
+                            SavedPlayer{player.x, player.y, player.z, player.yaw, player.pitch};
                         return true;
                     }
 
