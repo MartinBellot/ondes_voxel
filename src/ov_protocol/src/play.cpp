@@ -736,6 +736,13 @@ std::vector<u8> encode_block_update(WirePosition position, i32 state) {
     return writer.take();
 }
 
+std::vector<u8> encode_update_time(i64 world_age, i64 time_of_day) {
+    io::ByteWriter writer;
+    writer.write_i64(world_age);
+    writer.write_i64(time_of_day);
+    return writer.take();
+}
+
 std::vector<u8> encode_acknowledge_dig(i32 sequence) {
     io::ByteWriter writer;
     write_varint(writer, sequence);

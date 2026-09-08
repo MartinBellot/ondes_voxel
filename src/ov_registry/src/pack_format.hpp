@@ -23,7 +23,7 @@ namespace ov::registry {
 /// were current is far worse than no cache: the ids would be plausible and
 /// wrong, and nothing would report an error until a vanilla client crashed on
 /// an entity type that does not exist.
-inline constexpr u32 kFormatVersion = 6;
+inline constexpr u32 kFormatVersion = 7;
 
 inline constexpr u32 kHeaderSize = 128;
 
@@ -53,6 +53,8 @@ struct PackHeader {
     u32  item_count;
     /// One bit per block state: does it hold a fluid.
     u32 fluid_offset;
+    /// One float per block: how long it takes to break, -1 for never.
+    u32 hardness_offset;
     u32 reserved;
 };
 

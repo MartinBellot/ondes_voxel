@@ -38,3 +38,7 @@ compile_commands.json
 *.swp
 perf.data*
 *.dSYM/
+
+# Python caches from the measurement scripts.
+__pycache__/
+*.pyc

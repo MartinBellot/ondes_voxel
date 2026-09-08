@@ -195,6 +195,23 @@ public:
     /// above meaningless rather than merely false.
     [[nodiscard]] bool motion_measured(BlockId block) const noexcept;
 
+    /// How long this block takes to break, in vanilla's own units, or -1 for
+    /// a block that never breaks.
+    ///
+    /// Not in Mojang's reports either. The value comes from
+    /// PrismarineJS/minecraft-data and was then checked block by block against
+    /// a real 1.20.1 server, by timing how long the server itself takes —
+    /// see docs/PROVENANCE.md.
+    [[nodiscard]] f32 hardness(BlockId block) const noexcept;
+
+    /// Does breaking this block need the right kind of tool to drop anything?
+    ///
+    /// It also makes it five times slower: vanilla divides by 100 instead of
+    /// 30. Measured, and the surprise is that the tool's **family** counts and
+    /// not only its tier — a netherite shovel on stone takes the full 150
+    /// ticks a bare hand does, where a wooden pickaxe takes 23.
+    [[nodiscard]] bool requires_correct_tool(BlockId block) const noexcept;
+
     /// Does this **state** hold a fluid? MOTION_BLOCKING is the highest block
     /// that either stops movement or does.
     ///
@@ -220,6 +237,7 @@ private:
     std::vector<std::string_view> values_;
     std::span<const u8>           block_flags_;
     std::span<const u8>           fluid_bits_;
+    std::span<const f32>          hardness_;
     const void*                   header_{nullptr};
 };
 

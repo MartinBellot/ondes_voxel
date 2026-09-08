@@ -59,6 +59,7 @@ inline constexpr i32 kOpenScreen          = 0x30;
 inline constexpr i32 kContainerContent    = 0x12;
 inline constexpr i32 kContainerSlot       = 0x14;
 inline constexpr i32 kCloseContainer      = 0x11;
+inline constexpr i32 kUpdateTime         = 0x5E;
 }  // namespace clientbound
 
 /// Serverbound Play packet ids, protocol 763.
@@ -348,6 +349,17 @@ struct CreativeSlot {
 
 /// Tell every client a block changed. `state` is a block **state** id.
 [[nodiscard]] std::vector<u8> encode_block_update(WirePosition position, i32 state);
+
+/// The world's age and the time of day, both in ticks.
+///
+/// Sent every twenty ticks in vanilla. The client needs it to place the sun,
+/// and anything measuring the server's clock from outside needs it too: it is
+/// the only packet that carries a tick number.
+///
+/// A negative time of day means the daylight cycle is frozen at its absolute
+/// value, which is how vanilla says "doDaylightCycle false" without a gamerule
+/// packet.
+[[nodiscard]] std::vector<u8> encode_update_time(i64 world_age, i64 time_of_day);
 
 /// Confirm a predicted change. Without this the client rolls the block back
 /// after a moment, which looks like the server ignoring the player.

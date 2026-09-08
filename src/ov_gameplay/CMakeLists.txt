@@ -1,0 +1,19 @@
+# Rules the game plays by: breaking, placing, inventories.
+#
+# Depends on the registries and on nothing above them. A block behaviour that
+# reached for the server's Level would make client-side prediction impossible,
+# which is why this module cannot see one.
+ov_add_library(ov_gameplay
+    LAYER 9
+    SOURCES
+        src/breaking.cpp
+    DEPS
+        ov_registry
+)
+
+ov_add_test(test_ov_gameplay
+    SOURCES
+        tests/test_breaking.cpp
+    DEPS ov_gameplay
+    LABELS unit
+)

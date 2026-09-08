@@ -81,6 +81,7 @@ add_subdirectory(src/ov_nbt)
 add_subdirectory(src/ov_registry)
 add_subdirectory(src/ov_world)
 add_subdirectory(src/ov_protocol)
+add_subdirectory(src/ov_gameplay)
 
 # ── Checks ──────────────────────────────────────────────────────────────────
 # Compiles every public header on its own. Catches the header that only works

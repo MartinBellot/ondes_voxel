@@ -12,6 +12,7 @@
 #include "ov/base/log.hpp"
 #include "ov/base/thread.hpp"
 #include "ov/base/time.hpp"
+#include "ov/gameplay/breaking.hpp"
 #include "ov/io/file.hpp"
 #include "ov/math/block_pos.hpp"
 #include "ov/nbt/binary.hpp"
@@ -81,6 +82,11 @@ struct Options {
     ov::u16      port        = 25565;
     std::string  motd        = "Ondes VOXEL";
     ov::i32      max_players = 20;
+
+    /// Creative keeps flight and instant breaking; survival makes blocks take
+    /// the time the real game takes, which is the only mode where the break
+    /// rules are exercised at all.
+    bool survival = false;
 };
 
 /// Where a connection is in the protocol's state machine.
@@ -729,6 +735,33 @@ void set_chest_items(nbt::Tag& data, std::span<const net::ItemStack> slots,
 }
 
 /// What the server tracks per connected player.
+/// The Efficiency level on an item, read from the tag the protocol carries.
+///
+/// The stack's NBT is kept as raw bytes on purpose — re-encoding a tag we do
+/// not understand is how data gets lost — so it is decoded only when a number
+/// is actually needed from it, which is here.
+[[nodiscard]] u8 efficiency_of(const net::ItemStack& stack) {
+    if (stack.nbt.empty()) {
+        return 0;
+    }
+    const auto document = nbt::read(stack.nbt);
+    if (!document) {
+        return 0;
+    }
+    const nbt::Tag* list = document->root.find("Enchantments");
+    if (list == nullptr || list->list() == nullptr) {
+        return 0;
+    }
+    for (const nbt::Tag& entry : *list->list()) {
+        const nbt::Tag* id  = entry.find("id");
+        const nbt::Tag* lvl = entry.find("lvl");
+        if (id != nullptr && lvl != nullptr && id->as_string() == "minecraft:efficiency") {
+            return static_cast<u8>(std::clamp<i64>(lvl->as_i64(), 0, 255));
+        }
+    }
+    return 0;
+}
+
 struct Player {
     /// Held so the tick thread can send keep-alives without going through the
     /// packet handler. Dropped in on_disconnect, which is what keeps this from
@@ -763,6 +796,19 @@ struct Player {
     f64            z{0.5};
     f32            yaw{0.0F};
     f32            pitch{0.0F};
+    bool           on_ground{true};
+
+    /// The block this player is breaking, and when they started.
+    ///
+    /// Vanilla's own shape, because the client predicts against it: the server
+    /// does not finish the job on its own but waits to be told, and only falls
+    /// back to its own clock when the claim arrives too early to believe.
+    bool digging{false};
+    bool delayed_dig{false};
+    i32  dig_x{0};
+    i32  dig_y{0};
+    i32  dig_z{0};
+    i64  dig_started_tick{0};
 
     /// The key this player is remembered under between sessions.
     std::string identity;
@@ -809,6 +855,8 @@ Options parse_args(int argc, char** argv) {
         const std::string_view arg{argv[i]};
         if (arg == "--help" || arg == "-h") {
             options.show_help = true;
+        } else if (arg == "--survival") {
+            options.survival = true;
         } else if (arg.starts_with("--port=")) {
             const auto value  = arg.substr(7);
             ov::i32    parsed = 0;
@@ -851,6 +899,7 @@ void print_help() {
         "  --motd=<text>                                   server list description\n"
         "  --log-level=<trace|debug|info|warn|error|off>   verbosity (default: info)\n"
         "  --ticks=<n>                                     stop after n ticks\n"
+        "  --survival                                      survival mode: blocks take time\n"
         "  --help, -h                                      this message\n"
         "\n"
         "Not an official Minecraft product. Not approved by or associated with Mojang.\n");
@@ -930,6 +979,14 @@ int main(int argc, char** argv) {
             ? registries->protocol_id(*menu_registry, "minecraft:generic_9x3").value_or(2)
             : 2;
 
+    // How long each block takes to break, and whether the held tool lets it
+    // drop. Built once: every query otherwise walks the tag graph, and this
+    // sits on the path of every dig packet.
+    std::optional<gameplay::BreakRules> break_rules;
+    if (blocks && registries) {
+        break_rules.emplace(*blocks, *registries);
+    }
+
     Superflat superflat = world_available ? Superflat::from(*blocks) : Superflat{};
     if (world_available) {
         const auto plains = biome_id_in_codec(*codec_bytes, "minecraft:plains");
@@ -948,6 +1005,10 @@ int main(int argc, char** argv) {
     // than a world — the real ChunkMap arrives with the tick scheduler.
     // The world on disk. Under run/, which is gitignored — a save is the
     // player's, not the repository's.
+    // The tick the server is on, readable from the network threads. Breaking
+    // is counted in ticks, and the packet handler runs on another thread.
+    std::atomic<i64> server_tick{0};
+
     const std::filesystem::path level_dir = std::filesystem::path{"run"} / "world";
     const std::filesystem::path world_dir = level_dir / "region";
     std::error_code             directory_error;
@@ -1171,6 +1232,30 @@ int main(int argc, char** argv) {
     /// Called from the network thread, which is why the chunk cache has a mutex
     /// — the single-writer rule the project is built on arrives with the tick
     /// scheduler, and until then this is honest locking rather than a race.
+    // How much of a block one tick of digging removes, for a given player.
+    // Shared by the packet handler and the tick loop: the two have to agree, and
+    // writing it twice is how they stop agreeing.
+    const auto dig_progress_for = [&](const Player& who, net::WirePosition where) -> f32 {
+        if (!break_rules) {
+            return 1.0F;
+        }
+        registry::BlockStateId state{0};
+        {
+            const std::scoped_lock chunk_lock{chunk_mutex};
+            world::Chunk&          dug = chunk_at(where.x >> 4, where.z >> 4);
+            state                      = dug.get_block(static_cast<usize>(where.x & 15), where.y,
+                                                       static_cast<usize>(where.z & 15));
+        }
+        const net::ItemStack& held = who.inventory[36 + static_cast<usize>(who.held_slot)];
+        gameplay::Held        holding;
+        if (held.item_id != 0 && held.count > 0) {
+            holding.item       = held.item_id;
+            holding.efficiency = efficiency_of(held);
+        }
+        return break_rules->destroy_progress(state, holding,
+                                             gameplay::Stance{.on_ground = who.on_ground});
+    };
+
     const auto set_block_and_broadcast = [&](net::WirePosition      position,
                                              registry::BlockStateId state) {
         const auto shape = world::WorldShape::overworld();
@@ -1381,8 +1466,10 @@ int main(int argc, char** argv) {
                 // has the registry codec it cannot make sense of a single
                 // other packet.
                 net::LoginPlay join;
-                join.entity_id           = player.entity_id;
-                join.game_mode           = 1;  // creative, so flying works without food
+                join.entity_id = player.entity_id;
+                // Survival is what makes the break timings apply at all; creative
+                // stays the default so flight works without food or damage.
+                join.game_mode           = options.survival ? 0 : 1;
                 join.registry_codec      = *codec_bytes;
                 join.view_distance       = 10;
                 join.simulation_distance = 10;
@@ -1492,6 +1579,9 @@ int main(int argc, char** argv) {
                             player.yaw   = *movement->yaw;
                             player.pitch = *movement->pitch;
                         }
+                        // Standing or not divides the breaking speed by five,
+                        // so this is not decoration.
+                        player.on_ground = movement->on_ground;
                         // Remembered on every update rather than on disconnect:
                         // a client that is killed never sends a clean close, and
                         // losing the last position of a crashed session is the
@@ -1563,15 +1653,62 @@ int main(int argc, char** argv) {
                         if (!action) {
                             return false;
                         }
-                        // 0 is "started digging" — which in creative means the
-                        // block is already gone on the client — and 2 is
-                        // "finished" in survival. Handling only one of them
-                        // makes the other game mode do nothing.
-                        if (action->status != 0 && action->status != 2) {
+                        acknowledge(connection, action->sequence);
+
+                        if (!options.survival) {
+                            // Creative breaks on the first packet: the block is
+                            // already gone on the client when it arrives.
+                            if (action->status == 0 || action->status == 2) {
+                                set_block_and_broadcast(action->position, superflat.air.air);
+                            }
                             return true;
                         }
-                        set_block_and_broadcast(action->position, superflat.air.air);
-                        acknowledge(connection, action->sequence);
+
+                        const i64 now_tick = server_tick.load(std::memory_order_relaxed);
+
+                        if (action->status == 1) {  // cancelled
+                            player.digging = player.delayed_dig = false;
+                            return true;
+                        }
+
+                        if (action->status == 0) {  // started
+                            const f32 progress = dig_progress_for(player, action->position);
+                            if (progress >= 1.0F) {
+                                // Fast enough to be instant, which the client
+                                // has already assumed.
+                                set_block_and_broadcast(action->position, superflat.air.air);
+                                return true;
+                            }
+                            player.digging          = progress > 0.0F;
+                            player.delayed_dig      = false;
+                            player.dig_x            = action->position.x;
+                            player.dig_y            = action->position.y;
+                            player.dig_z            = action->position.z;
+                            player.dig_started_tick = now_tick;
+                            return true;
+                        }
+
+                        if (action->status == 2) {  // the client says it is done
+                            if (!player.digging || action->position.x != player.dig_x ||
+                                action->position.y != player.dig_y ||
+                                action->position.z != player.dig_z) {
+                                return true;
+                            }
+                            const f32  progress = dig_progress_for(player, action->position);
+                            const auto elapsed =
+                                static_cast<f32>(now_tick - player.dig_started_tick);
+                            // Vanilla's own threshold. Below it the claim is not
+                            // taken at its word: the server keeps the block and
+                            // finishes it on its own clock, which is exactly the
+                            // behaviour the break times were measured through.
+                            if (progress * (elapsed + 1.0F) >= 0.7F) {
+                                player.digging = player.delayed_dig = false;
+                                set_block_and_broadcast(action->position, superflat.air.air);
+                            } else if (progress > 0.0F) {
+                                player.digging     = false;
+                                player.delayed_dig = true;
+                            }
+                        }
                         return true;
                     }
 
@@ -1950,6 +2087,59 @@ int main(int argc, char** argv) {
 
     while (!g_stop_requested.load(std::memory_order_relaxed)) {
         const i32 ticks = clock.advance();
+        server_tick.store(clock.tick_count(), std::memory_order_relaxed);
+
+        // Finish the digs the client claimed too early to be believed. Vanilla
+        // keeps its own clock for those, and so do we: the block comes off on
+        // the tick the rule says, not on the tick the client asked for.
+        // The world clock, every second. The client places the sun with it, and
+        // it is the only packet carrying a tick number — which is what lets the
+        // break times be measured from outside at all.
+        if (clock.tick_count() % 20 == 0) {
+            std::unique_lock time_lock{players_mutex, std::try_to_lock};
+            if (time_lock.owns_lock()) {
+                const auto frozen_noon = i64{-6000};
+                if (const auto framed = net::encode_packet(
+                        net::clientbound::kUpdateTime,
+                        net::encode_update_time(clock.tick_count(), frozen_noon))) {
+                    for (auto& [clock_key, watcher] : players) {
+                        if (watcher.connection) {
+                            watcher.connection->send(*framed);
+                        }
+                    }
+                }
+            }
+        }
+
+        if (options.survival) {
+            std::unique_lock dig_lock{players_mutex, std::try_to_lock};
+            if (dig_lock.owns_lock()) {
+                for (auto& [key, digger] : players) {
+                    if (!digger.delayed_dig) {
+                        continue;
+                    }
+                    const net::WirePosition where{digger.dig_x, digger.dig_y, digger.dig_z};
+                    const f32               progress = dig_progress_for(digger, where);
+                    if (progress <= 0.0F) {
+                        digger.delayed_dig = false;
+                        continue;
+                    }
+                    // Vanilla writes this as `progress * (elapsed + 1)`, with
+                    // its start recorded inside the same tick that will first
+                    // test it. Ours is recorded on the network thread, one tick
+                    // earlier, so the plus one is already in the count —
+                    // keeping it would break every block a tick early, which is
+                    // exactly what the first measurement against our own server
+                    // showed: 149 where the real game takes 150.
+                    const auto elapsed =
+                        static_cast<f32>(clock.tick_count() - digger.dig_started_tick);
+                    if (progress * elapsed >= 1.0F) {
+                        digger.delayed_dig = false;
+                        set_block_and_broadcast(where, superflat.air.air);
+                    }
+                }
+            }
+        }
 
         for (i32 i = 0; i < ticks; ++i) {
             // The world tick lives here. Everything inside must be

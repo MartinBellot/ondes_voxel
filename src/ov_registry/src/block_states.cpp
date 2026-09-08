@@ -76,9 +76,10 @@ std::expected<BlockRegistry, RegistryError> BlockRegistry::from_bytes(std::vecto
     // One bit per state, so the length is in bytes, not states.
     const u32   fluid_bytes = (header.state_count + 7) / 8;
     const auto* fluids      = pack_at<u8>(data, header.fluid_offset, fluid_bytes);
+    const auto* hardness    = pack_at<f32>(data, header.hardness_offset, header.block_count);
 
     if (blocks == nullptr || props == nullptr || values == nullptr || states == nullptr ||
-        flags == nullptr || fluids == nullptr) {
+        flags == nullptr || fluids == nullptr || hardness == nullptr) {
         return std::unexpected{RegistryError::Corrupt};
     }
     if (header.strings_offset + header.string_bytes > data.size()) {
@@ -95,6 +96,9 @@ std::expected<BlockRegistry, RegistryError> BlockRegistry::from_bytes(std::vecto
                   header.block_count};
     registry.fluid_bits_ = std::span{
         reinterpret_cast<const u8*>(registry.data_.data() + header.fluid_offset), fluid_bytes};
+    registry.hardness_ =
+        std::span{reinterpret_cast<const f32*>(registry.data_.data() + header.hardness_offset),
+                  header.block_count};
 
     const auto* string_base =
         reinterpret_cast<const char*>(registry.data_.data() + header.strings_offset);
@@ -190,10 +194,11 @@ BlockRegistry::LightOpacity BlockRegistry::light_opacity(BlockId block) const no
 namespace {
 
 /// Bits 2 to 5 of a block's flag byte, above the two the light opacity uses.
-constexpr u8 kMotionBit   = 0b000100;
-constexpr u8 kLeavesBit   = 0b001000;
-constexpr u8 kAirBit      = 0b010000;
-constexpr u8 kMeasuredBit = 0b100000;
+constexpr u8 kMotionBit    = 0b000100;
+constexpr u8 kLeavesBit    = 0b001000;
+constexpr u8 kAirBit       = 0b010000;
+constexpr u8 kMeasuredBit  = 0b100000;
+constexpr u8 kNeedsToolBit = 0b1000000;
 
 }  // namespace
 
@@ -223,6 +228,19 @@ bool BlockRegistry::motion_measured(BlockId block) const noexcept {
         return false;
     }
     return (block_flags_[block.value()] & kMeasuredBit) != 0;
+}
+
+f32 BlockRegistry::hardness(BlockId block) const noexcept {
+    // Unknown block: unbreakable, which stops a stray id from being mined
+    // through rather than making it free to break.
+    return block.value() < hardness_.size() ? hardness_[block.value()] : -1.0F;
+}
+
+bool BlockRegistry::requires_correct_tool(BlockId block) const noexcept {
+    if (block.value() >= block_flags_.size()) {
+        return false;
+    }
+    return (block_flags_[block.value()] & kNeedsToolBit) != 0;
 }
 
 bool BlockRegistry::holds_fluid(BlockStateId state) const noexcept {

@@ -1413,3 +1413,104 @@ Format de pack v6. La table brute est régénérée dans
 `data/vanilla/1.20.1/normalized/motion.json`, gitignoré comme le reste des
 données dérivées de Mojang.
 
+---
+
+## Durées de cassage : la table d'un tiers, vérifiée tick par tick
+
+La dureté d'un bloc n'est ni dans les rapports du data generator ni dans les
+datapacks : c'est du code Java. **PrismarineJS/minecraft-data** (MIT, autorisé
+par `CLAUDE.md`) la publie pour les 1003 blocs, avec le drapeau
+`harvestTools` qui dit si un outil correct est exigé. C'est de là que vient la
+table.
+
+Mais sur ce projet cette source s'est déjà révélée fausse une fois — l'émission
+lumineuse, donnée par bloc alors qu'elle est par état. Elle est donc prise comme
+**hypothèse** et confrontée au jeu.
+
+### L'oracle : le serveur ne casse pas le bloc tout seul
+
+C'est le détail qui rend la mesure possible. Le serveur vanilla n'achève pas la
+destruction de lui-même : il attend que le client dise « j'ai fini », puis
+vérifie. Si la progression écoulée dépasse **0,7**, il croit le client sur
+parole et casse immédiatement. En dessous, il bascule sur sa propre horloge et
+casse le bloc au tick exact où vanilla le casserait.
+
+Dire « fini » dans le même tick que « je commence » passe donc toujours sous le
+seuil, et le nombre de ticks qui s'écoulent ensuite **est** la durée du jeu. Le
+client n'a jamais eu besoin de la connaître.
+
+Deux pièges ont coûté chacun une série de mesures fausses :
+
+* Le compte doit se lire sur l'horloge du serveur, pas sur la montre du client.
+  Le paquet `Update Time` (0x5E) porte l'âge du monde en ticks toutes les
+  secondes ; il faut **le même ancrage aux deux bouts** d'une mesure. Avec deux
+  ancrages différents la même mesure donnait 15, 18, 24 ou 26 pour de la terre.
+  Avec un seul, elle donne 15 six fois sur six.
+* L'envoi doit être aligné sur la grille de ticks. Envoyé au milieu d'un tick,
+  le départ tombe dans celui-ci ou dans le suivant selon la milliseconde, et le
+  compte sort une fois sur deux trop court d'un tick.
+
+Le serveur tenait 50,00 ms par tick sur les vingt-cinq mesures de contrôle — ce
+n'était donc pas lui qui variait.
+
+### Ce que la mesure a établi, et que la table ne disait pas
+
+| Question | Réponse mesurée | Comment |
+|---|---|---|
+| Vitesse des paliers | bois 2, pierre 4, or **12**, fer 6, diamant 8, netherite **9** | sur la pierre, `ceil(45 / v)` ne laisse qu'un entier possible ; netherite a demandé l'obsidienne pour séparer 9 de 10 et 11 |
+| Efficacité | ajoute exactement `niveau² + 1` | 137, 79 et 43 ticks sur l'obsidienne aux niveaux I, III et V |
+| Niveau de récolte de l'or | celui du **bois** | pioche en or sur minerai de fer : 25 ticks, soit le diviseur 100 |
+| Ce qui autorise la récolte | la **famille** de l'outil, pas seulement son palier | pelle en netherite sur pierre : **150** ticks, exactement comme à main nue, là où une pioche en bois en prend 23 |
+
+Ce dernier point est le seul qu'aucun raisonnement ne donne. Une pelle en
+netherite dépasse tous les paliers existants et reste, sur de la pierre, aussi
+lente qu'une main nue.
+
+### Vérification
+
+`scripts/measure_hardness.py` confronte la table au serveur, bloc par bloc, sur
+la condition la moins chère : à main nue quand elle reste sous vingt secondes —
+la vitesse y vaut exactement 1, donc le compte de ticks lit la dureté sans
+intervalle — et avec l'outil correct au-delà, ce que l'obsidienne exige avec ses
+deux cent cinquante secondes.
+
+**985 blocs sur 996 donnent exactement le nombre de ticks prédit.** Les onze
+autres ne sont pas des désaccords mais des blocs hors de portée du banc :
+
+* `air`, `cave_air`, `void_air` — il n'y a rien à miner ;
+* `water`, `lava`, `bubble_column` — un client ne vise jamais un fluide, et le
+  serveur ne donne pas suite ;
+* `snow`, `snow_block`, `cactus`, `powder_snow` — posés mais jamais cassés par
+  le banc, sans explication trouvée.
+
+Un douzième bloc, `dragon_egg`, donne 1 tick au lieu des 90 prédits : frappé, il
+se **téléporte** au lieu de se casser. C'est un comportement, pas une dureté.
+
+Six écarts apparents supplémentaires — dont la pierre à 149 ticks au lieu de
+150 — ont disparu en remesurant seul : ils venaient de la contention entre les
+six sondes parallèles. C'est la raison pour laquelle un écart n'est jamais
+retenu sans être reproduit.
+
+### De bout en bout
+
+Le même banc, branché sur **notre** serveur en `--survival`, donne les mêmes
+nombres que sur le vrai jeu :
+
+| | vanilla | Ondes VOXEL |
+|---|---|---|
+| herbe, main nue | 18 | 18 |
+| pierre, main nue | 150 | 150 |
+| pierre, pioche en bois | 23 | 23 |
+| pierre, pelle en netherite | 150 | 150 |
+| planches de chêne, main nue | 60 | 60 |
+| verre, main nue | 9 | 9 |
+| obsidienne, pioche en fer | 834 | 834 |
+| obsidienne, pioche en netherite | 167 | 167 |
+
+Le premier essai donnait 149, 22 et 17 : un tick de moins partout. Vanilla écrit
+sa condition `progression × (écoulé + 1)` avec un départ enregistré dans le tick
+même qui le testera ; le nôtre est enregistré sur le thread réseau, un tick plus
+tôt, donc le « + 1 » y est déjà. Un décalage d'un tick n'est pas cosmétique : le
+client prédit la même arithmétique, et un bloc cassé un tick trop tôt
+réapparaît sous les yeux du joueur.
+

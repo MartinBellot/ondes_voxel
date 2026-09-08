@@ -14,7 +14,7 @@ Four zones, because a block has to survive being placed before it can be read:
 """
 import json, sys, time
 
-FIFO, WORLD = sys.argv[1], sys.argv[2]
+FIFO, WORLD = (sys.argv[1], sys.argv[2]) if len(sys.argv) > 2 else (None, None)
 REG = json.load(open('data/vanilla/1.20.1/normalized/registries.json'))
 BLOCKS = REG['registries']['minecraft:block']['entries']
 
@@ -65,7 +65,7 @@ def wait_saved(log, count):
         time.sleep(0.5)
     return False
 
-LOG = WORLD + "/../log.txt"
+LOG = (WORLD + "/../log.txt") if WORLD else None
 
 def zone(name, origin_x, spacing, names, decorate):
     """Lay one zone out and return {block: (x, z)}."""
@@ -118,4 +118,5 @@ def main():
     json.dump({k: {b: list(v) for b, v in p.items()} for k, p in plans.items()},
               open(WORLD + "/../plan.json", "w"))
 
-main()
+if __name__ == "__main__":
+    main()

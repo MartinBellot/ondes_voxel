@@ -12,6 +12,7 @@ ov_add_executable(ov_dedicated
         ov_math
         ov_registry
         ov_world
+        ov_gameplay
 )
 
 # Where the locally generated vanilla data lives. Passed in rather than searched

@@ -196,7 +196,8 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] `level.dat` : version Anvil, générateur, spawn, bordure, DragonFight : gzip, racine `Data`, écriture sûre via `level.dat_old`
 - [ ] `DataVersion`, refus explicite des versions non supportées
 - [ ] Les ~20 archétypes de blocs dont dérivent ~80 % des 1003 types
-- [ ] Casse et pose : durées, outils corrects, Silk Touch, Fortune
+- [x] Durées de cassage et outils corrects : vérifiés tick pour tick sur 985 des 996 blocs
+- [ ] Silk Touch, Fortune et tables de butin
 - [x] Conteneurs : ouverture, clic gauche et droit, hotbar
 - [x] Shift-clic : fusion jusqu'à la taille de pile réelle, mesurée item par item
 - [ ] Glissés, touches numériques, inventaire du joueur autoritatif

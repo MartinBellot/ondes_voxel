@@ -11,7 +11,7 @@
   },
   "last_updated": "2026-09-08",
   "current_milestone": "M3",
-  "current_task": "m4-survival-break-and-place",
+  "current_task": "m4-loot-tables-and-drops",
   "milestones": {
     "M0": {
       "name": "Fondations",
@@ -52,8 +52,8 @@
     "M4": {
       "name": "Monde persistant",
       "status": "in_progress",
-      "done": 8,
-      "total": 12,
+      "done": 9,
+      "total": 13,
       "exit_criterion": "Round-trip croisé : notre sauvegarde s'ouvre dans Minecraft vanilla et réciproquement, sans perte.",
       "blocked": []
     },
@@ -124,7 +124,10 @@
     "chests": "ouverture, clic gauche et droit, fermeture, sauvegarde Anvil et rechargement : 64 diamants deposes survivent a un redemarrage du serveur",
     "motion_flags": "996/1003 blocs mesures sur un vrai serveur 1.20.1 : 778 arretent le mouvement, 187 non, 10 feuilles, 3 airs, 22 mouilles par defaut ; les 7 restants sont des segments de plantes verticales qui ne peuvent jamais etre le sommet d'une colonne",
     "heightmaps": "les quatre heightmaps recalculees depuis les blocs et identiques a celles du jeu : 274944/274944 colonnes-cartes sur un monde 1.20.1 vanilla, 742020/742020 sur un monde modde (380 colonnes sautees car elles contiennent un bloc modde)",
-    "motion_state_dependence": "10 paires d'etats contrastes (neige 1 et 8 couches, trappe, portillon, porte, dalle double, echafaudage, dripleaf) : 10 accords, donc le predicat est par bloc. L'eau, elle, est par etat : waterlogged true/false mesures separement"
+    "motion_state_dependence": "10 paires d'etats contrastes (neige 1 et 8 couches, trappe, portillon, porte, dalle double, echafaudage, dripleaf) : 10 accords, donc le predicat est par bloc. L'eau, elle, est par etat : waterlogged true/false mesures separement",
+    "break_times": "985/996 blocs donnent exactement le nombre de ticks predit, mesure sur un vrai serveur 1.20.1 ; 11 hors de portee du banc (air, fluides, 4 blocs recalcitrants) et dragon_egg qui se teleporte au lieu de se casser",
+    "tool_speeds": "bois 2, pierre 4, or 12, fer 6, diamant 8, netherite 9 ; efficacite ajoute niveau^2+1 ; la famille de l'outil conditionne la recolte et pas seulement le palier (pelle netherite sur pierre : 150 ticks, comme a main nue)",
+    "survival_breaking": "8/8 conditions identiques entre le vrai serveur et le notre, mesurees par la meme sonde : herbe, pierre a main nue et a la pioche, pelle netherite, planches, verre, obsidienne a la pioche en fer et en netherite"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",

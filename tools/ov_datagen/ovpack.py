@@ -49,7 +49,7 @@ MAGIC = b"OVPK"
 # Bumped by hand whenever the layout changes, so a stale cache is detected
 # rather than misread. A mismatched cache read as if it were current is far
 # worse than no cache at all.
-FORMAT_VERSION = 6
+FORMAT_VERSION = 7
 
 HEADER_SIZE = 128
 
@@ -79,7 +79,8 @@ def align8(data: bytearray) -> None:
 
 
 def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
-          opacity_doc: dict, stacks_doc: dict, motion_doc: dict) -> bytes:
+          opacity_doc: dict, stacks_doc: dict, motion_doc: dict,
+          hardness_doc: dict) -> bytes:
     blocks = blocks_doc["blocks"]
     state_count = blocks_doc["state_count"]
 
@@ -165,6 +166,7 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
     # which errs towards a dark room rather than a world with no shadows.
     opacity = opacity_doc["opacity"]
     motion = motion_doc["blocks"]
+    hardness = hardness_doc["blocks"]
 
     def flags_for(block: dict) -> int:
         name = block["name"]
@@ -180,7 +182,8 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
                 | (0b000100 if m["motion"] else 0)
                 | (0b001000 if m["leaves"] else 0)
                 | (0b010000 if m["air"] else 0)
-                | 0b100000)
+                | 0b100000
+                | (0b1000000 if hardness.get(name, {}).get("requires_tool") else 0))
 
     flag_bytes = bytes(flags_for(block) for block in blocks)
 
@@ -234,6 +237,14 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
     body += bytes(fluid_bits)
     align8(body)
 
+    # Dureté par bloc, en float 32. -1 veut dire incassable, ce que le serveur
+    # dit lui-même en ne cassant jamais le bloc — ce n'est pas une valeur par
+    # défaut mais une mesure.
+    hardness_offset = HEADER_SIZE + len(body)
+    for block in blocks:
+        body += struct.pack("<f", float(hardness.get(block["name"], {}).get("hardness", -1.0)))
+    align8(body)
+
     registries_offset = HEADER_SIZE + len(body)
     for name_offset, entry_first, entry_count, first_id in registry_records:
         # u32 name, u32 entry_first, u32 entry_count, u32 first_id — 16 bytes.
@@ -281,7 +292,7 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
     align8(body)
 
     header = struct.pack(
-        "<4sIIIIIIIIIIIIIIIIIIIIIIII",
+        "<4sIIIIIIIIIIIIIIIIIIIIIIIII",
         MAGIC,
         FORMAT_VERSION,
         len(block_records),
@@ -306,6 +317,7 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
         stacks_offset,
         len(item_entries),
         fluid_offset,
+        hardness_offset,
         0,  # reserved
     )
     assert len(header) <= HEADER_SIZE
@@ -341,9 +353,11 @@ def main() -> int:
         stacks_doc = json.load(f)
     with open(NORMALIZED / "motion.json") as f:
         motion_doc = json.load(f)
+    with open(NORMALIZED / "hardness.json") as f:
+        hardness_doc = json.load(f)
 
     payload = build(blocks_doc, registries_doc, tags_doc, opacity_doc, stacks_doc,
-                    motion_doc)
+                    motion_doc, hardness_doc)
     tag_records_count = [t for g in tags_doc["tags"].values() for t in g]
     member_count_total = sum(len(v) for g in tags_doc["tags"].values() for v in g.values())
     OUTPUT.write_bytes(payload)
@@ -356,12 +370,13 @@ def main() -> int:
     print(f"    light opacity .. {opacity_doc['measured']} blocks measured")
     print(f"    stack sizes .... {stacks_doc['measured']} items measured")
     print(f"    motion flags ... {motion_doc['measured']} blocks measured")
+    print(f"    hardness ....... {hardness_doc['count']} blocks")
     print(f"    size ........... {len(payload):,} bytes")
 
     # Byte-stability is the property the manifest depends on. Checking it here
     # costs nothing and catches a non-deterministic dict order immediately.
     if build(blocks_doc, registries_doc, tags_doc, opacity_doc, stacks_doc,
-             motion_doc) != payload:
+             motion_doc, hardness_doc) != payload:
         sys.exit("error: emitter is not deterministic")
     print("    deterministic .. yes")
     return 0
