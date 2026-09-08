@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <map>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -942,4 +943,188 @@ TEST_CASE("fluid never flows into a chunk that is not loaded", "[fluid]") {
 
     REQUIRE(rules().fluid_at(level.block_at(BlockPos{2, -60, 0})).kind == FluidKind::Water);
     REQUIRE(rules().fluid_at(level.block_at(BlockPos{3, -60, 0})).empty());
+}
+
+// ── Validation hors échantillon ─────────────────────────────────────────────
+//
+// Everything above was measured first and coded second, so replaying it proves
+// the transcription and not much more. These four were not: the geometry comes
+// from a fixed-seed pseudo-random generator — scattered walls, holes at
+// arbitrary distances — and no case was picked for being easy. The terrain is
+// the one played on the real server, block for block, and the expected map is
+// what its save held.
+//
+// Replayable with `scripts/measure_fluid_maze.py`.
+namespace {
+
+struct Maze {
+    std::string_view                     name;
+    std::span<const std::pair<i32, i32>> walls;
+    std::span<const std::pair<i32, i32>> holes;
+    std::span<const std::string_view>    want;
+};
+
+constexpr std::array<std::pair<i32, i32>, 40> kMaze1Walls{{
+    {-2, 8}, {4, -3}, {2, 8}, {1, 5}, {6, -7}, {8, 9}, {-9, 7}, {5, 1},
+    {-5, 7}, {7, -9}, {-4, -1}, {-1, 8}, {8, -7}, {7, 2}, {-5, -8}, {5, 2},
+    {-6, 1}, {3, -9}, {5, -6}, {3, 7}, {7, -4}, {-3, -1}, {-1, -7}, {-7, -9},
+    {9, -8}, {7, -6}, {9, -5}, {3, -4}, {-8, 3}, {3, -7}, {2, 9}, {4, -7},
+    {3, 3}, {0, -5}, {0, 2}, {5, -7}, {6, -4}, {8, 6}, {3, 2}, {-5, 5}
+}};
+constexpr std::array<std::pair<i32, i32>, 2> kMaze1Holes{{
+    {2, 6}, {8, -9}
+}};
+constexpr std::array<std::string_view, 19> kMaze1Want{{
+    "..#.........#...#..",
+    "....#.............#",
+    "........#...####.#.",
+    "........7.7...#.#..",
+    ".......76#67......#",
+    "......765456#..##..",
+    ".....76543456#.....",
+    "....76543234567....",
+    "...76##321234567...",
+    "..765432101234567..",
+    "...#6543212345#7...",
+    "....76543#34#6#.#..",
+    ".#...7654545#7.....",
+    "......765656.......",
+    "....#..767#7.......",
+    "........7........#.",
+    "#...#.......#......",
+    ".......##..#.......",
+    "...........#.....#.",
+}};
+
+constexpr std::array<std::pair<i32, i32>, 55> kMaze2Walls{{
+    {3, 3}, {-6, 6}, {-5, 6}, {0, -9}, {2, -6}, {-2, 4}, {1, 7}, {-2, 1},
+    {-1, -9}, {-4, 8}, {-4, 6}, {8, 1}, {-1, -8}, {9, -7}, {-4, 5}, {3, -5},
+    {8, -7}, {-1, 4}, {-5, -9}, {-8, -9}, {5, 0}, {-7, 4}, {8, -2}, {2, -8},
+    {2, -4}, {-7, 2}, {-5, 9}, {4, -2}, {9, -3}, {-7, -5}, {-8, 6}, {7, -6},
+    {-3, 0}, {3, 5}, {-4, -3}, {4, -3}, {-6, -6}, {1, 4}, {2, 5}, {-8, 3},
+    {9, -4}, {6, 3}, {-7, 3}, {-2, 2}, {-4, 1}, {4, -8}, {-4, -5}, {-7, 9},
+    {6, 2}, {3, 7}, {9, 4}, {7, 4}, {-2, -2}, {-4, 7}, {-9, 7}
+}};
+constexpr std::array<std::pair<i32, i32>, 1> kMaze2Holes{{
+    {-5, -6}
+}};
+constexpr std::array<std::string_view, 19> kMaze2Want{{
+    ".#..#...##.........",
+    "........#..#.#.....",
+    ".................##",
+    "...#....767#....#..",
+    "..#..#.76567#......",
+    "......76545#7.....#",
+    ".....#6543456#....#",
+    "....765#32345#7..#.",
+    "....654321234567...",
+    "....76#2101234#....",
+    ".....#.#21234567.#.",
+    "..#...7#3234567#...",
+    ".##..7654345#7.#...",
+    "..#...7##4#67...#.#",
+    ".....#.7656##......",
+    ".#.###..767........",
+    "#....#...7#.#......",
+    ".....#.............",
+    "..#.#..............",
+}};
+
+constexpr std::array<std::pair<i32, i32>, 25> kMaze3Walls{{
+    {-9, 4}, {3, -5}, {-7, -5}, {3, -3}, {-1, -5}, {7, -5}, {-3, 7}, {-6, 4},
+    {-1, -2}, {8, -8}, {1, 2}, {-3, 4}, {-9, 0}, {6, -4}, {5, -9}, {-6, -4},
+    {-9, 2}, {8, 1}, {6, -9}, {-5, 4}, {-6, -7}, {5, 1}, {5, -3}, {7, 9},
+    {6, -7}
+}};
+constexpr std::array<std::pair<i32, i32>, 4> kMaze3Holes{{
+    {5, -2}, {-4, -4}, {-4, -7}, {7, 1}
+}};
+constexpr std::array<std::string_view, 19> kMaze3Want{{
+    "..............##...",
+    ".................#.",
+    "...#...........#...",
+    "...................",
+    "..#.....#...#...#..",
+    "...#..76.......#...",
+    ".....765....#.#....",
+    ".....654#234567....",
+    ".....5432123456....",
+    "#....4321012345....",
+    ".....543212345#..#.",
+    "#...765432#4567....",
+    ".....765434567.....",
+    "#..##.#654567......",
+    ".......76567.......",
+    "........767........",
+    "......#..7.........",
+    "...................",
+    "................#..",
+}};
+
+constexpr std::array<std::pair<i32, i32>, 70> kMaze4Walls{{
+    {6, 4}, {6, -3}, {3, 3}, {6, 5}, {3, -7}, {5, -5}, {-2, -5}, {6, 7},
+    {7, 4}, {-9, 9}, {6, -7}, {-7, 0}, {0, -2}, {1, 1}, {0, -9}, {4, 9},
+    {4, 6}, {-5, 2}, {-8, 9}, {1, 5}, {-1, 7}, {2, -4}, {4, 2}, {9, -9},
+    {1, -6}, {3, -9}, {1, -2}, {-8, 5}, {5, 8}, {3, -2}, {-4, 7}, {9, 7},
+    {8, 5}, {-6, 7}, {1, -9}, {9, -7}, {-5, -4}, {0, -4}, {6, -1}, {4, -2},
+    {-9, 7}, {7, 0}, {1, 3}, {4, -1}, {-4, -2}, {-2, -4}, {-2, 9}, {-1, -4},
+    {1, -4}, {-8, 7}, {-9, -2}, {7, -1}, {9, -3}, {5, 9}, {-6, -9}, {4, 3},
+    {7, -9}, {3, 1}, {-4, -9}, {0, 6}, {-6, 6}, {7, 5}, {8, 9}, {4, -6},
+    {-3, 5}, {5, -6}, {2, 9}, {9, 4}, {-9, 3}, {1, -5}
+}};
+constexpr std::array<std::pair<i32, i32>, 3> kMaze4Holes{{
+    {8, -2}, {-1, 2}, {9, 5}
+}};
+constexpr std::array<std::string_view, 19> kMaze4Want{{
+    "...#.#...##.#...#.#",
+    "...................",
+    "............#..#..#",
+    "..........#..##....",
+    ".......#..#...#....",
+    "....#..#####.......",
+    "...............#..#",
+    "#....#...##.##.....",
+    ".............#.##..",
+    "..#.....10......#..",
+    "........21#.#......",
+    "....#...32...#.....",
+    "#.........#.##.....",
+    "...............##.#",
+    ".#....#...#....###.",
+    "...#.....#...#.....",
+    "##.#.#..#......#..#",
+    "..............#....",
+    "##.....#...#.##..#.",
+}};
+
+}  // namespace
+
+TEST_CASE("a maze nobody designed comes out the same", "[fluid][parity]") {
+    const std::array<Maze, 4> mazes{{
+        Maze{"maze_1", kMaze1Walls, kMaze1Holes, kMaze1Want},
+        Maze{"maze_2", kMaze2Walls, kMaze2Holes, kMaze2Want},
+        Maze{"maze_3", kMaze3Walls, kMaze3Holes, kMaze3Want},
+        Maze{"maze_4", kMaze4Walls, kMaze4Holes, kMaze4Want},
+    }};
+
+    for (const Maze& maze : mazes) {
+        INFO("maze " << maze.name);
+        TestLevel level;
+        level.floor(-61, 11, state_of("minecraft:stone"));
+        for (const auto& [x, z] : maze.walls) {
+            level.set_block(BlockPos{x, -60, z}, state_of("minecraft:stone"));
+        }
+        for (const auto& [x, z] : maze.holes) {
+            level.set_block(BlockPos{x, -61, z}, registry::BlockStateId{0});
+        }
+        REQUIRE(rules().place_fluid(level, BlockPos{0, -60, 0}, FluidKind::Water));
+        REQUIRE(level.settle(rules()) >= 0);
+
+        std::vector<std::string> want;
+        want.reserve(maze.want.size());
+        for (std::string_view row : maze.want) {
+            want.emplace_back(row);
+        }
+        require_identical(slice(level, -60, 9), want);
+    }
 }

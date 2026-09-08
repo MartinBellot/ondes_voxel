@@ -303,6 +303,29 @@ monde de test en mémoire, et comparé case par case au relevé.
 | eau infinie refusée, diagonale | 9 / 9 |
 | **total** | **1728 / 1728** |
 
+### Et surtout : hors échantillon
+
+Tout ce qui précède a servi à **écrire** la règle, donc le rejouer ne prouve que
+la fidélité de la transcription. Quatre labyrinthes ont donc été tirés d'un
+générateur pseudo-aléatoire à graine fixe — murs épars, trous à des distances
+quelconques, aucun cas choisi pour être facile — joués sur le vrai serveur, puis
+rejoués à l'identique dans le moteur (`scripts/measure_fluid_maze.py`).
+
+| labyrinthe | murs | trous | positions identiques |
+|---|---|---|---|
+| `maze_1` (graine 1) | 40 | 2 | 361 / 361 |
+| `maze_2` (graine 2) | 55 | 1 | 361 / 361 |
+| `maze_3` (graine 3) | 25 | 4 | 361 / 361 |
+| `maze_4` (graine 4) | 70 | 3 | 361 / 361 |
+| **total** | | | **1444 / 1444** |
+
+`maze_4` est le plus parlant : avec 70 murs, la source trouve un trou à deux
+blocs et l'eau ne fait que quatre cases. `maze_2`, avec un seul trou au milieu
+d'un champ de murs, en fait une soixantaine en serpentant. Les deux sortent
+identiques.
+
+**Total général : 3172 / 3172 positions.**
+
 S'y ajoutent les vérifications ponctuelles, hors grille : les trois cas du
 tableau de mélange, la colonne en chute et son niveau 1 au sol, le refus de
 l'eau infinie pour la lave, le contournement de la dalle, les trois délais de
