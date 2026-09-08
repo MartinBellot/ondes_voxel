@@ -313,6 +313,140 @@ def normalize_registries(raw: dict) -> dict:
 # ── Manifest ─────────────────────────────────────────────────────────────────
 
 
+# The tag directory a registry's tags live in. Mostly the registry name, but
+# five of them are legacy plurals — measured from the generator output, not
+# guessed, because "blocks" resolving to nothing would silently produce a world
+# with no tags rather than an error.
+TAG_DIRECTORY_TO_REGISTRY = {
+    "blocks": "minecraft:block",
+    "items": "minecraft:item",
+    "entity_types": "minecraft:entity_type",
+    "fluids": "minecraft:fluid",
+    "game_events": "minecraft:game_event",
+}
+
+# Tag directories belonging to registries the server *sends* rather than pins.
+# Their ids are ours and only exist at runtime, so their tags cannot be resolved
+# to numbers here. They are carried by the dynamic registry work instead.
+DYNAMIC_TAG_DIRECTORIES = {
+    "damage_type",
+    "worldgen/biome",
+    "worldgen/structure",
+    "worldgen/world_preset",
+    "worldgen/flat_level_generator_preset",
+}
+
+
+def normalize_tags(registries: dict) -> dict:
+    """Resolve every tag to a sorted list of numeric ids.
+
+    Tags reference other tags with a leading '#', so this is a graph, and the
+    plan calls for it to be flattened once here rather than walked at every
+    lookup in the game. Resolving at build time also means a cycle or a dangling
+    reference fails the build instead of a tick.
+
+    Vanilla's own datapack exercises none of the awkward cases: measured, it has
+    no `replace: true`, no object-form entries and no optional ones. They are
+    handled anyway, because the first third-party datapack will use them and the
+    format is what it is regardless of what Mojang happens to ship.
+    """
+    tag_root = GENERATED / "data"
+    known = {name: set(entry["entries"]) for name, entry in registries["registries"].items()}
+
+    # ── Read every file first, so references can resolve in any order ───────
+    raw: dict[str, dict] = {}
+    skipped_dynamic = 0
+
+    def split_directory(parts: tuple[str, ...]) -> tuple[str, str] | None:
+        """Separate the registry's directory from the tag's own name.
+
+        Both can contain slashes, which makes this genuinely ambiguous:
+        tags/banner_pattern/pattern_item/x.json is the registry
+        `banner_pattern` holding a tag named `pattern_item/x`, while
+        tags/worldgen/biome/y.json is the two-segment registry directory
+        `worldgen/biome` holding `y`. Splitting on the first slash gets one of
+        them wrong.
+
+        The registry set is known, so take the longest prefix that names one.
+        """
+        for cut in range(len(parts) - 1, 0, -1):
+            candidate = "/".join(parts[:cut])
+            if candidate in DYNAMIC_TAG_DIRECTORIES:
+                return candidate, "/".join(parts[cut:])
+            registry = TAG_DIRECTORY_TO_REGISTRY.get(candidate, f"minecraft:{candidate}")
+            if registry in known:
+                return candidate, "/".join(parts[cut:])
+        return None
+
+    for path in sorted(tag_root.rglob("tags/**/*.json")):
+        rel = path.relative_to(tag_root)
+        namespace = rel.parts[0]
+        # rel is <namespace>/tags/<directory...>/<name...>.json
+        parts = rel.parts[2:-1] + (rel.parts[-1][: -len(".json")],)
+
+        split = split_directory(parts)
+        if split is None:
+            die(f"tag file {rel} sits under no known registry directory")
+        directory, name = split
+
+        if directory in DYNAMIC_TAG_DIRECTORIES:
+            skipped_dynamic += 1
+            continue
+
+        registry = TAG_DIRECTORY_TO_REGISTRY.get(directory, f"minecraft:{directory}")
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        raw.setdefault(registry, {})[f"{namespace}:{name}"] = doc.get("values", [])
+
+    # ── Flatten, one registry at a time ────────────────────────────────────
+    resolved: dict[str, dict[str, list[str]]] = {}
+
+    for registry, tags in sorted(raw.items()):
+        entries = registries["registries"][registry]["entries"]
+        index = {entry: i for i, entry in enumerate(entries)}
+        first_id = registries["registries"][registry]["first_id"]
+        out: dict[str, list[str]] = {}
+
+        def resolve(tag: str, stack: tuple[str, ...]) -> set[str]:
+            if tag in stack:
+                die("tag cycle: " + " -> ".join(stack + (tag,)))
+            if tag not in tags:
+                die(f"{stack[-1] if stack else '?'} references unknown tag {tag}")
+
+            names: set[str] = set()
+            for value in tags[tag]:
+                # A value is either a plain string or {"id": ..., "required": bool}.
+                required = True
+                if isinstance(value, dict):
+                    required = value.get("required", True)
+                    value = value["id"]
+
+                if value.startswith("#"):
+                    names |= resolve(value[1:], stack + (tag,))
+                elif value in index:
+                    names.add(value)
+                elif required:
+                    die(f"tag {tag} requires {value}, which {registry} does not contain")
+                # An optional entry that resolves to nothing is dropped in
+                # silence — that is the whole point of marking it optional.
+            return names
+
+        for tag in sorted(tags):
+            members = resolve(tag, ())
+            # Sorted by id, so the C++ side can binary-search membership and so
+            # the emitted bytes are stable across runs.
+            out[tag] = sorted(members, key=lambda n: index[n])
+
+        resolved[registry] = out
+
+    return {
+        "$comment": "Tags flattened to sorted member lists. '#' references are resolved here so "
+                    "the game never walks the graph; ids are position + first_id in the registry.",
+        "version": TARGET_VERSION,
+        "skipped_dynamic_files": skipped_dynamic,
+        "tags": resolved,
+    }
+
+
 def sha256_of(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -396,9 +530,13 @@ def main() -> int:
     registries = normalize_registries(
         json.loads((reports / "registries.json").read_text(encoding="utf-8")))
 
+    info("resolving tags")
+    tags = normalize_tags(registries)
+
     NORMALIZED.mkdir(parents=True, exist_ok=True)
     outputs = []
-    for name, payload in (("blocks.json", blocks), ("registries.json", registries)):
+    for name, payload in (("blocks.json", blocks), ("registries.json", registries),
+                          ("tags.json", tags)):
         path = NORMALIZED / name
         # sort_keys for byte-reproducibility: the manifest is worthless otherwise.
         path.write_text(json.dumps(payload, indent=1, sort_keys=False, ensure_ascii=False) + "\n",
@@ -415,6 +553,14 @@ def main() -> int:
         print(f"      {item['block']}")
         print(f"        file {item['file_order']}")
         print(f"        real {item['real_order']}")
+
+    tag_total = sum(len(v) for v in tags["tags"].values())
+    info(f"tags ........... {tag_total} across {len(tags['tags'])} registries "
+         f"({tags['skipped_dynamic_files']} files skipped: dynamic registries)")
+    for registry, group in sorted(tags["tags"].items()):
+        biggest = max(group.items(), key=lambda kv: len(kv[1]))
+        print(f"      {registry:42s} {len(group):4d} tags, largest {biggest[0]} "
+              f"({len(biggest[1])} members)")
 
     critical = [n for n, r in registries["registries"].items() if r["wire_critical"]]
     info(f"wire-critical registries: {len(critical)}")

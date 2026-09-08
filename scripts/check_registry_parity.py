@@ -32,7 +32,7 @@ PACK = DATA / "registry.ovpack"
 REPORT = DATA / "generated" / "reports" / "blocks.json"
 REGISTRIES_REPORT = DATA / "generated" / "reports" / "registries.json"
 
-HEADER_FORMAT = "<4sIIIIIIIIIIIIIIII"
+HEADER_FORMAT = "<4sIIIIIIIIIIIIIIIIIIII"
 HEADER_SIZE = 128
 
 
@@ -42,7 +42,8 @@ def read_pack(path: Path) -> dict:
     fields = struct.unpack_from(HEADER_FORMAT, blob, 0)
     (magic, version, block_count, state_count, property_count, value_count,
      string_bytes, strings_at, blocks_at, props_at, values_at, states_at,
-     registry_count, entry_count, registries_at, entries_at, _) = fields
+     registry_count, entry_count, registries_at, entries_at,
+     tag_count, member_count, tags_at, members_at, _) = fields
 
     if magic != b"OVPK":
         sys.exit("error: not an .ovpack")
@@ -63,6 +64,16 @@ def read_pack(path: Path) -> dict:
             "entries": [text(entry_offsets[entry_first + j]) for j in range(entries_len)],
             "first_id": first_id,
         }
+
+    # Tags, flattened at build time. Members are ids, not names.
+    members = struct.unpack_from(f"<{member_count}i", blob, members_at)
+    registry_names = sorted(registries)
+    tags = {}
+    for i in range(tag_count):
+        name_at, registry_index, member_first, members_len = struct.unpack_from(
+            "<IIII", blob, tags_at + i * 16)
+        tags.setdefault(registry_names[registry_index], {})[text(name_at)] = list(
+            members[member_first:member_first + members_len])
 
     value_offsets = struct.unpack_from(f"<{value_count}I", blob, values_at)
 
@@ -97,6 +108,7 @@ def read_pack(path: Path) -> dict:
         "state_to_block": state_to_block,
         "size": len(blob),
         "registries": registries,
+        "tags": tags,
     }
 
 
@@ -175,6 +187,87 @@ def main() -> int:
 
     print(f"\033[0;32m▸\033[0m {len(pack['registries'])} registries, "
           f"{ids_checked} ids identical to Mojang's report")
+
+    # ── Tags, resolved again from the raw files ─────────────────────────────
+    #
+    # Deliberately a second implementation of the '#' resolution, not a call
+    # into the emitter's. An emitter and a reader that share a resolver agree
+    # with each other whatever it does; only an independent walk of the same
+    # source files can say the flattening is right.
+    tag_root = DATA / "generated" / "data"
+    directory_to_registry = {
+        "blocks": "minecraft:block", "items": "minecraft:item",
+        "entity_types": "minecraft:entity_type", "fluids": "minecraft:fluid",
+        "game_events": "minecraft:game_event",
+    }
+    dynamic = {"damage_type", "worldgen/biome", "worldgen/structure",
+               "worldgen/world_preset", "worldgen/flat_level_generator_preset"}
+
+    sources: dict[str, dict[str, list]] = {}
+    files_seen = 0
+    for path in sorted(tag_root.rglob("tags/**/*.json")):
+        rel = path.relative_to(tag_root)
+        parts = rel.parts[2:-1] + (rel.parts[-1][:-len(".json")],)
+        files_seen += 1
+        for cut in range(len(parts) - 1, 0, -1):
+            candidate = "/".join(parts[:cut])
+            registry = directory_to_registry.get(candidate, f"minecraft:{candidate}")
+            if candidate in dynamic or registry in pack["registries"]:
+                if candidate not in dynamic:
+                    sources.setdefault(registry, {})[
+                        f"{rel.parts[0]}:" + "/".join(parts[cut:])] = json.loads(
+                            path.read_text())["values"]
+                break
+
+    tag_errors: list[str] = []
+    members_checked = 0
+
+    for registry, group in sources.items():
+        entries = pack["registries"][registry]["entries"]
+        first_id = pack["registries"][registry]["first_id"]
+        position = {name: first_id + i for i, name in enumerate(entries)}
+
+        def flatten(tag, seen):
+            if tag in seen:
+                sys.exit(f"error: tag cycle at {tag}")
+            out = set()
+            for value in group[tag]:
+                required = True
+                if isinstance(value, dict):
+                    required, value = value.get("required", True), value["id"]
+                if value.startswith("#"):
+                    out |= flatten(value[1:], seen | {tag})
+                elif value in position:
+                    out.add(position[value])
+                elif required:
+                    tag_errors.append(f"{tag}: requires missing {value}")
+            return out
+
+        for tag in sorted(group):
+            expected = sorted(flatten(tag, frozenset()))
+            actual = pack["tags"].get(registry, {}).get(tag)
+            if actual is None:
+                tag_errors.append(f"{tag}: missing from the pack ({registry})")
+                continue
+            members_checked += len(expected)
+            if actual != expected:
+                tag_errors.append(
+                    f"{tag}: {len(actual)} members in the pack, {len(expected)} resolved")
+
+    packed_tags = sum(len(g) for g in pack["tags"].values())
+    source_tags = sum(len(g) for g in sources.values())
+    if packed_tags != source_tags:
+        tag_errors.append(f"{packed_tags} tags in the pack, {source_tags} in the source files")
+
+    if tag_errors:
+        print("\033[0;31mtag mismatches\033[0m")
+        for line in tag_errors[:20]:
+            print(f"  {line}")
+        return 1
+
+    print(f"\033[0;32m▸\033[0m {packed_tags} tags re-resolved independently, "
+          f"{members_checked} members identical "
+          f"({files_seen - source_tags} files skipped: dynamic registries)")
 
     by_name = {block["name"]: block for block in pack["blocks"]}
     errors: list[str] = []

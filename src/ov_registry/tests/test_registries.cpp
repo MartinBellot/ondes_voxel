@@ -2,6 +2,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -220,4 +221,141 @@ TEST_CASE("a registry whose entries leave the table is refused", "[registry][ids
     std::memcpy(bytes.data() + registries_offset + 8, &huge, sizeof(u32));
 
     REQUIRE(Registries::from_bytes(bytes).error() == RegistryError::Corrupt);
+}
+
+// ── Tags ────────────────────────────────────────────────────────────────────
+
+TEST_CASE("the vanilla tags are all present", "[registry][tags]") {
+    if (loaded() == nullptr) {
+        SKIP("no registry pack");
+    }
+    // 305 resolved tags across 10 registries; the other 108 tag files belong to
+    // registries the server sends rather than pins, so they have no numeric ids
+    // to resolve to and are carried elsewhere.
+    REQUIRE(loaded()->tag_count() == 305);
+}
+
+TEST_CASE("a tag reference is flattened, not stored", "[registry][tags]") {
+    if (loaded() == nullptr) {
+        SKIP("no registry pack");
+    }
+    const auto* r      = loaded();
+    const auto  blocks = r->find("minecraft:block");
+    REQUIRE(blocks.has_value());
+
+    // minecraft:logs contains nothing but three references to other tags:
+    //   #logs_that_burn, #crimson_stems, #warped_stems
+    // Resolved, that is 8 wood types x 4 forms, plus 2 nether fungi x 4.
+    const auto logs = r->find_tag(*blocks, "minecraft:logs");
+    REQUIRE(logs.has_value());
+    REQUIRE(r->tag_members(*logs).size() == 40);
+
+    const auto oak = r->protocol_id(*blocks, "minecraft:oak_log");
+    REQUIRE(oak.has_value());
+    REQUIRE(r->tag_contains(*logs, *oak));
+
+    const auto stripped = r->protocol_id(*blocks, "minecraft:stripped_warped_hyphae");
+    REQUIRE(stripped.has_value());
+    REQUIRE(r->tag_contains(*logs, *stripped));
+
+    const auto stone = r->protocol_id(*blocks, "minecraft:stone");
+    REQUIRE(stone.has_value());
+    REQUIRE_FALSE(r->tag_contains(*logs, *stone));
+}
+
+TEST_CASE("tags in a nested directory keep their path in the name", "[registry][tags]") {
+    if (loaded() == nullptr) {
+        SKIP("no registry pack");
+    }
+    const auto* r      = loaded();
+    const auto  blocks = r->find("minecraft:block");
+    REQUIRE(blocks.has_value());
+
+    // The file is tags/blocks/mineable/pickaxe.json, and the tag is
+    // minecraft:mineable/pickaxe — the directory prefix belongs to the
+    // registry, the rest to the name. Splitting that on the first slash would
+    // give the registry "blocks/mineable", which exists nowhere.
+    const auto pickaxe = r->find_tag(*blocks, "minecraft:mineable/pickaxe");
+    REQUIRE(pickaxe.has_value());
+    REQUIRE(r->tag_members(*pickaxe).size() == 375);
+
+    const auto axe = r->find_tag(*blocks, "minecraft:mineable/axe");
+    REQUIRE(axe.has_value());
+    REQUIRE(r->tag_members(*axe).size() == 297);
+}
+
+TEST_CASE("tags live in the registry they belong to", "[registry][tags]") {
+    if (loaded() == nullptr) {
+        SKIP("no registry pack");
+    }
+    const auto* r = loaded();
+
+    // minecraft:planks exists as both a block tag and an item tag, with the
+    // same name and different ids. Keying tags by name alone would collide.
+    const auto blocks = r->find("minecraft:block");
+    const auto items  = r->find("minecraft:item");
+    REQUIRE(blocks.has_value());
+    REQUIRE(items.has_value());
+
+    const auto block_planks = r->find_tag(*blocks, "minecraft:planks");
+    const auto item_planks  = r->find_tag(*items, "minecraft:planks");
+    REQUIRE(block_planks.has_value());
+    REQUIRE(item_planks.has_value());
+    REQUIRE(block_planks->value() != item_planks->value());
+    REQUIRE(r->tag_members(*block_planks).size() == 11);
+
+    // And a block tag is not findable through the item registry.
+    REQUIRE_FALSE(r->find_tag(*items, "minecraft:mineable/pickaxe").has_value());
+}
+
+TEST_CASE("members are sorted, so membership is a binary search", "[registry][tags]") {
+    if (loaded() == nullptr) {
+        SKIP("no registry pack");
+    }
+    const auto* r = loaded();
+
+    // tag_contains binary-searches. If the emitter ever stopped sorting, that
+    // search would silently miss members rather than fail.
+    for (u16 i = 0; i < r->tag_count(); ++i) {
+        const auto members = r->tag_members(TagId{i});
+        INFO(r->tag_name(TagId{i}));
+        REQUIRE(std::ranges::is_sorted(members));
+        REQUIRE(std::ranges::adjacent_find(members) == members.end());
+
+        for (const ProtocolId id : members) {
+            REQUIRE(r->tag_contains(TagId{i}, id));
+        }
+    }
+}
+
+TEST_CASE("the dynamic registries have no tags here", "[registry][tags]") {
+    if (loaded() == nullptr) {
+        SKIP("no registry pack");
+    }
+    const auto* r = loaded();
+
+    // damage_type and worldgen/biome both have tag files in the vanilla
+    // datapack, but their ids only exist once the server has built them, so
+    // they cannot be numbers in a build-time cache. Finding one here would
+    // mean the emitter had invented ids that the client will not agree with.
+    REQUIRE_FALSE(r->find("minecraft:damage_type").has_value());
+    for (u16 i = 0; i < r->tag_count(); ++i) {
+        const auto registry = r->find("minecraft:worldgen/biome");
+        REQUIRE_FALSE(registry.has_value());
+    }
+}
+
+TEST_CASE("an unknown tag yields nothing", "[registry][tags][malformed]") {
+    if (loaded() == nullptr) {
+        SKIP("no registry pack");
+    }
+    const auto* r      = loaded();
+    const auto  blocks = r->find("minecraft:block");
+    REQUIRE(blocks.has_value());
+
+    REQUIRE_FALSE(r->find_tag(*blocks, "minecraft:not_a_tag").has_value());
+    REQUIRE_FALSE(r->find_tag(*blocks, "logs").has_value());  // unqualified
+    REQUIRE(r->tag_members(TagId{60000}).empty());
+    REQUIRE(r->tag_name(TagId{60000}).empty());
+    REQUIRE_FALSE(r->tag_contains(TagId{60000}, 0));
 }

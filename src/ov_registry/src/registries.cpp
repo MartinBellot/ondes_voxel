@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <utility>
 
 namespace ov::registry {
 namespace {
@@ -45,18 +46,19 @@ std::expected<Registries, RegistryError> Registries::from_bytes(std::vector<u8> 
         return std::unexpected{RegistryError::VersionMismatch};
     }
 
+    Registries result;
+    result.data_                     = std::move(data);
+    const std::vector<u8>& data_view = result.data_;
+
     const auto* records =
-        pack_at<RegistryRecord>(data, header.registries_offset, header.registry_count);
-    const auto* entry_offsets = pack_at<u32>(data, header.entries_offset, header.entry_count);
+        pack_at<RegistryRecord>(data_view, header.registries_offset, header.registry_count);
+    const auto* entry_offsets = pack_at<u32>(data_view, header.entries_offset, header.entry_count);
     if (records == nullptr || entry_offsets == nullptr) {
         return std::unexpected{RegistryError::Corrupt};
     }
-    if (header.strings_offset + header.string_bytes > data.size()) {
+    if (header.strings_offset + header.string_bytes > data_view.size()) {
         return std::unexpected{RegistryError::Corrupt};
     }
-
-    Registries result;
-    result.data_ = std::move(data);
 
     // Resolve every name once, at load. Doing it per query would undo the point
     // of a format that needs no parsing.
@@ -91,7 +93,71 @@ std::expected<Registries, RegistryError> Registries::from_bytes(std::vector<u8> 
                                            static_cast<ProtocolId>(record.first_id)});
     }
 
+    // ── Tags ────────────────────────────────────────────────────────────────
+    const auto* tag_records = pack_at<TagRecord>(data_view, header.tags_offset, header.tag_count);
+    const auto* members =
+        pack_at<ProtocolId>(data_view, header.members_offset, header.member_count);
+    if (tag_records == nullptr || members == nullptr) {
+        return std::unexpected{RegistryError::Corrupt};
+    }
+    result.members_ = std::span{members, header.member_count};
+
+    result.tags_.reserve(header.tag_count);
+    for (u32 i = 0; i < header.tag_count; ++i) {
+        const TagRecord& record = tag_records[i];
+
+        if (record.registry_index >= result.registries_.size()) {
+            return std::unexpected{RegistryError::Corrupt};
+        }
+        if (static_cast<usize>(record.member_first) + record.member_count > header.member_count) {
+            return std::unexpected{RegistryError::Corrupt};
+        }
+
+        const std::string_view name =
+            string_at(result.data_, header.strings_offset, header.string_bytes, record.name_offset);
+        if (name.empty()) {
+            return std::unexpected{RegistryError::Corrupt};
+        }
+
+        result.tags_.push_back(Tag{name, static_cast<u16>(record.registry_index),
+                                   record.member_first, record.member_count});
+    }
+
     return result;
+}
+
+std::optional<TagId> Registries::find_tag(RegistryId       registry,
+                                          std::string_view name) const noexcept {
+    // Emitted sorted by (registry, name), which is exactly this comparison.
+    const auto key = std::pair{static_cast<u16>(registry.value()), name};
+    const auto it  = std::ranges::lower_bound(
+        tags_, key, {}, [](const Tag& tag) { return std::pair{tag.registry_index, tag.name}; });
+    if (it == tags_.end() || it->registry_index != registry.value() || it->name != name) {
+        return std::nullopt;
+    }
+    return TagId{static_cast<u16>(std::distance(tags_.begin(), it))};
+}
+
+std::string_view Registries::tag_name(TagId tag) const noexcept {
+    if (tag.value() >= tags_.size()) {
+        return {};
+    }
+    return tags_[tag.value()].name;
+}
+
+std::span<const ProtocolId> Registries::tag_members(TagId tag) const noexcept {
+    if (tag.value() >= tags_.size()) {
+        return {};
+    }
+    const Tag& entry = tags_[tag.value()];
+    return members_.subspan(entry.member_first, entry.member_count);
+}
+
+bool Registries::tag_contains(TagId tag, ProtocolId id) const noexcept {
+    // The hot one: "is this block a log?" runs on every break, every fire tick,
+    // every pathfinding step. Members are stored sorted so this is a binary
+    // search rather than a scan of 375 ids.
+    return std::ranges::binary_search(tag_members(tag), id);
 }
 
 std::expected<Registries, RegistryError> Registries::load(const std::filesystem::path& path) {

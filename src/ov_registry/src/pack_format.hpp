@@ -23,7 +23,7 @@ namespace ov::registry {
 /// were current is far worse than no cache: the ids would be plausible and
 /// wrong, and nothing would report an error until a vanilla client crashed on
 /// an entity type that does not exist.
-inline constexpr u32 kFormatVersion = 2;
+inline constexpr u32 kFormatVersion = 3;
 
 inline constexpr u32 kHeaderSize = 128;
 
@@ -44,6 +44,10 @@ struct PackHeader {
     u32  entry_count;
     u32  registries_offset;
     u32  entries_offset;
+    u32  tag_count;
+    u32  member_count;
+    u32  tags_offset;
+    u32  members_offset;
     u32  reserved;
 };
 
@@ -59,7 +63,18 @@ struct RegistryRecord {
     u32 first_id;
 };
 
+/// One tag: its name, which registry it belongs to, and the span of member ids
+/// it resolves to. Members are ids rather than names — the '#' references are
+/// flattened at build time, so the game never walks the tag graph.
+struct TagRecord {
+    u32 name_offset;
+    u32 registry_index;
+    u32 member_first;
+    u32 member_count;
+};
+
 static_assert(sizeof(RegistryRecord) == 16, "layout must match the emitter");
+static_assert(sizeof(TagRecord) == 16, "layout must match the emitter");
 static_assert(sizeof(PackHeader) <= kHeaderSize, "header must fit its reserved space");
 
 /// A bounds-checked view of `count` records at `offset`, or nullptr.

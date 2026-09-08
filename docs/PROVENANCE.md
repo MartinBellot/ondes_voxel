@@ -434,3 +434,65 @@ le premier datapack ajoutant un biome — et cela doit échouer là plutôt qu'e
 commencer à 1 » marcherait aujourd'hui et deviendrait faux silencieusement le
 jour où Mojang ajoute une seconde exception. Un décalage de un ici signifie que
 chaque potion du jeu applique l'effet voisin.
+
+---
+
+## Tags (`ov_registry`)
+
+Source : les 413 fichiers `data/minecraft/tags/**/*.json` du datapack vanilla,
+produits par le data generator.
+
+Un tag référence d'autres tags avec un `#` en tête, donc c'est un **graphe**.
+Il est aplati **une fois, à la compilation**, en listes d'IDs triées — le jeu ne
+parcourt jamais le graphe. Résoudre à chaque appel serait l'implémentation
+évidente et mettrait une traversée de graphe dans le chemin de cassage de bloc.
+Aplatir tôt fait aussi échouer un cycle ou une référence pendante **au build**
+plutôt qu'à un tick.
+
+| Mesure | Valeur |
+|---|---|
+| Fichiers de tags | **413** |
+| Tags résolus | **305**, sur 10 registres |
+| Membres | **4255** |
+| Fichiers reportés (registres dynamiques) | **108** |
+| Plus gros | `minecraft:mineable/pickaxe`, 375 membres |
+
+### Le piège du découpage de chemin
+
+Le répertoire du registre **et** le nom du tag peuvent contenir des `/` :
+
+```
+tags/banner_pattern/pattern_item/x.json  → registre banner_pattern, tag pattern_item/x
+tags/worldgen/biome/y.json               → registre worldgen/biome,  tag y
+tags/blocks/mineable/axe.json            → registre block,           tag mineable/axe
+```
+
+Découper au premier `/` se trompe sur le deuxième cas ; découper à l'avant-dernier
+se trompe sur les deux autres. La bonne règle : l'ensemble des registres est
+connu, donc on prend **le plus long préfixe qui nomme un registre**. Ma première
+version découpait naïvement et a échoué sur `banner_pattern/pattern_item` — le
+message d'erreur du normaliseur l'a montré immédiatement, ce qui est exactement
+ce qu'on attend d'un `die()` explicite plutôt que d'un `get()` silencieux.
+
+### Répertoires au pluriel
+
+Cinq répertoires sont des pluriels hérités et ne correspondent pas au nom du
+registre : `blocks` → `block`, `items` → `item`, `entity_types` → `entity_type`,
+`fluids` → `fluid`, `game_events` → `game_event`. Tous les autres sont déjà au
+singulier. La table est **mesurée depuis la sortie du générateur**, pas devinée.
+
+### Ce que le datapack vanilla n'exerce pas
+
+Mesuré : aucun `replace: true`, aucune entrée sous forme d'objet, aucune entrée
+`required: false`, aucune référence hors du namespace `minecraft`. Ces cas sont
+implémentés quand même — le format les définit, et le premier datapack tiers
+s'en servira. Ne coder que ce que Mojang expédie donnerait un chargeur qui
+marche jusqu'au premier pack de la communauté.
+
+### Vérification indépendante
+
+`check_registry_parity.py` **re-résout les `#` depuis les fichiers JSON bruts
+avec sa propre implémentation**, puis compare au binaire. Un émetteur et un
+lecteur partageant un résolveur s'accordent quoi qu'il fasse ; seule une seconde
+traversée des mêmes sources peut dire que l'aplatissement est juste.
+305 tags, 4255 membres, identiques.

@@ -141,7 +141,8 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       *(`scripts/check_registry_parity.py`, relit le binaire depuis sa spec)*
 - [x] `PalettedContainer` bit-exact : single-value, indirect 4-8 bits, direct 15 bits
 - [x] Palette de biomes 4×4×4, 6 bits en direct
-- [ ] Tags (blocs, items, fluides, entités), résolution récursive
+- [x] Tags des 10 registres codés en dur, résolution récursive à la compilation
+- [ ] Tags des registres dynamiques *(avec `Registry Data`, M3)*
 - [ ] Chargeur de datapack `pack_format` 15, empilable
 - [ ] `ov-datac` → cache `.ovpack` mmap, position-independent, zéro pointeur
 - [ ] Invalidation par version de format + hash de contenu

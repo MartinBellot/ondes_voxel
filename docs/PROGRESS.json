@@ -11,7 +11,7 @@
   },
   "last_updated": "2026-09-08",
   "current_milestone": "M1",
-  "current_task": "m2-tags-and-datapack-loader",
+  "current_task": "m2-datapack-loader",
   "milestones": {
     "M0": {
       "name": "Fondations",
@@ -33,8 +33,8 @@
     "M2": {
       "name": "Registres et données",
       "status": "in_progress",
-      "done": 15,
-      "total": 25,
+      "done": 16,
+      "total": 26,
       "exit_criterion": "Égalité stricte contre blocks.json sur les 24 135 états ; .ovpack chargé en < 10 ms ; vecteurs RNG conformes.",
       "blocked": [],
       "notes": "Data generator officiel exécuté et normalisé. 1003 blocs / 24135 blockstates. Deux pièges du dataset identifiés et neutralisés (ordre des propriétés, mob_effect 1-based). PalettedContainer vérifié contre 165318 sections écrites par le jeu lui-même."
@@ -100,7 +100,8 @@
     "palette_packing": "165318/165318 sections repaquetées octet-identiques (monde réel, largeurs 4 a 7 bits) ; 263778 sections single-valued supplementaires sans donnee",
     "legacy_rng": "toutes les draws entieres, flottantes et booleennes bit-identiques a une vraie JVM ; nextGaussian 44/56 bit-identiques, 4 ulp au pire (log fdlibm manquant)",
     "xoroshiro_rng": "flux identique a Xoroshiro128PlusPlus du JDK, upgrade de seed 128 bits compris (6 seeds x 8 tirages)",
-    "registry_parity": "66 registres / 5067 IDs identiques au rapport officiel Mojang, ordre inclus"
+    "registry_parity": "66 registres / 5067 IDs identiques au rapport officiel Mojang, ordre inclus",
+    "tag_parity": "305 tags / 4255 membres, re-resolus independamment depuis les fichiers JSON bruts et identiques ; 108 fichiers de registres dynamiques reportes"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",

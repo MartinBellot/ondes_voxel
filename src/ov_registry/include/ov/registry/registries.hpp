@@ -36,6 +36,11 @@ using RegistryId = Id<RegistryIdTag, u16>;
 /// The id an entry carries on the wire.
 using ProtocolId = i32;
 
+/// A tag's index within the pack.
+struct TagIdTag {};
+
+using TagId = Id<TagIdTag, u16>;
+
 /// Every hard-coded registry, keyed by name.
 ///
 /// Loading is a file read and a handful of bounds checks; the pack is laid out
@@ -77,6 +82,32 @@ public:
     /// the case for anything arriving from a peer.
     [[nodiscard]] std::string_view entry_of(RegistryId registry, ProtocolId id) const noexcept;
 
+    // ── Tags ────────────────────────────────────────────────────────────────
+    //
+    // Tags are how the game asks "is this one of the logs?" without listing
+    // forty blocks. They form a graph — a tag may include another with a '#'
+    // prefix — and that graph is flattened once, at build time, into sorted id
+    // lists. Resolving at every lookup would be the obvious implementation and
+    // would put a graph walk inside the block-breaking path.
+    //
+    // Tags for the six dynamic registries are deliberately absent: their ids
+    // only exist once the server has built them, so they cannot be numbers here.
+
+    [[nodiscard]] usize tag_count() const noexcept { return tags_.size(); }
+
+    /// Find a tag by registry and name, e.g. ("minecraft:block", "minecraft:logs").
+    [[nodiscard]] std::optional<TagId> find_tag(RegistryId       registry,
+                                                std::string_view name) const noexcept;
+
+    [[nodiscard]] std::string_view tag_name(TagId tag) const noexcept;
+
+    /// The tag's members, as wire ids, sorted ascending.
+    [[nodiscard]] std::span<const ProtocolId> tag_members(TagId tag) const noexcept;
+
+    /// Whether an id is in the tag. A binary search over a sorted span — this
+    /// is the call the game actually makes, millions of times.
+    [[nodiscard]] bool tag_contains(TagId tag, ProtocolId id) const noexcept;
+
 private:
     Registries() = default;
 
@@ -87,9 +118,18 @@ private:
         ProtocolId       first_id;
     };
 
+    struct Tag {
+        std::string_view name;
+        u16              registry_index;
+        u32              member_first;
+        u32              member_count;
+    };
+
     std::vector<u8>               data_;
     std::vector<Entry>            registries_;
     std::vector<std::string_view> entry_names_;
+    std::vector<Tag>              tags_;
+    std::span<const ProtocolId>   members_;
 };
 
 }  // namespace ov::registry
