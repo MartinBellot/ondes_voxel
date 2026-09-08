@@ -30,6 +30,8 @@ struct LoadedWorld {
     std::map<std::pair<i32, i32>, std::unique_ptr<world::Chunk>> chunks;
     usize                                                        chunks_read{0};
     usize                                                        chunks_failed{0};
+    /// Present on disk but stopped before `full`, so they carry no blocks.
+    usize chunks_unfinished{0};
     /// True if any chunk carried stored light. A save without it renders black,
     /// and that is worth telling apart from a broken mesher.
     bool light_stored{false};

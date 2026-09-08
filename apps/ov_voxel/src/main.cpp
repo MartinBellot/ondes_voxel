@@ -318,8 +318,8 @@ int main(int argc, char** argv) {
         const auto load_ms =
             std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - load_start)
                 .count();
-        OV_LOG_INFO("world: {} chunks read, {} failed, {:.0f} ms{}", world->chunks_read,
-                    world->chunks_failed, load_ms,
+        OV_LOG_INFO("world: {} chunks read, {} unfinished, {} failed, {:.0f} ms{}",
+                    world->chunks_read, world->chunks_unfinished, world->chunks_failed, load_ms,
                     world->light_stored ? "" : " — WITHOUT stored light");
     }
 

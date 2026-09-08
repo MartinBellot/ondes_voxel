@@ -140,6 +140,20 @@ std::optional<LoadedWorld> load_world(const std::filesystem::path&   world_direc
                 ++world.chunks_failed;
                 continue;
             }
+            // Only finished chunks.
+            //
+            // Force-loading a patch makes the server bring the chunks around
+            // it up to intermediate statuses — `structure_starts` has no
+            // blocks at all — and reading those produces an empty chunk that
+            // renders as a hole with no error anywhere. Skipping them changes
+            // nothing on screen and everything in the log: the count below
+            // says how much of what was asked for actually exists.
+            if (const nbt::Tag* status = document->root.find("Status");
+                status == nullptr || status->as_string() != "minecraft:full") {
+                ++world.chunks_unfinished;
+                continue;
+            }
+
             auto chunk = world::from_nbt(*document, context);
             if (!chunk) {
                 // A chunk this version cannot read is skipped, not guessed at.
