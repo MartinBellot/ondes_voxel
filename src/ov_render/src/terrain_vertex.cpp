@@ -32,12 +32,15 @@ TerrainVertex pack_vertex(const TerrainVertexAttributes& attributes) noexcept {
     const u32 ao    = std::min<u32>(attributes.ao, 3);
     const u32 facing =
         attributes.shade ? static_cast<u32>(attributes.facing) : u32{kFacingUnshaded};
-    const u32 tint = static_cast<u32>(attributes.tint) & 0x3u;
-
     TerrainVertex vertex;
     vertex.words[0] = x | (y << 16);
     vertex.words[1] = z | (u << 16);
-    vertex.words[2] = v | (sky << 16) | (block << 20) | (ao << 24) | (facing << 26) | (tint << 29);
+    vertex.words[2] = v | (sky << 16) | (block << 20) | (ao << 24) | (facing << 26);
+    // Byte order red, green, blue from the low end, so the shader's three
+    // bitfieldExtracts read them in the order they are named.
+    vertex.words[3] = ((attributes.tint_colour >> 16) & 0xFFu) |
+                      (((attributes.tint_colour >> 8) & 0xFFu) << 8) |
+                      ((attributes.tint_colour & 0xFFu) << 16);
     return vertex;
 }
 
@@ -59,7 +62,8 @@ TerrainVertexAttributes unpack_vertex(const TerrainVertex& vertex) noexcept {
     const auto facing = static_cast<u8>(field(vertex.words[2], 26, 3));
     attributes.shade  = facing < kFacingUnshaded;
     attributes.facing = attributes.shade ? static_cast<Direction>(facing) : Direction::Up;
-    attributes.tint   = static_cast<TintChannel>(field(vertex.words[2], 29, 2));
+    attributes.tint_colour = (field(vertex.words[3], 0, 8) << 16) |
+                             (field(vertex.words[3], 8, 8) << 8) | field(vertex.words[3], 16, 8);
     return attributes;
 }
 

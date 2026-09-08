@@ -7,8 +7,8 @@ using namespace ov;
 using namespace ov::render;
 using Catch::Approx;
 
-TEST_CASE("the vertex is twelve bytes and every field has its own bits", "[vertex]") {
-    STATIC_REQUIRE(sizeof(TerrainVertex) == 12);
+TEST_CASE("the vertex is sixteen bytes and every field has its own bits", "[vertex]") {
+    STATIC_REQUIRE(sizeof(TerrainVertex) == 16);
 
     // Overlapping bit ranges are the classic packing bug, and they show up as
     // lighting that flickers when a texture coordinate changes.
@@ -20,7 +20,7 @@ TEST_CASE("the vertex is twelve bytes and every field has its own bits", "[verte
     attributes.block_light = 7;
     attributes.ao          = 2;
     attributes.facing      = Direction::North;
-    attributes.tint        = TintChannel::Foliage;
+    attributes.tint_colour = 0x91BD59;
 
     const auto unpacked = unpack_vertex(pack_vertex(attributes));
 
@@ -34,7 +34,8 @@ TEST_CASE("the vertex is twelve bytes and every field has its own bits", "[verte
     CHECK(unpacked.ao == 2);
     CHECK(unpacked.facing == Direction::North);
     CHECK(unpacked.shade);
-    CHECK(unpacked.tint == TintChannel::Foliage);
+    // Eight bits a channel, so a real biome colour round-trips exactly.
+    CHECK(unpacked.tint_colour == 0x91BD59);
 }
 
 TEST_CASE("texture coordinates address a texel of a real atlas", "[vertex]") {
@@ -118,7 +119,7 @@ TEST_CASE("distinct attributes give distinct words", "[vertex]") {
     auto with_ao         = base;
     with_ao.ao           = 0;
     auto with_tint       = base;
-    with_tint.tint       = TintChannel::Water;
+    with_tint.tint_colour = 0x3F76E4;
 
     CHECK_FALSE(pack_vertex(base) == pack_vertex(with_light));
     CHECK_FALSE(pack_vertex(base) == pack_vertex(with_ao));

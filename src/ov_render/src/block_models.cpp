@@ -85,9 +85,12 @@ TintChannel tint_channel_for(std::string_view block_name) noexcept {
     constexpr std::string_view kGrass[]   = {"grass_block", "grass",           "tall_grass",
                                              "fern",        "large_fern",      "potted_fern",
                                              "sugar_cane",  "grass_block_snow"};
-    constexpr std::string_view kFoliage[] = {"oak_leaves",      "jungle_leaves",   "acacia_leaves",
-                                             "dark_oak_leaves", "mangrove_leaves", "vine",
-                                             "spruce_leaves",   "birch_leaves"};
+    constexpr std::string_view kFoliage[] = {"oak_leaves",      "jungle_leaves", "acacia_leaves",
+                                             "dark_oak_leaves", "mangrove_leaves", "vine"};
+    // These two ignore the biome and take a constant, which is why they are not
+    // in the list above.
+    constexpr std::string_view kEvergreen[] = {"spruce_leaves", "potted_spruce_sapling"};
+    constexpr std::string_view kBirch[]     = {"birch_leaves"};
     constexpr std::string_view kWater[]   = {"water", "bubble_column", "water_cauldron"};
 
     const auto bare = block_name.starts_with("minecraft:") ? block_name.substr(10) : block_name;
@@ -101,9 +104,12 @@ TintChannel tint_channel_for(std::string_view block_name) noexcept {
     if (std::ranges::find(kWater, bare) != std::ranges::end(kWater)) {
         return TintChannel::Water;
     }
-    // Spruce and birch take a fixed colour rather than the biome's, which the
-    // renderer does not distinguish yet. Foliage is close enough to be wrong in
-    // the right direction; a flat grey would not be.
+    if (std::ranges::find(kEvergreen, bare) != std::ranges::end(kEvergreen)) {
+        return TintChannel::EvergreenFoliage;
+    }
+    if (std::ranges::find(kBirch, bare) != std::ranges::end(kBirch)) {
+        return TintChannel::BirchFoliage;
+    }
     return TintChannel::None;
 }
 

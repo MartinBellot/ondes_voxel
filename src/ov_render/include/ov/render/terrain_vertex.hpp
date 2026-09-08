@@ -20,9 +20,20 @@
 // only ever asked whether a value survived the round trip, and appeared the
 // moment a real atlas rect went through it.
 //
-// Twelve bytes leaves 26 bits spare, which is not waste — it is where the
-// second uv for an overlay, or a normal for anything that is not axis-aligned,
-// will go without another format change.
+// Sixteen bytes now, and the fourth word is the biome tint, as eight bits a
+// channel. It went from two bits to twenty-four for a reason that only a
+// correct biome table makes visible: a tint is not one of four colours, it is
+// the average of the twenty-five biome cells around the block, sampled out of
+// a colormap texture, and a grass block in a plains and one four blocks into a
+// forest differ by a few units in each channel. Two bits named a channel and
+// the shader looked up a constant; that is exactly as wrong as it sounds, and
+// it is what made every meadow, jungle and taiga in the world the same green.
+//
+// The cost is measured and real: four more bytes a vertex is 81 MiB more in
+// the arena at a radius of 12. The alternatives were considered and rejected —
+// packing the colour into the one spare bit and the two the tint channel gave
+// back does not fit in three bits, and there is no precision left to take from
+// the uv without reintroducing the atlas bug below.
 //
 // Eight bytes is still reachable, and it is worth writing down how, so that the
 // option is not lost: give each section a palette of the sprites it uses,
@@ -41,17 +52,25 @@
 
 namespace ov::render {
 
-/// Which biome-driven colour multiplies this vertex.
+/// Which biome-driven colour a block's tinted faces take.
 ///
-/// Vanilla multiplies the tint into a vertex colour on the CPU; three more
-/// bytes for that would not have fitted, so the channel is named and the shader
-/// looks the colour up. A real difference in mechanism, and correct as long as
-/// the tint is constant across a quad — which for one block it is.
+/// Still named rather than resolved at this level: the channel is a property of
+/// the *block* — grass takes grass, leaves take foliage — while the colour it
+/// resolves to is a property of the *place*. The mesher, which knows both,
+/// turns one into the other and bakes the result into the vertex, the way
+/// vanilla does.
 enum class TintChannel : u8 {
     None    = 0,
     Grass   = 1,
     Foliage = 2,
     Water   = 3,
+    /// Spruce and birch leaves take a fixed colour and ignore the biome
+    /// entirely — a spruce in a jungle is the same dark green as one in a
+    /// taiga. Channels rather than special cases in the mesher, because that is
+    /// exactly what they are: a rule about the block, resolved by whoever knows
+    /// the colours.
+    EvergreenFoliage = 4,
+    BirchFoliage     = 5,
 };
 
 /// A vertex before packing. Never stored in a buffer; it exists so the packing
@@ -71,9 +90,11 @@ struct TerrainVertexAttributes {
     u8 ao{3};
     /// The face this vertex belongs to, for directional shading.
     Direction facing{Direction::Up};
+    /// The biome colour that multiplies this vertex, 0xRRGGBB. White for the
+    /// quads that declare no tint index, which is most of them.
+    u32 tint_colour{0xFFFFFF};
     /// Elements with `"shade": false` take no directional shading at all.
     bool        shade{true};
-    TintChannel tint{TintChannel::None};
 };
 
 /// Position range, in blocks relative to the section origin.
@@ -103,15 +124,18 @@ inline constexpr u8 kFacingUnshaded = 6;
 ///              20-23   block     4 bits
 ///              24-25   ao        2 bits
 ///              26-28   facing    3 bits   0-5 a Direction, 6 unshaded
-///              29-30   tint      2 bits
-///                 31   spare     1 bit
+///              29-31   spare     3 bits
+///     word 3    0-7    red       8 bits   the baked biome tint
+///               8-15   green     8 bits
+///              16-23   blue      8 bits
+///              24-31   spare     8 bits
 struct TerrainVertex {
-    std::array<u32, 3> words{};
+    std::array<u32, 4> words{};
 
     friend bool operator==(const TerrainVertex&, const TerrainVertex&) noexcept = default;
 };
 
-static_assert(sizeof(TerrainVertex) == 12, "the vertex format is part of the memory budget");
+static_assert(sizeof(TerrainVertex) == 16, "the vertex format is part of the memory budget");
 
 [[nodiscard]] TerrainVertex pack_vertex(const TerrainVertexAttributes& attributes) noexcept;
 

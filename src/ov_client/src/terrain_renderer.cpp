@@ -115,6 +115,7 @@ std::expected<std::unique_ptr<TerrainRenderer>, rhi::RhiError> TerrainRenderer::
     binding.attributes.push_back(rhi::VertexAttribute{0, rhi::Format::R32Uint, 0});
     binding.attributes.push_back(rhi::VertexAttribute{1, rhi::Format::R32Uint, 4});
     binding.attributes.push_back(rhi::VertexAttribute{2, rhi::Format::R32Uint, 8});
+    binding.attributes.push_back(rhi::VertexAttribute{3, rhi::Format::R32Uint, 12});
 
     const auto make = [&](rhi::BlendMode blend, bool depth_write, rhi::CullMode cull,
                           std::string_view name) {
@@ -158,9 +159,10 @@ std::expected<std::unique_ptr<TerrainRenderer>, rhi::RhiError> TerrainRenderer::
 
     self->indirect_ = device.info().indirect_first_instance && !desc.force_per_section_draws;
     self->stats_.arena_capacity = self->arena_->capacity();
-    OV_LOG_INFO("terrain: {} MiB arena, {} slots, {} draws per frame", desc.arena_bytes / (1 << 20),
+    OV_LOG_INFO("terrain: {} MiB arena, {} slots, {}", desc.arena_bytes / (1 << 20),
                 desc.max_sections,
-                self->indirect_ ? "one indirect call per layer" : "one per section (no indirect)");
+                self->indirect_ ? "one indirect draw per layer"
+                                : "one draw per section — the driver has no indirect firstInstance");
     return self;
 }
 
@@ -231,7 +233,7 @@ void TerrainRenderer::remove_section(u32 slot) {
 }
 
 void TerrainRenderer::draw(rhi::CommandList& cmd, const render::Mat4& view_projection,
-                           const render::Frustum& frustum, rhi::ImageHandle atlas,
+                           const render::Frustum& frustum, Vec3f camera, rhi::ImageHandle atlas,
                            rhi::SamplerHandle sampler, bool cull) {
     const std::array<rhi::ImageHandle, 1>   images{atlas};
     const std::array<rhi::SamplerHandle, 1> samplers{sampler};
@@ -252,7 +254,9 @@ void TerrainRenderer::draw(rhi::CommandList& cmd, const render::Mat4& view_proje
     u32 written           = 0;
 
     for (usize layer = 0; layer < pipelines_.size(); ++layer) {
+        const bool translucent = layer == layer_index(render::RenderLayer::Translucent);
         scratch_.clear();
+        distances_.clear();
         for (const u32 slot : by_layer_[layer]) {
             const Section& section = sections_[slot];
             // One plane test against a box removes most of the world at a
@@ -266,10 +270,39 @@ void TerrainRenderer::draw(rhi::CommandList& cmd, const render::Mat4& view_proje
             }
             scratch_.push_back(IndirectCommand{section.index_count, 1, 0,
                                                static_cast<i32>(section.vertex_offset), slot});
+            if (translucent) {
+                const Vec3f centre{section.origin.x + 8.0F, section.origin.y + 8.0F,
+                                   section.origin.z + 8.0F};
+                const Vec3f delta{centre.x - camera.x, centre.y - camera.y, centre.z - camera.z};
+                distances_.push_back(delta.x * delta.x + delta.y * delta.y + delta.z * delta.z);
+            }
             stats_.quads_drawn += section.index_count / 6;
         }
         if (scratch_.empty()) {
             continue;
+        }
+        // Back to front, because the translucent layer blends and does not
+        // write depth: drawn the other way round, a far surface painted after a
+        // near one blends over water it is behind.
+        //
+        // This orders whole sections, not the quads inside them. Vanilla sorts
+        // the quads too, with a per-section index buffer it rewrites when the
+        // camera has moved far enough — the asymmetry the plan anticipated.
+        // Sections first because it is the ordering error that spans sixteen
+        // blocks and is therefore the one that shows.
+        if (translucent) {
+            order_.resize(scratch_.size());
+            for (u32 i = 0; i < order_.size(); ++i) {
+                order_[i] = i;
+            }
+            std::ranges::sort(order_, [this](u32 a, u32 b) {
+                return distances_[a] > distances_[b];
+            });
+            sorted_.clear();
+            for (const u32 index : order_) {
+                sorted_.push_back(scratch_[index]);
+            }
+            scratch_.swap(sorted_);
         }
         stats_.sections_drawn += static_cast<u32>(scratch_.size());
 

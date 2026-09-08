@@ -23,7 +23,7 @@ namespace ov::registry {
 /// were current is far worse than no cache: the ids would be plausible and
 /// wrong, and nothing would report an error until a vanilla client crashed on
 /// an entity type that does not exist.
-inline constexpr u32 kFormatVersion = 10;
+inline constexpr u32 kFormatVersion = 11;
 
 /// Grew past 128 when the loot tables arrived.
 inline constexpr u32 kHeaderSize = 256;
@@ -83,8 +83,45 @@ struct PackHeader {
     /// One byte per state: the light it gives off, 0 to 15.
     u32 emission_offset;
 
+    /// Biome effects, sorted by name. A dynamic registry, so it is not in the
+    /// registries report and gets a section of its own.
+    u32 biomes_offset;
+    u32 biome_count;
+
     u32 reserved;
 };
+
+/// One biome's effects, exactly the fields vanilla sends in Registry Data.
+///
+/// The grass and foliage colours are absent on purpose for most biomes:
+/// vanilla computes them from the climate against a colormap in the resource
+/// pack, and that computation belongs where the texture is. What travels is
+/// the climate it needs, and the override for the biomes that ignore it.
+struct BiomeRecord {
+    /// f64 and not f32: the colormap index truncates `(1 - t) * 255`, and a
+    /// temperature of 0.6 sits a millionth away from the boundary between two
+    /// columns. In double it indexes 102, in float 101, and birch forest's
+    /// published grass colour agrees with the double. Measured, not assumed.
+    f64 temperature;
+    f64 downfall;
+    u32 name_offset;
+    u32 water_colour;
+    u32 water_fog_colour;
+    u32 fog_colour;
+    u32 sky_colour;
+    /// -1 for "no override". Black is a colour a biome could legitimately ask
+    /// for, so zero cannot mean absent.
+    i32 grass_colour;
+    i32 foliage_colour;
+    /// 0 none, 1 dark_forest, 2 swamp.
+    u8 grass_modifier;
+    /// 0 none, 1 frozen.
+    u8 temperature_modifier;
+    u8 has_precipitation;
+    u8 pad;
+};
+
+static_assert(sizeof(BiomeRecord) == 48, "layout must match the emitter");
 
 /// One registry: its name, the span of entries it owns, and the numeric id its
 /// first entry carries.

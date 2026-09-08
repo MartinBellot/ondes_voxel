@@ -50,6 +50,10 @@ u16 NeighbourhoodView::fluid_at(Vec3i) const {
     return 0;
 }
 
+u32 NeighbourhoodView::biome_colour(Vec3i, TintChannel) const {
+    return 0xFFFFFF;
+}
+
 std::string_view to_string(RenderLayer layer) noexcept {
     switch (layer) {
         case RenderLayer::Solid: return "solid";
@@ -134,7 +138,7 @@ void emit_block(const BakedModel& model, Vec3i block_position, const BlockRender
 
             attributes.facing = quad.facing;
             attributes.shade  = quad.shade;
-            attributes.tint   = quad.tint_index >= 0 ? info.tint : TintChannel::None;
+            attributes.tint_colour = quad.tint_index >= 0 ? info.tint_colour : 0xFFFFFFu;
 
             if (model.ambient_occlusion && quad.shade) {
                 // The three blocks sharing this corner: the two along the

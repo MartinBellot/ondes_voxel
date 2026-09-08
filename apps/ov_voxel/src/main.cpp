@@ -20,6 +20,7 @@
 #include "ov/client/window.hpp"
 #include "ov/registry/block_states.hpp"
 #include "ov/render/atlas.hpp"
+#include "ov/render/biome_colours.hpp"
 #include "ov/render/block_models.hpp"
 #include "ov/render/camera.hpp"
 #include "ov/render/chunk_mesher.hpp"
@@ -239,6 +240,22 @@ int main(int argc, char** argv) {
         return 1;
     }
     models.classify_layers(*atlas);
+
+    // The biome colours, resolved once against the pack's colormaps. The world
+    // was loaded with the registry's own biome names, so a chunk's numeric
+    // biome is already the index this is keyed by and the map is the identity —
+    // stated explicitly rather than assumed, because the day a save carries a
+    // biome the registry does not have, the identity stops holding.
+    auto biome_colours = render::BiomeColours::load(source, *blocks);
+    if (!biome_colours) {
+        OV_LOG_ERROR("biome colours: {}", render::to_string(biome_colours.error()));
+        return 1;
+    }
+    std::vector<u32> biome_identity(blocks->biome_count());
+    for (u32 index = 0; index < biome_identity.size(); ++index) {
+        biome_identity[index] = index;
+    }
+    const render::BiomeTints tints(*biome_colours, biome_identity);
     OV_LOG_INFO("atlas {}x{}, {} sprites, {} mip levels", atlas->width(), atlas->height(),
                 atlas->sprites().size(), atlas->mips().size());
 
@@ -261,7 +278,7 @@ int main(int argc, char** argv) {
             const i32 origin_y = shape.min_y + static_cast<i32>(index) * 16;
 
             const render::ChunkSectionView view(*blocks, neighbours, position.first * 16, origin_y,
-                                                position.second * 16);
+                                                position.second * 16, &tints);
             SectionMesh                    mesh;
             mesh.origin = Vec3f{static_cast<f32>(position.first * 16), static_cast<f32>(origin_y),
                                 static_cast<f32>(position.second * 16)};
@@ -549,7 +566,8 @@ int main(int argc, char** argv) {
             camera.view_projection(static_cast<f32>(width) / static_cast<f32>(height));
         const auto frustum = render::Frustum::from_view_projection(view_projection);
 
-        (*terrain)->draw(cmd, view_projection, frustum, *atlas_image, *sampler, options.cull);
+        (*terrain)->draw(cmd, view_projection, frustum, camera.position, *atlas_image,
+                         *sampler, options.cull);
         drawn_last_frame = (*terrain)->stats().sections_drawn;
 
         cmd.end_rendering();

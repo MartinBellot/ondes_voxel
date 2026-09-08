@@ -94,10 +94,12 @@ std::expected<BlockRegistry, RegistryError> BlockRegistry::from_bytes(std::vecto
     // One nibble a state would halve it, and the whole table is 24 kB. Bytes
     // until something measures the difference.
     const auto* emission = pack_at<u8>(data, header.emission_offset, header.state_count);
+    const auto* biomes   = pack_at<BiomeRecord>(data, header.biomes_offset, header.biome_count);
 
     if (blocks == nullptr || props == nullptr || values == nullptr || states == nullptr ||
         flags == nullptr || fluids == nullptr || hardness == nullptr || shape_boxes == nullptr ||
-        shape_records == nullptr || state_shapes == nullptr || emission == nullptr) {
+        shape_records == nullptr || state_shapes == nullptr || emission == nullptr ||
+        biomes == nullptr) {
         return std::unexpected{RegistryError::Corrupt};
     }
     if (header.strings_offset + header.string_bytes > data.size()) {
@@ -130,6 +132,9 @@ std::expected<BlockRegistry, RegistryError> BlockRegistry::from_bytes(std::vecto
     registry.emission_ =
         std::span{reinterpret_cast<const u8*>(registry.data_.data() + header.emission_offset),
                   header.state_count};
+
+    registry.biomes_      = registry.data_.data() + header.biomes_offset;
+    registry.biome_count_ = header.biome_count;
 
     registry.loot_ = LootData{
         std::span{reinterpret_cast<const LootTableRecord*>(registry.data_.data() +
@@ -321,6 +326,60 @@ bool BlockRegistry::face_is_sturdy(BlockStateId state, Face face) const noexcept
 
 u8 BlockRegistry::light_emission(BlockStateId state) const noexcept {
     return state.value() < emission_.size() ? emission_[state.value()] : u8{0};
+}
+
+std::optional<u32> BlockRegistry::find_biome(std::string_view name) const noexcept {
+    const auto* records = static_cast<const BiomeRecord*>(biomes_);
+    if (records == nullptr) {
+        return std::nullopt;
+    }
+    // The emitter sorts by name, so this is a binary search rather than a hash
+    // table nobody would ever rebuild.
+    u32 low  = 0;
+    u32 high = biome_count_;
+    while (low < high) {
+        const u32  middle = low + (high - low) / 2;
+        const auto found  = string_at(records[middle].name_offset);
+        if (found < name) {
+            low = middle + 1;
+        } else if (found > name) {
+            high = middle;
+        } else {
+            return middle;
+        }
+    }
+    return std::nullopt;
+}
+
+std::string_view BlockRegistry::biome_name(u32 index) const noexcept {
+    const auto* records = static_cast<const BiomeRecord*>(biomes_);
+    if (records == nullptr || index >= biome_count_) {
+        return {};
+    }
+    return string_at(records[index].name_offset);
+}
+
+BiomeEffects BlockRegistry::biome(u32 index) const noexcept {
+    const auto* records = static_cast<const BiomeRecord*>(biomes_);
+    if (records == nullptr || index >= biome_count_) {
+        // Plains-like rather than empty: an unknown biome should look ordinary
+        // rather than paint the world black.
+        return BiomeEffects{};
+    }
+    const BiomeRecord& record = records[index];
+    BiomeEffects       effects;
+    effects.temperature          = record.temperature;
+    effects.downfall             = record.downfall;
+    effects.water_colour         = record.water_colour;
+    effects.water_fog_colour     = record.water_fog_colour;
+    effects.fog_colour           = record.fog_colour;
+    effects.sky_colour           = record.sky_colour;
+    effects.grass_override       = record.grass_colour;
+    effects.foliage_override     = record.foliage_colour;
+    effects.grass_modifier       = record.grass_modifier;
+    effects.temperature_modifier = record.temperature_modifier;
+    effects.has_precipitation    = record.has_precipitation != 0;
+    return effects;
 }
 
 f32 BlockRegistry::hardness(BlockId block) const noexcept {

@@ -240,8 +240,13 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       conservées, pas encore jouées)*
 - [x] Mailleur **par face depuis le modèle**, occlusion ambiante par sommet
       *(pas greedy : le plan se trompait, voir PROVENANCE)*
-- [x] Vertex packé **12 octets** *(8 ne tient pas : 70 bits nécessaires, le
-      calcul est dans PROVENANCE — 8 bits d'`uv` n'adressent pas un atlas)*
+- [x] Vertex packé **16 octets** *(12 d'abord ; le quatrième mot est la teinte
+      de biome en RGB8, parce qu'une teinte n'est pas l'une de quatre couleurs
+      — coût mesuré : +81 Mio dans l'arène à 12 chunks)*
+- [x] **Couleurs de biome** : colormaps `grass.png` / `foliage.png` échantillonnées
+      par climat, overrides et modificateurs, mélange 5×5 comme vanilla
+      *(15 couleurs publiées reproduites exactement ; le climat est en f64 et
+      c'est une exigence mesurée, pas de la prudence)*
 - [x] Arène device-local 384 Mo, free-list en pages de **3 Ko**
       *(pas 4 Ko : le `vertexOffset` d'une commande indirecte compte des
       sommets, et 4096 n'est pas un multiple du sommet de 12 octets. 3072 l'est
@@ -252,8 +257,9 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       sections dessinées en 3 appels ; l'origine de section, qui ne peut plus
       être poussée, est lue dans un storage buffer indexé par le
       `firstInstance` de la commande)*
-- [~] Passe translucide triée, index buffer mutable dédié *(la couche existe
-      et l'eau s'y dessine ; le tri par distance reste)*
+- [~] Passe translucide triée, index buffer mutable dédié *(les sections sont
+      maintenant triées d'arrière en avant ; le tri des quads à l'intérieur
+      d'une section reste, et demande son propre index buffer)*
 - [ ] Plafond d'upload par frame (les spikes, pas le FPS moyen, sont le risque)
 - [ ] Ciel, soleil, lune, étoiles, nuages, brouillard, météo
 

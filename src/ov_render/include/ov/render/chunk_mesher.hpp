@@ -11,6 +11,7 @@
 
 #include "ov/base/types.hpp"
 #include "ov/registry/block_states.hpp"
+#include "ov/render/biome_colours.hpp"
 #include "ov/render/block_models.hpp"
 #include "ov/render/mesher.hpp"
 #include "ov/world/chunk.hpp"
@@ -27,12 +28,33 @@ namespace ov::render {
 /// with invisible surfaces.
 using ChunkNeighbours = std::array<const world::Chunk*, 9>;
 
+/// Turns a world's own biome ids into the colours a biome paints with.
+///
+/// Two indirections and not one, because they are genuinely different things:
+/// a chunk stores whatever numbering its own palette used when it was loaded,
+/// while BiomeColours is indexed by the registry's order. A world can carry a
+/// biome the registry has never heard of — a datapack's, or a modded one — and
+/// that has to come back as something ordinary rather than as an out-of-range
+/// read.
+class BiomeTints {
+public:
+    BiomeTints(const BiomeColours& colours, std::span<const u32> world_to_registry) noexcept
+        : colours_(&colours), world_to_registry_(world_to_registry) {}
+
+    [[nodiscard]] Rgb colour(u16 world_biome, TintChannel channel) const noexcept;
+
+private:
+    const BiomeColours*  colours_;
+    std::span<const u32> world_to_registry_;
+};
+
 /// A NeighbourhoodView over a 3x3 of chunks, addressed in section-local
 /// coordinates so that the packed vertex's range is the natural one.
 class ChunkSectionView final : public NeighbourhoodView {
 public:
     ChunkSectionView(const registry::BlockRegistry& blocks, const ChunkNeighbours& chunks,
-                     i32 origin_x, i32 origin_y, i32 origin_z) noexcept;
+                     i32 origin_x, i32 origin_y, i32 origin_z,
+                     const BiomeTints* tints = nullptr) noexcept;
 
     /// The state at a section-local position, or air outside what is loaded.
     [[nodiscard]] registry::BlockStateId state_at(Vec3i local) const noexcept;
@@ -42,6 +64,7 @@ public:
     [[nodiscard]] u8   sky_light(Vec3i position) const override;
     [[nodiscard]] u8   block_light(Vec3i position) const override;
     [[nodiscard]] u16  fluid_at(Vec3i position) const override;
+    [[nodiscard]] u32  biome_colour(Vec3i position, TintChannel channel) const override;
 
     /// True when no section in range carried any stored light.
     ///
@@ -54,6 +77,7 @@ private:
     [[nodiscard]] const world::Chunk* chunk_for(i32 world_x, i32 world_z) const noexcept;
 
     const registry::BlockRegistry* blocks_;
+    const BiomeTints*              tints_{nullptr};
     ChunkNeighbours                chunks_;
     i32                            origin_x_;
     i32                            origin_y_;

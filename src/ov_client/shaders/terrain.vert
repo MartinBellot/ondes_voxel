@@ -13,6 +13,7 @@
 layout(location = 0) in uint in_word0;
 layout(location = 1) in uint in_word1;
 layout(location = 2) in uint in_word2;
+layout(location = 3) in uint in_word3;
 
 layout(push_constant) uniform Push {
     mat4 view_projection;
@@ -35,7 +36,7 @@ sections;
 
 layout(location = 0) out vec2 v_uv;
 layout(location = 1) out float v_brightness;
-layout(location = 2) out flat uint v_tint;
+layout(location = 2) out vec3 v_tint;
 
 // Must match kPositionMin and kPositionScale.
 const float kPositionMin   = -8.0;
@@ -66,7 +67,13 @@ void main() {
     uint block  = bitfieldExtract(in_packed.z, 20, 4);
     uint ao     = bitfieldExtract(in_packed.z, 24, 2);
     uint facing = bitfieldExtract(in_packed.z, 26, 3);
-    v_tint      = bitfieldExtract(in_packed.z, 29, 2);
+
+    // The biome tint, baked per block by the mesher: the average of the
+    // twenty-five biome cells around it, sampled out of the pack's colormap.
+    // White for the quads that declare no tint index, which is most of them.
+    v_tint = vec3(float(bitfieldExtract(in_word3, 0, 8)),
+                  float(bitfieldExtract(in_word3, 8, 8)),
+                  float(bitfieldExtract(in_word3, 16, 8))) / 255.0;
 
     // A placeholder for vanilla's 16x16 lightmap texture, which folds in the
     // time of day, the dimension and the flicker of a torch. Taking the larger

@@ -25,6 +25,7 @@ Layout, all little-endian, every section 8-byte aligned:
     properties  one record per property, grouped by block
     values      one string offset per property value
     state_index one block index per block state, for O(1) reverse lookup
+    biomes      one record per biome, sorted by name; the client's colours
 
 Determinism matters as much as compactness: the same input has to produce the
 same bytes, or the manifest that proves a regenerated dataset is unchanged
@@ -35,6 +36,7 @@ from __future__ import annotations
 
 import json
 
+import biomes as biomes_module
 import collision
 import loot
 import struct
@@ -52,7 +54,7 @@ MAGIC = b"OVPK"
 # Bumped by hand whenever the layout changes, so a stale cache is detected
 # rather than misread. A mismatched cache read as if it were current is far
 # worse than no cache at all.
-FORMAT_VERSION = 10
+FORMAT_VERSION = 11
 
 _loot_report = ""
 
@@ -87,7 +89,7 @@ def align8(data: bytearray) -> None:
 def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
           opacity_doc: dict, stacks_doc: dict, motion_doc: dict,
           hardness_doc: dict, loot_dir, loot_map_doc: dict,
-          collision_doc: dict, emission_doc: dict) -> bytes:
+          collision_doc: dict, emission_doc: dict, biome_list: list) -> bytes:
     blocks = blocks_doc["blocks"]
     state_count = blocks_doc["state_count"]
 
@@ -259,6 +261,12 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
     # mais la table entière fait 24 ko et rien n'a encore mesuré la différence.
     emission_bytes = bytes(min(15, v) for v in emission_doc["per_state"])
 
+    # Interned before the blob is frozen, not when the section is written: the
+    # string table is closed at this line, and a name interned after it lands
+    # at an offset past the end of the blob — a lookup that silently returns
+    # nothing rather than failing.
+    biome_bytes = biomes_module.pack(biome_list, strings.intern)
+
     string_blob = strings.blob()
 
     # ── Assemble ────────────────────────────────────────────────────────────
@@ -352,13 +360,17 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
         body += struct.pack("<I", offset)
     align8(body)
 
+    biomes_offset = HEADER_SIZE + len(body)
+    body += biome_bytes
+    body += b"\0" * (-len(body) % 8)
+
     states_offset = HEADER_SIZE + len(body)
     for block_index in state_to_block:
         body += struct.pack("<H", block_index)
     align8(body)
 
     header = struct.pack(
-        "<4s" + "I" * 44,
+        "<4s" + "I" * 46,
         MAGIC,
         FORMAT_VERSION,
         len(block_records),
@@ -403,6 +415,8 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
         len(shape_boxes) // 6,
         len(shape_records),
         emission_offset,
+        biomes_offset,
+        len(biome_list),
         0,  # reserved
     )
     assert len(header) <= HEADER_SIZE
@@ -450,9 +464,14 @@ def main() -> int:
     if not loot_dir.is_dir():
         sys.exit(f"error: {loot_dir} not found. Run tools/ov_datagen/datagen.py first.")
 
+    biome_dir = (NORMALIZED.parent / "generated" / "data" / "minecraft" / "worldgen" / "biome")
+    if not biome_dir.is_dir():
+        sys.exit(f"error: {biome_dir} not found. Run tools/ov_datagen/datagen.py first.")
+    biome_list = biomes_module.collect(biome_dir)
+
     payload = build(blocks_doc, registries_doc, tags_doc, opacity_doc, stacks_doc,
                     motion_doc, hardness_doc, loot_dir, loot_map_doc, collision_doc,
-                    emission_doc)
+                    emission_doc, biome_list)
     tag_records_count = [t for g in tags_doc["tags"].values() for t in g]
     member_count_total = sum(len(v) for g in tags_doc["tags"].values() for v in g.values())
     OUTPUT.write_bytes(payload)
@@ -466,6 +485,7 @@ def main() -> int:
     print(f"    stack sizes .... {stacks_doc['measured']} items measured")
     print(f"    motion flags ... {motion_doc['measured']} blocks measured")
     print(f"    hardness ....... {hardness_doc['count']} blocks")
+    print(f"    biomes ......... {len(biome_list)}")
     print(f"    loot tables .... {_loot_report}")
     print(f"    collision ...... {len(collision_doc['shapes'])} shapes, "
           f"{sum(len(s) for s in collision_doc['shapes'])} boxes")
@@ -476,7 +496,7 @@ def main() -> int:
     # costs nothing and catches a non-deterministic dict order immediately.
     if build(blocks_doc, registries_doc, tags_doc, opacity_doc, stacks_doc,
              motion_doc, hardness_doc, loot_dir, loot_map_doc, collision_doc,
-             emission_doc) != payload:
+             emission_doc, biome_list) != payload:
         sys.exit("error: emitter is not deterministic")
     print("    deterministic .. yes")
     return 0

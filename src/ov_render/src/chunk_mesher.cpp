@@ -40,8 +40,9 @@ static_assert(static_cast<u8>(Direction::East) ==
 
 ChunkSectionView::ChunkSectionView(const registry::BlockRegistry& blocks,
                                    const ChunkNeighbours& chunks, i32 origin_x, i32 origin_y,
-                                   i32 origin_z) noexcept
+                                   i32 origin_z, const BiomeTints* tints) noexcept
     : blocks_(&blocks),
+      tints_(tints),
       chunks_(chunks),
       origin_x_(origin_x),
       origin_y_(origin_y),
@@ -160,6 +161,75 @@ u16 ChunkSectionView::fluid_at(Vec3i position) const {
     return 0;
 }
 
+Rgb BiomeTints::colour(u16 world_biome, TintChannel channel) const noexcept {
+    if (colours_ == nullptr || world_biome >= world_to_registry_.size()) {
+        return 0xFFFFFF;
+    }
+    const u32 index = world_to_registry_[world_biome];
+    switch (channel) {
+        case TintChannel::Grass:
+            return colours_->grass(index);
+        case TintChannel::Foliage:
+            return colours_->foliage(index);
+        case TintChannel::Water:
+            return colours_->water(index);
+        // Constants, and the same two constants everywhere in the world: a
+        // spruce in a jungle is the dark green of a taiga's, and a birch is
+        // pale wherever it grows. Published values.
+        case TintChannel::EvergreenFoliage:
+            return 0x619961;
+        case TintChannel::BirchFoliage:
+            return 0x80A755;
+        case TintChannel::None:
+            break;
+    }
+    return 0xFFFFFF;
+}
+
+u32 ChunkSectionView::biome_colour(Vec3i position, TintChannel channel) const {
+    if (tints_ == nullptr || channel == TintChannel::None) {
+        return 0xFFFFFF;
+    }
+    const i32 world_x = origin_x_ + position.x;
+    const i32 world_y = origin_y_ + position.y;
+    const i32 world_z = origin_z_ + position.z;
+
+    // Vanilla's biome blend: a square of blocks around this one, at its own
+    // height, averaged channel by channel. The radius is a video setting whose
+    // default is 2, so twenty-five samples. Without it a biome boundary is a
+    // hard line across the grass, which is the single most recognisable thing
+    // about a world rendered with the tint resolved per biome rather than per
+    // block.
+    //
+    // Horizontal only, and that is not a simplification: the blend reads the
+    // biome at one Y, so a cave under a swamp does not tint the meadow above
+    // it.
+    constexpr i32 kRadius  = 2;
+    constexpr u32 kSamples = (kRadius * 2 + 1) * (kRadius * 2 + 1);
+
+    u32 red = 0;
+    u32 green = 0;
+    u32 blue = 0;
+    for (i32 dz = -kRadius; dz <= kRadius; ++dz) {
+        for (i32 dx = -kRadius; dx <= kRadius; ++dx) {
+            const world::Chunk* chunk = chunk_for(world_x + dx, world_z + dz);
+            u16                 biome = 0;
+            if (chunk != nullptr && chunk->shape().contains_y(world_y)) {
+                biome = chunk->get_biome(inside_chunk(world_x + dx), world_y,
+                                         inside_chunk(world_z + dz));
+            }
+            const Rgb sample = tints_->colour(biome, channel);
+            red += (sample >> 16) & 0xFFu;
+            green += (sample >> 8) & 0xFFu;
+            blue += sample & 0xFFu;
+        }
+    }
+    // Integer division, like vanilla's: the average of twenty-five bytes is
+    // truncated, not rounded, and rounding here would put every blended block
+    // half a unit away from the game's.
+    return ((red / kSamples) << 16) | ((green / kSamples) << 8) | (blue / kSamples);
+}
+
 SectionMeshStats mesh_section(const ChunkSectionView& view, BlockModelCache& models,
                               const TextureAtlas& atlas, MeshBuffers& out) {
     SectionMeshStats stats;
@@ -181,9 +251,14 @@ SectionMeshStats mesh_section(const ChunkSectionView& view, BlockModelCache& mod
                 }
 
                 const usize before = out.total_vertices();
-                emit_block(render.model, local,
-                           BlockRenderInfo{render.layer, render.tint, render.fluid}, atlas, view,
-                           out);
+                // Resolved once per block rather than once per quad: the tint
+                // is a property of the position, and a grass block has six
+                // faces that share it.
+                const u32 tint = render.tint == TintChannel::None
+                                     ? 0xFFFFFFu
+                                     : view.biome_colour(local, render.tint);
+                emit_block(render.model, local, BlockRenderInfo{render.layer, tint, render.fluid},
+                           atlas, view, out);
                 const usize emitted = out.total_vertices() - before;
                 if (emitted > 0) {
                     ++stats.blocks_drawn;

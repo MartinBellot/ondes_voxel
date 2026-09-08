@@ -33,11 +33,15 @@
 namespace ov::client {
 
 struct TerrainRendererDesc {
-    /// The device-local arena, in bytes. 384 MiB is the plan's figure and is
-    /// sized for a radius of 12 with room for the churn of walking around; the
-    /// renderer reports what it actually uses so the number can be revisited
-    /// against a measurement rather than a guess.
-    u64 arena_bytes{384ULL * 1024 * 1024};
+    /// The device-local arena, in bytes.
+    ///
+    /// The plan said 384 MiB and that was right for a 12-byte vertex: 259 MiB
+    /// measured at a radius of 12. The vertex then grew to 16 bytes to carry
+    /// the baked biome colour, the same world became 340 MiB, and 44 MiB of
+    /// headroom is not enough to walk around in. 512 keeps roughly the
+    /// proportion the plan intended. The renderer reports what it actually
+    /// uses, so this stays a number that was measured rather than chosen.
+    u64 arena_bytes{512ULL * 1024 * 1024};
     /// The most sections that can be resident at once. Bounds the origin
     /// table and the indirect command buffers, both of which are indexed by
     /// slot.
@@ -97,8 +101,8 @@ public:
     /// Cull, write the commands, and record the draws. Must be called inside a
     /// begin_rendering / end_rendering pair.
     void draw(rhi::CommandList& cmd, const render::Mat4& view_projection,
-              const render::Frustum& frustum, rhi::ImageHandle atlas, rhi::SamplerHandle sampler,
-              bool cull = true);
+              const render::Frustum& frustum, Vec3f camera, rhi::ImageHandle atlas,
+              rhi::SamplerHandle sampler, bool cull = true);
 
     [[nodiscard]] const TerrainStats& stats() const noexcept { return stats_; }
     /// False when the driver made us fall back to a draw per section.
@@ -153,6 +157,14 @@ private:
     /// Scratch, reused every frame. Nothing here allocates once the world has
     /// settled, which is the same rule the tick obeys.
     std::vector<IndirectCommand> scratch_;
+    /// Squared distance from the camera to each command in `scratch_`, for the
+    /// translucent layer's ordering. Parallel rather than a member of the
+    /// command, because the command's layout is fixed by Vulkan.
+    std::vector<f32> distances_;
+    std::vector<u32> order_;
+    /// Members, not locals: this runs every frame, and a vector built inside
+    /// the loop would allocate in the hot path.
+    std::vector<IndirectCommand> sorted_;
 
     u32          ring_{0};
     bool         indirect_{false};

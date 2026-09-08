@@ -2640,3 +2640,78 @@ features optionnelles. Elles ne sont demandées que si le pilote les annonce, et
 `DeviceInfo::indirect_first_instance` dit lesquelles ont été obtenues ; sinon le
 renderer retombe sur un draw par section — qui garde l'arène et la lecture
 d'origine, et ne perd que l'appel unique. MoltenVK sur M2 les fournit.
+
+## Les couleurs de biome, vérifiées contre quinze valeurs publiées
+
+*2026-09-08.*
+
+Jusqu'ici, chaque bloc d'herbe et chaque feuille du monde prenait **la même
+couleur** : le shader avait deux bits nommant un canal — herbe, feuillage, eau —
+et lisait une constante. Une prairie, une jungle et une taïga étaient du même
+vert. Ce n'était pas une approximation, c'était une couleur unique répétée.
+
+Vanilla fait tout autre chose, et c'est vérifiable de bout en bout :
+
+1. `water_color` est **stocké** dans le fichier du biome, en RGB exact ;
+2. l'herbe et le feuillage sont **échantillonnés dans une texture du resource
+   pack**, `colormap/grass.png` et `colormap/foliage.png`, à un point donné par
+   la température et les précipitations du biome ;
+3. quelques biomes remplacent l'échantillon (badlands, cherry grove) et deux le
+   modifient après coup (dark forest, swamp) ;
+4. la couleur affichée est la **moyenne des 25 cellules de biome autour du
+   bloc**, à sa propre hauteur — le rayon de mélange par défaut est 2.
+
+La règle d'échantillonnage :
+
+```
+t = clamp(temperature, 0, 1)
+r = clamp(downfall, 0, 1) * t          ← multiplié par t, d'où le triangle
+x = (int)((1 - t) * 255)
+y = (int)((1 - r) * 255)
+```
+
+**Vérification.** Quinze couleurs d'herbe sont des valeurs publiées, citées
+indépendamment de tout code. Les quinze reviennent exactement — prairie, forêt,
+jungle, désert, badlands, plaines enneigées, taïga, savane, forêt de bouleaux,
+forêt sombre, océan, collines balayées, champs de champignons, vieille pinède, et
+marais. Si l'ordre des axes, la mise à l'échelle par la température ou l'un des
+deux modificateurs était faux, le compte tomberait.
+
+### Le piège du f32
+
+Une des quinze ne passait pas : **birch_forest**, 0x88BB66 au lieu de 0x88BB67.
+Un cran de bleu.
+
+L'index tronque. Pour une température de 0,6 :
+
+| | 1 − t | ×255 | index |
+|---|---|---|---|
+| double | 0,4 | 102,000000000000014 | **102** |
+| float | 0,39999998 | 101,99999 | **101** |
+
+Deux colonnes différentes du colormap, donc deux couleurs. La valeur publiée est
+celle de la colonne 102, et sur l'ensemble des couleurs vérifiées le double en
+donne 12 sur 12 contre 11 sur 12 pour le float. **Le climat est donc stocké en
+f64 dans le pack** — une exigence mesurée et pas de la prudence, et le seul
+biome du jeu où cela se voit.
+
+### Ce qui reste faux, et le reste sciemment
+
+- **Le marais.** Le modificateur `swamp` choisit entre deux valeurs selon un
+  champ de bruit, si bien qu'un marais est vert par plaques. Le bruit exact
+  n'est documenté nulle part que ce projet ait le droit de lire, donc la plus
+  commune des deux valeurs est prise pour tout le biome. Un marais est donc
+  uniformément du bon vert au lieu de l'être par plaques. Écrit ici pour que ce
+  soit corrigé par mesure et non deviné.
+- **L'épicéa et le bouleau** prennent une constante et ignorent le biome — un
+  épicéa dans une jungle est du vert sombre d'une taïga. C'était noté « pas
+  encore distingué » dans le code ; ce sont maintenant deux canaux à part,
+  0x619961 et 0x80A755.
+
+### Le coût
+
+Le sommet est passé de 12 à 16 octets pour porter la couleur, soit **+81 Mio
+dans l'arène à 12 chunks** (259 → 340). Les solutions sans coût mémoire ont été
+examinées et écartées : il ne reste pas trois bits libres dans le mot 2, et
+reprendre de la précision aux coordonnées d'atlas rejouerait exactement le bug
+documenté plus haut. L'arène passe donc de 384 à 512 Mio.

@@ -72,6 +72,14 @@ public:
     /// Opacity cannot answer it: water is transparent, so the ordinary
     /// occlusion test correctly refuses to hide anything behind it.
     [[nodiscard]] virtual u16 fluid_at(Vec3i position) const;
+
+    /// The biome colour of a given channel at `position`, 0xRRGGBB.
+    ///
+    /// Asked of the view rather than computed here, because the blend vanilla
+    /// applies reaches two blocks outside the section and only the view knows
+    /// what is there. White by default, so a test view that does not care about
+    /// biomes gets untinted geometry rather than black.
+    [[nodiscard]] virtual u32 biome_colour(Vec3i position, TintChannel channel) const;
 };
 
 /// Vertices per render layer, ready to upload. Four vertices per quad, wound
@@ -95,8 +103,10 @@ struct MeshBuffers {
 /// How one block's model should be emitted.
 struct BlockRenderInfo {
     RenderLayer layer{RenderLayer::Solid};
-    /// Which biome colour multiplies the quads that declare a tint index.
-    TintChannel tint{TintChannel::None};
+    /// Which biome colour multiplies the quads that declare a tint index —
+    /// already resolved for this block's position, because the colour depends
+    /// on where the block is and the channel only on what it is.
+    u32 tint_colour{0xFFFFFF};
     /// Non-zero when this block is a fluid, identifying which one.
     u16 fluid{0};
 };

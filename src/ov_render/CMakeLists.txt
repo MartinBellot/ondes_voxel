@@ -26,6 +26,7 @@ ov_add_library(ov_render
         src/asset_source.cpp
         src/atlas.cpp
         src/bake.cpp
+        src/biome_colours.cpp
         src/block_models.cpp
         src/camera.cpp
         src/chunk_mesher.cpp
@@ -54,6 +55,7 @@ ov_add_test(test_ov_render
         tests/test_asset_source.cpp
         tests/test_atlas.cpp
         tests/test_bake.cpp
+        tests/test_biome_colours.cpp
         tests/test_block_state_model.cpp
         tests/test_camera.cpp
         tests/test_chunk_mesher.cpp

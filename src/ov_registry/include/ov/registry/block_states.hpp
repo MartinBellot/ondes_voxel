@@ -73,6 +73,29 @@ struct PropertyView {
 /// Reads a file produced by tools/ov_datagen, which derives it from the
 /// official server jar's own reports. Nothing here is hand-maintained: a list
 /// of 24135 ids kept by hand would be wrong within a version.
+/// What the client needs to paint a biome.
+///
+/// Grass and foliage are usually *not* here: vanilla derives them from the
+/// climate against a colormap texture in the resource pack, and that belongs on
+/// the side that has the texture. `grass_override` and `foliage_override` carry
+/// the exceptions — badlands, cherry grove, swamp — and are -1 otherwise.
+struct BiomeEffects {
+    /// f64 because the colormap index truncates, and the boundary matters. See
+    /// the comment on BiomeRecord.
+    f64 temperature{0.8};
+    f64 downfall{0.4};
+    u32 water_colour{0x3F76E4};
+    u32 water_fog_colour{0x050533};
+    u32 fog_colour{0xC0D8FF};
+    u32 sky_colour{0x78A7FF};
+    i32 grass_override{-1};
+    i32 foliage_override{-1};
+    /// 0 none, 1 dark_forest, 2 swamp.
+    u8 grass_modifier{0};
+    u8 temperature_modifier{0};
+    bool has_precipitation{true};
+};
+
 class BlockRegistry {
 public:
     [[nodiscard]] static std::expected<BlockRegistry, RegistryError> load(
@@ -252,6 +275,24 @@ public:
     /// docs/PROVENANCE.md.
     [[nodiscard]] u8 light_emission(BlockStateId state) const noexcept;
 
+    // ── Biomes ──────────────────────────────────────────────────────────────
+    //
+    // A dynamic registry: the client is told about biomes rather than
+    // hardcoding them, so unlike blocks their ids are ours and the lookup is by
+    // name. What is stored is exactly what vanilla sends.
+
+    [[nodiscard]] usize biome_count() const noexcept { return biome_count_; }
+
+    /// Index of a biome by resource location, e.g. "minecraft:swamp".
+    /// The section is sorted by name, so this is a binary search.
+    [[nodiscard]] std::optional<u32> find_biome(std::string_view name) const noexcept;
+
+    [[nodiscard]] std::string_view biome_name(u32 index) const noexcept;
+
+    /// The effects of one biome. Out-of-range gives the plains-like defaults
+    /// rather than nothing: a missing biome should look ordinary, not black.
+    [[nodiscard]] BiomeEffects biome(u32 index) const noexcept;
+
     /// The compiled loot tables, indexed by block.
     ///
     /// Handed out as plain arrays rather than as an evaluator: the rules for
@@ -289,7 +330,12 @@ private:
     std::span<const u32>          shape_records_;
     std::span<const u16>          state_shapes_;
     std::span<const u8>           emission_;
-    std::string_view              strings_blob_;
+    /// BiomeRecord*, type-erased: the record's layout is private to this
+    /// module, and naming it here would put the file format in a public
+    /// header. Same reason as header_ below.
+    const void*      biomes_{nullptr};
+    u32              biome_count_{0};
+    std::string_view strings_blob_;
     const void*                   header_{nullptr};
 };
 

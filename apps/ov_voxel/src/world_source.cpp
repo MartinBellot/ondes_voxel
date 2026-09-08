@@ -86,6 +86,16 @@ std::optional<LoadedWorld> load_world(const std::filesystem::path&   world_direc
 
     world::ChunkCodecContext context;
     context.blocks = &blocks;
+    // The registry's biome names, in the registry's own order, so that the
+    // numeric biome a chunk ends up storing *is* the index BiomeColours is
+    // keyed by. Without this the span is empty, every biome in the save
+    // resolves to id 0, and the whole world takes one biome's colours — which
+    // is exactly what it did before, and looked plausible enough to miss.
+    std::vector<std::string_view> biome_names(blocks.biome_count());
+    for (u32 index = 0; index < blocks.biome_count(); ++index) {
+        biome_names[index] = blocks.biome_name(index);
+    }
+    context.biome_names = biome_names;
     // Without this, cave_air and void_air are not recognised as air and a whole
     // cave system meshes as solid blocks of nothing.
     context.air = world::AirStates::from(blocks);
