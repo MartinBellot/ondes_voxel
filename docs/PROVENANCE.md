@@ -2093,3 +2093,39 @@ sont rejoués à travers le second par `ov-inspect stairs` : **256 / 256**. Le c
 du troisième bloc, que cet outil ne monte pas, est couvert par un test unitaire
 qui reprend les quatre situations mesurées.
 
+---
+
+## Murets : une dimension de plus, et une surprise
+
+Un muret porte trois valeurs par côté — `none`, `low`, `tall` — plus un poteau,
+et les deux dépendent de ce qu'il y a **au-dessus** autant que des voisins.
+C'est la dimension qui manquait aux clôtures.
+
+Le relevé croise six configurations de voisinage (aucun, un, deux opposés, deux
+adjacents, trois, quatre) avec six blocs au-dessus, puis sept sortes de voisin
+avec deux blocs au-dessus. Ce qu'il donne :
+
+**Le côté monte à `tall` exactement quand le bloc au-dessus remplit sa propre
+face inférieure.** Pierre et dalle basse le font, une torche et le poteau d'un
+autre muret non — et c'est le prédicat de face pleine qu'on avait déjà, pris
+vers le bas.
+
+**Le poteau disparaît quand les connexions sont symétriques sur les deux axes.**
+Une ligne droite le supprime, un coin le garde, un T le garde — et une croix
+complète le supprime aussi, ce qui est la surprise : quatre côtés connectés se
+comportent comme deux. La lecture qui explique tout le tableau est
+« nord vaut sud **et** est vaut ouest », le cas sans aucune connexion mis à part.
+
+Le dernier terme est une donnée, pas du code : le tag `wall_post_override` — 73
+blocs, dont la torche et tous les panneaux — remet le poteau quoi qu'en disent
+les connexions. Il est donc lu, pas listé.
+
+### Ce que le test fonctionnel a attrapé
+
+Deux murets côte à côte sortaient justes du premier coup. Poser une pierre
+**au-dessus** de l'un d'eux ne le faisait pas monter à `tall` : le serveur ne
+remodelait que les quatre voisins horizontaux. Un muret lit ce qu'il a sur la
+tête, donc tout bloc posé doit redonner sa chance à celui d'en dessous. Le test
+unitaire, lui, passait — il appelait la règle directement, avec le bloc du
+dessus déjà en main.
+

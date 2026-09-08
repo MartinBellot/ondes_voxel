@@ -70,11 +70,18 @@ constexpr std::array<std::string_view, 2> kSupportIsFull{"minecraft:mud", "minec
 
 }  // namespace
 
-Connections::Connections(const registry::BlockRegistry& blocks, const registry::Registries&)
+Connections::Connections(const registry::BlockRegistry& blocks,
+                         const registry::Registries&    registries)
     : blocks_{&blocks} {
     kinds_.resize(blocks.block_count(), ConnectingKind::None);
     refuses_.resize(blocks.block_count(), false);
     support_full_.resize(blocks.block_count(), false);
+    post_override_.resize(blocks.block_count(), false);
+
+    const auto block_registry = registries.find("minecraft:block");
+    const auto post_tag = block_registry
+                              ? registries.find_tag(*block_registry, "minecraft:wall_post_override")
+                              : std::nullopt;
 
     for (u16 index = 0; index < blocks.block_count(); ++index) {
         const registry::BlockId block{index};
@@ -96,6 +103,12 @@ Connections::Connections(const registry::BlockRegistry& blocks, const registry::
 
         refuses_[index]      = std::ranges::find(kRefused, name) != kRefused.end();
         support_full_[index] = std::ranges::find(kSupportIsFull, name) != kSupportIsFull.end();
+
+        if (post_tag && block_registry) {
+            if (const auto id = registries.protocol_id(*block_registry, name)) {
+                post_override_[index] = registries.tag_contains(*post_tag, *id);
+            }
+        }
     }
 }
 
@@ -124,6 +137,11 @@ bool Connections::attaches(ConnectingKind kind, Side side,
             break;
         case ConnectingKind::Pane:
             if (other_kind == ConnectingKind::Pane || other_kind == ConnectingKind::Wall) {
+                return true;
+            }
+            break;
+        case ConnectingKind::Wall:
+            if (other_kind == ConnectingKind::Wall || other_kind == ConnectingKind::Pane) {
                 return true;
             }
             break;
@@ -192,6 +210,60 @@ namespace {
 }
 
 }  // namespace
+
+registry::BlockStateId Connections::wall_shape(registry::BlockStateId                       state,
+                                               const std::array<registry::BlockStateId, 4>& around,
+                                               registry::BlockStateId above) const noexcept {
+    const registry::BlockId block = blocks_->block_of(state);
+    const auto              up    = blocks_->find_property(block, "up");
+    if (!up) {
+        return state;
+    }
+
+    // A side rises when the block above fills its own downward face: stone and
+    // a bottom slab do, a wall's post and a torch do not.
+    const bool raised = blocks_->face_is_sturdy(above, registry::BlockRegistry::Face::Down);
+
+    registry::BlockStateId reshaped = state;
+    std::array<bool, 4>    attached{};
+    for (u8 index = 0; index < 4; ++index) {
+        const auto property = blocks_->find_property(block, kSideNames[index]);
+        if (!property) {
+            continue;
+        }
+        attached[index] = attaches(ConnectingKind::Wall, static_cast<Side>(index), around[index]);
+        const std::string_view wanted = !attached[index] ? "none" : (raised ? "tall" : "low");
+        const auto             it     = std::ranges::find(property->values, wanted);
+        if (it != property->values.end()) {
+            reshaped = blocks_->with_property(
+                reshaped, *property, static_cast<u16>(std::distance(property->values.begin(), it)));
+        }
+    }
+
+    // The post stands unless the connections are symmetric on both axes — a
+    // straight line, or a full cross — and nothing above insists.
+    const registry::BlockId above_block = blocks_->block_of(above);
+    bool                    post        = attached[0] != attached[1] || attached[2] != attached[3];
+    if (!attached[0] && !attached[1] && !attached[2] && !attached[3]) {
+        post = true;
+    }
+    if (above_block.value() < post_override_.size() && post_override_[above_block.value()]) {
+        post = true;
+    }
+    if (kind_of(above_block) == ConnectingKind::Wall) {
+        const auto above_up = blocks_->find_property(above_block, "up");
+        if (above_up && blocks_->property_value(above, *above_up) == "true") {
+            post = true;
+        }
+    }
+
+    const auto it = std::ranges::find(up->values, post ? "true" : "false");
+    if (it != up->values.end()) {
+        reshaped = blocks_->with_property(reshaped, *up,
+                                          static_cast<u16>(std::distance(up->values.begin(), it)));
+    }
+    return reshaped;
+}
 
 registry::BlockStateId Connections::stair_shape(
     registry::BlockStateId                       state,
@@ -272,13 +344,16 @@ registry::BlockStateId Connections::stair_shape(
     return set_shape("straight");
 }
 
-registry::BlockStateId Connections::reshape(
-    registry::BlockStateId                       state,
-    const std::array<registry::BlockStateId, 4>& around) const noexcept {
+registry::BlockStateId Connections::reshape(registry::BlockStateId                       state,
+                                            const std::array<registry::BlockStateId, 4>& around,
+                                            registry::BlockStateId above) const noexcept {
     const registry::BlockId block = blocks_->block_of(state);
     const ConnectingKind    kind  = kind_of(block);
     if (kind == ConnectingKind::Stairs) {
         return stair_shape(state, around);
+    }
+    if (kind == ConnectingKind::Wall) {
+        return wall_shape(state, around, above);
     }
     if (kind != ConnectingKind::Fence && kind != ConnectingKind::NetherBrickFence &&
         kind != ConnectingKind::Pane) {

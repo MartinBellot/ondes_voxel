@@ -1570,12 +1570,13 @@ int main(int argc, char** argv) {
             return;
         }
 
-        std::array<std::pair<net::WirePosition, registry::BlockStateId>, 5> changes{};
+        std::array<std::pair<net::WirePosition, registry::BlockStateId>, 6> changes{};
         usize                                                               count = 0;
         {
             const std::scoped_lock lock{chunk_mutex};
             const auto             around = neighbours_of(position);
-            changes[count++]              = {position, connections->reshape(state, around)};
+            const auto             above  = block_at({position.x, position.y + 1, position.z});
+            changes[count++]              = {position, connections->reshape(state, around, above)};
 
             constexpr std::array<net::WirePosition, 4> kSteps{
                 net::WirePosition{0, 0, -1}, net::WirePosition{0, 0, 1},
@@ -1586,12 +1587,24 @@ int main(int argc, char** argv) {
                 const registry::BlockStateId before = around[i];
                 // The neighbour sees the new block, not the old one, so its own
                 // view has to be built with the change already in place.
-                auto view                          = neighbours_of(side);
-                view[i ^ 1]                        = state;
-                const registry::BlockStateId after = connections->reshape(before, view);
+                auto view   = neighbours_of(side);
+                view[i ^ 1] = state;
+                const registry::BlockStateId after =
+                    connections->reshape(before, view, block_at({side.x, side.y + 1, side.z}));
                 if (after != before) {
                     changes[count++] = {side, after};
                 }
+            }
+
+            // And the block underneath. A wall reads what sits on its head —
+            // a stone above turns its sides from low to tall — so placing
+            // anything has to give the block below a second look.
+            const net::WirePosition      under{position.x, position.y - 1, position.z};
+            const registry::BlockStateId before = block_at(under);
+            const registry::BlockStateId after =
+                connections->reshape(before, neighbours_of(under), state);
+            if (after != before) {
+                changes[count++] = {under, after};
             }
         }
         for (usize i = 0; i < count; ++i) {

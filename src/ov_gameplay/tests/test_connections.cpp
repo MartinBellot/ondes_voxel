@@ -210,3 +210,62 @@ TEST_CASE("stairs take a corner, and one block cancels it", "[gameplay][connecti
     REQUIRE(reshape(me, 1, stair("west", "bottom"), 2, stair("north", "bottom")) == "straight");
     REQUIRE(reshape(me, 1, stair("west", "bottom"), 3, stair("north", "bottom")) == "inner_left");
 }
+
+TEST_CASE("a wall's sides rise, and its post comes and goes", "[gameplay][connections][walls]") {
+    if (!loaded().rules) {
+        SKIP("no registry pack");
+    }
+    const auto air   = state_of("minecraft:air");
+    const auto stone = state_of("minecraft:stone");
+    const auto wall  = state_of("minecraft:cobblestone_wall");
+    const auto torch = state_of("minecraft:torch");
+
+    const auto value = [&](registry::BlockStateId state, std::string_view property) {
+        const auto found =
+            loaded().blocks->find_property(block_of("minecraft:cobblestone_wall"), property);
+        REQUIRE(found.has_value());
+        return loaded().blocks->property_value(state, *found);
+    };
+    // Sides are north, south, west, east.
+    const auto shaped = [&](std::array<registry::BlockStateId, 4> around,
+                            registry::BlockStateId                above) {
+        return loaded().rules->reshape(wall, around, above);
+    };
+
+    // Alone, the post stands and nothing reaches out.
+    const auto alone = shaped({air, air, air, air}, air);
+    REQUIRE(value(alone, "up") == "true");
+    REQUIRE(value(alone, "east") == "none");
+
+    // One neighbour: low under open sky, tall under something solid. Measured
+    // — stone and a bottom slab raise it, a torch and another wall's post do
+    // not, which is exactly "does the block above fill its own downward face".
+    REQUIRE(value(shaped({air, air, air, wall}, air), "east") == "low");
+    REQUIRE(value(shaped({air, air, air, wall}, stone), "east") == "tall");
+    REQUIRE(value(shaped({air, air, air, wall}, torch), "east") == "low");
+    REQUIRE(value(shaped({air, air, air, wall}, wall), "east") == "low");
+
+    // A straight line drops the post; a corner keeps it. So does a cross,
+    // which is the surprise: symmetric on both axes counts as a line.
+    REQUIRE(value(shaped({air, air, wall, wall}, air), "up") == "false");
+    REQUIRE(value(shaped({wall, air, air, wall}, air), "up") == "true");
+    REQUIRE(value(shaped({wall, air, wall, wall}, air), "up") == "true");
+    REQUIRE(value(shaped({wall, wall, wall, wall}, air), "up") == "false");
+
+    // And anything in the post-override tag puts it back. That list is
+    // vanilla's own, so it is read rather than written down here.
+    REQUIRE(value(shaped({air, air, wall, wall}, torch), "up") == "true");
+    REQUIRE(value(shaped({wall, wall, wall, wall}, torch), "up") == "true");
+    REQUIRE(value(shaped({air, air, wall, wall}, stone), "up") == "false");
+
+    // A wall reaches for walls, panes and full faces — not for a fence, and
+    // not for a bottom slab, whose side is not full.
+    REQUIRE(value(shaped({air, air, air, stone}, air), "east") == "low");
+    REQUIRE(value(shaped({air, air, air, state_of("minecraft:glass_pane")}, air), "east") == "low");
+    REQUIRE(value(shaped({air, air, air, state_of("minecraft:iron_bars")}, air), "east") == "low");
+    REQUIRE(value(shaped({air, air, air, state_of("minecraft:oak_fence")}, air), "east") == "none");
+    REQUIRE(value(shaped({air, air, air, with("minecraft:oak_slab", "type", "bottom")}, air),
+                  "east") == "none");
+    REQUIRE(value(shaped({air, air, air, state_of("minecraft:oak_leaves")}, air), "east") ==
+            "none");
+}

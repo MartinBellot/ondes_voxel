@@ -42,8 +42,8 @@ enum class ConnectingKind : u8 {
     Pane,
     /// A gate is not itself reshaped, but a fence reaches for one.
     FenceGate,
-    /// Walls have three values a side rather than two; they are recognised but
-    /// not yet reshaped, because `low` and `tall` need what is above.
+    /// Walls carry three values a side and a post, and both depend on the block
+    /// above as well as on the neighbours.
     Wall,
     /// Stairs take one of five shapes depending on the stair in front of or
     /// behind them.
@@ -64,9 +64,12 @@ public:
     ///
     /// Returns the state unchanged for anything that does not reshape, so a
     /// caller can run it over every placement without asking first.
+    ///
+    /// `above` only matters to walls, whose sides rise to `tall` under a solid
+    /// block and whose post appears or vanishes with what sits on it.
     [[nodiscard]] registry::BlockStateId reshape(
-        registry::BlockStateId                       state,
-        const std::array<registry::BlockStateId, 4>& around) const noexcept;
+        registry::BlockStateId state, const std::array<registry::BlockStateId, 4>& around,
+        registry::BlockStateId above = registry::BlockStateId{0}) const noexcept;
 
     /// The shape a stair takes given its four horizontal neighbours.
     ///
@@ -74,6 +77,14 @@ public:
     /// third pass for the block that keeps a corner from forming. A corner
     /// needs a stair in front of or behind, on the same half, facing across;
     /// and exactly one of the two crossing directions cancels it.
+    /// The state a wall takes. Measured: a side is `tall` exactly when the
+    /// block above fills its own downward face, and the post disappears only
+    /// when the connections are symmetric on both axes — a straight line or a
+    /// full cross — unless what sits above forces it back.
+    [[nodiscard]] registry::BlockStateId wall_shape(
+        registry::BlockStateId state, const std::array<registry::BlockStateId, 4>& around,
+        registry::BlockStateId above) const noexcept;
+
     [[nodiscard]] registry::BlockStateId stair_shape(
         registry::BlockStateId                       state,
         const std::array<registry::BlockStateId, 4>& around) const noexcept;
@@ -87,6 +98,9 @@ private:
     std::vector<ConnectingKind> kinds_;
     std::vector<bool>           refuses_;
     std::vector<bool>           support_full_;
+    /// Blocks that keep a wall's post standing whatever its connections do.
+    /// A vanilla tag, so it is read rather than listed here.
+    std::vector<bool> post_override_;
 };
 
 }  // namespace ov::gameplay
