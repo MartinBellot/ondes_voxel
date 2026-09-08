@@ -3040,3 +3040,35 @@ Deux figures publiées ne se déduisent pas des constantes — la nage en surfac
 (2,20 m/s mesuré, 1,96 calculé) et la nage sprintée vers le haut (6,98 contre
 ~5). Elles sont donc à mesurer contre un vrai client, comme la physique
 terrestre l'a été.
+
+### Deux corrections venues d'une seconde lecture
+
+Une seconde recherche indépendante a corrigé deux points de la première :
+
+1. **La lave peu profonde applique les deux gravités**, pas une seule — le
+   seizième de l'eau *puis* le quart de la lave, soit 0,025 par tick, sous une
+   traînée verticale de 0,8. La lave *profonde* n'a que le quart, sous une
+   traînée de 0,5, et c'est elle que la valeur publiée de 0,8 m/s mesure. Les
+   deux branches ont des traînées différentes, donc ce n'est pas contradictoire.
+2. **Un seuil de vélocité négligeable de 0,003.** Toute composante en dessous
+   est mise à zéro. C'était 0,005 avant la 1.9. Sans lui, un joueur qui s'arrête
+   dérive indéfiniment par quantités de plus en plus petites et chaque rapport
+   de position porte un nombre différent. Ajouté, et la physique terrestre
+   ajustée sur la trace du vrai client passe toujours — ce qui était la question.
+
+### Le brouillard sous l'eau
+
+Debout dans un océan, l'écran était presque vide : chaque face entre deux blocs
+d'eau est supprimée, donc **il n'y a réellement rien à dessiner de près**, et le
+brouillard de l'air laissait voir des îlots lointains flotter dans du bleu pâle.
+
+La **couleur** est mesurée : c'est le `water_fog_color` du biome, qui est dans
+le pack. Les **distances** ne le sont pas, et c'est écrit tel quel dans le code
+plutôt que déguisé — le brouillard sous-marin de vanilla dépend aussi du temps
+passé immergé, de Respiration et de Respiration Aquatique, dont rien n'existe
+ici.
+
+Un premier essai à 24 blocs de portée **noyait un fond marin situé à dix-sept
+blocs**. C'est ce qui a rendu évident que deviner serré est pire que deviner
+large : une valeur inventée trop courte supprime de l'information, une trop
+longue en laisse.

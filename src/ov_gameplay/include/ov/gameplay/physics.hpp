@@ -142,6 +142,13 @@ struct MotionConstants {
     f64 lava_drag{0.5};
     f64 lava_shallow_vertical_drag{0.8};
     f64 lava_gravity{0.08 / 4.0};
+
+    /// A velocity component below this is set to zero.
+    ///
+    /// It was 0.005 before 1.9 and has been 0.003 since. Without it a player
+    /// who stops walking drifts by ever smaller amounts forever and every
+    /// position report carries a different number.
+    f64 negligible_speed{0.003};
 };
 
 /// Advance one tick.

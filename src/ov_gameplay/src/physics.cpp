@@ -29,6 +29,24 @@ namespace {
     return Vec3d{strafe * cos_yaw - forward * sin_yaw, 0.0, forward * cos_yaw + strafe * sin_yaw};
 }
 
+/// Below this, a velocity is zero.
+///
+/// Vanilla drops any component under the threshold to nothing rather than
+/// letting it decay forever. Without it a player who stops walking keeps
+/// drifting by ever smaller amounts and never quite arrives, and every position
+/// report carries a different number.
+void clamp_negligible(Vec3d& velocity, const MotionConstants& constants) {
+    if (std::abs(velocity.x) < constants.negligible_speed) {
+        velocity.x = 0.0;
+    }
+    if (std::abs(velocity.y) < constants.negligible_speed) {
+        velocity.y = 0.0;
+    }
+    if (std::abs(velocity.z) < constants.negligible_speed) {
+        velocity.z = 0.0;
+    }
+}
+
 }  // namespace
 
 FluidSample FluidWorld::sample(const Vec3d& position) const {
@@ -138,6 +156,7 @@ FluidSample FluidWorld::sample(const Vec3d& position) const {
     next.velocity.x *= horizontal_drag;
     next.velocity.y *= vertical_drag;
     next.velocity.z *= horizontal_drag;
+    clamp_negligible(next.velocity, constants);
 
     if (water) {
         // Skipped entirely while sprinting: a swimming player gets no downward
@@ -146,10 +165,18 @@ FluidSample FluidWorld::sample(const Vec3d& position) const {
             next.velocity.y -= constants.water_gravity;
         }
     } else {
-        // A quarter of the usual gravity, and *only* that — not water's
-        // sixteenth as well. Applying both settles a sinking player at one
-        // metre a second where the game's published figure is 0.8, which is
-        // how this was caught.
+        // Deep lava gets a quarter of gravity and nothing else — 0.02 over a
+        // drag of 0.5 is exactly the published 0.8 m/s, and adding water's
+        // sixteenth on top gave 1.0, which is how the first version was
+        // caught.
+        //
+        // Shallow lava gets *both*, and that is not a contradiction: it is a
+        // separate branch with a different drag. Two independent
+        // reimplementations agree that the shallow case runs the same falling
+        // adjustment water does before the quarter is applied.
+        if (!deep_lava && !input.sprint) {
+            next.velocity.y -= constants.water_gravity;
+        }
         next.velocity.y -= constants.lava_gravity;
     }
 
@@ -241,6 +268,7 @@ MotionState step(const MotionState& state, const MoveInput& input, const MotionC
     next.velocity.x *= friction;
     next.velocity.z *= friction;
 
+    clamp_negligible(next.velocity, constants);
     return next;
 }
 

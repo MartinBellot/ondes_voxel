@@ -905,6 +905,21 @@ int main(int argc, char** argv) {
                                            20.0);
         }
         const f32 darken = render::sky_darken(time_of_day, 0.0F, 0.0F);
+
+        // Is the eye under water? Vanilla asks this every frame and changes
+        // the fog completely when the answer is yes, and the difference is
+        // enormous: without it, standing inside an ocean looks like standing in
+        // clear air with the world mysteriously missing, because every face
+        // between two water blocks is culled and there is genuinely nothing to
+        // draw nearby.
+        bool eye_in_water = false;
+        if (online) {
+            const auto sample = session->fluid_at(
+                static_cast<i32>(std::floor(camera.position.x)),
+                static_cast<i32>(std::floor(camera.position.y)),
+                static_cast<i32>(std::floor(camera.position.z)));
+            eye_in_water = sample.fluid == gameplay::Fluid::Water;
+        }
         lightmap.update(darken, render::kOverworldAmbientLight, options.gamma, 0.0F);
 
         const u32 biome = online ? session->biome_at(static_cast<i32>(std::floor(camera.position.x)),
@@ -912,7 +927,8 @@ int main(int argc, char** argv) {
                                                      static_cast<i32>(std::floor(camera.position.z)))
                                  : camera_biome(*world, *blocks, camera.position);
         const auto effects = blocks->biome(biome);
-        const u32   fog_rgb   = render::fog_colour(effects.fog_colour, darken);
+        const u32 fog_rgb = eye_in_water ? effects.water_fog_colour
+                                        : render::fog_colour(effects.fog_colour, darken);
         const u32   sky_rgb   = render::sky_colour(effects.sky_colour, darken);
 
         auto frame = device.begin_frame();
@@ -974,8 +990,27 @@ int main(int argc, char** argv) {
         client::SkyFrame sky;
         sky.lightmap   = &lightmap;
         sky.fog_colour = fog_rgb;
-        sky.fog_start  = options.fog ? render_distance * 0.92F : 1.0e9F;
-        sky.fog_end    = options.fog ? render_distance : 1.1e9F;
+        if (!options.fog) {
+            sky.fog_start = 1.0e9F;
+            sky.fog_end   = 1.1e9F;
+        } else if (eye_in_water) {
+            // Water fog is close and thick, and it uses the biome's own
+            // water_fog_color rather than the sky's.
+            //
+            // The COLOUR is measured — it is the biome's own water_fog_color.
+            // The DISTANCES are not, and are flagged here rather than dressed
+            // up: vanilla's underwater fog also depends on how long you have
+            // been submerged, on Respiration and on Water Breathing, none of
+            // which exists here. A first attempt at 24 blocks drowned a seabed
+            // seventeen blocks away, which is how it became obvious that
+            // guessing tight was worse than guessing loose. See
+            // docs/PROVENANCE.md.
+            sky.fog_end   = std::min(render_distance, 96.0F);
+            sky.fog_start = sky.fog_end * 0.25F;
+        } else {
+            sky.fog_start = render_distance * 0.92F;
+            sky.fog_end   = render_distance;
+        }
 
         (*terrain)->draw(cmd, view_projection, frustum, camera.position, *atlas_image, *sampler,
                          sky, options.cull);
