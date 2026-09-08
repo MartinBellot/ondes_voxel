@@ -9,10 +9,12 @@ ov_add_library(ov_world
     SOURCES
         src/chunk.cpp
         src/chunk_section.cpp
+        src/chunk_storage.cpp
         src/heightmap.cpp
         src/light_array.cpp
         src/paletted_container.cpp
     DEPS
+        ov_nbt
         ov_registry
         ov_math
 )

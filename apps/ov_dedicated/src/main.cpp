@@ -15,6 +15,7 @@
 #include "ov/io/file.hpp"
 #include "ov/math/block_pos.hpp"
 #include "ov/nbt/binary.hpp"
+#include "ov/nbt/region_writer.hpp"
 #include "ov/protocol/framing.hpp"
 #include "ov/protocol/listener.hpp"
 #include "ov/protocol/login.hpp"
@@ -24,6 +25,7 @@
 #include "ov/registry/block_states.hpp"
 #include "ov/registry/registries.hpp"
 #include "ov/world/chunk.hpp"
+#include "ov/world/chunk_storage.hpp"
 
 #include <fmt/format.h>
 
@@ -35,6 +37,7 @@
 #include <cmath>
 #include <csignal>
 #include <filesystem>
+#include <map>
 #include <mutex>
 #include <string_view>
 #include <thread>
@@ -294,6 +297,43 @@ struct Superflat {
     return std::nullopt;
 }
 
+/// Every biome name in the codec, indexed by the id we assign it.
+///
+/// The disk format names biomes; we hold numbers. This is the table between the
+/// two, and it comes from the codec so that saving and sending cannot disagree.
+[[nodiscard]] std::vector<std::string> biome_names_in_codec(std::span<const u8> codec) {
+    std::vector<std::string> names;
+    const auto               document = nbt::read(codec);
+    if (!document) {
+        return names;
+    }
+    const nbt::Tag* registry = document->root.find("minecraft:worldgen/biome");
+    const nbt::Tag* value    = registry == nullptr ? nullptr : registry->find("value");
+    if (value == nullptr || value->list() == nullptr) {
+        return names;
+    }
+    for (const nbt::Tag& entry : *value->list()) {
+        const nbt::Tag* name = entry.find("name");
+        const nbt::Tag* id   = entry.find("id");
+        if (name == nullptr || id == nullptr) {
+            continue;
+        }
+        const auto index = static_cast<usize>(id->as_i64());
+        if (names.size() <= index) {
+            names.resize(index + 1);
+        }
+        names[index] = std::string{name->as_string()};
+    }
+    return names;
+}
+
+/// The region file a chunk belongs to. 32x32 chunks per region, and the floor
+/// division has to be arithmetic: chunk -1 lives in region -1, not region 0.
+[[nodiscard]] std::filesystem::path region_path(const std::filesystem::path& directory, i32 cx,
+                                                i32 cz) {
+    return directory / fmt::format("r.{}.{}.mca", cx >> 5, cz >> 5);
+}
+
 /// What the server tracks per connected player.
 struct Player {
     /// Held so the tick thread can send keep-alives without going through the
@@ -475,8 +515,23 @@ int main(int argc, char** argv) {
     // Chunks are generated once and reused. A superflat column is identical
     // everywhere but its coordinates, so this is a cache of one shape rather
     // than a world — the real ChunkMap arrives with the tick scheduler.
+    // The world on disk. Under run/, which is gitignored — a save is the
+    // player's, not the repository's.
+    const std::filesystem::path world_dir = std::filesystem::path{"run"} / "world" / "region";
+    std::error_code             directory_error;
+    std::filesystem::create_directories(world_dir, directory_error);
+
+    std::vector<std::string> biome_name_storage =
+        codec_bytes ? biome_names_in_codec(*codec_bytes) : std::vector<std::string>{};
+    std::vector<std::string_view> biome_names;
+    biome_names.reserve(biome_name_storage.size());
+    for (const auto& name : biome_name_storage) {
+        biome_names.emplace_back(name);
+    }
+
     std::mutex                            chunk_mutex;
     std::unordered_map<i64, world::Chunk> chunk_cache;
+    std::unordered_set<i64>               dirty_chunks;
     const auto                            chunk_key = [](i32 cx, i32 cz) {
         return (static_cast<i64>(cx) << 32) ^ static_cast<u32>(cz);
     };
@@ -506,6 +561,78 @@ int main(int argc, char** argv) {
     std::unordered_map<std::string, SavedPlayer>       saved_players;
     std::mutex                                         players_mutex;
     std::atomic<i32>                                   next_entity_id{1};
+
+    const world::ChunkCodecContext codec_context{
+        blocks ? &*blocks : nullptr,
+        biome_names,
+        superflat.air,
+    };
+
+    /// Fetch a chunk: from memory, then from disk, then generated.
+    ///
+    /// Disk before the generator, so a saved chunk always wins. The other order
+    /// works until the first reload and then quietly discards everything anyone
+    /// built.
+    ///
+    /// Caller holds chunk_mutex.
+    const auto chunk_at = [&](i32 cx, i32 cz) -> world::Chunk& {
+        const i64 key = chunk_key(cx, cz);
+        if (const auto it = chunk_cache.find(key); it != chunk_cache.end()) {
+            return it->second;
+        }
+
+        const auto region = nbt::RegionFile::open(region_path(world_dir, cx, cz));
+        if (region) {
+            const auto local_x = static_cast<u32>(cx & 31);
+            const auto local_z = static_cast<u32>(cz & 31);
+            if (region->has_chunk(local_x, local_z)) {
+                if (const auto document = region->read_chunk(local_x, local_z)) {
+                    if (auto loaded = world::from_nbt(*document, codec_context)) {
+                        return chunk_cache.emplace(key, std::move(*loaded)).first->second;
+                    }
+                }
+            }
+        }
+        return chunk_cache.emplace(key, superflat.generate(ChunkPos{cx, cz})).first->second;
+    };
+
+    /// Write every changed chunk, grouped by region so each file opens once.
+    const auto save_world = [&] {
+        const std::scoped_lock lock{chunk_mutex};
+        if (dirty_chunks.empty()) {
+            return;
+        }
+
+        std::map<std::pair<i32, i32>, std::vector<i64>> by_region;
+        for (const i64 key : dirty_chunks) {
+            const auto cx = static_cast<i32>(key >> 32);
+            const auto cz = static_cast<i32>(static_cast<u32>(key & 0xFFFFFFFF));
+            by_region[{cx >> 5, cz >> 5}].push_back(key);
+        }
+
+        usize written = 0;
+        for (const auto& [region_pos, keys] : by_region) {
+            const auto path =
+                world_dir / fmt::format("r.{}.{}.mca", region_pos.first, region_pos.second);
+            auto writer = nbt::RegionWriter::open_or_empty(path);
+            for (const i64 key : keys) {
+                const auto it = chunk_cache.find(key);
+                if (it == chunk_cache.end()) {
+                    continue;
+                }
+                const auto cx = static_cast<i32>(key >> 32);
+                const auto cz = static_cast<i32>(static_cast<u32>(key & 0xFFFFFFFF));
+                writer.set_chunk(static_cast<u32>(cx & 31), static_cast<u32>(cz & 31),
+                                 world::to_nbt(it->second, codec_context), 0);
+                ++written;
+            }
+            if (!writer.write(path)) {
+                OV_LOG_WARN("could not write {}", path.string());
+            }
+        }
+        OV_LOG_INFO("saved {} chunks across {} regions", written, by_region.size());
+        dirty_chunks.clear();
+    };
 
     /// Bring a player's loaded chunks in line with where they are.
     ///
@@ -551,11 +678,8 @@ int main(int argc, char** argv) {
             const auto cz = static_cast<i32>(static_cast<u32>(key & 0xFFFFFFFF));
             {
                 const std::scoped_lock lock{chunk_mutex};
-                auto                   it = chunk_cache.find(key);
-                if (it == chunk_cache.end()) {
-                    it = chunk_cache.emplace(key, superflat.generate(ChunkPos{cx, cz})).first;
-                }
-                send(net::clientbound::kChunkDataAndLight, net::encode_chunk_data(it->second));
+                send(net::clientbound::kChunkDataAndLight,
+                     net::encode_chunk_data(chunk_at(cx, cz)));
             }
             player.loaded_chunks.insert(key);
         }
@@ -599,13 +723,12 @@ int main(int argc, char** argv) {
         const i32 chunk_z = position.z >> 4;
         {
             const std::scoped_lock lock{chunk_mutex};
-            auto                   it = chunk_cache.find(chunk_key(chunk_x, chunk_z));
-            if (it == chunk_cache.end()) {
-                return;
-            }
+            world::Chunk&          chunk = chunk_at(chunk_x, chunk_z);
+
             const auto local_x = static_cast<usize>(position.x & 15);
             const auto local_z = static_cast<usize>(position.z & 15);
-            it->second.set_block(local_x, position.y, local_z, state);
+            chunk.set_block(local_x, position.y, local_z, state);
+            dirty_chunks.insert(chunk_key(chunk_x, chunk_z));
 
             // WORLD_SURFACE has just moved, so the chunk's sky light has too.
             // Relighting the whole chunk rather than the column: light spreads
@@ -613,7 +736,7 @@ int main(int argc, char** argv) {
             // Without this a hole stays lit as if it were still filled, and the
             // error only shows after a reload — the client lights its own edits
             // locally and never notices the server disagreeing.
-            relight_chunk(it->second, superflat.air);
+            relight_chunk(chunk, superflat.air);
         }
 
         const auto framed =
@@ -969,6 +1092,7 @@ int main(int argc, char** argv) {
 
     TickClock clock;
     i64       behind_events = 0;
+    auto      last_autosave = std::chrono::steady_clock::now();
 
     while (!g_stop_requested.load(std::memory_order_relaxed)) {
         const i32 ticks = clock.advance();
@@ -978,6 +1102,16 @@ int main(int argc, char** argv) {
             // deterministic, and must not allocate once running: in debug
             // builds this guard aborts on the first allocation, naming it.
             const NoAllocScope no_alloc{"server tick"};
+        }
+
+        // Autosave. A clean shutdown saves too, but a server that is killed
+        // never gets one — and losing an hour of building to a crash is the
+        // failure people remember. Thirty seconds is short enough to matter and
+        // long enough that a world with nothing dirty costs a map lookup.
+        if (const auto now = std::chrono::steady_clock::now();
+            now - last_autosave >= std::chrono::seconds{30}) {
+            last_autosave = now;
+            save_world();
         }
 
         // Keep-alive. The client drops a server that goes quiet, and vanilla
@@ -1049,6 +1183,8 @@ int main(int argc, char** argv) {
         OV_LOG_INFO("allocations: {} ({} bytes), tick violations: {}", stats.allocations,
                     stats.bytes, stats.violations);
     }
+    save_world();
+
     listener->stop();
     network_thread.join();
 

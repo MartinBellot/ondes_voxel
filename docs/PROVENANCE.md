@@ -865,3 +865,50 @@ soient pas.
 
 `ov-inspect region --verify` reconstruit le fichier depuis ses propres chunks et
 compare. Sur le monde réel : **17 879 / 17 879 chunks octet-identiques**.
+
+---
+
+## Sérialisation des chunks (`ov_world`)
+
+Le format disque est **basé sur les noms**, et c'est toute la raison pour
+laquelle une sauvegarde peut être partagée entre implémentations. Sur le fil, une
+entrée de palette est un identifiant numérique d'état ; sur disque c'est
+`{Name: "minecraft:oak_stairs", Properties: {facing: "north", …}}`.
+
+Écrire les ids du réseau sur disque produirait un fichier qui se recharge
+parfaitement **ici** et ne veut rien dire dans Minecraft — et dont la version qui
+l'a écrit serait la seule à pouvoir le décoder. La conversion passe donc par le
+registre dans les deux sens, et un état dont le registre ignore le nom est
+**refusé plutôt que deviné**.
+
+Trois décisions à leurs raisons :
+
+- **Le disque n'a pas de forme « directe ».** Un conteneur direct en mémoire est
+  reconverti en palette à l'écriture : le format nomme, et 24 135 noms seraient
+  absurdes.
+- **La lumière est écrite, pas recalculée au chargement.** Il n'y a pas de moteur
+  de lumière sur le chemin de lecture ; recalculer différerait silencieusement de
+  ce que le client a vu en dernier.
+- **Les heightmaps sont recalculés, pas lus.** C'est de la donnée dérivée, un
+  heightmap stocké peut être périmé — mesuré sur un monde réel : une colonne sur
+  4,5 millions l'était — et le recalcul coûte un balayage que le chargement paie
+  déjà.
+
+Les noms de biomes sont **passés en paramètre**. Les biomes vivent dans un
+registre que le serveur *envoie* ; leurs identifiants appartiennent à qui a
+construit le codec, et ce module n'a pas à les connaître.
+
+### Le monde sur disque
+
+`run/world/region/` — gitignoré, une sauvegarde appartient au joueur, pas au
+dépôt. Le disque passe **avant** le générateur : l'ordre inverse fonctionne
+jusqu'au premier rechargement puis jette silencieusement tout ce qui a été
+construit.
+
+Vérifié de bout en bout : construire une tour et creuser un trou, arrêter le
+serveur, le relancer — blocs et lumière identiques, et le fichier produit passe
+le contrôle d'aller-retour d'`ov-inspect`.
+
+Autosave toutes les 30 secondes, en plus de l'arrêt propre : un serveur tué n'a
+jamais d'arrêt propre, et perdre une heure de construction sur un crash est la
+panne dont on se souvient. Mesuré : 4 chunks sur 3 régions, zéro surcharge de tick.

@@ -184,15 +184,15 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 
 ## M4 — Monde persistant
 
-- [ ] Lecture Anvil : sections, palettes, biomes, block entities, heightmaps
-- [ ] Écriture Anvil : allocation de secteurs, compactage, timestamps
+- [x] Lecture Anvil : sections, palettes, biomes, heightmaps *(block entities à venir)*
+- [x] Écriture Anvil : fichiers région, palettes par nom, écriture atomique : allocation de secteurs, compactage, timestamps
 - [ ] `level.dat` : gzip, racine `Data`, écriture sûre via `level.dat_old`
 - [ ] `DataVersion`, refus explicite des versions non supportées
 - [ ] Les ~20 archétypes de blocs dont dérivent ~80 % des 1003 types
 - [ ] Casse et pose : durées, outils corrects, Silk Touch, Fortune
 - [ ] Inventaire, conteneurs, shift-click, drag, hotbar
 - [ ] Mode créatif, sélection d'items
-- [ ] Sauvegarde asynchrone (gratuite grâce au COW)
+- [x] Sauvegarde périodique et à l'arrêt *(asynchrone via COW : à venir)*
 - [ ] **Round-trip croisé avec Minecraft vanilla, sans perte** ⭐
 
 ---
