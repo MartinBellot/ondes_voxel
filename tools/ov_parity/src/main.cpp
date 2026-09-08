@@ -57,6 +57,15 @@ struct Options {
     /// default so that the same binary gives the before and the after figure
     /// without rebuilding — the only honest way to say what a stage is worth.
     bool carvers{false};
+    /// Report the distribution of each named term instead of comparing.
+    ///
+    /// No reference world is involved: this asks whether a term is the shape
+    /// it is supposed to be. `base_3d_noise` is a sum of Perlin octaves
+    /// blended between two symmetric stacks, so its mean over a large sample
+    /// must be zero; a mean that is not says the octave weighting is wrong,
+    /// and a term biased by a few hundredths is exactly what a surface one
+    /// block low looks like.
+    bool stats{false};
     /// Dump one column: what the game has, and every term we compute.
     std::string column;
     std::filesystem::path pack{"data/vanilla/1.20.1/registry.ovpack"};
@@ -87,6 +96,8 @@ struct Options {
             options.terrain = true;
         } else if (argument == "--carvers") {
             options.carvers = true;
+        } else if (argument == "--stats") {
+            options.stats = true;
         } else if (argument.starts_with("--column=")) {
             options.column = value("--column=");
         } else if (argument.starts_with("--pack=")) {
@@ -170,6 +181,15 @@ struct Options {
         name == "minecraft:lava") {
         return false;
     }
+    // Ice is not terrain. On a frozen ocean the surface rules freeze the top
+    // of the water, so the game's topmost "solid" block sits at the sea level
+    // while the noise put the sea bed twenty blocks lower. Counting it made
+    // every frozen column report a surface eight or more blocks too low and
+    // buried the real offset under an artefact of a later stage.
+    if (name == "minecraft:ice" || name == "minecraft:packed_ice" ||
+        name == "minecraft:blue_ice" || name == "minecraft:frosted_ice") {
+        return false;
+    }
     // Trees are not terrain. They are placed by the feature stage, which runs
     // after the noise and is not implemented, so counting their trunks and
     // leaves as solid measures a stage this comparison is not about — and it
@@ -235,6 +255,60 @@ int main(int argc, char** argv) {
     if (!biomes) {
         OV_LOG_ERROR("biome table: {}", worldgen::to_string(biomes.error()));
         return 1;
+    }
+
+    if (options.stats) {
+        // A grid wide enough to cross continents and deep enough to leave the
+        // slides alone, so what is reported is the term's own shape and not
+        // the shape of the world's floor and ceiling.
+        struct Term {
+            std::string_view              name;
+            const worldgen::DensityFunction* function;
+        };
+        const std::array<Term, 8> terms{
+            Term{"overworld/base_3d_noise",
+                 router->function("minecraft:overworld/base_3d_noise")},
+            Term{"overworld/sloped_cheese",
+                 router->function("minecraft:overworld/sloped_cheese")},
+            Term{"overworld/depth", router->function("minecraft:overworld/depth")},
+            Term{"overworld/offset", router->function("minecraft:overworld/offset")},
+            Term{"overworld/factor", router->function("minecraft:overworld/factor")},
+            Term{"overworld/jaggedness", router->function("minecraft:overworld/jaggedness")},
+            Term{"router:final_density", router->entry("final_density")},
+            Term{"router:initial_density_without_jaggedness",
+                 router->entry("initial_density_without_jaggedness")},
+        };
+
+        fmt::print("\n{:>44} {:>10} {:>10} {:>10} {:>10} {:>8}\n", "term", "mean", "sd", "min",
+                   "max", "n");
+        for (const auto& term : terms) {
+            if (term.function == nullptr) {
+                fmt::print("{:>44}   not in the router\n", term.name);
+                continue;
+            }
+            f64   sum   = 0.0;
+            f64   sum2  = 0.0;
+            f64   low   = std::numeric_limits<f64>::max();
+            f64   high  = std::numeric_limits<f64>::lowest();
+            usize count = 0;
+            for (i32 x = -2048; x <= 2048; x += 71) {
+                for (i32 z = -2048; z <= 2048; z += 67) {
+                    for (i32 y = 0; y <= 128; y += 13) {
+                        const f64 value = term.function->compute({x, y, z});
+                        sum += value;
+                        sum2 += value * value;
+                        low  = std::min(low, value);
+                        high = std::max(high, value);
+                        ++count;
+                    }
+                }
+            }
+            const f64 mean = sum / static_cast<f64>(count);
+            const f64 sd = std::sqrt(std::max(0.0, sum2 / static_cast<f64>(count) - mean * mean));
+            fmt::print("{:>44} {:>+10.5f} {:>10.5f} {:>+10.4f} {:>+10.4f} {:>8}\n", term.name,
+                       mean, sd, low, high, count);
+        }
+        return 0;
     }
 
     if (!options.column.empty()) {
@@ -317,6 +391,30 @@ int main(int argc, char** argv) {
     std::array<usize, 17>    height_delta{};
     std::array<usize, 10> extra_by_band{};
     std::array<usize, 10> missing_by_band{};
+    /// The same surface offset, counted only over columns the game left dry.
+    /// An ocean column's offset is dominated by the sea bed, which the
+    /// aquifer and not the noise decides; mixing the two hides whatever the
+    /// land is doing.
+    std::array<usize, 17> land_delta{};
+    usize                 land_columns = 0;
+    /// Agreement if our density were read `kShift` blocks higher or lower.
+    /// This is the test that tells a *translated* field from a merely wrong
+    /// one: a genuine two-block offset shows as a peak at +2 here, and a
+    /// field of the wrong shape shows as a flat curve with its maximum at 0.
+    constexpr i32                 kShiftRange = 4;
+    std::array<usize, 2 * kShiftRange + 1> shift_agreed{};
+    /// The mean surface error against the position within an interpolation
+    /// cell, which is eight blocks tall and four wide.
+    ///
+    /// This is the test for a misaligned cell grid, and it is a sharp one: if
+    /// our corners sat half a cell away from the game's, the error would rise
+    /// and fall with the height's position inside the cell. A flat row here
+    /// says the grid is aligned and the error is in the values, not in where
+    /// they are sampled.
+    std::array<i64, 8> delta_by_cell_y{};
+    std::array<i64, 8> count_by_cell_y{};
+    std::array<i64, 4> delta_by_cell_x{};
+    std::array<i64, 4> count_by_cell_x{};
 
     usize cells    = 0;
     usize agreed   = 0;
@@ -420,8 +518,13 @@ int main(int argc, char** argv) {
                 // and the density graph is not cheap. Every fourth column in
                 // each direction is 1024 blocks a chunk, which settles the
                 // question without taking an hour.
-                for (i32 sample_z = 0; sample_z < 16; sample_z += 4) {
-                    for (i32 sample_x = 0; sample_x < 16; sample_x += 4) {
+                // Every third column rather than every fourth, and the three
+                // is the point: the interpolation cell is four wide, so a
+                // stride of four only ever lands on x % 4 == 0 and the test
+                // for a misaligned horizontal grid has nothing to compare.
+                // Three visits all four residues, and samples more besides.
+                for (i32 sample_z = 0; sample_z < 16; sample_z += 3) {
+                    for (i32 sample_x = 0; sample_x < 16; sample_x += 3) {
                         const i32 world_x = chunk_x * 16 + sample_x;
                         const i32 world_z = chunk_z * 16 + sample_z;
 
@@ -447,10 +550,34 @@ int main(int argc, char** argv) {
                                 break;
                             }
                         }
+                        // Dry or not: whether the game put water anywhere in
+                        // the eight blocks above what it called the surface.
+                        bool wet = false;
+                        for (i32 above = 1; above <= 8 && !wet; ++above) {
+                            const auto* at =
+                                block_at(*document, sample_x, their_top + above, sample_z);
+                            wet = at != nullptr && (*at == "minecraft:water" ||
+                                                    *at == "minecraft:ice" ||
+                                                    *at == "minecraft:seagrass" ||
+                                                    *at == "minecraft:kelp_plant");
+                        }
                         if (their_top != -65 && our_top != -65) {
                             const auto slot = static_cast<usize>(
                                 std::clamp(our_top - their_top + 8, 0, 16));
                             ++height_delta[slot];
+                            if (!wet) {
+                                ++land_delta[slot];
+                                ++land_columns;
+                                // Measured from the bottom of the world, which
+                                // is where the cell grid is anchored.
+                                const auto cell_y =
+                                    static_cast<usize>(((their_top + 64) % 8 + 8) % 8);
+                                delta_by_cell_y[cell_y] += our_top - their_top;
+                                ++count_by_cell_y[cell_y];
+                                const auto cell_x = static_cast<usize>((world_x % 4 + 4) % 4);
+                                delta_by_cell_x[cell_x] += our_top - their_top;
+                                ++count_by_cell_x[cell_x];
+                            }
                             // How far off the density actually is at the block
                             // the game called the surface. A magnitude tells
                             // apart "a constant is missing" from "the field is
@@ -474,6 +601,15 @@ int main(int argc, char** argv) {
                             const bool our_solid =
                                 generator->is_solid(world_x, height, world_z) &&
                                 !(options.carvers && carved.get(sample_x, height, sample_z));
+                            for (i32 shift = -kShiftRange; shift <= kShiftRange; ++shift) {
+                                const bool shifted =
+                                    generator->is_solid(world_x, height + shift, world_z) &&
+                                    !(options.carvers &&
+                                      carved.get(sample_x, height + shift, sample_z));
+                                if (shifted == their_solid) {
+                                    ++shift_agreed[static_cast<usize>(shift + kShiftRange)];
+                                }
+                            }
                             ++blocks_seen;
                             if (their_solid == our_solid) {
                                 ++blocks_agreed;
@@ -689,6 +825,43 @@ int main(int argc, char** argv) {
                        height_delta[slot],
                        100.0 * static_cast<f64>(height_delta[slot]) /
                            static_cast<f64>(columns));
+        }
+        fmt::print("\nthe same, over the {} columns the game left dry:\n", land_columns);
+        for (usize slot = 0; slot < land_delta.size(); ++slot) {
+            if (land_delta[slot] == 0) {
+                continue;
+            }
+            fmt::print("  {:>+3} {:>8}  ({:>6.2f} %)\n", static_cast<i32>(slot) - 8,
+                       land_delta[slot],
+                       100.0 * static_cast<f64>(land_delta[slot]) /
+                           static_cast<f64>(land_columns));
+        }
+        fmt::print("\nmean surface error against the height's place in the 8-block cell:\n");
+        for (usize slot = 0; slot < delta_by_cell_y.size(); ++slot) {
+            if (count_by_cell_y[slot] == 0) {
+                continue;
+            }
+            fmt::print("  y%8 == {} {:>+8.3f}  ({} columns)\n", slot,
+                       static_cast<f64>(delta_by_cell_y[slot]) /
+                           static_cast<f64>(count_by_cell_y[slot]),
+                       count_by_cell_y[slot]);
+        }
+        fmt::print("\nthe same against x within the 4-block cell:\n");
+        for (usize slot = 0; slot < delta_by_cell_x.size(); ++slot) {
+            if (count_by_cell_x[slot] == 0) {
+                continue;
+            }
+            fmt::print("  x%4 == {} {:>+8.3f}  ({} columns)\n", slot,
+                       static_cast<f64>(delta_by_cell_x[slot]) /
+                           static_cast<f64>(count_by_cell_x[slot]),
+                       count_by_cell_x[slot]);
+        }
+        fmt::print("\nagreement if our density were read n blocks off:\n");
+        for (usize slot = 0; slot < shift_agreed.size(); ++slot) {
+            fmt::print("  {:>+3} {:>8}  ({:>7.3f} %)\n",
+                       static_cast<i32>(slot) - kShiftRange, shift_agreed[slot],
+                       100.0 * static_cast<f64>(shift_agreed[slot]) /
+                           static_cast<f64>(blocks_seen));
         }
         fmt::print("\nthe density where the game's surface is:\n");
         for (const auto& line : probes) {

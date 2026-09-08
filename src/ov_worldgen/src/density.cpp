@@ -569,16 +569,37 @@ private:
 class BlendedNoiseNode final : public DensityFunction {
 public:
     explicit BlendedNoiseNode(std::shared_ptr<const BlendedNoise> noise)
-        : noise_(std::move(noise)) {}
+        : noise_(std::move(noise)), gain_(gain_from_environment()) {}
 
     [[nodiscard]] f64 compute(const FunctionContext& at) const override {
-        return noise_->value(at.x, at.y, at.z);
+        return noise_->value(at.x, at.y, at.z) * gain_;
     }
-    [[nodiscard]] f64 min_value() const override { return -noise_->max_value(); }
-    [[nodiscard]] f64 max_value() const override { return noise_->max_value(); }
+    [[nodiscard]] f64 min_value() const override { return -noise_->max_value() * gain_; }
+    [[nodiscard]] f64 max_value() const override { return noise_->max_value() * gain_; }
 
 private:
+    /// OV_BASE3D_GAIN scales this noise and nothing else.
+    ///
+    /// It exists to settle one question by measurement. This noise is the only
+    /// term of the terrain that the biome comparison does not already check,
+    /// and `quarter_negative` above it has a kink at zero: the slope is four
+    /// times steeper on the positive side, so a given amount of noise raises
+    /// the surface four times as far as it lowers it. The mean height of the
+    /// surface is therefore proportional to this noise's *amplitude*, not
+    /// only to its mean — and a surface uniformly a block or two low is what
+    /// an amplitude that is too small looks like. Sweeping the gain and
+    /// watching the surface histogram says whether that is what is happening.
+    [[nodiscard]] static f64 gain_from_environment() {
+        const char* text = std::getenv("OV_BASE3D_GAIN");
+        if (text == nullptr) {
+            return 1.0;
+        }
+        const f64 value = std::strtod(text, nullptr);
+        return value == 0.0 ? 1.0 : value;
+    }
+
     std::shared_ptr<const BlendedNoise> noise_;
+    f64                                 gain_{1.0};
 };
 
 }  // namespace

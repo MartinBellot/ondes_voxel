@@ -13,6 +13,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cmath>
 #include <filesystem>
 
 using namespace ov;
@@ -147,4 +148,75 @@ TEST_CASE("flat_cache quantises to quarters", "[worldgen][density]") {
     CHECK(continents->compute({-1, 0, -1}) == negative);
     CHECK(continents->compute({-3, 0, -3}) == negative);
     CHECK(continents->compute({-5, 0, -5}) != negative);
+}
+
+TEST_CASE("every node's bounds contain the values it produces", "[worldgen][density]") {
+    if (!std::filesystem::is_directory(data_root() / "worldgen")) {
+        SKIP("vanilla worldgen data absent");
+    }
+    auto router = NoiseRouter::load(data_root(), "overworld", 1234567890);
+    REQUIRE(router.has_value());
+
+    // The bounds are not documentation. `min` and `max` skip their second
+    // argument when the first is already outside the other's range —
+    // `a < b->min_value() ? a : min(a, b)` — so a bound that is too tight makes
+    // those nodes return the *wrong number*, quietly, for the positions where
+    // the skipped branch would have won. That failure looks like terrain with
+    // holes rather than like a crash, which is why it is worth a test.
+    for (const auto* name :
+         {"temperature", "vegetation", "continents", "erosion", "depth", "ridges",
+          "final_density", "initial_density_without_jaggedness", "barrier", "lava", "vein_toggle",
+          "vein_ridged", "vein_gap", "fluid_level_floodedness", "fluid_level_spread"}) {
+        const DensityFunction* entry = router->entry(name);
+        REQUIRE(entry != nullptr);
+        const f64 low  = entry->min_value();
+        const f64 high = entry->max_value();
+        CAPTURE(name, low, high);
+        CHECK(low <= high);
+        for (i32 x = -768; x <= 768; x += 384) {
+            for (i32 z = -768; z <= 768; z += 384) {
+                for (i32 y = -60; y <= 300; y += 60) {
+                    const f64 value = entry->compute({x, y, z});
+                    CAPTURE(x, y, z, value);
+                    CHECK(value >= low);
+                    CHECK(value <= high);
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("the old blended noise is centred on zero", "[worldgen][density]") {
+    if (!std::filesystem::is_directory(data_root() / "worldgen")) {
+        SKIP("vanilla worldgen data absent");
+    }
+    auto router = NoiseRouter::load(data_root(), "overworld", 1234567890);
+    REQUIRE(router.has_value());
+    const DensityFunction* base = router->function("minecraft:overworld/base_3d_noise");
+    REQUIRE(base != nullptr);
+
+    // Three stacks of octaves, two of which are a floor and a ceiling and the
+    // third a selector between them. The two limits are drawn the same way, so
+    // whatever the selector does the result is symmetric about zero and the
+    // mean over a wide grid has to be small.
+    //
+    // This guards the octave stack rather than the terrain: a count or a
+    // weighting that slipped would move this mean, and the surface it produces
+    // would sit a block or two from the game's without anything else looking
+    // wrong. The tolerance is loose on purpose — a regression guard, not a
+    // fitted number.
+    f64   sum   = 0.0;
+    usize count = 0;
+    for (i32 x = -1024; x <= 1024; x += 97) {
+        for (i32 z = -1024; z <= 1024; z += 89) {
+            for (i32 y = 0; y <= 128; y += 32) {
+                sum += base->compute({x, y, z});
+                ++count;
+            }
+        }
+    }
+    REQUIRE(count > 500);
+    const f64 mean = sum / static_cast<f64>(count);
+    CAPTURE(mean, count);
+    CHECK(std::abs(mean) < 0.05);
 }
