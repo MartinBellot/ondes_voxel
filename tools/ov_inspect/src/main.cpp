@@ -21,8 +21,10 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <filesystem>
+#include <limits>
 #include <map>
 #include <string>
 #include <string_view>
@@ -391,6 +393,21 @@ int inspect_chunk_packing(const std::filesystem::path& path) {
     // Real lighting varies smoothly, so the correct reading is the one giving
     // the smaller step between neighbouring cells. This measures both on arrays
     // the game itself wrote.
+    // Heightmap semantics, checked rather than read off a wiki page.
+    //
+    // WORLD_SURFACE is documented as "the highest non-air block", but the value
+    // stored is an offset, and whether it is that block's y or the free space
+    // above it is exactly the kind of off-by-one that produces a world where
+    // rain falls one block into the ground.
+    //
+    // So it is recomputed here from the block palettes — by NAME, so the check
+    // is independent of which version's ids the world uses — and compared
+    // against what the game wrote.
+    usize columns_checked    = 0;
+    usize columns_matched    = 0;
+    usize columns_off_by_one = 0;
+    usize columns_reported   = 0;
+
     usize light_arrays        = 0;
     usize low_nibble_smoother = 0;
     f64   low_total           = 0.0;
@@ -408,6 +425,136 @@ int inspect_chunk_packing(const std::filesystem::path& path) {
             const nbt::Tag* section_list = chunk->root.find("sections");
             if (section_list == nullptr || section_list->list() == nullptr) {
                 continue;
+            }
+
+            // ── Recompute WORLD_SURFACE from the blocks ─────────────────────
+            const nbt::Tag* heightmaps = chunk->root.find("Heightmaps");
+            const nbt::Tag* surface =
+                heightmaps == nullptr ? nullptr : heightmaps->find("WORLD_SURFACE");
+            const auto* surface_longs =
+                surface == nullptr ? nullptr : surface->get_if<nbt::Tag::LongArray>();
+
+            if (surface_longs != nullptr && surface_longs->size() == 37) {
+                constexpr std::string_view kAirNames[] = {"minecraft:air", "minecraft:cave_air",
+                                                          "minecraft:void_air"};
+                std::array<i32, 256>       top{};
+                top.fill(std::numeric_limits<i32>::min());
+                std::array<std::string_view, 256> top_name{};
+
+                // The heightmap's origin is the *dimension's* floor, not the
+                // lowest section the file happens to list. Measured: two chunks
+                // in this world list 25 sections starting at -5 rather than 24
+                // starting at -4, because vanilla writes an extra section below
+                // the world for lighting. Deriving the origin from the section
+                // list shifts every column in those chunks by 16.
+                constexpr i32 kOverworldMinY = -64;
+
+                for (const nbt::Tag& section : *section_list->list()) {
+                    const nbt::Tag* y_tag = section.find("Y");
+                    if (y_tag == nullptr) {
+                        continue;
+                    }
+                    const auto section_y = static_cast<i32>(y_tag->as_i64());
+
+                    const nbt::Tag* states = section.find("block_states");
+                    if (states == nullptr) {
+                        continue;
+                    }
+                    const nbt::Tag* palette = states->find("palette");
+                    if (palette == nullptr || palette->list() == nullptr) {
+                        continue;
+                    }
+
+                    std::vector<bool>             palette_is_air;
+                    std::vector<std::string_view> palette_names;
+                    palette_is_air.reserve(palette->list()->size());
+                    for (const nbt::Tag& entry : *palette->list()) {
+                        const nbt::Tag*        name = entry.find("Name");
+                        const std::string_view text =
+                            name == nullptr ? std::string_view{} : name->as_string();
+                        palette_names.push_back(text);
+                        palette_is_air.push_back(std::ranges::find(kAirNames, text) !=
+                                                 std::end(kAirNames));
+                    }
+
+                    const i32       base = section_y * 16;
+                    const nbt::Tag* data = states->find("data");
+                    const auto*     longs =
+                        data == nullptr ? nullptr : data->get_if<nbt::Tag::LongArray>();
+
+                    if (longs == nullptr || longs->empty()) {
+                        // Single-valued: either the whole section is air, or
+                        // all of it is solid up to its top.
+                        if (!palette_is_air.empty() && !palette_is_air[0]) {
+                            for (usize c = 0; c < 256; ++c) {
+                                if (base + 15 > top[c]) {
+                                    top[c]      = base + 15;
+                                    top_name[c] = palette_names[0];
+                                }
+                            }
+                        }
+                        continue;
+                    }
+
+                    const u8  bits = world::bits_for_palette(palette_is_air.size());
+                    const u32 per  = world::entries_per_long(bits);
+                    const u64 mask = (u64{1} << bits) - 1;
+                    for (usize index = 0; index < 4096; ++index) {
+                        const usize word = index / per;
+                        if (word >= longs->size()) {
+                            break;
+                        }
+                        const auto slot = static_cast<usize>(
+                            (static_cast<u64>((*longs)[word]) >> ((index % per) * bits)) & mask);
+                        if (slot >= palette_is_air.size() || palette_is_air[slot]) {
+                            continue;
+                        }
+                        const i32 y = base + static_cast<i32>(index / 256);
+                        if (y > top[index % 256]) {
+                            top[index % 256]      = y;
+                            top_name[index % 256] = palette_names[slot];
+                        }
+                    }
+                }
+
+                const i32 min_y           = kOverworldMinY;
+                usize     mismatched_here = 0;
+                for (usize column = 0; column < 256; ++column) {
+                    // 256 values of 9 bits, seven to a long — the same
+                    // never-span rule the block palettes use.
+                    const usize word   = column / 7;
+                    const auto  stored = static_cast<i32>(
+                        (static_cast<u64>((*surface_longs)[word]) >> ((column % 7) * 9)) & 0x1FF);
+
+                    const i32 expected = top[column] == std::numeric_limits<i32>::min()
+                                             ? 0
+                                             : top[column] + 1 - min_y;
+                    ++columns_checked;
+                    if (stored == expected) {
+                        ++columns_matched;
+                    } else {
+                        ++mismatched_here;
+                        if (stored == expected - 1) {
+                            ++columns_off_by_one;
+                        }
+                        // Capped: a world that disagrees everywhere would
+                        // otherwise bury the summary under its own noise.
+                        if (columns_reported < 8) {
+                            ++columns_reported;
+                            fmt::print(
+                                "      column ({},{}) of chunk ({},{}): stored {}, "
+                                "recomputed {} (top block y {} is {})\n",
+                                column % 16, column / 16, x, z, stored, expected,
+                                top[column] == std::numeric_limits<i32>::min() ? -9999
+                                                                               : top[column],
+                                top_name[column]);
+                        }
+                    }
+                }
+                if (mismatched_here > 0) {
+                    fmt::print("    chunk ({},{}): {} columns differ, sections listed {}\n", x, z,
+                               mismatched_here, section_list->list()->size());
+                }
             }
 
             for (const nbt::Tag& section : *section_list->list()) {
@@ -540,6 +687,13 @@ int inspect_chunk_packing(const std::filesystem::path& path) {
         fmt::print("{}b:{} ", bits, count);
     }
     fmt::print("\n");
+    if (columns_checked > 0) {
+        fmt::print(
+            "  WORLD_SURFACE .. {}{}/{} columns\033[0m recomputed from the blocks"
+            " ({} off by one)\n",
+            columns_matched == columns_checked ? "\033[0;32m" : "\033[0;31m", columns_matched,
+            columns_checked, columns_off_by_one);
+    }
     if (light_arrays > 0) {
         const f64  low       = low_total / static_cast<f64>(light_arrays);
         const f64  high      = high_total / static_cast<f64>(light_arrays);

@@ -165,7 +165,8 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [ ] Générateur superflat
 - [ ] Moteur de lumière : ciel et bloc, propagation et suppression
 - [x] Tableaux de lumière nullables à valeur uniforme (divise l'empreinte par 2)
-- [ ] Heightmaps (WORLD_SURFACE, MOTION_BLOCKING, OCEAN_FLOOR)
+- [x] Heightmaps : stockage, packing 9 bits, sémantique vérifiée sur monde réel
+- [ ] Calcul des heightmaps depuis les blocs *(demande les flags d'état de bloc)*
 - [ ] Streaming de chunks selon la distance de vue
 - [ ] Physique du joueur : AABB, marche, saut, sprint, accroupissement, nage
 - [ ] Gestion des joueurs, keep-alive, liste des joueurs

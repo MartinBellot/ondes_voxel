@@ -11,7 +11,7 @@
   },
   "last_updated": "2026-09-08",
   "current_milestone": "M3",
-  "current_task": "m3-chunk-and-heightmaps",
+  "current_task": "m3-chunk-container",
   "milestones": {
     "M0": {
       "name": "Fondations",
@@ -42,8 +42,8 @@
     "M3": {
       "name": "Tranche verticale",
       "status": "in_progress",
-      "done": 1,
-      "total": 15,
+      "done": 2,
+      "total": 16,
       "exit_criterion": "Un client Minecraft vanilla 1.20.1 non modifié se connecte, marche, casse et pose un bloc — sans une ligne de Vulkan.",
       "blocked": []
     },
@@ -102,7 +102,8 @@
     "xoroshiro_rng": "flux identique a Xoroshiro128PlusPlus du JDK, upgrade de seed 128 bits compris (6 seeds x 8 tirages)",
     "registry_parity": "66 registres / 5067 IDs identiques au rapport officiel Mojang, ordre inclus",
     "tag_parity": "305 tags / 4255 membres, re-resolus independamment depuis les fichiers JSON bruts et identiques ; 108 fichiers de registres dynamiques reportes",
-    "light_nibble_order": "ordre confirme par mesure sur 144974 tableaux de lumiere reels : cellule paire = demi-octet bas, plus lisse dans 97.8 % des cas"
+    "light_nibble_order": "ordre confirme par mesure sur 144974 tableaux de lumiere reels : cellule paire = demi-octet bas, plus lisse dans 97.8 % des cas",
+    "heightmap_semantics": "4577023/4577024 colonnes recalculees depuis les blocs et identiques ; l'unique ecart est un bloc modde (create:crushing_wheel_controller)"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",

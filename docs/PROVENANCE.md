@@ -552,3 +552,49 @@ Les **trois** blocs d'air comptent comme air : `air` (état 0), `void_air`
 (12817) et `cave_air` (12818), un seul état chacun — mesuré, pas supposé. Un
 client à qui l'on dit qu'une grotte est pleine la rend pleine. Les identifiants
 sont résolus depuis le registre, jamais écrits en dur.
+
+---
+
+## Heightmaps (`ov_world`)
+
+Sémantique établie par **recalcul depuis les blocs**, pas par lecture de wiki.
+`ov-inspect chunk` reconstruit `WORLD_SURFACE` à partir des palettes — **par nom**,
+donc indépendamment de la version d'IDs du monde — et compare à ce que le jeu a
+écrit.
+
+| Mesure | Valeur |
+|---|---|
+| Colonnes recalculées | **4 577 024** |
+| Identiques | **4 577 023** (99,99998 %) |
+| À un près | **0** |
+
+Zéro écart d'un bloc, ce qui est le point : la question était de savoir si la
+valeur stockée est le sommet ou le premier espace libre au-dessus. C'est le
+**premier espace libre** : `stored == top + 1 − minY`. Une colonne vide stocke 0.
+L'autre convention fait tomber la pluie un bloc sous le sol.
+
+### L'origine n'est pas la liste des sections
+
+Deux chunks de ce monde listent **25 sections à partir de -5**, pas 24 à partir
+de -4 : vanilla écrit une section supplémentaire sous le monde pour la lumière.
+Déduire l'origine de la liste des sections décale **toutes** les colonnes de ces
+chunks de seize blocs. L'origine est le plancher de la **dimension**, point.
+
+C'est exactement le genre de fait qu'aucune lecture de spécification ne donne et
+qu'une mesure livre en une passe.
+
+### Le packing
+
+La règle des palettes, encore : **9 bits par entrée, sept par long, aucune
+entrée à cheval**. 37 longs pour 256 colonnes, pas 36. Neuf bits parce qu'un
+monde de 384 blocs stocke les valeurs 0 à 384 — **385** possibilités, pas 384.
+Dimensionner pour 384 rend le sommet du monde irreprésentable, ce qui reste
+invisible jusqu'à ce que quelqu'un y construise.
+
+### L'unique écart, expliqué et non arrondi
+
+Une colonne sur 4,5 millions diverge de 3 blocs. Le bloc en cause est
+`create:crushing_wheel_controller` — un bloc **moddé**. C'est le mod qui décide
+si son bloc compte comme air ; une vérification par nom sur la liste vanilla ne
+peut pas le savoir. Ce n'est pas un défaut de l'implémentation, c'est la limite
+connue de la méthode de contrôle, et elle est écrite ici plutôt qu'arrondie.
