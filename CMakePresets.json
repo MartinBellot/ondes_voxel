@@ -10,8 +10,8 @@
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "$comment": "The client feature pulls GLFW, Vulkan and VMA. It is added here at M5, when the renderer starts; before then it would cost a long first build for nothing (risk R5).",
-        "VCPKG_MANIFEST_FEATURES": "tests"
+        "$comment": "The client feature pulls GLFW, volk, the Vulkan headers and VMA. M5 is where the renderer starts, so this is where it is switched on; before then it was a long first build for nothing (risk R5). The headless preset below deliberately does not inherit it.",
+        "VCPKG_MANIFEST_FEATURES": "tests;client"
       }
     },
     {

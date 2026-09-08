@@ -212,17 +212,20 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 ## M5 — Client Ondes VOXEL
 
 ### `ov_rhi` (L13)
-- [ ] Instance, device, swapchain, `VK_KHR_dynamic_rendering`
-- [ ] Handles opaques index + génération, jamais de pointeur
-- [ ] Buffers, images, samplers, VMA
-- [ ] Pipelines, `VkPipelineCache` persisté, SPIR-V compilé **hors-ligne**
-- [ ] Command lists, **barrières explicites** (pas de state tracker automatique)
-- [ ] `FrameContext` : ring de 2, pool de descripteurs et arène de staging
-- [ ] Timestamps GPU dès le départ
+- [x] Instance, device, swapchain, `VK_KHR_dynamic_rendering`
+- [x] Handles opaques index + génération, jamais de pointeur
+- [x] Buffers, images, samplers, VMA
+- [x] Pipelines, `VkPipelineCache` persisté, SPIR-V compilé **hors-ligne**
+- [x] Command lists, **barrières explicites** (pas de state tracker automatique)
+- [~] `FrameContext` : ring de 2, pool de descripteurs et arène de staging
+      *(ring et pool faits ; l'arène de staging reste — les uploads passent par
+      un buffer jetable, ce qui va pour le démarrage et pas pour une frame)*
+- [x] Timestamps GPU dès le départ
 - [ ] Handles de texture en `u32` — bindless **préparé, non implémenté** 🔒
 
 ### `ov_render` (L14)
-- [ ] Triangle → quad texturé → cube + profondeur + caméra
+- [~] Triangle → quad texturé → cube + profondeur + caméra *(le triangle
+      s'affiche ; `ov_voxel --frames=8 --screenshot=…` le vérifie sans œil humain)*
 - [x] **Pipeline blockstate → variant → model → parent → elements → faces →
       rotations → uvlock** *(1005 blockstates, 6081 références, 62227 quads,
       0 échec — `ov_modelbake run/assets`)*
@@ -239,7 +242,7 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [ ] Ciel, soleil, lune, étoiles, nuages, brouillard, météo
 
 ### `ov_client` (L15) et `ov_audio` (L14)
-- [ ] Fenêtre GLFW, entrées, bindings de touches
+- [x] Fenêtre GLFW, entrées, bindings de touches
 - [ ] Serveur intégré sur son propre thread
 - [ ] Prédiction de mouvement et réconciliation
 - [ ] Interpolation d'entités

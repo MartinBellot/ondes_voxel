@@ -60,12 +60,10 @@
     "M5": {
       "name": "Client Ondes VOXEL",
       "status": "in_progress",
-      "done": 2,
+      "done": 9,
       "total": 26,
       "exit_criterion": "Deux clients pour un même serveur ; p99 de frame time <= 20 ms à 12 chunks sur M2 ; golden images vertes sur lavapipe.",
-      "blocked": [
-        "Nécessite le SDK Vulkan / MoltenVK, non installé. Chemin documenté par scripts/bootstrap.sh : le paquet macOS de https://vulkan.lunarg.com/sdk/home (installateur .dmg, non scriptable ; il pose ~/VulkanSDK et fournit MoltenVK, les couches de validation et glslc). Vérifié : il n'existe PAS de cask Homebrew `vulkan-sdk`. Bloque ov_rhi, ov_client et les shaders ; la moitié CPU du jalon (modèles, bake, vertex, AO) n'en dépend pas et avance sans."
-      ]
+      "blocked": []
     },
     "M6": {
       "name": "Contenu complet",
@@ -143,7 +141,7 @@
     "compiler": "Apple clang 17.0.0",
     "cmake": "4.4.3",
     "ninja": "1.13.2",
-    "vulkan_sdk": null,
+    "vulkan_sdk": "1.4.357.1 (LunarG, macOS). Loader et ICD installés dans /usr/local, donc découverts sans exporter VULKAN_SDK ; glslc et glslangValidator sont dans /usr/local/bin. Deux pilotes répondent pour le même GPU — MoltenVK 1.4.2 et Mesa KosmicKrisp — et ov_rhi choisit MoltenVK explicitement.",
     "vanilla_1_20_1_instance": true,
     "vanilla_server_jar": "tools/vanilla/server.jar — 1.20.1, protocole 763, SHA-1 84194a2f286ef7c14ed7ce0090dba59902951553",
     "resource_packs": [
