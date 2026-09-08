@@ -147,7 +147,7 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [ ] Test : rebuild depuis JSON == cache, **octet à octet** (déterminisme) 🔒
 - [x] `LegacyRandomSource` bit-exact — vérifié contre une vraie JVM 🔒
 - [ ] `log` fdlibm pour rendre `nextGaussian` bit-exact *(4 ulp d'écart mesuré)*
-- [ ] `XoroshiroRandomSource` bit-exact 🔒
+- [x] `XoroshiroRandomSource` bit-exact — vérifié contre le JDK, seeding compris 🔒
 - [ ] `PositionalRandomFactory`, hachage de seeds, vecteurs de référence ⭐
 - [ ] `ov-inspect` : dump NBT, région, chunk, registre, paquet
 

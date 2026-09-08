@@ -348,3 +348,44 @@ roadmap. Tant qu'elle n'est pas là, l'affirmation honnête est celle du tableau
   pour décaler chaque veine de minerai du monde.
 - `nextDouble` tire **26 bits puis 27**, dans cet ordre. Tirer 32 et 32 consomme
   autant d'état et donne un résultat faux.
+
+---
+
+## `XoroshiroRandomSource` (`ov_math`)
+
+Algorithmes publiés : **Xoroshiro128++** (Blackman & Vigna) et le finaliseur
+**variante 13 de Stafford** utilisé par SplitMix64. Le tirage borné suit la
+méthode de **Lemire**.
+
+### L'oracle est meilleur que prévu
+
+Le JDK 17 embarque `Xoroshiro128PlusPlus` comme algorithme standard. J'avais
+supposé qu'il brouillait la graine avec le **ratio d'or** ; les vecteurs ont dit
+non — c'est le **ratio d'argent** `0x6A09E667F3BCC909`, c'est-à-dire exactement
+ce que fait le jeu.
+
+Conséquence : `RandomGeneratorFactory.of("Xoroshiro128PlusPlus")` valide non pas
+seulement la fonction de transition, mais **tout le chemin**, upgrade de graine
+64 → 128 bits compris. Une graine simple entre, le flux complet est comparé.
+6 graines × 8 tirages, tous identiques.
+
+C'est un cas où une hypothèse fausse a rendu la vérification plus forte : je
+cherchais un oracle pour le cœur seulement, la mesure en a livré un pour
+l'ensemble.
+
+### Ce qui diffère du générateur legacy, et pourquoi ça compte
+
+| | `LegacyRandomSource` | `XoroshiroRandomSource` |
+|---|---|---|
+| Borné | rejet par modulo, deux chemins | Lemire, multiplication haute |
+| `nextFloat` | 24 bits d'un tirage 24 bits | 24 bits **hauts** d'un tirage 64 bits |
+| `nextDouble` | 26 bits puis 27, deux tirages | 53 bits hauts, **un seul** tirage |
+
+Les deux consomment des quantités d'état différentes. Réutiliser une méthode de
+l'un dans l'autre ne produit aucune erreur — seulement un monde différent.
+
+### L'état interdit
+
+Xoroshiro possède un état absorbant : tout à zéro, dont il ne ressort jamais.
+C'est l'upgrade de graine qui éloigne la graine `0` de cet état, et une graine
+`0` est trop courante pour que ce soit théorique. Un test le vérifie.

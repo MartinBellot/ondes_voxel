@@ -11,7 +11,7 @@
   },
   "last_updated": "2026-09-08",
   "current_milestone": "M1",
-  "current_task": "m2-xoroshiro-random-source",
+  "current_task": "m2-positional-random-factory",
   "milestones": {
     "M0": {
       "name": "Fondations",
@@ -33,7 +33,7 @@
     "M2": {
       "name": "Registres et données",
       "status": "in_progress",
-      "done": 12,
+      "done": 13,
       "total": 25,
       "exit_criterion": "Égalité stricte contre blocks.json sur les 24 135 états ; .ovpack chargé en < 10 ms ; vecteurs RNG conformes.",
       "blocked": [],
@@ -98,7 +98,8 @@
     "header_lines_total": 2204084,
     "translation_units": 30,
     "palette_packing": "165318/165318 sections repaquetées octet-identiques (monde réel, largeurs 4 a 7 bits) ; 263778 sections single-valued supplementaires sans donnee",
-    "legacy_rng": "toutes les draws entieres, flottantes et booleennes bit-identiques a une vraie JVM ; nextGaussian 44/56 bit-identiques, 4 ulp au pire (log fdlibm manquant)"
+    "legacy_rng": "toutes les draws entieres, flottantes et booleennes bit-identiques a une vraie JVM ; nextGaussian 44/56 bit-identiques, 4 ulp au pire (log fdlibm manquant)",
+    "xoroshiro_rng": "flux identique a Xoroshiro128PlusPlus du JDK, upgrade de seed 128 bits compris (6 seeds x 8 tirages)"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",

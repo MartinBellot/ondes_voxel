@@ -85,4 +85,76 @@ private:
     bool have_next_gaussian_{false};
 };
 
+// ── Xoroshiro128++ ──────────────────────────────────────────────────────────
+
+/// The 64-bit golden ratio, used to space seeds apart before mixing.
+inline constexpr u64 kGoldenRatio64 = 0x9E3779B97F4A7C15ULL;
+
+/// The 64-bit silver ratio, XORed into a seed before it is upgraded to 128
+/// bits. The JDK's own Xoroshiro128PlusPlus uses the same constant the same
+/// way, which is what makes it a usable oracle for this whole path.
+inline constexpr u64 kSilverRatio64 = 0x6A09E667F3BCC909ULL;
+
+/// Stafford's variant 13 mix — the finaliser SplitMix64 uses.
+///
+/// Its whole job is to take two seeds that differ in one bit and give back two
+/// states that share nothing. Skipping it makes neighbouring world seeds
+/// produce visibly similar terrain.
+[[nodiscard]] u64 mix_stafford_13(u64 z) noexcept;
+
+/// Xoroshiro128++, the generator the game moved to in 1.18.
+///
+/// Worldgen runs on this one, so its stream is the terrain. The transition
+/// function and the seed mix are both published algorithms (Blackman & Vigna;
+/// Stafford), and both are checked against the JDK's own implementation — see
+/// the tests.
+///
+/// Note how much differs from the legacy source beyond the core: the bounded
+/// draw uses Lemire's multiply-and-reject rather than a modulo rejection, and
+/// the float and double draws take their bits from the *top* of a 64-bit
+/// result rather than assembling two smaller draws. Reusing the legacy versions
+/// here would consume the wrong amount of state and silently reshape the world.
+class XoroshiroRandomSource {
+public:
+    /// Seeds the way the game does: XOR by the silver ratio, space the second
+    /// half by the golden ratio, then mix both. A single 64-bit world seed
+    /// becomes 128 bits of state, and seed 0 lands nowhere near the all-zero
+    /// state Xoroshiro can never leave.
+    explicit XoroshiroRandomSource(i64 seed) noexcept;
+
+    /// Build directly from a 128-bit state, for derived generators and tests.
+    XoroshiroRandomSource(u64 lo, u64 hi) noexcept : lo_{lo}, hi_{hi} {}
+
+    [[nodiscard]] i64 next_long() noexcept;
+
+    /// The low 32 bits of a 64-bit draw. One draw, not two.
+    [[nodiscard]] i32 next_int() noexcept { return static_cast<i32>(next_long()); }
+
+    /// Uniform in `[0, bound)` by Lemire's method: multiply into the high half
+    /// and reject only the short tail. Not the legacy modulo rejection, and not
+    /// interchangeable with it — the two consume different amounts of state.
+    [[nodiscard]] i32 next_int(i32 bound) noexcept;
+
+    [[nodiscard]] bool next_boolean() noexcept { return (next_long() & 1) != 0; }
+
+    /// The top 24 bits of one draw, scaled by 2^-24.
+    [[nodiscard]] f32 next_float() noexcept;
+
+    /// The top 53 bits of one draw, scaled by 2^-53.
+    [[nodiscard]] f64 next_double() noexcept;
+
+    /// Standard normal. Carries the same fdlibm caveat as the legacy source.
+    [[nodiscard]] f64 next_gaussian() noexcept;
+
+    [[nodiscard]] u64 state_lo() const noexcept { return lo_; }
+
+    [[nodiscard]] u64 state_hi() const noexcept { return hi_; }
+
+private:
+    u64  lo_{0};
+    u64  hi_{0};
+    f64  next_gaussian_{0.0};
+    bool have_next_gaussian_{false};
+};
+
 }  // namespace ov::math

@@ -4,6 +4,7 @@
 
 #include <bit>
 #include <cmath>
+#include <numeric>
 #include <vector>
 
 using namespace ov;
@@ -178,4 +179,117 @@ TEST_CASE("the gaussian agrees with the JVM to within four ulp, not to the bit",
 
     REQUIRE(total == 56);
     REQUIRE(exact >= 44);
+}
+
+// ── Xoroshiro128++ ──────────────────────────────────────────────────────────
+
+// Reference vectors from the JDK's own Xoroshiro128PlusPlus, via
+// scripts/gen_xoroshiro_vectors.java.
+//
+// The JDK ships this generator as a standard algorithm, which makes it an
+// oracle for the whole of it: the transition function, the Stafford-13 seed
+// mix, and the seed upgrade — the JDK XORs by the silver ratio before mixing,
+// which is precisely what the game does. So a plain seed goes in and the entire
+// path is checked end to end. A wrong rotation, a wrong mix constant or a
+// swapped state half and nothing lines up.
+//
+// I first assumed the JDK used the golden ratio here and the vectors said
+// otherwise; the constant is the silver ratio, and that is what made this an
+// oracle for the seed upgrade rather than only for the core.
+namespace {
+
+struct XoroVector {
+    i64 seed;
+    i64 next_long[8];
+};
+
+// clang-format off
+const XoroVector kXoroVectors[] = {
+{0LL, {3038984756725240190LL,-3694039286755638414LL,4633751808701151732LL,2160572957309072155LL,1839370574944072389LL,-4488466507718817201LL,-4199796579929588030LL,-1069045159880208415LL,}},
+    {1LL, {-1033667707219518978LL,6451672561743293322LL,-1821890263888393630LL,890086654470169703LL,8094835630745194324LL,2779418831538184155LL,-2153570570747265786LL,2631759950516672506LL,}},
+    {-1LL, {-8676505878415342125LL,-868585888688873692LL,-6331679347063163302LL,-2068491455652362927LL,-5626054917968568837LL,350347487066691045LL,5757290794395940LL,-3423761802310783585LL,}},
+    {42LL, {-4695948378737616609LL,7341713790291473579LL,-7542733514721318211LL,4888889476139319686LL,8419651034331256779LL,-6491934549477179079LL,8279452174680803839LL,6246239634032559210LL,}},
+    {1234567890123LL, {-2624490476143626894LL,-4120571446321590704LL,-8577917762645600131LL,-9031676666403446600LL,3319664545208770767LL,-5757480376081603304LL,-6806829506973170798LL,1311108021591173775LL,}},
+    {-998877665544332211LL, {7519316578565276097LL,573110358808193159LL,-3819507108672464273LL,-3391829786671280193LL,-6676585584767917494LL,4624326125635116349LL,-5186098402426869151LL,8096676595958135085LL,}},
+};
+// clang-format on
+
+}  // namespace
+
+TEST_CASE("xoroshiro reproduces the JDK stream draw for draw", "[math][random]") {
+    for (const XoroVector& v : kXoroVectors) {
+        XoroshiroRandomSource r{v.seed};
+        for (const i64 expected : v.next_long) {
+            REQUIRE(r.next_long() == expected);
+        }
+    }
+}
+
+TEST_CASE("the game's own seed upgrade spreads adjacent seeds apart", "[math][random]") {
+    // Seeds 1 and 2 are one bit apart. Without the mix their states would be
+    // too, and two worlds a player types seconds apart would look related.
+    const XoroshiroRandomSource a{1};
+    const XoroshiroRandomSource b{2};
+
+    REQUIRE(a.state_lo() != b.state_lo());
+    REQUIRE(a.state_hi() != b.state_hi());
+
+    // Not merely different: unrelated. Half the bits should differ.
+    const int distance = std::popcount(a.state_lo() ^ b.state_lo());
+    REQUIRE(distance > 16);
+    REQUIRE(distance < 48);
+
+    // And the two halves of one state must not be related either.
+    REQUIRE(a.state_lo() != a.state_hi());
+}
+
+TEST_CASE("a zero seed still produces a live generator", "[math][random]") {
+    // Xoroshiro has one forbidden state: all zeroes, which it never leaves.
+    // The seed upgrade is what keeps a seed of 0 away from it, and a world
+    // seeded 0 is common enough that this is not a theoretical concern.
+    XoroshiroRandomSource r{0};
+    REQUIRE((r.state_lo() != 0 || r.state_hi() != 0));
+
+    bool any_nonzero = false;
+    for (int i = 0; i < 16; ++i) {
+        any_nonzero = any_nonzero || r.next_long() != 0;
+    }
+    REQUIRE(any_nonzero);
+}
+
+TEST_CASE("xoroshiro's bounded draw is uniform and in range", "[math][random]") {
+    // Lemire's method, not the legacy modulo rejection. The two consume
+    // different amounts of state, so they are not interchangeable even though
+    // both are correct in isolation.
+    XoroshiroRandomSource r{12345};
+
+    std::vector<int> counts(7, 0);
+    for (int i = 0; i < 70000; ++i) {
+        const i32 value = r.next_int(7);
+        REQUIRE(value >= 0);
+        REQUIRE(value < 7);
+        ++counts[static_cast<usize>(value)];
+    }
+    for (const int count : counts) {
+        REQUIRE(count > 9000);
+        REQUIRE(count < 11000);
+    }
+}
+
+TEST_CASE("xoroshiro's float and double draws stay in range", "[math][random]") {
+    XoroshiroRandomSource r{99};
+    for (int i = 0; i < 10000; ++i) {
+        const f32 f = r.next_float();
+        REQUIRE(f >= 0.0F);
+        REQUIRE(f < 1.0F);
+        const f64 d = r.next_double();
+        REQUIRE(d >= 0.0);
+        REQUIRE(d < 1.0);
+    }
+}
+
+TEST_CASE("a bound of zero or less yields zero for xoroshiro too", "[math][random][malformed]") {
+    XoroshiroRandomSource r{1};
+    REQUIRE(r.next_int(0) == 0);
+    REQUIRE(r.next_int(-3) == 0);
 }
