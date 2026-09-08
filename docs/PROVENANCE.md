@@ -2144,3 +2144,38 @@ tête, donc tout bloc posé doit redonner sa chance à celui d'en dessous. Le te
 unitaire, lui, passait — il appelait la règle directement, avec le bloc du
 dessus déjà en main.
 
+---
+
+## Collisions : le pont entre un état de bloc et une boîte
+
+La partie mathématique existait déjà dans `ov_math` — boîtes, balayage, découpe
+par axe. Ce qui manquait était le pont : transformer un état de bloc en les
+boîtes qu'il occupe, et interroger le monde plutôt qu'une liste.
+
+Le monde est lu par un pointeur de fonction et un contexte, pas par un patron :
+le header est public, et un patron y traînerait le type de monde de l'appelant
+dans chaque unité de traduction qui l'inclut.
+
+Trois choses que les tests vérifient et qu'une implémentation plausible rate :
+
+* **Toucher une face n'est pas se chevaucher.** Sans cela un joueur s'enfonce
+  dans le sol au lieu de s'y poser. Debout à `y = 1.0` sur un bloc : libre. À
+  `0.9` : dedans.
+* **Une dalle basse arrête à mi-hauteur**, donc on s'y tient à `0.5`. Lire une
+  seule boîte par bloc placerait le joueur un bloc trop haut, et une dalle haute
+  laisserait un vide sous elle.
+* **Un escalier est deux boîtes.** Le test vérifie qu'à mi-hauteur, un coin est
+  libre et l'autre non — une seule boîte rendrait les deux identiques.
+
+Le déplacement se résout **axe par axe, dans l'ordre Y, X, Z**. Marcher en
+diagonale contre un mur coupe le X et laisse passer le Z, ce qui est glisser le
+long du mur ; tester le déplacement entier d'un coup arrêterait les deux, et
+rendrait les escaliers infranchissables.
+
+### Premier usage : ne plus poser un bloc dans quelqu'un
+
+Le serveur acceptait jusqu'ici de poser un bloc à l'endroit exact où se tient un
+joueur. Il refuse désormais, et — c'est la moitié qui compte — il **le dit** : le
+client avait prédit la pose, donc sans le paquet de correction il continuerait
+d'afficher un bloc qui n'existe pas.
+

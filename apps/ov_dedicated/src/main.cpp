@@ -13,6 +13,7 @@
 #include "ov/base/thread.hpp"
 #include "ov/base/time.hpp"
 #include "ov/gameplay/breaking.hpp"
+#include "ov/gameplay/collision.hpp"
 #include "ov/gameplay/connections.hpp"
 #include "ov/gameplay/loot.hpp"
 #include "ov/io/compression.hpp"
@@ -1488,6 +1489,18 @@ int main(int argc, char** argv) {
         }
     };
 
+    /// The world as the collision code reads it: a plain function and a
+    /// context, because a public header may not carry a template.
+    ///
+    /// Caller holds chunk_mutex.
+    struct WorldView {
+        std::function<registry::BlockStateId(i32, i32, i32)> read;
+
+        static registry::BlockStateId look_up(void* context, i32 x, i32 y, i32 z) {
+            return static_cast<WorldView*>(context)->read(x, y, z);
+        }
+    };
+
     /// Read a block without holding the lock twice.
     ///
     /// Caller holds chunk_mutex.
@@ -2150,6 +2163,59 @@ int main(int argc, char** argv) {
                         // face says which side, and it lands one step along it.
                         const auto target = net::offset_by_face(place->position, place->face);
                         const auto placed = placed_state(*blocks, *held_block, *place, player.yaw);
+
+                        // Refuse a block that would land inside somebody. The
+                        // client predicted it, so it has to be told: without the
+                        // block update below, the player keeps seeing a block
+                        // that is not there.
+                        {
+                            WorldView              view;
+                            const std::scoped_lock chunk_lock{chunk_mutex};
+                            view.read = [&](i32 bx, i32 by, i32 bz) {
+                                return block_at({bx, by, bz});
+                            };
+                            const gameplay::CollisionWorld collisions{*blocks, &WorldView::look_up,
+                                                                      &view};
+
+                            std::vector<AABB> shapes;
+                            for (const registry::BlockRegistry::Box& box :
+                                 blocks->collision_boxes(placed)) {
+                                constexpr f64 kUnit = 1.0 / 32.0;
+                                shapes.push_back(
+                                    AABB{Vec3d{static_cast<f64>(target.x) +
+                                                   static_cast<f64>(box.min_x) * kUnit,
+                                               static_cast<f64>(target.y) +
+                                                   static_cast<f64>(box.min_y) * kUnit,
+                                               static_cast<f64>(target.z) +
+                                                   static_cast<f64>(box.min_z) * kUnit},
+                                         Vec3d{static_cast<f64>(target.x) +
+                                                   static_cast<f64>(box.max_x) * kUnit,
+                                               static_cast<f64>(target.y) +
+                                                   static_cast<f64>(box.max_y) * kUnit,
+                                               static_cast<f64>(target.z) +
+                                                   static_cast<f64>(box.max_z) * kUnit}});
+                            }
+
+                            bool blocked = false;
+                            for (const auto& [occupant_key, occupant] : players) {
+                                const AABB hitbox =
+                                    gameplay::player_box(Vec3d{occupant.x, occupant.y, occupant.z});
+                                for (const AABB& shape : shapes) {
+                                    blocked = blocked || shape.intersects(hitbox);
+                                }
+                            }
+                            if (blocked) {
+                                if (const auto framed = net::encode_packet(
+                                        net::clientbound::kBlockUpdate,
+                                        net::encode_block_update(
+                                            target, static_cast<i32>(block_at(target).value())))) {
+                                    if (player.connection) {
+                                        player.connection->send(*framed);
+                                    }
+                                }
+                                return true;
+                            }
+                        }
                         set_block_connected(target, placed);
 
                         // Doors and beds take two blocks. Placing only the half
