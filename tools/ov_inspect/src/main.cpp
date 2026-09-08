@@ -15,6 +15,7 @@
 #include "ov/nbt/binary.hpp"
 #include "ov/nbt/region.hpp"
 #include "ov/nbt/tag.hpp"
+#include "ov/world/chunk.hpp"
 #include "ov/world/light_array.hpp"
 #include "ov/world/paletted_container.hpp"
 
@@ -403,10 +404,11 @@ int inspect_chunk_packing(const std::filesystem::path& path) {
     // So it is recomputed here from the block palettes — by NAME, so the check
     // is independent of which version's ids the world uses — and compared
     // against what the game wrote.
-    usize columns_checked    = 0;
-    usize columns_matched    = 0;
-    usize columns_off_by_one = 0;
-    usize columns_reported   = 0;
+    usize columns_checked       = 0;
+    usize columns_matched       = 0;
+    usize columns_off_by_one    = 0;
+    usize columns_reported      = 0;
+    usize columns_replay_differ = 0;
 
     usize light_arrays        = 0;
     usize low_nibble_smoother = 0;
@@ -440,6 +442,16 @@ int inspect_chunk_packing(const std::filesystem::path& path) {
                 std::array<i32, 256>       top{};
                 top.fill(std::numeric_limits<i32>::min());
                 std::array<std::string_view, 256> top_name{};
+
+                // Replayed through the real Chunk type, one set_block at a time,
+                // so what is checked is the incremental heightmap maintenance
+                // rather than a formula written out twice. Only air-ness matters
+                // here, so every solid block becomes the same placeholder state.
+                constexpr registry::BlockStateId kAirId{0};
+                constexpr registry::BlockStateId kSolidId{1};
+                world::Chunk replay{ChunkPos{static_cast<i32>(x), static_cast<i32>(z)},
+                                    world::WorldShape::overworld(),
+                                    world::AirStates{kAirId, kAirId, kAirId}};
 
                 // The heightmap's origin is the *dimension's* floor, not the
                 // lowest section the file happens to list. Measured: two chunks
@@ -492,6 +504,11 @@ int inspect_chunk_packing(const std::filesystem::path& path) {
                                     top_name[c] = palette_names[0];
                                 }
                             }
+                            for (i32 dy = 0; dy < 16; ++dy) {
+                                for (usize c = 0; c < 256; ++c) {
+                                    replay.set_block(c % 16, base + dy, c / 16, kSolidId);
+                                }
+                            }
                         }
                         continue;
                     }
@@ -514,6 +531,7 @@ int inspect_chunk_packing(const std::filesystem::path& path) {
                             top[index % 256]      = y;
                             top_name[index % 256] = palette_names[slot];
                         }
+                        replay.set_block(index % 16, y, (index % 256) / 16, kSolidId);
                     }
                 }
 
@@ -529,6 +547,16 @@ int inspect_chunk_packing(const std::filesystem::path& path) {
                     const i32 expected = top[column] == std::numeric_limits<i32>::min()
                                              ? 0
                                              : top[column] + 1 - min_y;
+                    // The Chunk's own maintained heightmap has to agree with
+                    // the recomputation as well; if it does not, the
+                    // incremental path has drifted.
+                    const i32 replayed = replay.heightmap(world::HeightmapType::WorldSurface)
+                                             .first_free(column % 16, column / 16) -
+                                         world::WorldShape::overworld().min_y;
+                    if (replayed != expected) {
+                        ++columns_replay_differ;
+                    }
+
                     ++columns_checked;
                     if (stored == expected) {
                         ++columns_matched;
@@ -693,6 +721,9 @@ int inspect_chunk_packing(const std::filesystem::path& path) {
             " ({} off by one)\n",
             columns_matched == columns_checked ? "\033[0;32m" : "\033[0;31m", columns_matched,
             columns_checked, columns_off_by_one);
+        fmt::print("  Chunk replay ... {}{}/{} columns\033[0m maintained incrementally\n",
+                   columns_replay_differ == 0 ? "\033[0;32m" : "\033[0;31m",
+                   columns_checked - columns_replay_differ, columns_checked);
     }
     if (light_arrays > 0) {
         const f64  low       = low_total / static_cast<f64>(light_arrays);

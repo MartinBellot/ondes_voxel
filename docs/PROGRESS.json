@@ -11,7 +11,7 @@
   },
   "last_updated": "2026-09-08",
   "current_milestone": "M3",
-  "current_task": "m3-chunk-container",
+  "current_task": "m3-tick-loop-and-chunkmap",
   "milestones": {
     "M0": {
       "name": "Fondations",
@@ -42,10 +42,12 @@
     "M3": {
       "name": "Tranche verticale",
       "status": "in_progress",
-      "done": 2,
-      "total": 16,
+      "done": 3,
+      "total": 17,
       "exit_criterion": "Un client Minecraft vanilla 1.20.1 non modifié se connecte, marche, casse et pose un bloc — sans une ligne de Vulkan.",
-      "blocked": []
+      "blocked": [
+        "MOTION_BLOCKING, OCEAN_FLOOR, moteur de lumiere et collisions : necessitent la table de flags par etat de bloc, absente des rapports officiels."
+      ]
     },
     "M4": {
       "name": "Monde persistant",
@@ -103,7 +105,8 @@
     "registry_parity": "66 registres / 5067 IDs identiques au rapport officiel Mojang, ordre inclus",
     "tag_parity": "305 tags / 4255 membres, re-resolus independamment depuis les fichiers JSON bruts et identiques ; 108 fichiers de registres dynamiques reportes",
     "light_nibble_order": "ordre confirme par mesure sur 144974 tableaux de lumiere reels : cellule paire = demi-octet bas, plus lisse dans 97.8 % des cas",
-    "heightmap_semantics": "4577023/4577024 colonnes recalculees depuis les blocs et identiques ; l'unique ecart est un bloc modde (create:crushing_wheel_controller)"
+    "heightmap_semantics": "4577023/4577024 colonnes recalculees depuis les blocs et identiques ; l'unique ecart est un bloc modde (create:crushing_wheel_controller)",
+    "chunk_replay": "4577024/4577024 colonnes : le heightmap maintenu bloc par bloc via Chunk::set_block n'a jamais devie du balayage complet, sur un monde reel"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",

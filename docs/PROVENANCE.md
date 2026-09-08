@@ -598,3 +598,58 @@ Une colonne sur 4,5 millions diverge de 3 blocs. Le bloc en cause est
 si son bloc compte comme air ; une vérification par nom sur la liste vanilla ne
 peut pas le savoir. Ce n'est pas un défaut de l'implémentation, c'est la limite
 connue de la méthode de contrôle, et elle est écrite ici plutôt qu'arrondie.
+
+---
+
+## Le conteneur `Chunk` (`ov_world`)
+
+### Décalage arithmétique, pas division
+
+`section_index = (y >> 4) - min_section`. Une division tronque vers zéro, ce qui
+placerait `y = -1` et `y = 0` dans la **même** section pendant que `y = -16` et
+`y = -17` se retrouveraient séparés — une couture de seize blocs à l'origine du
+monde. La majeure partie de l'Overworld est à `y` négatif, donc ce n'est pas un
+cas limite.
+
+### La forme du monde est un paramètre
+
+L'Overworld fait 384 blocs depuis -64 ; le Nether et l'End font 256 depuis 0 ;
+une dimension de datapack fait ce qu'elle veut. Coder -64 en dur fonctionne
+jusqu'au premier chunk du Nether.
+
+### `WORLD_SURFACE` maintenu, et vérifié comme tel
+
+Poser un bloc, c'est une comparaison. **Casser** celui qui était la surface,
+c'est un balayage vers le bas. C'est le sens coûteux, et celui qu'une
+implémentation oublie : le heightmap continue alors de pointer un bloc qui
+n'existe plus, et la pluie tombe sur du vide.
+
+Vérification sur données réelles, via `ov-inspect chunk` : les blocs d'un chunk
+du jeu sont **rejoués un `set_block` à la fois** dans un vrai `Chunk`, puis le
+heightmap maintenu est comparé au balayage complet des mêmes blocs.
+
+| Mesure | Valeur |
+|---|---|
+| Colonnes rejouées | **4 577 024** |
+| Maintenu == balayé | **4 577 024** (100 %) |
+
+Deux comparaisons distinctes, à ne pas confondre : celle-ci oppose le chemin
+incrémental au balayage complet ; la ligne `WORLD_SURFACE` d'`ov-inspect` oppose
+le balayage au fichier.
+
+### Ce qui est bloqué, et pourquoi
+
+`MOTION_BLOCKING`, `OCEAN_FLOOR`, le moteur de lumière et les collisions ont tous
+besoin d'une **table de flags par état de bloc** — `blocksMotion`, émission
+lumineuse, opacité, formes de collision. Les rapports officiels ne la portent
+pas : en vanilla ce sont du code Java, pas des données.
+
+**Piste écartée : `PrismarineJS/minecraft-data`.** Licence MIT, explicitement
+autorisée par le `CLAUDE.md`, mais son `blocks.json` porte `emitLight` **par
+bloc**, alors que l'émission dépend de l'**état** — mesuré :
+`respawn_anchor` a 5 niveaux selon `charges`, `candle` 4 selon `candles`,
+`cave_vines` selon `berries`, `redstone_ore` selon `lit`. L'utiliser coulerait
+une approximation dans les fondations du moteur de lumière, exactement le genre
+d'erreur qui donne un monde qui a l'air juste et ne l'est pas.
+
+La source reste **à décider**. Elle doit être par état.

@@ -7,6 +7,7 @@
 ov_add_library(ov_world
     LAYER 6
     SOURCES
+        src/chunk.cpp
         src/chunk_section.cpp
         src/heightmap.cpp
         src/light_array.cpp
@@ -18,6 +19,7 @@ ov_add_library(ov_world
 
 ov_add_test(test_ov_world
     SOURCES
+        tests/test_chunk.cpp
         tests/test_chunk_section.cpp
         tests/test_heightmap.cpp
         tests/test_paletted_container.cpp

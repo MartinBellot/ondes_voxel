@@ -166,7 +166,8 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [ ] Moteur de lumière : ciel et bloc, propagation et suppression
 - [x] Tableaux de lumière nullables à valeur uniforme (divise l'empreinte par 2)
 - [x] Heightmaps : stockage, packing 9 bits, sémantique vérifiée sur monde réel
-- [ ] Calcul des heightmaps depuis les blocs *(demande les flags d'état de bloc)*
+- [x] `WORLD_SURFACE` calculé et maintenu incrémentalement *(air suffit)*
+- [ ] `MOTION_BLOCKING` et `OCEAN_FLOOR` *(bloqués : table de flags d'état)*
 - [ ] Streaming de chunks selon la distance de vue
 - [ ] Physique du joueur : AABB, marche, saut, sprint, accroupissement, nage
 - [ ] Gestion des joueurs, keep-alive, liste des joueurs
