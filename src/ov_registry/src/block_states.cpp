@@ -1,5 +1,7 @@
 #include "ov/registry/block_states.hpp"
 
+#include "pack_format.hpp"
+
 #include "ov/io/byte_reader.hpp"
 #include "ov/io/file.hpp"
 
@@ -9,28 +11,6 @@
 
 namespace ov::registry {
 namespace {
-
-constexpr u32 kFormatVersion = 1;
-constexpr u32 kHeaderSize    = 64;
-
-/// The header, exactly as tools/ov_datagen/ovpack.py writes it. Little-endian
-/// throughout, unlike the rest of the project — this format is ours, and
-/// matching the host's byte order costs nothing and saves a swap per field.
-struct PackHeader {
-    char magic[4];
-    u32  format_version;
-    u32  block_count;
-    u32  state_count;
-    u32  property_count;
-    u32  value_count;
-    u32  string_bytes;
-    u32  strings_offset;
-    u32  blocks_offset;
-    u32  properties_offset;
-    u32  values_offset;
-    u32  states_offset;
-    u32  reserved;
-};
 
 struct BlockRecord {
     u32 name_offset;
@@ -51,14 +31,6 @@ struct PropertyRecord {
 
 static_assert(sizeof(BlockRecord) == 16, "layout must match the emitter");
 static_assert(sizeof(PropertyRecord) == 12, "layout must match the emitter");
-
-template<typename T>
-[[nodiscard]] const T* at(const std::vector<u8>& data, usize offset, usize count) noexcept {
-    if (offset + count * sizeof(T) > data.size()) {
-        return nullptr;
-    }
-    return reinterpret_cast<const T*>(data.data() + offset);
-}
 
 }  // namespace
 
@@ -90,10 +62,11 @@ std::expected<BlockRegistry, RegistryError> BlockRegistry::from_bytes(std::vecto
         return std::unexpected{RegistryError::VersionMismatch};
     }
 
-    const auto* blocks = at<BlockRecord>(data, header.blocks_offset, header.block_count);
-    const auto* props  = at<PropertyRecord>(data, header.properties_offset, header.property_count);
-    const auto* values = at<u32>(data, header.values_offset, header.value_count);
-    const auto* states = at<u16>(data, header.states_offset, header.state_count);
+    const auto* blocks = pack_at<BlockRecord>(data, header.blocks_offset, header.block_count);
+    const auto* props =
+        pack_at<PropertyRecord>(data, header.properties_offset, header.property_count);
+    const auto* values = pack_at<u32>(data, header.values_offset, header.value_count);
+    const auto* states = pack_at<u16>(data, header.states_offset, header.state_count);
 
     if (blocks == nullptr || props == nullptr || values == nullptr || states == nullptr) {
         return std::unexpected{RegistryError::Corrupt};

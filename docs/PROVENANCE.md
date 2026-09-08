@@ -389,3 +389,48 @@ l'un dans l'autre ne produit aucune erreur — seulement un monde différent.
 Xoroshiro possède un état absorbant : tout à zéro, dont il ne ressort jamais.
 C'est l'upgrade de graine qui éloigne la graine `0` de cet état, et une graine
 `0` est trop courante pour que ce soit théorique. Un test le vérifie.
+
+---
+
+## Les 66 registres codés en dur (`ov_registry`)
+
+Source : `generated/reports/registries.json`, produit par le data generator
+officiel. Rien n'est écrit à la main — une liste de 5067 IDs maintenue
+manuellement serait fausse avant la fin de la version.
+
+C'est le risque **R1** du plan. Le client vanilla 1.20.1 connaît ces IDs avant
+de se connecter et ne les reçoit **jamais**. Une seule entrée dans le mauvais
+ordre et il affiche la mauvaise entité, sans qu'aucune erreur n'apparaisse
+nulle part.
+
+| Mesure | Valeur |
+|---|---|
+| Registres | **66** |
+| IDs vérifiés entrée par entrée, ordre compris | **5067** |
+| Plus gros | `sound_event` 1474 · `item` 1255 · `block` 1003 |
+| Registres à `first_id ≠ 0` | **1** — `minecraft:mob_effect`, 1-based |
+
+`scripts/check_registry_parity.py` relit le `.ovpack` **depuis la description du
+format**, pas depuis l'émetteur, puis compare au rapport. Un émetteur et un
+lecteur qui partagent un bug se valideraient mutuellement ; un tiers qui relit
+la spec ne le peut pas.
+
+### Ce que le rapport contient exactement
+
+Mesuré : `registries.json` liste **uniquement** les 66 registres codés en dur.
+Les six registres dynamiques — `dimension_type`, `worldgen/biome`, `chat_type`,
+`damage_type`, `trim_material`, `trim_pattern` — n'y figurent pas du tout ; ils
+vivent dans le datapack, et leurs IDs sont envoyés au client en NBT pendant le
+login, donc ils sont **les nôtres**.
+
+Le script les exclut malgré tout. L'exclusion ne se déclenche jamais
+aujourd'hui, et c'est écrit tel quel dans le code : c'est un garde-fou. Si une
+version future les faisait apparaître dans le rapport, les épingler casserait
+le premier datapack ajoutant un biome — et cela doit échouer là plutôt qu'en jeu.
+
+### `mob_effect` est stocké, pas traité en cas particulier
+
+`first_id` est un champ du format. Coder en dur « si le nom est mob_effect,
+commencer à 1 » marcherait aujourd'hui et deviendrait faux silencieusement le
+jour où Mojang ajoute une seconde exception. Un décalage de un ici signifie que
+chaque potion du jeu applique l'effet voisin.

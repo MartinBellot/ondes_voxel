@@ -130,8 +130,9 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] `MANIFEST.sha256` committé — CI vérifie sans redistribuer de données Mojang
 - [x] `ResourceLocation` : validation stricte, forme canonique, ordre par namespace
 - [ ] Interning des identifiants et hachage parfait
-- [ ] `Registry<T>` avec **les IDs numériques exacts de Mojang** 🔒
-- [ ] Test CI : égalité stricte contre `registries.json`, ordre inclus ⭐
+- [x] `Registries` : les 66 registres codés en dur, IDs exacts de Mojang 🔒
+- [x] Test CI : égalité stricte contre `registries.json`, ordre inclus ⭐
+      *(5067 IDs, `scripts/check_registry_parity.py`)*
 - [x] `.ovpack` binaire, mmap-able, sans pointeur — 131 744 octets, déterministe
 - [x] `BlockRegistry` : lookup bloc, propriétés, état par défaut, bloc d'un état
 - [ ] `BlockState` en SoA plat : flags, émission, occultation, formes, couleurs

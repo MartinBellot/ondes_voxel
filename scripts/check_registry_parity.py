@@ -30,9 +30,10 @@ DATA = ROOT / "data" / "vanilla" / TARGET_VERSION
 
 PACK = DATA / "registry.ovpack"
 REPORT = DATA / "generated" / "reports" / "blocks.json"
+REGISTRIES_REPORT = DATA / "generated" / "reports" / "registries.json"
 
-HEADER_FORMAT = "<4sIIIIIIIIIIII"
-HEADER_SIZE = 64
+HEADER_FORMAT = "<4sIIIIIIIIIIIIIIII"
+HEADER_SIZE = 128
 
 
 def read_pack(path: Path) -> dict:
@@ -40,7 +41,8 @@ def read_pack(path: Path) -> dict:
     blob = path.read_bytes()
     fields = struct.unpack_from(HEADER_FORMAT, blob, 0)
     (magic, version, block_count, state_count, property_count, value_count,
-     string_bytes, strings_at, blocks_at, props_at, values_at, states_at, _) = fields
+     string_bytes, strings_at, blocks_at, props_at, values_at, states_at,
+     registry_count, entry_count, registries_at, entries_at, _) = fields
 
     if magic != b"OVPK":
         sys.exit("error: not an .ovpack")
@@ -50,6 +52,17 @@ def read_pack(path: Path) -> dict:
     def text(offset: int) -> str:
         end = strings.index(b"\0", offset)
         return strings[offset:end].decode("utf-8")
+
+    # Every registry whose ids the vanilla client hard-codes.
+    entry_offsets = struct.unpack_from(f"<{entry_count}I", blob, entries_at)
+    registries = {}
+    for i in range(registry_count):
+        name_at, entry_first, entries_len, first_id = struct.unpack_from(
+            "<IIII", blob, registries_at + i * 16)
+        registries[text(name_at)] = {
+            "entries": [text(entry_offsets[entry_first + j]) for j in range(entries_len)],
+            "first_id": first_id,
+        }
 
     value_offsets = struct.unpack_from(f"<{value_count}I", blob, values_at)
 
@@ -83,17 +96,85 @@ def read_pack(path: Path) -> dict:
         "state_count": state_count,
         "state_to_block": state_to_block,
         "size": len(blob),
+        "registries": registries,
     }
 
 
 def main() -> int:
-    for path in (PACK, REPORT):
+    for path in (PACK, REPORT, REGISTRIES_REPORT):
         if not path.is_file():
             sys.exit(f"error: {path.relative_to(ROOT)} not found.\n"
                      f"  Run tools/ov_datagen/datagen.py, then tools/ov_datagen/ovpack.py")
 
     pack = read_pack(PACK)
     report = json.loads(REPORT.read_text())
+
+    # ── Every hard-coded registry, entry by entry, order included ───────────
+    #
+    # This is risk R1 from the plan. The vanilla client knows these ids before
+    # it connects and is never told them, so a single entry out of order means
+    # it renders the wrong entity and reports nothing.
+    #
+    # The six registries the server actually sends are listed as excluded, but
+    # measured today the exclusion never fires: registries.json contains
+    # exactly the 66 hard-coded registries and none of the dynamic ones, which
+    # live in the datapack instead. The list stays as a guard — if a future
+    # report starts including them, pinning their ids would break the first
+    # datapack that adds a biome, and that must fail here rather than in play.
+    DYNAMIC = {
+        "minecraft:dimension_type", "minecraft:worldgen/biome", "minecraft:chat_type",
+        "minecraft:damage_type", "minecraft:trim_material", "minecraft:trim_pattern",
+    }
+    registries_report = json.loads(REGISTRIES_REPORT.read_text())
+    registry_errors: list[str] = []
+    ids_checked = 0
+
+    for name, entry in registries_report.items():
+        if name in DYNAMIC:
+            if name in pack["registries"]:
+                registry_errors.append(f"{name}: dynamic registry must not be pinned")
+            continue
+
+        ours = pack["registries"].get(name)
+        if ours is None:
+            registry_errors.append(f"{name}: missing from the pack")
+            continue
+
+        # Mojang gives {name: {protocol_id: n}}; the id is the position, so
+        # sorting by it reconstructs the order that defines them.
+        expected = [k for k, _ in sorted(entry["entries"].items(),
+                                         key=lambda kv: kv[1]["protocol_id"])]
+        first_id = min(v["protocol_id"] for v in entry["entries"].values())
+
+        if first_id != ours["first_id"]:
+            registry_errors.append(
+                f"{name}: first id {ours['first_id']} in the pack, {first_id} in the report")
+
+        if len(expected) != len(ours["entries"]):
+            registry_errors.append(
+                f"{name}: {len(ours['entries'])} entries in the pack, {len(expected)} in the report")
+            continue
+
+        for index, (mine, theirs) in enumerate(zip(ours["entries"], expected)):
+            ids_checked += 1
+            if mine != theirs:
+                registry_errors.append(
+                    f"{name}[{first_id + index}]: pack says {mine}, report says {theirs}")
+
+    missing = set(pack["registries"]) - set(registries_report)
+    for name in sorted(missing):
+        registry_errors.append(f"{name}: in the pack but not in the report")
+
+    if registry_errors:
+        print("\033[0;31mregistry id mismatches\033[0m")
+        for line in registry_errors[:20]:
+            print(f"  {line}")
+        if len(registry_errors) > 20:
+            print(f"  ... and {len(registry_errors) - 20} more")
+        return 1
+
+    print(f"\033[0;32m▸\033[0m {len(pack['registries'])} registries, "
+          f"{ids_checked} ids identical to Mojang's report")
 
     by_name = {block["name"]: block for block in pack["blocks"]}
     errors: list[str] = []

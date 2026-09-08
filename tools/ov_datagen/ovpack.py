@@ -15,6 +15,8 @@ Layout, all little-endian, every section 8-byte aligned:
 
     header      magic "OVPK", format version, counts, section offsets
     strings     NUL-separated; every name is an offset into this blob
+    registries  one record per registry: name, entry range, first id
+    entries     one string offset per entry, in the order Mojang lists them
     blocks      one record per block, in registry order
     properties  one record per property, grouped by block
     values      one string offset per property value
@@ -43,9 +45,9 @@ MAGIC = b"OVPK"
 # Bumped by hand whenever the layout changes, so a stale cache is detected
 # rather than misread. A mismatched cache read as if it were current is far
 # worse than no cache at all.
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 
-HEADER_SIZE = 64
+HEADER_SIZE = 128
 
 
 class StringTable:
@@ -72,7 +74,7 @@ def align8(data: bytearray) -> None:
         data.append(0)
 
 
-def build(blocks_doc: dict) -> bytes:
+def build(blocks_doc: dict, registries_doc: dict) -> bytes:
     blocks = blocks_doc["blocks"]
     state_count = blocks_doc["state_count"]
 
@@ -108,6 +110,24 @@ def build(blocks_doc: dict) -> bytes:
              len(block["properties"]))
         )
 
+    # ── Every other registry ────────────────────────────────────────────────
+    #
+    # These carry the ids the vanilla client hard-codes and never receives, so
+    # they are not ours to choose. Order is Mojang's order, and `first_id` is
+    # zero everywhere except minecraft:mob_effect.
+    registry_records: list[tuple[int, int, int, int]] = []
+    entry_offsets: list[int] = []
+
+    for name in sorted(registries_doc["registries"]):
+        registry = registries_doc["registries"][name]
+        entry_first = len(entry_offsets)
+        for entry in registry["entries"]:
+            entry_offsets.append(strings.intern(entry))
+        registry_records.append(
+            (strings.intern(name), entry_first, len(registry["entries"]),
+             registry["first_id"])
+        )
+
     string_blob = strings.blob()
 
     # ── Assemble ────────────────────────────────────────────────────────────
@@ -115,6 +135,17 @@ def build(blocks_doc: dict) -> bytes:
 
     strings_offset = HEADER_SIZE
     body += string_blob
+    align8(body)
+
+    registries_offset = HEADER_SIZE + len(body)
+    for name_offset, entry_first, entry_count, first_id in registry_records:
+        # u32 name, u32 entry_first, u32 entry_count, u32 first_id — 16 bytes.
+        body += struct.pack("<IIII", name_offset, entry_first, entry_count, first_id)
+    align8(body)
+
+    entries_offset = HEADER_SIZE + len(body)
+    for offset in entry_offsets:
+        body += struct.pack("<I", offset)
     align8(body)
 
     blocks_offset = HEADER_SIZE + len(body)
@@ -142,7 +173,7 @@ def build(blocks_doc: dict) -> bytes:
     align8(body)
 
     header = struct.pack(
-        "<4sIIIIIIIIIIII",
+        "<4sIIIIIIIIIIIIIIII",
         MAGIC,
         FORMAT_VERSION,
         len(block_records),
@@ -155,6 +186,10 @@ def build(blocks_doc: dict) -> bytes:
         props_offset,
         values_offset,
         states_offset,
+        len(registry_records),
+        len(entry_offsets),
+        registries_offset,
+        entries_offset,
         0,  # reserved
     )
     assert len(header) <= HEADER_SIZE
@@ -168,20 +203,27 @@ def main() -> int:
     if not blocks_path.is_file():
         sys.exit(f"error: {blocks_path} not found. Run tools/ov_datagen/datagen.py first.")
 
+    registries_path = NORMALIZED / "registries.json"
+    if not registries_path.is_file():
+        sys.exit(f"error: {registries_path} not found. Run tools/ov_datagen/datagen.py first.")
+
     with open(blocks_path) as f:
         blocks_doc = json.load(f)
+    with open(registries_path) as f:
+        registries_doc = json.load(f)
 
-    payload = build(blocks_doc)
+    payload = build(blocks_doc, registries_doc)
     OUTPUT.write_bytes(payload)
 
     print(f"\033[0;32m▸\033[0m {OUTPUT.relative_to(ROOT)}")
     print(f"    blocks ......... {blocks_doc['block_count']}")
     print(f"    states ......... {blocks_doc['state_count']}")
+    print(f"    registries ..... {len(registries_doc['registries'])}")
     print(f"    size ........... {len(payload):,} bytes")
 
     # Byte-stability is the property the manifest depends on. Checking it here
     # costs nothing and catches a non-deterministic dict order immediately.
-    if build(blocks_doc) != payload:
+    if build(blocks_doc, registries_doc) != payload:
         sys.exit("error: emitter is not deterministic")
     print("    deterministic .. yes")
     return 0

@@ -8,6 +8,7 @@ ov_add_library(ov_registry
     LAYER 5
     SOURCES
         src/block_states.cpp
+        src/registries.cpp
     DEPS
         ov_io
 )
@@ -15,6 +16,7 @@ ov_add_library(ov_registry
 ov_add_test(test_ov_registry
     SOURCES
         tests/test_block_states.cpp
+        tests/test_registries.cpp
     DEPS ov_registry
     LABELS unit
 )
