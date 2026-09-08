@@ -2309,3 +2309,68 @@ voit à travers —, une vitre, et l'ombrage directionnel par face.
 Ce que cela vérifie d'un coup : la résolution des modèles, le bake, la table
 `uv`, le stitching, les mips, le mailleur par face, le culling par `cullface`,
 l'occlusion ambiante, le vertex packé, la caméra, et tout `ov_rhi`.
+
+---
+
+## Physique du joueur : le client comme oracle
+
+C'est le seul système où l'implémentation de référence tourne **chez le
+joueur**. Le client vanilla est la physique, et il annonce sa position vingt
+fois par seconde. Le serveur enregistre donc ce qu'il reçoit
+(`--record-motion`), et les constantes sont ajustées sur cette trace plutôt que
+rappelées.
+
+Le relevé demande une chorégraphie de deux minutes — rester immobile, marcher,
+sprinter, sauter, sauter en sprintant, avancer accroupi, tomber de haut — et
+donne 1238 positions.
+
+### Ce que la chute donne
+
+La plus longue chute libre de la trace fait 33 ticks. Le modèle est
+`v ← (v − g) × k`, deux inconnues, résolues sur trois échantillons puis rejouées
+sur les 33 :
+
+| | |
+|---|---|
+| gravité | **0,079 998** |
+| traînée verticale | **0,980 014** |
+| erreur maximale sur 33 ticks rejoués | 3,7 × 10⁻⁴ |
+
+L'ordre compte autant que les valeurs : la gravité **puis** la traînée. Le
+premier tick d'une chute vaut 0,0784, et non 0,08 — l'inverse donnerait
+0,0784 aussi au premier tick et divergerait ensuite.
+
+Un détail du protocole se lit au passage : la trace **commence** à 0,0784, alors
+que le premier tick d'une chute ne déplace rien du tout. Le client n'envoie pas
+de paquet pour un tick où il n'a pas bougé. Le test l'écrit noir sur blanc,
+faute de quoi l'implémentation serait décalée d'un tick pour de bon.
+
+### Ce que la marche donne
+
+Les plateaux tenus plusieurs dizaines de ticks, au sol et à altitude constante :
+
+| | par tick | par seconde |
+|---|---|---|
+| marche | **0,215 78** | 4,316 |
+| sprint | **0,280 58** | 5,612 |
+| accroupi | **0,064 74** | 1,295 |
+| premier tick d'un saut | **0,420 000** | — |
+
+### Le terme qui manquait
+
+Le modèle reconstruit à partir des constantes évidentes — poussée 0,1, friction
+`0,6 × 0,91` — prédit un état stable de **0,2203** par tick. La mesure dit
+0,21578. Quatre pour cent d'écart : assez pour être faux, assez peu pour passer
+inaperçu.
+
+La [documentation de la Minecraft Parkour Wiki](https://www.mcpk.wiki/wiki/Horizontal_Movement_Formulas)
+donne le terme manquant : les impulsions d'entrée sont multipliées par **0,98**
+avant tout le reste. Avec lui, `0,1 × 0,98 / (1 − 0,546) = 0,215 86` — contre
+0,215 78 mesuré. Sprint : 0,280 62 contre 0,280 58. Accroupi : 0,064 76 contre
+0,064 74.
+
+Les deux sources ont été obtenues séparément et se rejoignent à la quatrième
+décimale. C'est exactement l'usage qu'on veut d'une documentation : elle nomme
+un terme qu'une mesure seule aurait laissé dans le bruit, et la mesure confirme
+qu'il s'agit bien de celui-là.
+

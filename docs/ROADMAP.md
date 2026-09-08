@@ -177,7 +177,8 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] `MOTION_BLOCKING`, `MOTION_BLOCKING_NO_LEAVES` et `OCEAN_FLOOR` : prédicats mesurés sur 996 des 1003 blocs
 - [x] Streaming de chunks selon la distance de vue *(envoi et déchargement)*
 - [x] Collisions : boîtes par état, chevauchement et glissement axe par axe
-- [ ] Physique du joueur : marche, saut, sprint, accroupissement, nage
+- [x] Physique du joueur : marche, sprint, accroupissement, saut, chute — ajustés sur une trace du vrai client
+- [ ] Nage, échelles, glace et slime : glissance par bloc
 - [x] Gestion des joueurs, keep-alive, liste des joueurs
 - [x] Entités joueur : apparition, mouvement, rotation de tête, retrait
 - [ ] `ov_netclient` + `ClientLevel` (réplique séparée)

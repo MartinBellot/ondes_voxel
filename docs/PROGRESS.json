@@ -42,8 +42,8 @@
     "M3": {
       "name": "Tranche verticale",
       "status": "in_progress",
-      "done": 13,
-      "total": 21,
+      "done": 14,
+      "total": 22,
       "exit_criterion": "Un client Minecraft vanilla 1.20.1 non modifié se connecte, marche, casse et pose un bloc — sans une ligne de Vulkan.",
       "blocked": [
         "Mouvement autoritatif : les formes de collision sont desormais dans le pack (4327 formes, par etat), donc le blocage est leve ; reste a ecrire la physique."
@@ -139,7 +139,8 @@
     "stair_shapes": "256 cas releves en entier sur un vrai serveur (4 orientations x 2 moities x 4 cotes x 4 x 2), plus 64 cas pour le troisieme bloc qui annule le coin : 32 empeches, 32 conserves ; rejeu par le code livre 256/256",
     "wall_states": "releve croisant 6 configurations de voisinage et 6 blocs au-dessus, plus 7 sortes de voisin : un cote monte a tall quand le bloc du dessus remplit sa face inferieure, et le poteau tombe quand les connexions sont symetriques sur les deux axes — la croix complete comprise",
     "container_modes": "les six modes de clic appliques cote serveur : clic simple, shift-clic, touche numerique, lacher et glisse ; un glisse gauche de 64 pierres sur trois slots donne 21/21/21 avec le reste sur le curseur, comme vanilla",
-    "collision": "boites par etat depuis le pack, chevauchement et glissement axe par axe dans l'ordre Y/X/Z ; poser un bloc dans un joueur est refuse et corrige chez le client"
+    "collision": "boites par etat depuis le pack, chevauchement et glissement axe par axe dans l'ordre Y/X/Z ; poser un bloc dans un joueur est refuse et corrige chez le client",
+    "player_physics": "ajustee sur 1238 positions rapportees par un vrai client 1.20.1 : gravite 0.079998, trainee 0.980014 (erreur 3.7e-4 sur 33 ticks rejoues), marche 0.21578/tick, sprint 0.28058, accroupi 0.06474, saut 0.420000 ; le terme d'entree 0.98 vient de la documentation et la mesure le confirme a la quatrieme decimale"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",

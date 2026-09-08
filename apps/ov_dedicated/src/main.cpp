@@ -43,6 +43,7 @@
 #include <chrono>
 #include <cmath>
 #include <csignal>
+#include <cstdio>
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -87,6 +88,14 @@ struct Options {
     ov::u16      port        = 25565;
     std::string  motd        = "Ondes VOXEL";
     ov::i32      max_players = 20;
+
+    /// Where to write every position a client reports, one line per packet.
+    ///
+    /// The client is the reference implementation of the player's physics and
+    /// it says where it is twenty times a second. Recording that is the only
+    /// way to measure gravity, drag and friction against the real thing rather
+    /// than against a recollection of it.
+    std::string record_motion;
 
     /// Creative keeps flight and instant breaking; survival makes blocks take
     /// the time the real game takes, which is the only mode where the break
@@ -903,6 +912,8 @@ Options parse_args(int argc, char** argv) {
         const std::string_view arg{argv[i]};
         if (arg == "--help" || arg == "-h") {
             options.show_help = true;
+        } else if (arg.starts_with("--record-motion=")) {
+            options.record_motion = std::string{arg.substr(16)};
         } else if (arg == "--survival") {
             options.survival = true;
         } else if (arg.starts_with("--port=")) {
@@ -948,6 +959,7 @@ void print_help() {
         "  --log-level=<trace|debug|info|warn|error|off>   verbosity (default: info)\n"
         "  --ticks=<n>                                     stop after n ticks\n"
         "  --survival                                      survival mode: blocks take time\n"
+        "  --record-motion=<file>                          log every reported position\n"
         "  --help, -h                                      this message\n"
         "\n"
         "Not an official Minecraft product. Not approved by or associated with Mojang.\n");
@@ -1060,6 +1072,16 @@ int main(int argc, char** argv) {
     // The tick the server is on, readable from the network threads. Breaking
     // is counted in ticks, and the packet handler runs on another thread.
     std::atomic<i64> server_tick{0};
+
+    std::FILE* motion_log = nullptr;
+    if (!options.record_motion.empty()) {
+        motion_log = std::fopen(options.record_motion.c_str(), "w");
+        if (motion_log == nullptr) {
+            OV_LOG_WARN("cannot write {}", options.record_motion);
+        } else {
+            OV_LOG_INFO("recording reported positions to {}", options.record_motion);
+        }
+    }
 
     // Les piles au sol. Sous le même verrou que les joueurs : elles n'existent
     // que pour être ramassées, et le ramassage lit les deux.
@@ -1926,6 +1948,17 @@ int main(int argc, char** argv) {
                         // Standing or not divides the breaking speed by five,
                         // so this is not decoration.
                         player.on_ground = movement->on_ground;
+
+                        if (motion_log != nullptr) {
+                            // Tick, name, position, look, ground. One line per
+                            // packet, in the order they arrive: the derivation
+                            // needs the gaps as much as the values.
+                            fmt::print(motion_log, "{} {} {:.6f} {:.6f} {:.6f} {:.2f} {:.2f} {}\n",
+                                       server_tick.load(std::memory_order_relaxed), player.name,
+                                       player.x, player.y, player.z, player.yaw, player.pitch,
+                                       player.on_ground ? 1 : 0);
+                            std::fflush(motion_log);
+                        }
                         // Remembered on every update rather than on disconnect:
                         // a client that is killed never sends a clean close, and
                         // losing the last position of a crashed session is the
