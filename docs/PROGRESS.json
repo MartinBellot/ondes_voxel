@@ -11,7 +11,7 @@
   },
   "last_updated": "2026-09-08",
   "current_milestone": "M3",
-  "current_task": "m4-block-archetypes",
+  "current_task": "m4-block-connections",
   "milestones": {
     "M0": {
       "name": "Fondations",
@@ -52,8 +52,8 @@
     "M4": {
       "name": "Monde persistant",
       "status": "in_progress",
-      "done": 11,
-      "total": 14,
+      "done": 12,
+      "total": 15,
       "exit_criterion": "Round-trip croisé : notre sauvegarde s'ouvre dans Minecraft vanilla et réciproquement, sans perte.",
       "blocked": []
     },
@@ -131,7 +131,9 @@
     "loot_tables": "1215/1215 cas identiques au vrai serveur 1.20.1 (32 tirages chacun, 1024 pour quatre qui ont demande a se departager) ; 982 blocs ont une table, 963 pools, 1128 entrees",
     "loot_table_mapping": "mesuree bloc par bloc : 920 des 1003 blocs utilisent la table qui porte leur nom, 62 en empruntent une autre (torche murale -> blocks/torch) et 21 pointent sur minecraft:empty",
     "loot_unsupported": "copy_name, copy_nbt, copy_state, set_contents et l'entree dynamic : refuses a la compilation et sans effet a l'execution, donc un coffre nomme retombe anonyme",
-    "item_entities": "quatre paquets releves sur un vrai serveur (spawn 0x01, metadonnees 0x52 index 8 type 7, ramassage 0x67, retrait 0x3E) et figes octet pour octet en test ; casser un bloc en survie fait tomber son butin, qui se ramasse"
+    "item_entities": "quatre paquets releves sur un vrai serveur (spawn 0x01, metadonnees 0x52 index 8 type 7, ramassage 0x67, retrait 0x3E) et figes octet pour octet en test ; casser un bloc en survie fait tomber son butin, qui se ramasse",
+    "placement_states": "dalle doublee, porte a deux moities et lit a deux blocs : etats identiques a ceux du vrai serveur 1.20.1, releves par scripts/measure_placement.py puis rejoues chez nous",
+    "placement_blocked": "les connexions attendent le predicat de face pleine, qui est par etat et par face : une dalle basse n'accroche pas une cloture, la meme en double si"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",

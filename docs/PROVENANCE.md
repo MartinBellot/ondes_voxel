@@ -1659,3 +1659,60 @@ dans une boîte de 1,2 bloc autour du joueur plutôt que par intersection de
 volumes. Enfin, un inventaire plein laisse la pile au sol avec ce qui n'a pas
 tenu : la faire disparaître serait une perte silencieuse.
 
+---
+
+## Conventions de pose : ce que `setblock` ne dit pas
+
+`setblock` place exactement l'état qu'on lui donne. Il ne dit donc rien de ce
+qu'un bloc **décide** au moment d'être posé — et c'est là que vivent les
+conventions : quel côté d'une dalle, quelle charnière d'une porte, où va la tête
+d'un lit. Cela ne se lit qu'en posant vraiment, avec un clic, une face et un
+point de contact.
+
+`scripts/measure_placement.py` joue des scénarios sur un vrai serveur 1.20.1 et
+relit le monde avec `ov-inspect state`, qui rend le nom **et toutes les
+propriétés** — `column` ne donnait que le nom, ce qui suffit à savoir qu'un bloc
+est là et pas à savoir lequel.
+
+### Le bogue d'un octet qui ne se voyait pas
+
+Pendant un moment, aucune pose ne passait : le serveur renvoyait les deux blocs
+concernés à leur état d'avant, sans une ligne de journal. La cause était dans la
+sonde, pas dans le serveur. Le paquet de synchronisation de position porte X, Y,
+Z, lacet, tangage, **un octet de drapeaux**, puis l'identifiant de
+téléportation : trente-trois octets, pas trente-deux. En confirmant avec l'octet
+de drapeaux la sonde répondait toujours zéro, le serveur restait en attente — et
+un serveur qui attend une confirmation de téléportation **ignore silencieusement
+toute interaction avec un bloc**.
+
+Ce qui rend l'erreur durable : le **cassage**, lui, continue de marcher. Toutes
+les mesures de durée ont donc été justes tout du long, et rien n'a signalé le
+problème avant qu'on essaie de poser.
+
+### Ce que le vrai serveur répond
+
+| Scénario | État obtenu |
+|---|---|
+| dalle posée au sol | `type=bottom` |
+| dalle recliquée par le dessus | **`type=double`** — un seul bloc, pas deux moitiés |
+| clôture seule | aucune connexion |
+| deux clôtures côte à côte | `east=true` / `west=true` |
+| clôture contre de la pierre | `east=true` — elle s'accroche aussi au plein |
+| deux murets | `east=low` / `west=low`, et **`up=true`** |
+| porte | deux moitiés, `hinge=left`, orientée comme le regard |
+| lit | pied au clic, tête un cran plus loin dans la direction du regard |
+
+Les lits rejoignent donc les portes, les escaliers, les portillons et
+l'observateur dans le groupe qui s'oriente **comme** le joueur regarde, et non à
+son opposé.
+
+### Ce qui reste, et pourquoi il n'est pas fait ici
+
+Les connexions demandent un prédicat de plus : « une clôture s'accroche-t-elle à
+ce bloc ? ». Il se mesure très bien — poser une clôture, poser le bloc à côté,
+relire — et le relevé donne pierre oui, verre oui, portillon oui, mais dalle
+non, escalier non, feuillage non, muret non. **C'est donc une propriété de
+l'état et de la face**, pas du bloc : une dalle basse n'offre pas de face pleine
+à l'est, la même dalle en `type=double` si. Une table par bloc serait fausse
+exactement là où on la remarquerait, et elle attend d'être faite par état.
+

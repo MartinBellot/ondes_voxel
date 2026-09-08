@@ -108,8 +108,12 @@ class Miner:
             elif pid == 0x3C:                     # synchronize position
                 x, y, z = struct.unpack_from(">ddd", p, 0)
                 self.pos = (x, y, z)
-                i = 32
-                tid, _ = read_varint(p, i)
+                # X, Y, Z, yaw, pitch, flags, *then* the teleport id: 33 bytes
+                # in, not 32. Confirming with the flags byte instead answers 0,
+                # the server keeps waiting, and from then on it ignores every
+                # movement **and every block placement** without a word. Digging
+                # still works, which is what makes the mistake survive.
+                tid, _ = read_varint(p, 33)
                 self.send(0x00, varint(tid))
                 self.send(0x14, struct.pack(">ddd", x, y, z) + bytes([1]))
             if until is not None:

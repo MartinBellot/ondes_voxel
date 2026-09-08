@@ -896,6 +896,103 @@ int inspect_light(const std::filesystem::path& directory) {
     return 0;
 }
 
+/// Report the full block state at given positions: name and every property.
+///
+/// `column` prints the name alone, which is enough to tell whether a block is
+/// there and useless for telling *which* stair it is. Placement conventions —
+/// which way a slab faces, what shape a stair takes, which sides a fence
+/// connects on — live entirely in the properties.
+int inspect_states(const std::filesystem::path& directory) {
+    std::map<std::pair<i32, i32>, std::optional<nbt::RegionFile>> regions;
+
+    i32 x = 0;
+    i32 y = 0;
+    i32 z = 0;
+    while (std::cin >> x >> y >> z) {
+        const i32  chunk_x    = x >> 4;
+        const i32  chunk_z    = z >> 4;
+        const auto region_key = std::pair{chunk_x >> 5, chunk_z >> 5};
+
+        if (!regions.contains(region_key)) {
+            const auto path =
+                directory / fmt::format("r.{}.{}.mca", region_key.first, region_key.second);
+            auto opened = nbt::RegionFile::open(path);
+            regions.emplace(region_key, opened ? std::optional{std::move(*opened)} : std::nullopt);
+        }
+        const auto& region = regions.at(region_key);
+        const auto  chunk  = region ? region->read_chunk(static_cast<u32>(chunk_x & 31),
+                                                         static_cast<u32>(chunk_z & 31))
+                                    : decltype(region->read_chunk(0, 0)){};
+        if (!region || !chunk) {
+            fmt::print("{} {} {} -\n", x, y, z);
+            continue;
+        }
+
+        const nbt::Tag* sections = chunk->root.find("sections");
+        if (sections == nullptr || sections->list() == nullptr) {
+            fmt::print("{} {} {} -\n", x, y, z);
+            continue;
+        }
+
+        std::string description = "-";
+        for (const nbt::Tag& section : *sections->list()) {
+            const nbt::Tag* section_y = section.find("Y");
+            if (section_y == nullptr || section_y->as_i64() != (y >> 4)) {
+                continue;
+            }
+            const nbt::Tag* states = section.find("block_states");
+            if (states == nullptr) {
+                break;
+            }
+            const nbt::Tag* palette = states->find("palette");
+            if (palette == nullptr || palette->list() == nullptr || palette->list()->empty()) {
+                break;
+            }
+            const usize index =
+                ((static_cast<usize>(y & 15) * 16) + static_cast<usize>(z & 15)) * 16 +
+                static_cast<usize>(x & 15);
+            usize           slot  = 0;
+            const nbt::Tag* data  = states->find("data");
+            const auto*     longs = data == nullptr ? nullptr : data->get_if<nbt::Tag::LongArray>();
+            if (longs != nullptr && !longs->empty()) {
+                const u8   bits = world::bits_for_palette(palette->list()->size());
+                const u32  per  = world::entries_per_long(bits);
+                const auto word = static_cast<u64>((*longs)[index / per]);
+                slot =
+                    static_cast<usize>((word >> ((index % per) * bits)) & ((u64{1} << bits) - 1));
+            }
+            if (slot >= palette->list()->size()) {
+                break;
+            }
+            const nbt::Tag& entry = (*palette->list())[slot];
+            const nbt::Tag* name  = entry.find("Name");
+            if (name == nullptr) {
+                break;
+            }
+            description = std::string{name->as_string()};
+            if (const nbt::Tag* properties = entry.find("Properties");
+                properties != nullptr && properties->compound() != nullptr) {
+                // Sorted, because the palette's order is whatever the writer
+                // used and two identical states must compare equal as text.
+                std::vector<std::string> pairs;
+                for (const nbt::CompoundEntry& property : *properties->compound()) {
+                    pairs.push_back(
+                        fmt::format("{}={}", property.name, property.value.as_string()));
+                }
+                std::ranges::sort(pairs);
+                description += "[";
+                for (usize i = 0; i < pairs.size(); ++i) {
+                    description += (i == 0 ? "" : ",") + pairs[i];
+                }
+                description += "]";
+            }
+            break;
+        }
+        fmt::print("{} {} {} {}\n", x, y, z, description);
+    }
+    return 0;
+}
+
 /// Recompute the four heightmaps from the blocks and compare with what the game
 /// wrote.
 ///
@@ -1295,6 +1392,7 @@ void print_usage() {
         "  ov-inspect column <region-dir>        block and the four heightmaps per 'x y z'\n"
         "  ov-inspect heightmaps <region-dir> [--pack=P]  recompute them and compare\n"
         "  ov-inspect loot   <pack>              roll loot tables per 'block silk fortune tool n'\n"
+        "  ov-inspect state  <region-dir>        full block state per 'x y z'\n"
         "\n"
         "  --tree      print the tag tree\n"
         "  --verify    decode, re-encode, and compare the bytes\n"
@@ -1318,7 +1416,8 @@ int main(int argc, char** argv) {
 
     const std::string_view command{argv[1]};
     if (command != "nbt" && command != "region" && command != "zip" && command != "chunk" &&
-        command != "light" && command != "column" && command != "heightmaps" && command != "loot") {
+        command != "light" && command != "column" && command != "heightmaps" && command != "loot" &&
+        command != "state") {
         fmt::print(stderr, "unknown command '{}'\n", command);
         print_usage();
         return 1;
@@ -1365,6 +1464,9 @@ int main(int argc, char** argv) {
     }
     if (command == "loot") {
         return inspect_loot(argv[2]);
+    }
+    if (command == "state") {
+        return inspect_states(argv[2]);
     }
     return inspect_nbt(argv[2], tree, verify, max_depth);
 }

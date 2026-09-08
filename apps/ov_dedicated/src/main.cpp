@@ -521,7 +521,28 @@ struct Superflat {
 /// its default rather than turned the wrong way with confidence.
 [[nodiscard]] bool faces_away_from_player(std::string_view name) {
     return name == "minecraft:observer" || name.ends_with("_stairs") ||
-           name.ends_with("_fence_gate") || name.ends_with("_door");
+           name.ends_with("_fence_gate") || name.ends_with("_door") || name.ends_with("_bed");
+}
+
+/// The compass direction a player at this yaw is looking along.
+///
+/// Yaw runs 0 at south and increases westward, so rounding to the nearest
+/// quarter turn gives the direction faced.
+[[nodiscard]] usize facing_index(f32 yaw) noexcept {
+    const auto quarter = static_cast<i32>(std::floor(static_cast<f64>(yaw) / 90.0 + 0.5));
+    // Modulo of a negative yaw is negative in C++, and a negative index would
+    // read off the front of the array.
+    return static_cast<usize>(((quarter % 4) + 4) % 4);
+}
+
+/// One step along a compass direction, in the order south, west, north, east.
+[[nodiscard]] net::WirePosition step_towards(net::WirePosition from, usize direction) noexcept {
+    switch (direction) {
+        case 0: return {from.x, from.y, from.z + 1};   // south
+        case 1: return {from.x - 1, from.y, from.z};   // west
+        case 2: return {from.x, from.y, from.z - 1};   // north
+        default: return {from.x + 1, from.y, from.z};  // east
+    }
 }
 
 [[nodiscard]] registry::BlockStateId placed_state(const registry::BlockRegistry& blocks,
@@ -554,11 +575,8 @@ struct Superflat {
     // Yaw runs 0 at south and increases westward, so rounding to the nearest
     // quarter turn gives the direction the player faces.
     constexpr std::array<std::string_view, 4> kFacing{"south", "west", "north", "east"};
-    const auto quarter = static_cast<i32>(std::floor(static_cast<f64>(player_yaw) / 90.0 + 0.5));
-    // Modulo of a negative yaw is negative in C++, and a negative index would
-    // read off the front of the array.
-    const auto looking  = static_cast<usize>(((quarter % 4) + 4) % 4);
-    const auto opposite = (looking + 2) % 4;
+    const auto                                looking  = facing_index(player_yaw);
+    const auto                                opposite = (looking + 2) % 4;
     set("facing", kFacing[faces_away_from_player(blocks.block_name(block)) ? looking : opposite]);
 
     const bool upper = place.face == 0 || (place.face >= 2 && place.cursor_y > 0.5F);
@@ -1958,15 +1976,68 @@ int main(int argc, char** argv) {
                             return true;
                         }
 
+                        const std::string_view held_name = blocks->block_name(*held_block);
+
+                        // Clicking a slab of the same kind fills it out rather
+                        // than placing a second one beside it. Measured on a
+                        // real server: the result is one block of type=double,
+                        // not two halves.
+                        {
+                            registry::BlockStateId clicked{0};
+                            {
+                                const std::scoped_lock chunk_lock{chunk_mutex};
+                                world::Chunk&          at =
+                                    chunk_at(place->position.x >> 4, place->position.z >> 4);
+                                clicked = at.get_block(static_cast<usize>(place->position.x & 15),
+                                                       place->position.y,
+                                                       static_cast<usize>(place->position.z & 15));
+                            }
+                            const registry::BlockId clicked_block = blocks->block_of(clicked);
+                            const auto type = blocks->find_property(clicked_block, "type");
+                            if (clicked_block == *held_block && type &&
+                                blocks->property_value(clicked, *type) != "double") {
+                                const auto values = type->values;
+                                const auto index  = static_cast<u16>(std::distance(
+                                    values.begin(), std::ranges::find(values, "double")));
+                                if (index < values.size()) {
+                                    set_block_and_broadcast(
+                                        place->position,
+                                        blocks->with_property(clicked, *type, index));
+                                    return true;
+                                }
+                            }
+                        }
+
                         // The clicked block is not where the new one goes: the
                         // face says which side, and it lands one step along it.
                         const auto target = net::offset_by_face(place->position, place->face);
-                        set_block_and_broadcast(
-                            target, placed_state(*blocks, *held_block, *place, player.yaw));
+                        const auto placed = placed_state(*blocks, *held_block, *place, player.yaw);
+                        set_block_and_broadcast(target, placed);
+
+                        // Doors and beds take two blocks. Placing only the half
+                        // the player clicked leaves a door that cannot open and
+                        // a bed the client draws as a hole.
+                        if (const auto half = blocks->find_property(*held_block, "half");
+                            half &&
+                            std::ranges::find(half->values, "upper") != half->values.end()) {
+                            const auto upper = static_cast<u16>(std::distance(
+                                half->values.begin(), std::ranges::find(half->values, "upper")));
+                            set_block_and_broadcast({target.x, target.y + 1, target.z},
+                                                    blocks->with_property(placed, *half, upper));
+                        }
+                        if (const auto part = blocks->find_property(*held_block, "part");
+                            part && std::ranges::find(part->values, "head") != part->values.end()) {
+                            const auto head = static_cast<u16>(std::distance(
+                                part->values.begin(), std::ranges::find(part->values, "head")));
+                            // The head lies one step along the way the player is
+                            // looking, which is also the way the bed faces.
+                            set_block_and_broadcast(step_towards(target, facing_index(player.yaw)),
+                                                    blocks->with_property(placed, *part, head));
+                        }
 
                         // A sign needs a block entity to hold its text, and the
                         // editor has to be opened or it can never be written on.
-                        const std::string_view block_name = blocks->block_name(*held_block);
+                        const std::string_view block_name = held_name;
 
                         if (block_name == "minecraft:chest" && registries &&
                             block_entity_registry) {
