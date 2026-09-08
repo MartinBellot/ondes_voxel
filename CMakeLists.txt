@@ -66,6 +66,7 @@ find_package(Threads REQUIRED)
 find_package(fmt CONFIG REQUIRED)
 find_package(libdeflate CONFIG REQUIRED)
 find_package(asio CONFIG REQUIRED)
+find_package(simdjson CONFIG REQUIRED)
 
 if(OV_BUILD_TESTS)
     find_package(Catch2 3 CONFIG REQUIRED)
@@ -83,11 +84,23 @@ add_subdirectory(src/ov_world)
 add_subdirectory(src/ov_protocol)
 add_subdirectory(src/ov_gameplay)
 
+# ── Rendering frontier ──────────────────────────────────────────────────────
+# Everything below this line is client-only. The linux-server-only preset turns
+# OV_BUILD_CLIENT off, so the headless job never compiles a line of it — which
+# is what makes layering lock #3 a real guarantee rather than a policy check.
+if(OV_BUILD_CLIENT)
+    add_subdirectory(src/ov_render)
+endif()
+
 # ── Checks ──────────────────────────────────────────────────────────────────
 # Compiles every public header on its own. Catches the header that only works
 # because something else included <string_view> first — which compiles on
 # libc++ and fails on libstdc++.
-ov_add_header_selftest(MODULES ov_base ov_math ov_io ov_nbt ov_registry ov_world ov_protocol)
+set(OV_SELFTEST_MODULES ov_base ov_math ov_io ov_nbt ov_registry ov_world ov_protocol)
+if(OV_BUILD_CLIENT)
+    list(APPEND OV_SELFTEST_MODULES ov_render)
+endif()
+ov_add_header_selftest(MODULES ${OV_SELFTEST_MODULES})
 
 # ── Apps ────────────────────────────────────────────────────────────────────
 add_subdirectory(apps/ov_dedicated)
@@ -95,6 +108,10 @@ add_subdirectory(apps/ov_dedicated)
 # ── Tools ───────────────────────────────────────────────────────────────────
 add_subdirectory(tools/ov_inspect)
 add_subdirectory(tools/ov_assetimport)
+
+if(OV_BUILD_CLIENT)
+    add_subdirectory(tools/ov_modelbake)
+endif()
 
 # ── Summary ─────────────────────────────────────────────────────────────────
 message(STATUS "")

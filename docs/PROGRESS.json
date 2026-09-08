@@ -59,12 +59,12 @@
     },
     "M5": {
       "name": "Client Ondes VOXEL",
-      "status": "not_started",
-      "done": 0,
+      "status": "in_progress",
+      "done": 2,
       "total": 26,
       "exit_criterion": "Deux clients pour un même serveur ; p99 de frame time <= 20 ms à 12 chunks sur M2 ; golden images vertes sur lavapipe.",
       "blocked": [
-        "Nécessite le SDK Vulkan / MoltenVK, non installé."
+        "Nécessite le SDK Vulkan / MoltenVK, non installé. Chemin documenté par scripts/bootstrap.sh : le paquet macOS de https://vulkan.lunarg.com/sdk/home (installateur .dmg, non scriptable ; il pose ~/VulkanSDK et fournit MoltenVK, les couches de validation et glslc). Vérifié : il n'existe PAS de cask Homebrew `vulkan-sdk`. Bloque ov_rhi, ov_client et les shaders ; la moitié CPU du jalon (modèles, bake, vertex, AO) n'en dépend pas et avance sans."
       ]
     },
     "M6": {
