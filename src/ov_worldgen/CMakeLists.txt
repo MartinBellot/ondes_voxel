@@ -23,6 +23,7 @@ ov_add_library(ov_worldgen
 
 ov_add_test(test_ov_worldgen
     SOURCES
+        tests/test_biome_source.cpp
         tests/test_density.cpp
         tests/test_noise.cpp
     DEPS ov_worldgen

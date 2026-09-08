@@ -109,6 +109,34 @@ std::expected<BiomeSource, DensityError> BiomeSource::load(const std::filesystem
     return source;
 }
 
+std::string_view BiomeSource::entry_biome(usize index) const {
+    return index < entries_.size() ? std::string_view{entries_[index].biome} : std::string_view{};
+}
+
+ClimatePoint BiomeSource::entry_centre(usize index) const {
+    ClimatePoint point;
+    if (index >= entries_.size()) {
+        return point;
+    }
+    for (usize axis = 0; axis < 7; ++axis) {
+        const auto& range      = entries_[index].box[axis];
+        point.coordinates[axis] = range.low + (range.high - range.low) / 2;
+    }
+    // The seventh axis is measured against zero, never sampled, so a box with
+    // a non-zero offset must still be probed at zero or the probe would be
+    // asking about a point the world cannot reach.
+    point.coordinates[6] = 0;
+    return point;
+}
+
+std::vector<std::string_view> BiomeSource::biomes() const {
+    std::set<std::string_view> names;
+    for (const Entry& entry : entries_) {
+        names.insert(entry.biome);
+    }
+    return {names.begin(), names.end()};
+}
+
 usize BiomeSource::biome_count() const noexcept {
     std::set<std::string_view> names;
     for (const Entry& entry : entries_) {

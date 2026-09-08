@@ -45,6 +45,9 @@ struct Options {
     /// formula, and that is a far shorter road than reasoning about which of
     /// twenty constants is a percent out.
     std::string sweep;
+    /// Print one representative surface position per biome instead of
+    /// comparing. What the renderer needs to be pointed at.
+    bool locate{false};
 };
 
 [[nodiscard]] Options parse(int argc, char** argv) {
@@ -66,6 +69,8 @@ struct Options {
             options.reports = value("--reports=");
         } else if (argument.starts_with("--sweep=")) {
             options.sweep = value("--sweep=");
+        } else if (argument == "--locate") {
+            options.locate = true;
         }
     }
     return options;
@@ -93,6 +98,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    std::map<std::string, std::array<i32, 3>>                   located;
     std::vector<std::pair<worldgen::ClimatePoint, std::string>> recorded;
     usize cells    = 0;
     usize agreed   = 0;
@@ -113,6 +119,8 @@ int main(int argc, char** argv) {
     /// Where the humidity sat, per biome the game named. A bias in one axis
     /// shows as two distributions that overlap where the game's do not.
     std::map<std::string, std::array<i64, 3>> humidity_census;
+    /// Cells and agreements per biome, as the game named it.
+    std::map<std::string, std::array<i64, 2>> per_biome;
     /// How many disagreements each axis was outside the box on.
     std::array<i64, 7> blame{};
     /// Disagreements where both biomes were exactly as near. Those are decided
@@ -150,6 +158,30 @@ int main(int argc, char** argv) {
             const nbt::Tag* status = document->root.find("Status");
             if (status == nullptr || status->as_string() != "minecraft:full") {
                 continue;
+            }
+
+            // The surface height, for --locate. Without it a camera placed by
+            // "highest non-air near the middle" ends up inside a tree, or on
+            // the sea bed with the whole frame under water.
+            std::array<i32, 256> surface{};
+            surface.fill(64);
+            if (const nbt::Tag* maps = document->root.find("Heightmaps")) {
+                if (const nbt::Tag* world_surface = maps->find("WORLD_SURFACE")) {
+                    if (const auto* longs = world_surface->get_if<nbt::Tag::LongArray>()) {
+                        // Nine bits an entry, seven to a long, and the value is
+                        // measured from the bottom of the world.
+                        for (usize column = 0; column < 256; ++column) {
+                            const usize word = column / 7;
+                            const usize slot = (column % 7) * 9;
+                            if (word < longs->size()) {
+                                surface[column] =
+                                    static_cast<i32>((static_cast<u64>((*longs)[word]) >> slot) &
+                                                     0x1FFU) -
+                                    64;
+                            }
+                        }
+                    }
+                }
             }
 
             const nbt::Tag* x_pos = document->root.find("xPos");
@@ -223,6 +255,24 @@ int main(int argc, char** argv) {
                     const i32 quart_z = chunk_z * 4 + cz;
                     const i32 quart_y = section_y * 4 + cy;
 
+                    if (options.locate) {
+                        // Surface only: a biome's *look* is decided at the top
+                        // of the world, and pointing a camera at a cave biome's
+                        // cell would frame solid stone.
+                        if (quart_y * 4 < 48 || quart_y * 4 > 200) {
+                            continue;
+                        }
+                        const std::string name(names[palette_index]);
+                        if (!located.contains(name)) {
+                            const usize column =
+                                static_cast<usize>((cz * 4) * 16 + (cx * 4));
+                            located.emplace(name, std::array<i32, 3>{quart_x * 4, quart_z * 4,
+                                                                     surface[column & 255]});
+                        }
+                        ++cells;
+                        continue;
+                    }
+
                     const auto climate = biomes->sample(*router, quart_x, quart_y, quart_z);
                     if (!options.sweep.empty()) {
                         // Keep the reading and the game's answer; the sweep
@@ -240,6 +290,11 @@ int main(int argc, char** argv) {
                         highest[axis] = std::max(highest[axis], climate.coordinates[axis]);
                     }
                     theirs[names[palette_index]] += 1;
+                    {
+                        auto& row = per_biome[std::string(names[palette_index])];
+                        row[0] += 1;
+                        row[1] += (ours == names[palette_index]) ? 1 : 0;
+                    }
                     {
                         auto& row = humidity_census[std::string(names[palette_index])];
                         row[0] += 1;
@@ -283,6 +338,13 @@ int main(int argc, char** argv) {
         if (chunks >= static_cast<usize>(options.chunks)) {
             break;
         }
+    }
+
+    if (options.locate) {
+        for (const auto& [name, where] : located) {
+            fmt::print("{} {} {} {}\n", name, where[0], where[1], where[2]);
+        }
+        return 0;
     }
 
     if (cells == 0) {
@@ -345,14 +407,22 @@ int main(int argc, char** argv) {
         }
     }
 
-    fmt::print("\nour humidity, grouped by the biome the game chose:\n");
-    for (const auto& [name, row] : humidity_census) {
-        if (row[0] < 200) {
-            continue;
-        }
-        fmt::print("  {:<34} n={:>6}  mean {:>7}  max {:>7}\n", name, row[0], row[1] / row[0],
-                   row[2]);
+    // Per biome, because an average hides everything that matters: one biome
+    // at 60 % inside a world that is 99 % right is a real bug, and the total
+    // would never show it.
+    fmt::print("\nper biome, as the game named them:\n");
+    fmt::print("  {:<36} {:>9} {:>9} {:>8}\n", "biome", "cells", "agreed", "");
+    std::vector<std::pair<std::string, std::array<i64, 2>>> rows(per_biome.begin(),
+                                                                 per_biome.end());
+    std::sort(rows.begin(), rows.end(),
+              [](const auto& a, const auto& b) { return a.second[0] > b.second[0]; });
+    for (const auto& [name, row] : rows) {
+        const f64 rate = 100.0 * static_cast<f64>(row[1]) / static_cast<f64>(row[0]);
+        fmt::print("  {:<36} {:>9} {:>9} {:>7.3f} %{}\n", name, row[0], row[1], rate,
+                   row[1] == row[0] ? "" : "   <-");
     }
+    fmt::print("\n{} of the {} biomes in the table were seen\n", rows.size(),
+               biomes->biome_count());
 
     if (agreed != cells) {
         fmt::print("\nwhat each side said (game / ours):\n");

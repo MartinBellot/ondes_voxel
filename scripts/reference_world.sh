@@ -35,6 +35,10 @@ max-players=1
 view-distance=10
 simulation-distance=10
 sync-chunk-writes=true
+# The watchdog kills the server when a tick takes a minute, and force-loading a
+# few thousand chunks at once does exactly that. This is a pregeneration run,
+# not a game.
+max-tick-time=-1
 allow-nether=false
 spawn-npcs=false
 spawn-animals=false
@@ -43,23 +47,39 @@ enable-command-block=false
 PROPERTIES
 
 echo "generating with seed $SEED …"
-# The server generates its spawn chunks at start-up, then we ask for a wider
-# square by force-loading it, wait, and stop. force-load has a 256-chunk limit
-# per command — a limit that fails silently — so the area is asked for in
-# pieces.
+# Scattered patches rather than one square around spawn.
+#
+# The climate noises have wavelengths of a few thousand blocks, so a single
+# region only ever shows the handful of biomes that happen to be there — the
+# first run of this saw thirteen of fifty-three. Patches tens of thousands of
+# blocks apart are climatically independent, and that is what reaches the deserts,
+# the badlands, the snowy peaks and the mushroom fields.
+#
+# force-load has a 256-chunk limit per command and it fails *silently*, so each
+# patch is small and asked for on its own.
+PATCHES="0,0 48000,0 -37000,15000 22000,-41000 -19000,-28000 61000,33000
+         -55000,-51000 8000,72000 -70000,4000 35000,58000 -12000,-64000
+         44000,44000 -44000,44000 67000,-17000 -26000,39000 15000,26000
+         -83000,29000 52000,-68000 -31000,77000 90000,21000 -95000,-38000
+         73000,63000 -63000,-83000 27000,95000 -105000,7000 41000,-95000
+         -17000,-105000 110000,-45000"
+
 (
     sleep 25
-    for x in -8 0 8; do
-        for z in -8 0 8; do
-            echo "forceload add $((x*16)) $((z*16)) $((x*16+112)) $((z*16+112))"
-            sleep 2
-        done
+    for patch in $PATCHES; do
+        x="${patch%,*}"
+        z="${patch#*,}"
+        # 160 blocks a side, not 64. The parity check is happy with a small
+        # patch; a screenshot is not — a camera in a five-chunk world sees the
+        # edge of it, and the biome looks like a floating island.
+        echo "forceload add $x $z $((x+160)) $((z+160))"
+        sleep 6
     done
-    sleep 20
+    sleep 60
     echo "save-all flush"
-    sleep 10
+    sleep 25
     echo "stop"
-) | (cd "$OUT" && java -Xmx2G -jar server.jar nogui) | tail -20
+) | (cd "$OUT" && java -Xmx2G -jar server.jar nogui) | tail -8
 
 echo
 echo "seed $SEED -> $OUT/world"

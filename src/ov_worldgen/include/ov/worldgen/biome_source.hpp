@@ -23,6 +23,7 @@
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <array>
 #include <vector>
 
 namespace ov::worldgen {
@@ -67,6 +68,20 @@ public:
     [[nodiscard]] i64 distance_to(const ClimatePoint& climate, std::string_view biome) const;
 
     [[nodiscard]] usize entry_count() const noexcept { return entries_.size(); }
+
+    /// The biome one box belongs to.
+    [[nodiscard]] std::string_view entry_biome(usize index) const;
+
+    /// The middle of one box.
+    ///
+    /// Exposed so a test can ask the question that matters: is every biome in
+    /// the table actually *reachable*? A box that another box swallows would
+    /// name a biome the world can never contain, and nothing about the
+    /// generated terrain would reveal it.
+    [[nodiscard]] ClimatePoint entry_centre(usize index) const;
+
+    /// Every distinct biome, sorted.
+    [[nodiscard]] std::vector<std::string_view> biomes() const;
     [[nodiscard]] usize biome_count() const noexcept;
 
     /// Quantise a climate value the way the game does.
