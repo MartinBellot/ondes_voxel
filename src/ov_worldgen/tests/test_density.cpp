@@ -45,22 +45,42 @@ TEST_CASE("the overworld router loads whole", "[worldgen][density]") {
     // The six climate functions are the ones the biome source reads. Every one
     // of them has to be present, or a biome would be chosen from a missing
     // dimension.
-    for (const auto* name : {"temperature", "vegetation", "continents", "erosion", "depth",
-                             "ridges", "initial_density_without_jaggedness", "barrier", "lava",
-                             "vein_toggle", "vein_ridged", "vein_gap"}) {
+    // The whole router, all fifteen. This used to assert that exactly one
+    // entry was missing — final_density, which reaches old_blended_noise — and
+    // that line failed the day the noise landed, which is what it was for.
+    for (const auto* name :
+         {"temperature", "vegetation", "continents", "erosion", "depth", "ridges",
+          "final_density", "initial_density_without_jaggedness", "barrier", "lava", "vein_toggle",
+          "vein_ridged", "vein_gap", "fluid_level_floodedness", "fluid_level_spread"}) {
         CAPTURE(name);
         CHECK(router->entry(name) != nullptr);
     }
+    CHECK(router->unavailable().empty());
+}
 
-    // And exactly one is not: final_density reaches old_blended_noise, the
-    // 1.17 terrain noise, which is not implemented yet. It is named here so
-    // that the day it is, this line fails and reminds someone to delete it —
-    // rather than the absence quietly becoming permanent.
-    const auto missing = router->unavailable();
-    REQUIRE(missing.size() == 1);
-    CHECK(missing.front().first == "final_density");
-    CHECK(missing.front().second == DensityError::Unsupported);
-    CHECK(router->entry("final_density") == nullptr);
+TEST_CASE("the terrain density has a shape", "[worldgen][density]") {
+    if (!std::filesystem::is_directory(data_root() / "worldgen")) {
+        SKIP("vanilla worldgen data absent");
+    }
+    auto router = NoiseRouter::load(data_root(), "overworld", 1234567890);
+    REQUIRE(router.has_value());
+    const DensityFunction* density = router->entry("final_density");
+    REQUIRE(density != nullptr);
+
+    // Deep underground is solid and high in the air is not. That is the one
+    // thing terrain density means, and a graph that built without error could
+    // still be uniformly zero.
+    CHECK(density->compute({0, -60, 0}) > 0.0);
+    CHECK(density->compute({0, 300, 0}) < 0.0);
+
+    // And it is not a step function of y alone: two columns far apart differ
+    // at the same height, or the world would be flat.
+    bool varies = false;
+    const f64 reference = density->compute({0, 80, 0});
+    for (i32 i = 1; i <= 40 && !varies; ++i) {
+        varies = density->compute({i * 271, 80, i * 397}) != reference;
+    }
+    CHECK(varies);
 }
 
 TEST_CASE("climate varies with position and repeats with the seed",

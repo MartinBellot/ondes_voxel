@@ -232,3 +232,119 @@ f64 NormalNoise::value(f64 x, f64 y, f64 z) const noexcept {
 }
 
 }  // namespace ov::worldgen
+
+namespace ov::worldgen {
+
+namespace {
+
+/// The scale every old terrain noise is measured in. Not derived from
+/// anything — it is the constant the 1.17 generator used, and the terrain's
+/// horizontal wavelength is set by it.
+constexpr f64 kOldNoiseScale = 684.412;
+
+}  // namespace
+
+BlendedNoise::LegacyStack BlendedNoise::LegacyStack::create(math::XoroshiroRandomSource& random,
+                                                            i32 first_octave, usize count) {
+    LegacyStack stack;
+    stack.first_octave = first_octave;
+    stack.octaves.resize(count);
+
+    // Sequential, and in this order. The octave at index `-first_octave` — the
+    // highest frequency — is created first, then the rest descend to index
+    // zero. Creating them in array order instead would draw the same numbers
+    // in a different arrangement and give a different world.
+    const auto top = static_cast<usize>(-first_octave);
+    if (top < count) {
+        stack.octaves[top] = std::make_unique<ImprovedNoise>(random);
+    }
+    for (usize index = top; index-- > 0;) {
+        stack.octaves[index] = std::make_unique<ImprovedNoise>(random);
+    }
+    return stack;
+}
+
+BlendedNoise BlendedNoise::create(math::XoroshiroRandomSource& random, f64 xz_scale, f64 y_scale,
+                                  f64 xz_factor, f64 y_factor, f64 smear_scale_multiplier) {
+    BlendedNoise noise;
+    // All three from the same generator, in this order: the two limits at
+    // sixteen octaves each, then the selector at eight.
+    noise.min_limit_ = LegacyStack::create(random, -15, 16);
+    noise.max_limit_ = LegacyStack::create(random, -15, 16);
+    noise.main_      = LegacyStack::create(random, -7, 8);
+
+    noise.xz_multiplier_          = kOldNoiseScale * xz_scale;
+    noise.y_multiplier_           = kOldNoiseScale * y_scale;
+    noise.xz_factor_              = xz_factor;
+    noise.y_factor_               = y_factor;
+    noise.smear_scale_multiplier_ = smear_scale_multiplier;
+
+    // The two limits are divided by 512 and the result by 128, and each stack
+    // of sixteen octaves is bounded by 2 with the usual halving weights.
+    f64 bound = 0.0;
+    f64 weight = 1.0;
+    for (usize i = 0; i < 16; ++i) {
+        bound += 2.0 / weight;
+        weight *= 2.0;
+    }
+    noise.max_value_ = bound / 512.0 / 128.0;
+    return noise;
+}
+
+f64 BlendedNoise::value(i32 x, i32 y, i32 z) const noexcept {
+    const f64 sx = static_cast<f64>(x) * xz_multiplier_;
+    const f64 sy = static_cast<f64>(y) * y_multiplier_;
+    const f64 sz = static_cast<f64>(z) * xz_multiplier_;
+
+    // The selector is sampled at a coarser scale than the limits, which is why
+    // it varies slowly enough to choose between them over whole hillsides
+    // rather than block by block.
+    const f64 mx = sx / xz_factor_;
+    const f64 my = sy / y_factor_;
+    const f64 mz = sz / xz_factor_;
+
+    const f64 smear      = y_multiplier_ * smear_scale_multiplier_;
+    const f64 main_smear = smear / y_factor_;
+
+    f64 selector = 0.0;
+    f64 falloff  = 1.0;
+    for (const auto& octave : main_.octaves) {
+        if (octave != nullptr) {
+            selector += octave->noise(PerlinNoise::wrap(mx * falloff),
+                                      PerlinNoise::wrap(my * falloff),
+                                      PerlinNoise::wrap(mz * falloff), main_smear * falloff,
+                                      my * falloff) /
+                        falloff;
+        }
+        falloff /= 2.0;
+    }
+
+    const f64 blend = (selector / 10.0 + 1.0) / 2.0;
+    // Saturated on either side the other stack is never touched. Not only an
+    // optimisation: it is sixteen octaves of Perlin skipped for most of the
+    // world.
+    const bool only_max = blend >= 1.0;
+    const bool only_min = blend <= 0.0;
+
+    f64 low  = 0.0;
+    f64 high = 0.0;
+    falloff  = 1.0;
+    for (usize index = 0; index < min_limit_.octaves.size(); ++index) {
+        const f64 wx = PerlinNoise::wrap(sx * falloff);
+        const f64 wy = PerlinNoise::wrap(sy * falloff);
+        const f64 wz = PerlinNoise::wrap(sz * falloff);
+        const f64 sm = smear * falloff;
+        if (!only_max && min_limit_.octaves[index] != nullptr) {
+            low += min_limit_.octaves[index]->noise(wx, wy, wz, sm, sy * falloff) / falloff;
+        }
+        if (!only_min && max_limit_.octaves[index] != nullptr) {
+            high += max_limit_.octaves[index]->noise(wx, wy, wz, sm, sy * falloff) / falloff;
+        }
+        falloff /= 2.0;
+    }
+
+    const f64 t = std::clamp(blend, 0.0, 1.0);
+    return (low / 512.0 + (high / 512.0 - low / 512.0) * t) / 128.0;
+}
+
+}  // namespace ov::worldgen

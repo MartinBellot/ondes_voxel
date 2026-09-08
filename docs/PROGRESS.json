@@ -67,8 +67,8 @@
     "M6": {
       "name": "Contenu complet",
       "status": "in_progress",
-      "done": 2,
-      "total": 71,
+      "done": 4,
+      "total": 72,
       "exit_criterion": "Une batterie world_test par sous-système ; parité statistique worldgen sur 1000 seeds ; matrice protocole à 100 %.",
       "blocked": []
     },
@@ -157,7 +157,8 @@
     "worldgen_oracle": "monde de reference genere par le vrai serveur 1.20.1 a la seed 1234567890 (scripts/reference_world.sh, 4 fichiers de region). C'est le seul oracle de la parite de terrain : aucune formule ne peut la prouver, seuls les blocs que le jeu ecrit",
     "biome_parity": "613857 / 614400 cellules de biome identiques au vrai serveur 1.20.1 a la seed 1234567890 (99.912 %), sur 400 chunks entierement generes. Les 543 ecarts sont TOUS des egalites exactes — deux boites a la meme distance — donc le calcul du climat est identique et seule la departition differe (R-tree + cache du resultat precedent chez vanilla)",
     "worldgen_harness": "tools/ov_parity compare notre generation au monde de reference. Il a d'abord donne 67 % : il lisait des chunks arretes a un statut partiel, dont le tableau de biomes vaut plains par defaut — ce qui faisait dire 'le jeu a choisi plains' a chaque desaccord. Filtre sur Status == minecraft:full, le meme code donne 99.912 %",
-    "biome_coverage": "les 53 biomes de l'overworld sont dans la table et les 53 sont ATTEIGNABLES : sonder le centre de chacune des 7593 boites les produit tous. Un biome qu'une autre boite avalerait serait un biome que le monde ne peut pas contenir, quelle que soit la seed — et aucun terrain genere ne le revelerait. Le nether a ses 5 ; l'End n'a pas de table, c'est une regle fixe, et la demander echoue au lieu de rendre une table vide"
+    "biome_coverage": "les 53 biomes de l'overworld sont dans la table et les 53 sont ATTEIGNABLES : sonder le centre de chacune des 7593 boites les produit tous. Un biome qu'une autre boite avalerait serait un biome que le monde ne peut pas contenir, quelle que soit la seed — et aucun terrain genere ne le revelerait. Le nether a ses 5 ; l'End n'a pas de table, c'est une regle fixe, et la demander echoue au lieu de rendre une table vide",
+    "terrain_parity": "97.79 % d'accord solide/air sur 153600 blocs echantillonnes contre le monde genere par le vrai serveur. Les deux modes d'erreur sont mesures et separes : 1.20 % de pierre en trop (le jeu a de l'air, de l'eau et de la lave la ou nous avons de la pierre — grottes et aquiferes, non implementes) et 1.01 % de pierre manquante, concentree au-dessus de y=64, avec un decalage de surface centre sur -2 blocs dont la cause n'est pas localisee"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",

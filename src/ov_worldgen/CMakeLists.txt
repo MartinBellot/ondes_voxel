@@ -9,6 +9,7 @@ ov_add_library(ov_worldgen
     LAYER 10
     SOURCES
         src/biome_source.cpp
+        src/chunk_generator.cpp
         src/density.cpp
         src/noise.cpp
     DEPS

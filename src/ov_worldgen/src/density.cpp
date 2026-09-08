@@ -451,6 +451,128 @@ private:
     bool                               two_d_;
 };
 
+/// Sampled on the coarse cell grid and interpolated between.
+///
+/// This is the one wrapper that genuinely changes the value. The terrain is not
+/// evaluated per block: it is evaluated at the corners of cells four blocks
+/// wide and eight tall, and every block inside a cell is a trilinear blend of
+/// its eight corners. That is why 1.18 terrain has the smoothness it does, and
+/// why evaluating this function directly gives a *different*, rougher world.
+///
+/// The interpolation order is y, then x, then z — vanilla's. With floating
+/// point that is not the same as any other order, and terrain parity is exactly
+/// the kind of claim that order decides.
+///
+/// The corner values are memoised. Vanilla fills them a slice at a time as it
+/// walks a chunk; a cache keyed by the corner reaches the same numbers with the
+/// same count of evaluations, and does not require the caller to walk in any
+/// particular order. Not thread-safe, and generation is single-threaded — when
+/// it stops being, this becomes per-chunk state rather than a shared map.
+class Interpolated final : public DensityFunction {
+public:
+    Interpolated(DensityRef inner, i32 cell_width, i32 cell_height, i32 min_y)
+        : inner_(std::move(inner)),
+          cell_width_(cell_width),
+          cell_height_(cell_height),
+          min_y_(min_y) {}
+
+    [[nodiscard]] f64 compute(const FunctionContext& at) const override {
+        const i32 cell_x = floor_div(at.x, cell_width_);
+        const i32 cell_z = floor_div(at.z, cell_width_);
+        const i32 cell_y = floor_div(at.y - min_y_, cell_height_);
+
+        const f64 tx = static_cast<f64>(at.x - cell_x * cell_width_) /
+                       static_cast<f64>(cell_width_);
+        const f64 tz = static_cast<f64>(at.z - cell_z * cell_width_) /
+                       static_cast<f64>(cell_width_);
+        const f64 ty = static_cast<f64>(at.y - min_y_ - cell_y * cell_height_) /
+                       static_cast<f64>(cell_height_);
+
+        const f64 c000 = corner(cell_x, cell_y, cell_z);
+        const f64 c001 = corner(cell_x, cell_y, cell_z + 1);
+        const f64 c010 = corner(cell_x, cell_y + 1, cell_z);
+        const f64 c011 = corner(cell_x, cell_y + 1, cell_z + 1);
+        const f64 c100 = corner(cell_x + 1, cell_y, cell_z);
+        const f64 c101 = corner(cell_x + 1, cell_y, cell_z + 1);
+        const f64 c110 = corner(cell_x + 1, cell_y + 1, cell_z);
+        const f64 c111 = corner(cell_x + 1, cell_y + 1, cell_z + 1);
+
+        // y first, then x, then z.
+        const f64 xz00 = lerp(ty, c000, c010);
+        const f64 xz01 = lerp(ty, c001, c011);
+        const f64 xz10 = lerp(ty, c100, c110);
+        const f64 xz11 = lerp(ty, c101, c111);
+        const f64 z0   = lerp(tx, xz00, xz10);
+        const f64 z1   = lerp(tx, xz01, xz11);
+        return lerp(tz, z0, z1);
+    }
+
+    [[nodiscard]] f64 min_value() const override { return inner_->min_value(); }
+    [[nodiscard]] f64 max_value() const override { return inner_->max_value(); }
+
+private:
+    [[nodiscard]] static constexpr i32 floor_div(i32 value, i32 divisor) noexcept {
+        const i32 quotient = value / divisor;
+        return (value % divisor != 0 && ((value < 0) != (divisor < 0))) ? quotient - 1 : quotient;
+    }
+    [[nodiscard]] static constexpr f64 lerp(f64 t, f64 a, f64 b) noexcept {
+        return a + t * (b - a);
+    }
+
+    [[nodiscard]] f64 corner(i32 cell_x, i32 cell_y, i32 cell_z) const {
+        // Three fields that do not overlap. The first version shifted
+        // thirty-two-bit values by 40 and 16 and XORed them, so x's low bits
+        // sat on top of z's high ones and y's on top of both: different cells
+        // collided and handed each other their values. The terrain came out
+        // two blocks low on average with a tail to eight, which looks exactly
+        // like a noise being slightly wrong.
+        //
+        // The ranges are known: a cell coordinate is a block coordinate over
+        // four, so the world border fits in twenty-four bits, and there are
+        // forty-eight vertical cells.
+        const u64 key = (static_cast<u64>(static_cast<u32>(cell_x) & 0xFFFFFFU) << 40) |
+                        (static_cast<u64>(static_cast<u32>(cell_z) & 0xFFFFFFU) << 16) |
+                        static_cast<u64>(static_cast<u32>(cell_y) & 0xFFFFU);
+        if (const auto found = cache_.find(key); found != cache_.end()) {
+            return found->second;
+        }
+        const FunctionContext at{cell_x * cell_width_, min_y_ + cell_y * cell_height_,
+                                 cell_z * cell_width_};
+        const f64             value = inner_->compute(at);
+        // Bounded, so a long generation run does not grow without limit. A
+        // chunk needs about 1225 corners per interpolated node; clearing at a
+        // hundred thousand keeps several chunks' worth and costs a refill.
+        if (cache_.size() > 100000) {
+            cache_.clear();
+        }
+        cache_.emplace(key, value);
+        return value;
+    }
+
+    DensityRef inner_;
+    i32        cell_width_{4};
+    i32        cell_height_{8};
+    i32        min_y_{-64};
+
+    mutable std::unordered_map<u64, f64> cache_;
+};
+
+/// The old terrain noise, as a node.
+class BlendedNoiseNode final : public DensityFunction {
+public:
+    explicit BlendedNoiseNode(std::shared_ptr<const BlendedNoise> noise)
+        : noise_(std::move(noise)) {}
+
+    [[nodiscard]] f64 compute(const FunctionContext& at) const override {
+        return noise_->value(at.x, at.y, at.z);
+    }
+    [[nodiscard]] f64 min_value() const override { return -noise_->max_value(); }
+    [[nodiscard]] f64 max_value() const override { return noise_->max_value(); }
+
+private:
+    std::shared_ptr<const BlendedNoise> noise_;
+};
+
 }  // namespace
 
 DensityFunction::~DensityFunction() = default;
@@ -478,6 +600,10 @@ struct NoiseRouter::Impl {
     std::vector<std::unique_ptr<simdjson::padded_string>> documents;
 
     math::XoroshiroPositionalFactory factory{0, 0};
+    /// The blended noise gets a generator forked from the world seed's own
+    /// stream, not from the positional factory. Kept here because the fork
+    /// consumes state and must happen exactly once.
+    math::XoroshiroRandomSource blended_random{0};
 
     std::unordered_map<std::string, std::shared_ptr<const NormalNoise>> noises;
     std::unordered_map<std::string, DensityRef>                         functions;
@@ -499,6 +625,8 @@ struct NoiseRouter::Impl {
     [[nodiscard]] std::expected<std::shared_ptr<const NormalNoise>, DensityError> noise(
         std::string_view name);
     [[nodiscard]] std::expected<DensityRef, DensityError> parse(Json node);
+    /// The cell grid, read from the settings before the router is parsed.
+    /// `interpolated` needs it and nothing else does.
     [[nodiscard]] std::expected<DensityRef, DensityError> reference(std::string_view name);
     [[nodiscard]] std::expected<Spline::Point, DensityError> spline_point(Json node);
     [[nodiscard]] std::expected<DensityRef, DensityError> spline(Json node);
@@ -666,6 +794,7 @@ std::expected<DensityRef, DensityError> NoiseRouter::Impl::spline(Json node) {
 }
 
 std::expected<DensityRef, DensityError> NoiseRouter::Impl::parse(Json node) {
+
     // A bare number is a constant, and a bare string is a reference. Both are
     // common enough in the data that treating them as errors would reject the
     // vanilla files outright.
@@ -790,15 +919,30 @@ std::expected<DensityRef, DensityError> NoiseRouter::Impl::parse(Json node) {
         if (!inner) return inner;
         return wrap(std::make_shared<const FlatCache>(*inner));
     }
-    if (kind == "cache_2d" || kind == "cache_once" || kind == "cache_all_in_cell" ||
-        kind == "interpolated") {
-        // `interpolated` is NOT transparent — it samples on the coarse cell
-        // grid and interpolates between. Point by point there is nothing to
-        // interpolate, so this returns the direct value: exact for the climate
-        // functions, and not for the terrain density, which needs the grid.
+    if (kind == "interpolated") {
+        auto inner = argument("argument");
+        if (!inner) return inner;
+        return wrap(std::make_shared<const Interpolated>(*inner, this->cell_width,
+                                                        this->cell_height, this->min_y));
+    }
+    if (kind == "cache_2d" || kind == "cache_once" || kind == "cache_all_in_cell") {
+        // These three really are transparent: two memoise and one caches by
+        // column over an argument that does not depend on y. Same number, so
+        // for a point-by-point evaluator they are the identity and the
+        // difference is speed.
         auto inner = argument("argument");
         if (!inner) return inner;
         return wrap(std::make_shared<const Passthrough>(*inner));
+    }
+    if (kind == "old_blended_noise") {
+        // Its own generator, forked from the world seed's — not the positional
+        // factory the named noises use. The fork consumes two draws, so its
+        // position in the sequence is part of what the seed decides.
+        auto forked = std::make_shared<BlendedNoise>(BlendedNoise::create(
+            blended_random, number_at("xz_scale", 1.0), number_at("y_scale", 1.0),
+            number_at("xz_factor", 80.0), number_at("y_factor", 160.0),
+            number_at("smear_scale_multiplier", 8.0)));
+        return wrap(std::make_shared<const BlendedNoiseNode>(std::move(forked)));
     }
     if (kind == "weird_scaled_sampler") {
         std::string_view noise_name;
@@ -855,7 +999,8 @@ std::expected<NoiseRouter, DensityError> NoiseRouter::load(const std::filesystem
     // world seed. That fork is the whole of "the same seed gives the same
     // world".
     math::XoroshiroRandomSource source{seed};
-    impl.factory = source.fork_positional();
+    impl.factory        = source.fork_positional();
+    impl.blended_random = source.fork();
 
     auto document = impl.read(data_root / "worldgen" / "noise_settings" /
                               (std::string(settings) + ".json"));

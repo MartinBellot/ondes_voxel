@@ -14,6 +14,8 @@
 #include "ov/nbt/binary.hpp"
 #include "ov/nbt/region.hpp"
 #include "ov/worldgen/biome_source.hpp"
+#include "ov/registry/block_states.hpp"
+#include "ov/worldgen/chunk_generator.hpp"
 #include "ov/worldgen/density.hpp"
 
 #include <fmt/format.h>
@@ -48,6 +50,9 @@ struct Options {
     /// Print one representative surface position per biome instead of
     /// comparing. What the renderer needs to be pointed at.
     bool locate{false};
+    /// Compare blocks rather than biomes.
+    bool terrain{false};
+    std::filesystem::path pack{"data/vanilla/1.20.1/registry.ovpack"};
 };
 
 [[nodiscard]] Options parse(int argc, char** argv) {
@@ -71,9 +76,132 @@ struct Options {
             options.sweep = value("--sweep=");
         } else if (argument == "--locate") {
             options.locate = true;
+        } else if (argument == "--terrain") {
+            options.terrain = true;
+        } else if (argument.starts_with("--pack=")) {
+            options.pack = value("--pack=");
         }
     }
     return options;
+}
+
+/// The block name at a position inside a chunk's NBT, or nullptr.
+///
+/// Read straight out of the palette rather than through a Chunk, because the
+/// comparison is about names and a Chunk would resolve them through our own
+/// registry — which would quietly turn a block we do not know into air.
+[[nodiscard]] const std::string_view* block_at(const nbt::Document& document, i32 local_x, i32 y,
+                                               i32 local_z) {
+    static std::string_view result;
+    const nbt::Tag*         list = document.root.find("sections");
+    if (list == nullptr || list->type() != nbt::TagType::List) {
+        return nullptr;
+    }
+    for (const nbt::Tag& section : *list->list()) {
+        const nbt::Tag* y_tag = section.find("Y");
+        if (y_tag == nullptr || static_cast<i32>(y_tag->as_i64()) != (y >> 4)) {
+            continue;
+        }
+        const nbt::Tag* states = section.find("block_states");
+        if (states == nullptr) {
+            return nullptr;
+        }
+        const nbt::Tag* palette = states->find("palette");
+        if (palette == nullptr || palette->type() != nbt::TagType::List ||
+            palette->list()->empty()) {
+            return nullptr;
+        }
+        const auto& entries = *palette->list();
+        usize       index   = 0;
+        if (entries.size() > 1) {
+            const nbt::Tag* data = states->find("data");
+            if (data == nullptr) {
+                return nullptr;
+            }
+            const auto* longs = data->get_if<nbt::Tag::LongArray>();
+            if (longs == nullptr) {
+                return nullptr;
+            }
+            const usize bits =
+                std::max<usize>(4, static_cast<usize>(std::bit_width(entries.size() - 1)));
+            const usize cell =
+                static_cast<usize>(((y & 15) * 16 + local_z) * 16 + local_x);
+            const usize per_word = 64 / bits;
+            const usize word     = cell / per_word;
+            if (word >= longs->size()) {
+                return nullptr;
+            }
+            index = static_cast<usize>((static_cast<u64>((*longs)[word]) >>
+                                        ((cell % per_word) * bits)) &
+                                       ((1ULL << bits) - 1));
+        }
+        if (index >= entries.size()) {
+            return nullptr;
+        }
+        const nbt::Tag* name = entries[index].find("Name");
+        if (name == nullptr) {
+            return nullptr;
+        }
+        result = name->as_string();
+        return &result;
+    }
+    return nullptr;
+}
+
+/// Does this block count as terrain?
+///
+/// Stone and its relatives only. Grass, dirt and sand are put there by the
+/// surface rules, which run after the noise; counting them would measure a
+/// stage this comparison is not about.
+[[nodiscard]] bool is_solid_name(std::string_view name) {
+    if (name == "minecraft:air" || name == "minecraft:cave_air" ||
+        name == "minecraft:void_air" || name == "minecraft:water" ||
+        name == "minecraft:lava") {
+        return false;
+    }
+    // Trees are not terrain. They are placed by the feature stage, which runs
+    // after the noise and is not implemented, so counting their trunks and
+    // leaves as solid measures a stage this comparison is not about — and it
+    // is most of what sits above the surface, which is exactly where the
+    // "missing solid" figure piled up before this list existed.
+    constexpr std::array<std::string_view, 8> kFeatureParts{
+        "_log", "_leaves", "_wood", "vine", "_stem", "mushroom", "coral", "sapling"};
+    for (const std::string_view part : kFeatureParts) {
+        if (name.find(part) != std::string_view::npos) {
+            return false;
+        }
+    }
+    // The single block of vegetation that sits on almost every grass block.
+    // Matched exactly rather than by substring: "grass_block" is terrain and
+    // "short_grass" is not, and a substring test cannot tell them apart.
+    constexpr std::array<std::string_view, 16> kPlants{
+        "minecraft:short_grass", "minecraft:grass",     "minecraft:tall_grass",
+        "minecraft:fern",        "minecraft:large_fern", "minecraft:dead_bush",
+        "minecraft:snow",        "minecraft:sugar_cane", "minecraft:cactus",
+        "minecraft:bamboo",      "minecraft:seagrass",   "minecraft:tall_seagrass",
+        "minecraft:kelp",        "minecraft:kelp_plant", "minecraft:lily_pad",
+        "minecraft:moss_carpet"};
+    for (const std::string_view plant : kPlants) {
+        if (name == plant) {
+            return false;
+        }
+    }
+    // Flowers, of which there are about twenty and all of which end the same
+    // way in practice.
+    constexpr std::array<std::string_view, 12> kFlowers{
+        "minecraft:dandelion",  "minecraft:poppy",       "minecraft:blue_orchid",
+        "minecraft:allium",     "minecraft:azure_bluet", "minecraft:oxeye_daisy",
+        "minecraft:cornflower", "minecraft:lily_of_the_valley", "minecraft:sunflower",
+        "minecraft:lilac",      "minecraft:rose_bush",   "minecraft:peony"};
+    for (const std::string_view flower : kFlowers) {
+        if (name == flower) {
+            return false;
+        }
+    }
+    if (name.find("_tulip") != std::string_view::npos) {
+        return false;
+    }
+    return true;
 }
 
 }  // namespace
@@ -98,8 +226,42 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::map<std::string, std::array<i32, 3>>                   located;
+    std::map<std::string, std::array<i32, 4>>                   located;
     std::vector<std::pair<worldgen::ClimatePoint, std::string>> recorded;
+    // The terrain comparison needs the block registry, which the biome one
+    // does not.
+    std::optional<registry::BlockRegistry> pack;
+    std::optional<worldgen::ChunkGenerator> generator;
+    if (options.terrain) {
+        auto loaded = registry::BlockRegistry::load(options.pack);
+        if (!loaded) {
+            OV_LOG_ERROR("registry {}: run tools/ov_datagen first", options.pack.string());
+            return 1;
+        }
+        pack.emplace(std::move(*loaded));
+        generator.emplace(*router, *biomes, *pack);
+    }
+    /// Solid where the game is solid, and the two ways of being wrong. They
+    /// mean different things: stone where the game has air is a cave nobody
+    /// carved, and air where the game has stone would be the noise itself
+    /// being wrong.
+    usize blocks_seen = 0;
+    usize blocks_agreed = 0;
+    usize extra_solid = 0;
+    usize missing_solid = 0;
+    /// Disagreements by height, in bands of 32. Where they sit says what they
+    /// are: near the surface they are trees and the surface rules, deep down
+    /// they are caves nobody carved.
+    /// What the blocks actually are. Guessing at them cost three rounds of
+    /// excluding the wrong things.
+    std::map<std::string, usize> extra_names;
+    std::map<std::string, usize> missing_names;
+    /// Our surface height minus theirs, from eight below to eight above.
+    std::vector<std::string> probes;
+    std::array<usize, 17>    height_delta{};
+    std::array<usize, 10> extra_by_band{};
+    std::array<usize, 10> missing_by_band{};
+
     usize cells    = 0;
     usize agreed   = 0;
     usize chunks   = 0;
@@ -194,6 +356,87 @@ int main(int argc, char** argv) {
             const auto chunk_x = static_cast<i32>(x_pos->as_i64());
             const auto chunk_z = static_cast<i32>(z_pos->as_i64());
 
+            if (options.terrain) {
+                // Only the columns, not every block: a chunk is 98304 blocks
+                // and the density graph is not cheap. Every fourth column in
+                // each direction is 1024 blocks a chunk, which settles the
+                // question without taking an hour.
+                for (i32 sample_z = 0; sample_z < 16; sample_z += 4) {
+                    for (i32 sample_x = 0; sample_x < 16; sample_x += 4) {
+                        const i32 world_x = chunk_x * 16 + sample_x;
+                        const i32 world_z = chunk_z * 16 + sample_z;
+
+                        // The surface height on each side, block by block. A
+                        // constant offset here is a bug in the density; a
+                        // scattered one is roughness the interpolation is
+                        // meant to smooth. The two look identical in a
+                        // percentage.
+                        i32 their_top = -65;
+                        i32 our_top   = -65;
+                        for (i32 probe = 200; probe > -64; --probe) {
+                            if (their_top == -65) {
+                                const auto* at = block_at(*document, sample_x, probe, sample_z);
+                                if (at != nullptr && is_solid_name(*at)) {
+                                    their_top = probe;
+                                }
+                            }
+                            if (our_top == -65 &&
+                                generator->is_solid(world_x, probe, world_z)) {
+                                our_top = probe;
+                            }
+                            if (their_top != -65 && our_top != -65) {
+                                break;
+                            }
+                        }
+                        if (their_top != -65 && our_top != -65) {
+                            const auto slot = static_cast<usize>(
+                                std::clamp(our_top - their_top + 8, 0, 16));
+                            ++height_delta[slot];
+                            // How far off the density actually is at the block
+                            // the game called the surface. A magnitude tells
+                            // apart "a constant is missing" from "the field is
+                            // the wrong shape".
+                            if (probes.size() < 12 && our_top < their_top) {
+                                probes.push_back(fmt::format(
+                                    "  ({:>7},{:>7}) game {:>4}, ours {:>4}, density there "
+                                    "{:+.5f}, one below {:+.5f}",
+                                    world_x, world_z, their_top, our_top,
+                                    generator->density_at(world_x, their_top, world_z),
+                                    generator->density_at(world_x, their_top - 1, world_z)));
+                            }
+                        }
+                        for (i32 height = -64; height < 256; height += 2) {
+                            const auto* named =
+                                block_at(*document, sample_x, height, sample_z);
+                            if (named == nullptr) {
+                                continue;
+                            }
+                            const bool their_solid = is_solid_name(*named);
+                            const bool our_solid =
+                                generator->is_solid(world_x, height, world_z);
+                            ++blocks_seen;
+                            if (their_solid == our_solid) {
+                                ++blocks_agreed;
+                            } else {
+                                const auto band = static_cast<usize>(
+                                    std::clamp((height + 64) / 32, 0, 9));
+                                if (our_solid) {
+                                    ++extra_solid;
+                                    ++extra_by_band[band];
+                                    extra_names[std::string(*named)] += 1;
+                                } else {
+                                    ++missing_solid;
+                                    ++missing_by_band[band];
+                                    missing_names[std::string(*named)] += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+                ++chunks;
+                continue;
+            }
+
             for (const nbt::Tag& section : *list->list()) {
                 const nbt::Tag* y_tag  = section.find("Y");
                 const nbt::Tag* biomes_tag = section.find("biomes");
@@ -255,19 +498,22 @@ int main(int argc, char** argv) {
                     const i32 quart_z = chunk_z * 4 + cz;
                     const i32 quart_y = section_y * 4 + cy;
 
-                    if (options.locate) {
-                        // Surface only: a biome's *look* is decided at the top
-                        // of the world, and pointing a camera at a cave biome's
-                        // cell would frame solid stone.
-                        if (quart_y * 4 < 48 || quart_y * 4 > 200) {
+
+    if (options.locate) {
+                        // Both heights are reported: the cell's own, and the
+                        // surface above it. A surface biome wants the second; a
+                        // cave biome only exists at the first, and pointing a
+                        // camera at the sky above a lush cave frames a forest.
+                        if (quart_y * 4 > 200) {
                             continue;
                         }
                         const std::string name(names[palette_index]);
                         if (!located.contains(name)) {
                             const usize column =
                                 static_cast<usize>((cz * 4) * 16 + (cx * 4));
-                            located.emplace(name, std::array<i32, 3>{quart_x * 4, quart_z * 4,
-                                                                     surface[column & 255]});
+                            located.emplace(name,
+                                            std::array<i32, 4>{quart_x * 4, quart_z * 4,
+                                                               surface[column & 255], quart_y * 4});
                         }
                         ++cells;
                         continue;
@@ -340,9 +586,61 @@ int main(int argc, char** argv) {
         }
     }
 
+                    if (options.terrain) {
+        fmt::print("\nseed {}, {} chunks, {} blocks sampled\n", options.seed, chunks,
+                   blocks_seen);
+        fmt::print("solid/not agreed: {} / {}  ({:.3f} %)\n", blocks_agreed, blocks_seen,
+                   100.0 * static_cast<f64>(blocks_agreed) / static_cast<f64>(blocks_seen));
+        fmt::print("  stone where the game has none: {:>9}  ({:.3f} %)   <- caves and aquifers\n",
+                   extra_solid, 100.0 * static_cast<f64>(extra_solid) /
+                                    static_cast<f64>(blocks_seen));
+        fmt::print("  none where the game has stone: {:>9}  ({:.3f} %)   <- the noise itself\n",
+                   missing_solid, 100.0 * static_cast<f64>(missing_solid) /
+                                      static_cast<f64>(blocks_seen));
+        fmt::print("\nby height:\n  {:>12} {:>12} {:>12}\n", "y", "extra", "missing");
+        for (usize band = 0; band < extra_by_band.size(); ++band) {
+            if (extra_by_band[band] == 0 && missing_by_band[band] == 0) {
+                continue;
+            }
+            fmt::print("  {:>5} .. {:>4} {:>12} {:>12}\n", static_cast<i32>(band) * 32 - 64,
+                       static_cast<i32>(band) * 32 - 33, extra_by_band[band],
+                       missing_by_band[band]);
+        }
+        const auto census = [](std::string_view title, const std::map<std::string, usize>& names) {
+            std::vector<std::pair<std::string, usize>> sorted(names.begin(), names.end());
+            std::sort(sorted.begin(), sorted.end(),
+                      [](const auto& a, const auto& b) { return a.second > b.second; });
+            fmt::print("\n{}\n", title);
+            for (usize i = 0; i < sorted.size() && i < 10; ++i) {
+                fmt::print("  {:>8}  {}\n", sorted[i].second, sorted[i].first);
+            }
+        };
+        fmt::print("\nour surface height minus the game's:\n");
+        usize columns = 0;
+        for (const usize count : height_delta) {
+            columns += count;
+        }
+        for (usize slot = 0; slot < height_delta.size(); ++slot) {
+            if (height_delta[slot] == 0) {
+                continue;
+            }
+            fmt::print("  {:>+3} {:>8}  ({:>6.2f} %)\n", static_cast<i32>(slot) - 8,
+                       height_delta[slot],
+                       100.0 * static_cast<f64>(height_delta[slot]) /
+                           static_cast<f64>(columns));
+        }
+        fmt::print("\nthe density where the game's surface is:\n");
+        for (const auto& line : probes) {
+            fmt::print("{}\n", line);
+        }
+        census("what the game had where we had none:", missing_names);
+        census("what the game had where we had stone:", extra_names);
+        return 0;
+    }
+
     if (options.locate) {
         for (const auto& [name, where] : located) {
-            fmt::print("{} {} {} {}\n", name, where[0], where[1], where[2]);
+            fmt::print("{} {} {} {} {}\n", name, where[0], where[1], where[2], where[3]);
         }
         return 0;
     }

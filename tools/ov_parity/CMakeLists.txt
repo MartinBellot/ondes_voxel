@@ -8,6 +8,7 @@ ov_add_executable(ov_parity
         src/main.cpp
     DEPS
         ov_worldgen
+        ov_registry
         ov_nbt
         fmt::fmt
 )

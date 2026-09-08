@@ -203,6 +203,12 @@ i64 position_seed(i32 x, i32 y, i32 z) noexcept {
     return value >> 16;
 }
 
+XoroshiroRandomSource XoroshiroRandomSource::fork() noexcept {
+    const auto lo = static_cast<u64>(next_long());
+    const auto hi = static_cast<u64>(next_long());
+    return XoroshiroRandomSource{lo, hi};
+}
+
 XoroshiroPositionalFactory XoroshiroRandomSource::fork_positional() noexcept {
     const auto lo = static_cast<u64>(next_long());
     const auto hi = static_cast<u64>(next_long());

@@ -359,9 +359,20 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       *(le routeur et les réglages sont lus depuis les JSON vanilla ; les
       splines sont évaluées **en float**, comme le jeu, parce que c'est d'elles
       que vient la forme à grande échelle du terrain)*
-- [ ] `old_blended_noise` — le bruit de terrain 1.17, dont dépend `final_density`
-- [ ] `NoiseChunk` : échantillonnage sur la grille de cellules et interpolation
-      *(c'est ce qui rend `interpolated` inexact point par point)*
+- [x] `old_blended_noise` — le bruit de terrain 1.17, dont dépend `final_density`
+      *(trois piles d'octaves : deux limites et un sélecteur qui choisit entre
+      elles, ce qui est ce qui donne ses surplombs au terrain 1.17. Ensemencées
+      **en séquence** et non par nom — l'ancien schéma, et c'est pourquoi elles
+      ne peuvent pas réutiliser `PerlinNoise::create`)*
+- [x] `NoiseChunk` : échantillonnage sur la grille de cellules et interpolation
+      *(cellules de 4 blocs de large et 8 de haut ; interpolation y puis x puis
+      z, l'ordre de vanilla — en flottant ce n'est pas le même résultat qu'un
+      autre ordre)*
+- [~] **Les 15 entrées du routeur overworld se construisent** ; le remplissage
+      des chunks donne **97,79 % d'accord solide/air** contre le monde de
+      référence *(1,20 % de pierre en trop = grottes et aquifères non
+      implémentés ; 1,01 % de pierre manquante, dont un décalage systématique
+      de la surface d'environ deux blocs dont la cause n'est pas localisée)*
 - [x] **Multi-noise biome source** : temperature, humidity, continentalness,
       erosion, depth, weirdness
       *(**613857 cellules de biome sur 614400 identiques au vrai jeu** à la

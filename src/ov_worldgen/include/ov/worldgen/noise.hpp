@@ -129,4 +129,54 @@ private:
           max_value_(max_value) {}
 };
 
+/// The terrain noise from before 1.18, still the backbone of the shape.
+///
+/// The density function graph calls it `old_blended_noise` and it is not a
+/// leftover: `final_density` is built on it, so no terrain exists without it.
+///
+/// Three stacks of octaves rather than one. Two of them are limits — a floor
+/// and a ceiling — and the third chooses between them, so the result is an
+/// interpolation whose *blend factor* is itself noise. That is what gives 1.17
+/// terrain its overhangs: a smooth field cannot produce them, and a field that
+/// picks between two smooth fields can.
+///
+/// Its octaves are seeded **in sequence** from one generator, not by name.
+/// That is the older scheme, and it is why this class cannot reuse
+/// PerlinNoise::create: the same amplitudes seeded the two ways give two
+/// different worlds.
+class BlendedNoise {
+public:
+    [[nodiscard]] static BlendedNoise create(math::XoroshiroRandomSource& random, f64 xz_scale,
+                                             f64 y_scale, f64 xz_factor, f64 y_factor,
+                                             f64 smear_scale_multiplier);
+
+    [[nodiscard]] f64 value(i32 x, i32 y, i32 z) const noexcept;
+
+    [[nodiscard]] f64 max_value() const noexcept { return max_value_; }
+
+private:
+    /// A stack of octaves seeded one after another rather than by name.
+    ///
+    /// The highest-frequency octave is created *first* and the rest descend, so
+    /// the order in the generator's stream is the reverse of the array.
+    struct LegacyStack {
+        std::vector<std::unique_ptr<ImprovedNoise>> octaves;
+        i32                                         first_octave{0};
+
+        [[nodiscard]] static LegacyStack create(math::XoroshiroRandomSource& random,
+                                                i32 first_octave, usize count);
+    };
+
+    LegacyStack min_limit_;
+    LegacyStack max_limit_;
+    LegacyStack main_;
+
+    f64 xz_multiplier_{0.0};
+    f64 y_multiplier_{0.0};
+    f64 xz_factor_{0.0};
+    f64 y_factor_{0.0};
+    f64 smear_scale_multiplier_{0.0};
+    f64 max_value_{0.0};
+};
+
 }  // namespace ov::worldgen

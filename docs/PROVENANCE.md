@@ -3190,3 +3190,65 @@ axes étaient déjà justes — et qu'aucune échelle ni aucun décalage sur la
 température ne remontait au-dessus de 88 %, donc que l'erreur n'était pas un
 facteur. Les deux conclusions étaient correctes : l'erreur n'était dans aucun
 axe.
+
+## Le terrain : 97,79 % de la forme, et les deux façons de se tromper
+
+*2026-09-08.*
+
+`old_blended_noise` a levé le dernier blocage : **les quinze entrées du routeur
+overworld se construisent**, `final_density` comprise. Le générateur de chunks
+existe et se mesure.
+
+### Ce que le bruit ancien a de particulier
+
+Trois piles d'octaves, pas une. Deux sont des **limites** — un plancher et un
+plafond — et la troisième choisit entre elles. Le résultat est donc une
+interpolation **dont le facteur de mélange est lui-même du bruit**, et c'est ce
+qui donne au terrain de la 1.17 ses surplombs : un champ lisse ne peut pas en
+produire, un champ qui choisit entre deux champs lisses, si.
+
+Ses octaves sont ensemencées **en séquence** depuis un générateur, pas par nom.
+C'est l'ancien schéma, et c'est pourquoi ce bruit ne peut pas réutiliser
+`PerlinNoise::create` : les mêmes amplitudes ensemencées des deux façons donnent
+deux mondes différents. L'octave de plus haute fréquence est créée **en
+premier** et les autres descendent.
+
+### La grille de cellules
+
+`interpolated` n'est pas transparent, et c'est le seul enveloppeur qui ne l'est
+pas. Le terrain n'est pas évalué bloc par bloc : il l'est aux coins de cellules
+de **4 blocs de large et 8 de haut**, et chaque bloc à l'intérieur est un
+mélange trilinéaire de ses huit coins. L'ordre est **y, puis x, puis z** — celui
+de vanilla, et en flottant ce n'est pas le même résultat qu'un autre ordre.
+
+Un bug corrigé au passage, latent plutôt que visible : la clé du cache des coins
+décalait des valeurs 32 bits de 40 et 16 et les combinait par XOR, si bien que
+les champs se chevauchaient et que des cellules distinctes pouvaient se répondre
+l'une l'autre.
+
+### Le chiffre, et les deux erreurs séparées
+
+**97,79 % d'accord solide/air** sur 153 600 blocs échantillonnés. Ce qui compte
+est que les deux façons de se tromper aient été séparées, parce qu'elles ne
+veulent pas dire la même chose :
+
+| | | |
+|---|---|---|
+| pierre là où le jeu n'en a pas | 1,20 % | air, eau, lave — **grottes et aquifères** |
+| pas de pierre là où le jeu en a | 1,01 % | terre, pierre, herbe — la surface |
+
+Le premier est entièrement expliqué : le recensement des blocs concernés donne
+`air`, `water`, `cave_air`, `lava`. Ce sont les carvers et les aquifères, qui ne
+sont pas implémentés. Ce n'est pas une erreur du bruit, c'est une étape absente.
+
+Le second ne l'est **pas**. Il se concentre au-dessus de y = 64, et la
+distribution des hauteurs de surface est centrée sur **−2 blocs** avec une queue
+jusqu'à −8 : notre terrain est systématiquement un peu plus bas. Sondée au bloc
+que le jeu appelle la surface, notre densité y vaut entre −0,005 et −0,076 — tout
+juste sous le seuil. **La cause n'est pas localisée**, et elle est écrite ici
+plutôt que laissée dans un pourcentage.
+
+Trois hypothèses ont été écartées par mesure : ce ne sont pas les arbres (les
+exclure change 1,38 % en 1,03 %), ce n'est pas la végétation de surface (0,02 %
+de plus), et ce n'est pas le cache d'interpolation (le corriger ne change rien
+sur cette zone).

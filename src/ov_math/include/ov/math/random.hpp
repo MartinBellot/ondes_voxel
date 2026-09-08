@@ -157,6 +157,13 @@ public:
     /// forks is part of what the seed decides.
     [[nodiscard]] XoroshiroPositionalFactory fork_positional() noexcept;
 
+    /// A new generator seeded from two draws of this one.
+    ///
+    /// Distinct from fork_positional and not interchangeable with it: both
+    /// consume two draws, but one yields a generator and the other a factory,
+    /// and worldgen asks for each at particular points in the sequence.
+    [[nodiscard]] XoroshiroRandomSource fork() noexcept;
+
     [[nodiscard]] u64 state_lo() const noexcept { return lo_; }
 
     [[nodiscard]] u64 state_hi() const noexcept { return hi_; }
