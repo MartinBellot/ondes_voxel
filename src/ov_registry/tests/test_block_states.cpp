@@ -481,3 +481,57 @@ TEST_CASE("a slab fills the face it sits against", "[registry][blocks][collision
         REQUIRE(r->face_is_sturdy(with("double"), static_cast<Face>(face)));
     }
 }
+
+TEST_CASE("light emission is per state", "[registry][blocks][light]") {
+    if (loaded_registry() == nullptr) {
+        SKIP("no registry pack");
+    }
+    const auto* r = loaded_registry();
+
+    const auto of = [&](std::string_view name) {
+        const auto block = r->find_block(name);
+        REQUIRE(block.has_value());
+        return r->light_emission(r->default_state(*block));
+    };
+
+    // Read out of a windowless room on a real server: the value the game wrote
+    // into the block's own cell is what it gives off.
+    REQUIRE(of("minecraft:glowstone") == 15);
+    REQUIRE(of("minecraft:sea_lantern") == 15);
+    REQUIRE(of("minecraft:shroomlight") == 15);
+    REQUIRE(of("minecraft:torch") == 14);
+    REQUIRE(of("minecraft:wall_torch") == 14);
+    REQUIRE(of("minecraft:end_rod") == 14);
+    REQUIRE(of("minecraft:crying_obsidian") == 10);
+    REQUIRE(of("minecraft:soul_torch") == 10);
+    REQUIRE(of("minecraft:soul_lantern") == 10);
+    REQUIRE(of("minecraft:enchanting_table") == 7);
+    REQUIRE(of("minecraft:redstone_torch") == 7);
+    REQUIRE(of("minecraft:magma_block") == 3);
+    REQUIRE(of("minecraft:brewing_stand") == 1);
+    REQUIRE(of("minecraft:stone") == 0);
+    REQUIRE(of("minecraft:air") == 0);
+
+    // And the reason it cannot be a table per block: a candle's light is three
+    // times how many are in the cluster, and an unlit one gives nothing.
+    const auto candle = r->find_block("minecraft:candle");
+    REQUIRE(candle.has_value());
+    const auto count = r->find_property(*candle, "candles");
+    const auto lit   = r->find_property(*candle, "lit");
+    REQUIRE(count.has_value());
+    REQUIRE(lit.has_value());
+
+    const auto with_lit = [&](u16 candles, std::string_view burning) {
+        auto       state = r->first_state(*candle);
+        const auto index = std::ranges::find(lit->values, burning);
+        REQUIRE(index != lit->values.end());
+        state = r->with_property(state, *lit,
+                                 static_cast<u16>(std::distance(lit->values.begin(), index)));
+        return r->light_emission(r->with_property(state, *count, candles));
+    };
+
+    for (u16 candles = 0; candles < 4; ++candles) {
+        REQUIRE(with_lit(candles, "true") == (candles + 1) * 3);
+        REQUIRE(with_lit(candles, "false") == 0);
+    }
+}

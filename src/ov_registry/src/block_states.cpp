@@ -91,10 +91,13 @@ std::expected<BlockRegistry, RegistryError> BlockRegistry::from_bytes(std::vecto
     const auto* shape_records =
         pack_at<ShapeRecord>(data, header.shapes_offset, header.shape_count);
     const auto* state_shapes = pack_at<u16>(data, header.state_shapes_offset, header.state_count);
+    // One nibble a state would halve it, and the whole table is 24 kB. Bytes
+    // until something measures the difference.
+    const auto* emission = pack_at<u8>(data, header.emission_offset, header.state_count);
 
     if (blocks == nullptr || props == nullptr || values == nullptr || states == nullptr ||
         flags == nullptr || fluids == nullptr || hardness == nullptr || shape_boxes == nullptr ||
-        shape_records == nullptr || state_shapes == nullptr) {
+        shape_records == nullptr || state_shapes == nullptr || emission == nullptr) {
         return std::unexpected{RegistryError::Corrupt};
     }
     if (header.strings_offset + header.string_bytes > data.size()) {
@@ -122,6 +125,10 @@ std::expected<BlockRegistry, RegistryError> BlockRegistry::from_bytes(std::vecto
                   header.shape_count * 2};
     registry.state_shapes_ =
         std::span{reinterpret_cast<const u16*>(registry.data_.data() + header.state_shapes_offset),
+                  header.state_count};
+
+    registry.emission_ =
+        std::span{reinterpret_cast<const u8*>(registry.data_.data() + header.emission_offset),
                   header.state_count};
 
     registry.loot_ = LootData{
@@ -310,6 +317,10 @@ bool BlockRegistry::face_is_sturdy(BlockStateId state, Face face) const noexcept
         return false;
     }
     return (record->sturdy >> static_cast<u16>(face) & 1U) != 0;
+}
+
+u8 BlockRegistry::light_emission(BlockStateId state) const noexcept {
+    return state.value() < emission_.size() ? emission_[state.value()] : u8{0};
 }
 
 f32 BlockRegistry::hardness(BlockId block) const noexcept {

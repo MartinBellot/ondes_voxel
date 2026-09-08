@@ -52,7 +52,7 @@ MAGIC = b"OVPK"
 # Bumped by hand whenever the layout changes, so a stale cache is detected
 # rather than misread. A mismatched cache read as if it were current is far
 # worse than no cache at all.
-FORMAT_VERSION = 9
+FORMAT_VERSION = 10
 
 _loot_report = ""
 
@@ -87,7 +87,7 @@ def align8(data: bytearray) -> None:
 def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
           opacity_doc: dict, stacks_doc: dict, motion_doc: dict,
           hardness_doc: dict, loot_dir, loot_map_doc: dict,
-          collision_doc: dict) -> bytes:
+          collision_doc: dict, emission_doc: dict) -> bytes:
     blocks = blocks_doc["blocks"]
     state_count = blocks_doc["state_count"]
 
@@ -255,6 +255,10 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
         shape_records.append((first, len(boxes), collision.sturdy_bits(boxes)))
     state_shapes = b"".join(struct.pack("<H", index) for index in collision_doc["states"])
 
+    # Un octet par état. Un demi-octet suffirait — les valeurs vont de 0 à 15 —
+    # mais la table entière fait 24 ko et rien n'a encore mesuré la différence.
+    emission_bytes = bytes(min(15, v) for v in emission_doc["per_state"])
+
     string_blob = strings.blob()
 
     # ── Assemble ────────────────────────────────────────────────────────────
@@ -296,6 +300,10 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
 
     state_shapes_offset = HEADER_SIZE + len(body)
     body += state_shapes
+    align8(body)
+
+    emission_offset = HEADER_SIZE + len(body)
+    body += emission_bytes
     align8(body)
 
     hardness_offset = HEADER_SIZE + len(body)
@@ -350,7 +358,7 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
     align8(body)
 
     header = struct.pack(
-        "<4s" + "I" * 43,
+        "<4s" + "I" * 44,
         MAGIC,
         FORMAT_VERSION,
         len(block_records),
@@ -394,6 +402,7 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
         state_shapes_offset,
         len(shape_boxes) // 6,
         len(shape_records),
+        emission_offset,
         0,  # reserved
     )
     assert len(header) <= HEADER_SIZE
@@ -435,12 +444,15 @@ def main() -> int:
         loot_map_doc = json.load(f)
     with open(NORMALIZED / "collision_shapes.json") as f:
         collision_doc = json.load(f)
+    with open(NORMALIZED / "light_emission.json") as f:
+        emission_doc = json.load(f)
     loot_dir = (NORMALIZED.parent / "generated" / "data" / "minecraft" / "loot_tables" / "blocks")
     if not loot_dir.is_dir():
         sys.exit(f"error: {loot_dir} not found. Run tools/ov_datagen/datagen.py first.")
 
     payload = build(blocks_doc, registries_doc, tags_doc, opacity_doc, stacks_doc,
-                    motion_doc, hardness_doc, loot_dir, loot_map_doc, collision_doc)
+                    motion_doc, hardness_doc, loot_dir, loot_map_doc, collision_doc,
+                    emission_doc)
     tag_records_count = [t for g in tags_doc["tags"].values() for t in g]
     member_count_total = sum(len(v) for g in tags_doc["tags"].values() for v in g.values())
     OUTPUT.write_bytes(payload)
@@ -457,13 +469,14 @@ def main() -> int:
     print(f"    loot tables .... {_loot_report}")
     print(f"    collision ...... {len(collision_doc['shapes'])} shapes, "
           f"{sum(len(s) for s in collision_doc['shapes'])} boxes")
+    print(f"    light .......... {emission_doc['covered']} states measured")
     print(f"    size ........... {len(payload):,} bytes")
 
     # Byte-stability is the property the manifest depends on. Checking it here
     # costs nothing and catches a non-deterministic dict order immediately.
     if build(blocks_doc, registries_doc, tags_doc, opacity_doc, stacks_doc,
-             motion_doc, hardness_doc, loot_dir, loot_map_doc,
-             collision_doc) != payload:
+             motion_doc, hardness_doc, loot_dir, loot_map_doc, collision_doc,
+             emission_doc) != payload:
         sys.exit("error: emitter is not deterministic")
     print("    deterministic .. yes")
     return 0

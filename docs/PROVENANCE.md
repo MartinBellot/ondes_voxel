@@ -2374,3 +2374,47 @@ décimale. C'est exactement l'usage qu'on veut d'une documentation : elle nomme
 un terme qu'une mesure seule aurait laissé dans le bruit, et la mesure confirme
 qu'il s'agit bien de celui-là.
 
+---
+
+## Émission lumineuse : lire ce que le jeu a écrit
+
+Combien de lumière un bloc donne n'est nulle part dans les rapports officiels.
+Mais le jeu écrit la lumière qu'il calcule dans chaque chunk qu'il sauvegarde,
+et **la valeur dans la case du bloc est son émission**. Il suffit donc d'une
+salle sans ciel, d'une cellule par bloc, et de relire.
+
+Deux tentatives ont échoué avant celle-ci, chacune pour une raison qui vaut
+d'être notée.
+
+**Les cellules trop proches.** Une première version les espaçait de quelques
+blocs. La lumière ne s'additionne pas — elle prend le maximum — mais deux
+sources à portée l'une de l'autre donnent quand même un relevé qui n'est pas
+celui qu'on croit. Dix-sept blocs d'écart : une source de quinze à seize cases
+ne contribue plus rien.
+
+**La coque trop juste.** La salle est creusée dans un bloc de pierre qui
+débordait de quatre blocs. Or la lumière du ciel entre par la tranche et se
+propage quinze cases vers l'intérieur : toutes les cellules de bordure lisaient
+la somme d'une émission et d'un reste de jour. Cinquante-quatre blocs sortaient
+faux, **dont la torche des âmes, qui éclaire à dix et rendait zéro** — une
+valeur parfaitement plausible pour un bloc dont on ne sait rien. Avec vingt
+blocs de marge, il en reste vingt-sept, et ce sont exactement ceux qu'on ne peut
+pas poser sur un sol de pierre : cactus, coraux, éventails muraux.
+
+Deux limites du jeu ont aussi coûté une passe : `forceload` plafonne à 256
+chunks par commande et `fill` à 32 768 blocs. Les dépasser échoue **en
+silence**, et le relevé rend alors une salle à moitié creusée dont la moitié des
+cases n'existe pas.
+
+### Par état, comme le reste
+
+Une bougie éclaire à trois fois leur nombre, un minerai selon qu'il est allumé,
+une ancre de résurrection selon sa charge. Une seconde passe donne une cellule
+à chaque état des soixante familles concernées — 479 états — et **corrige 241
+valeurs** que la passe par bloc avait laissées à celle de l'état par défaut.
+
+**23 282 états sur 24 135.** Les valeurs sont celles qu'on attend une fois
+qu'on les voit : verre luisant 15, torche 14, tige d'ender 14, obsidienne
+pleureuse 10, table d'enchantement 7, torche de redstone 7, bloc de magma 3,
+alambic 1.
+

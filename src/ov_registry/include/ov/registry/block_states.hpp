@@ -243,6 +243,15 @@ public:
     /// the connection rule rebuilt from these shapes reproduces every one.
     [[nodiscard]] bool face_is_sturdy(BlockStateId state, Face face) const noexcept;
 
+    /// How much light this state gives off, 0 to 15.
+    ///
+    /// Per state and not per block: a redstone ore lit by a footstep, a candle
+    /// by how many are in the cluster, a respawn anchor by its charge. Nothing
+    /// in Mojang's reports carries it — it is Java code — so it was read out of
+    /// the light the game itself wrote into a windowless room. See
+    /// docs/PROVENANCE.md.
+    [[nodiscard]] u8 light_emission(BlockStateId state) const noexcept;
+
     /// The compiled loot tables, indexed by block.
     ///
     /// Handed out as plain arrays rather than as an evaluator: the rules for
@@ -279,6 +288,7 @@ private:
     std::span<const Box>          boxes_;
     std::span<const u32>          shape_records_;
     std::span<const u16>          state_shapes_;
+    std::span<const u8>           emission_;
     std::string_view              strings_blob_;
     const void*                   header_{nullptr};
 };

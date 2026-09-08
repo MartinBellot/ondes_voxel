@@ -167,6 +167,106 @@ i32 sky_floor(const world::Chunk& chunk, usize x, usize z, i32 top) {
     return chunk.shape().min_y;
 }
 
+/// Fill in the light the blocks themselves give off.
+///
+/// Separate from the sky pass and stored in its own nibble array, because the
+/// two answer different questions: sky light is what reaches a cell from above
+/// and block light is what a torch puts there. A client shown one in place of
+/// the other lights caves like noon.
+///
+/// The emission is per state — a candle by how many are in the cluster, an ore
+/// by whether it is lit — and it is measured, not guessed.
+void relight_blocks(world::Chunk& chunk, const registry::BlockRegistry& blocks) {
+    const auto shape = chunk.shape();
+
+    struct Cell {
+        u8  x;
+        i32 y;
+        u8  z;
+    };
+
+    const auto light_at = [&](usize x, i32 y, usize z) -> u8 {
+        const world::ChunkSection* section = chunk.section_for_y(y);
+        return section == nullptr ? 0
+                                  : section->block_light().get(
+                                        world::section_index(x, static_cast<usize>(y & 15), z));
+    };
+    const auto set_light = [&](usize x, i32 y, usize z, u8 value) {
+        world::ChunkSection* section = chunk.section_for_y(y);
+        if (section != nullptr) {
+            section->block_light().set(world::section_index(x, static_cast<usize>(y & 15), z),
+                                       value);
+        }
+    };
+
+    std::vector<Cell> frontier;
+
+    // Clear first, then seed. Relighting without clearing leaves the light of a
+    // torch that was broken, which is invisible until someone walks back into
+    // the room they lit yesterday.
+    for (usize i = 0; i < shape.section_count(); ++i) {
+        world::ChunkSection* section = chunk.section_for_y(shape.min_y + static_cast<i32>(i) * 16);
+        if (section == nullptr) {
+            continue;
+        }
+        for (usize index = 0;
+             index < world::kSectionSize * world::kSectionSize * world::kSectionSize; ++index) {
+            section->block_light().set(index, 0);
+        }
+    }
+
+    for (usize z = 0; z < 16; ++z) {
+        for (usize x = 0; x < 16; ++x) {
+            for (i32 y = shape.min_y; y <= shape.max_y(); ++y) {
+                const u8 emission = blocks.light_emission(chunk.get_block(x, y, z));
+                if (emission > 0) {
+                    set_light(x, y, z, emission);
+                    frontier.push_back(Cell{static_cast<u8>(x), y, static_cast<u8>(z)});
+                }
+            }
+        }
+    }
+
+    for (usize head = 0; head < frontier.size(); ++head) {
+        const Cell cell    = frontier[head];
+        const u8   current = light_at(cell.x, cell.y, cell.z);
+        if (current <= 1) {
+            continue;
+        }
+        const u8 spread = static_cast<u8>(current - 1);
+
+        const std::array<Cell, 6> neighbours{{
+            {static_cast<u8>(cell.x - 1), cell.y, cell.z},
+            {static_cast<u8>(cell.x + 1), cell.y, cell.z},
+            {cell.x, cell.y, static_cast<u8>(cell.z - 1)},
+            {cell.x, cell.y, static_cast<u8>(cell.z + 1)},
+            {cell.x, cell.y - 1, cell.z},
+            {cell.x, cell.y + 1, cell.z},
+        }};
+
+        for (const Cell& next : neighbours) {
+            if (next.x >= 16 || next.z >= 16 || next.y < shape.min_y || next.y > shape.max_y()) {
+                continue;
+            }
+            if (stops_sky_light(&blocks, chunk.get_block(next.x, next.y, next.z))) {
+                continue;
+            }
+            if (light_at(next.x, next.y, next.z) >= spread) {
+                continue;
+            }
+            set_light(next.x, next.y, next.z, spread);
+            frontier.push_back(next);
+        }
+    }
+
+    for (usize i = 0; i < shape.section_count(); ++i) {
+        world::ChunkSection* section = chunk.section_for_y(shape.min_y + static_cast<i32>(i) * 16);
+        if (section != nullptr) {
+            section->block_light().compact();
+        }
+    }
+}
+
 void relight_chunk(world::Chunk& chunk) {
     const auto  shape   = chunk.shape();
     const auto& surface = chunk.heightmap(world::HeightmapType::WorldSurface);
@@ -488,6 +588,9 @@ struct Superflat {
         // use. Two code paths that compute light differently agree right up
         // until someone digs.
         relight_chunk(chunk);
+        if (blocks != nullptr) {
+            relight_blocks(chunk, *blocks);
+        }
         return chunk;
     }
 };
@@ -1197,7 +1300,17 @@ int main(int argc, char** argv) {
                     const auto version = world::chunk_data_version(*document);
                     if (version == world::kDataVersion1201) {
                         if (auto loaded = world::from_nbt(*document, codec_context)) {
-                            return chunk_cache.emplace(key, std::move(*loaded)).first->second;
+                            world::Chunk& placed =
+                                chunk_cache.emplace(key, std::move(*loaded)).first->second;
+                            // A saved chunk carries the light it was written
+                            // with, which may have come from another
+                            // implementation. Recomputing costs a pass and
+                            // removes a whole class of "the cave is lit and I
+                            // do not know why".
+                            if (blocks) {
+                                relight_blocks(placed, *blocks);
+                            }
+                            return placed;
                         }
                     } else {
                         OV_LOG_ERROR("chunk {},{} was written by data version {} — this is {}", cx,
@@ -1576,6 +1689,20 @@ int main(int argc, char** argv) {
                     return found == chunk_cache.end() ? nullptr : &found->second;
                 },
                 chunk_x, chunk_z);
+
+            // Block light too, chunk by chunk. A torch placed at a border lights
+            // the chunk next door, so the whole neighbourhood is redone rather
+            // than only the one that changed.
+            if (blocks) {
+                for (i32 dz = -1; dz <= 1; ++dz) {
+                    for (i32 dx = -1; dx <= 1; ++dx) {
+                        const auto found = chunk_cache.find(chunk_key(chunk_x + dx, chunk_z + dz));
+                        if (found != chunk_cache.end()) {
+                            relight_blocks(found->second, *blocks);
+                        }
+                    }
+                }
+            }
 
             for (i32 dz = -1; dz <= 1; ++dz) {
                 for (i32 dx = -1; dx <= 1; ++dx) {

@@ -23,7 +23,7 @@ namespace ov::registry {
 /// were current is far worse than no cache: the ids would be plausible and
 /// wrong, and nothing would report an error until a vanilla client crashed on
 /// an entity type that does not exist.
-inline constexpr u32 kFormatVersion = 9;
+inline constexpr u32 kFormatVersion = 10;
 
 /// Grew past 128 when the loot tables arrived.
 inline constexpr u32 kHeaderSize = 256;
@@ -79,6 +79,9 @@ struct PackHeader {
     u32 state_shapes_offset;
     u32 box_count;
     u32 shape_count;
+
+    /// One byte per state: the light it gives off, 0 to 15.
+    u32 emission_offset;
 
     u32 reserved;
 };

@@ -170,7 +170,8 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] Générateur superflat
 - [x] Lumière du ciel : sunlight direct + propagation par flood fill *(intra-chunk)*
 - [x] Propagation de lumière inter-chunks *(voisinage 3×3 chargé)*
-- [ ] Lumière de bloc et suppression incrémentale
+- [x] Lumière de bloc : émission mesurée par état, propagation depuis les sources
+- [ ] Suppression incrémentale de la lumière (aujourd'hui le voisinage est refait en entier)
 - [x] Tableaux de lumière nullables à valeur uniforme (divise l'empreinte par 2)
 - [x] Heightmaps : stockage, packing 9 bits, sémantique vérifiée sur monde réel
 - [x] `WORLD_SURFACE` calculé et maintenu incrémentalement *(air suffit)*
