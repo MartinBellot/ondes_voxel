@@ -29,6 +29,7 @@ ov_add_library(ov_render
         src/biome_colours.cpp
         src/block_models.cpp
         src/camera.cpp
+        src/environment.cpp
         src/chunk_mesher.cpp
         src/frustum.cpp
         src/block_state_model.cpp
@@ -58,6 +59,7 @@ ov_add_test(test_ov_render
         tests/test_biome_colours.cpp
         tests/test_block_state_model.cpp
         tests/test_camera.cpp
+        tests/test_environment.cpp
         tests/test_chunk_mesher.cpp
         tests/test_frustum.cpp
         tests/test_mesher.cpp

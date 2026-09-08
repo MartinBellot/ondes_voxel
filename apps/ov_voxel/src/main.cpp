@@ -23,6 +23,7 @@
 #include "ov/render/biome_colours.hpp"
 #include "ov/render/block_models.hpp"
 #include "ov/render/camera.hpp"
+#include "ov/render/environment.hpp"
 #include "ov/render/chunk_mesher.hpp"
 #include "ov/render/frustum.hpp"
 #include "ov/rhi/device.hpp"
@@ -32,6 +33,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -70,6 +72,17 @@ struct Options {
     bool vsync{true};
     /// Draw the terrain the old way, one call a section, for comparison.
     bool indirect{true};
+    /// Time of day in ticks. 6000 is noon, 18000 midnight.
+    i64 time{6000};
+    /// Let the clock run at the game's twenty ticks a second, so a sunset can
+    /// be watched rather than posed.
+    bool daylight_cycle{true};
+    /// Push the fog past the far plane. A diagnostic, like --no-cull: when the
+    /// whole screen is one colour the first question is whether the terrain
+    /// drew and the fog ate it, or whether it never drew at all.
+    bool fog{true};
+    /// The brightness slider, 0 Moody to 1 Bright. 1.20.1 defaults to 0.5.
+    f32 gamma{0.5F};
     /// x,y,z,yaw,pitch. Exists so a face can be put in front of the camera and
     /// looked at, which is how the questions a unit test cannot answer — is
     /// this texture mirrored? — actually get settled.
@@ -119,6 +132,14 @@ struct Options {
             options.vsync = false;
         } else if (argument == "--no-indirect") {
             options.indirect = false;
+        } else if (argument.starts_with("--time=")) {
+            options.time = std::atoll(value("--time=").c_str());
+        } else if (argument.starts_with("--gamma=")) {
+            options.gamma = static_cast<f32>(std::atof(value("--gamma=").c_str()));
+        } else if (argument == "--no-daylight-cycle") {
+            options.daylight_cycle = false;
+        } else if (argument == "--no-fog") {
+            options.fog = false;
         }
     }
     return options;
@@ -157,6 +178,22 @@ bool write_ppm(const std::filesystem::path& path, std::span<const u8> rgba, u32 
     return std::span(
         reinterpret_cast<const u8*>(container.data()),
         container.size() * sizeof(typename std::decay_t<decltype(container)>::value_type));
+}
+
+/// The biome the camera is standing in, whose fog and sky colour the frame
+/// takes. Vanilla samples where you are, not where you are looking.
+[[nodiscard]] u32 camera_biome(const demo::LoadedWorld& world,
+                               const registry::BlockRegistry& blocks, Vec3f position) {
+    (void)blocks;
+    const auto x = static_cast<i32>(std::floor(position.x));
+    const auto y = static_cast<i32>(std::floor(position.y));
+    const auto z = static_cast<i32>(std::floor(position.z));
+
+    const world::Chunk* chunk = world.at(x >> 4, z >> 4);
+    if (chunk == nullptr || !chunk->shape().contains_y(y)) {
+        return 0;
+    }
+    return chunk->get_biome(static_cast<usize>(x & 15), y, static_cast<usize>(z & 15));
 }
 
 /// The percentile the milestone is judged on. Not the mean: 60 FPS on average
@@ -436,6 +473,16 @@ int main(int argc, char** argv) {
     camera.pitch_degrees = 20.0F;
     camera.far_plane     = static_cast<f32>(options.radius + 2) * 16.0F * 1.8F;
 
+    // The render distance in blocks, which is what the fog is measured against.
+    // Vanilla's terrain fog starts at 92 % of it and is complete at 100 %.
+    const f32 render_distance = static_cast<f32>(options.radius) * 16.0F;
+
+    // The biome under the camera decides the fog and the sky. One biome for the
+    // whole frame, which is what vanilla does too — it samples where you are,
+    // not where you are looking.
+    render::Lightmap lightmap;
+    i64              time_of_day = options.time;
+
     if (!options.camera.empty()) {
         std::array<f32, 5> values{camera.position.x, camera.position.y, camera.position.z,
                                   camera.yaw_degrees, camera.pitch_degrees};
@@ -472,6 +519,7 @@ int main(int argc, char** argv) {
         readback = *buffer;
     }
 
+    const auto       start_time = std::chrono::steady_clock::now();
     std::vector<f64> cpu_frame_ms;
     std::vector<f64> record_ms;
     std::vector<f64> gpu_frame_ms;
@@ -517,6 +565,23 @@ int main(int argc, char** argv) {
             camera.position.y -= speed;
         }
 
+        if (options.daylight_cycle) {
+            // Twenty ticks a second, the game's own rate. Wall time here and
+            // not a tick counter, because this viewer has no server to take a
+            // tick from; the moment it does, the time comes from the server.
+            time_of_day = options.time +
+                          static_cast<i64>(std::chrono::duration<f64>(
+                                               std::chrono::steady_clock::now() - start_time)
+                                               .count() *
+                                           20.0);
+        }
+        const f32 darken = render::sky_darken(time_of_day, 0.0F, 0.0F);
+        lightmap.update(darken, render::kOverworldAmbientLight, options.gamma, 0.0F);
+
+        const auto  effects   = blocks->biome(camera_biome(*world, *blocks, camera.position));
+        const u32   fog_rgb   = render::fog_colour(effects.fog_colour, darken);
+        const u32   sky_rgb   = render::sky_colour(effects.sky_colour, darken);
+
         auto frame = device.begin_frame();
         if (!frame) {
             if (frame.error() == rhi::RhiError::SwapchainOutOfDate) {
@@ -545,17 +610,24 @@ int main(int argc, char** argv) {
         cmd.transition(depth_image, rhi::ResourceState::Undefined,
                        rhi::ResourceState::DepthAttachment);
 
+        // The clear colour is the fog's, not the sky's. Anything the terrain
+        // does not cover is at infinite distance, where the fog is complete —
+        // so clearing to the sky colour would draw a hard line along the
+        // horizon between faded terrain and unfaded sky.
         rhi::ColourAttachment colour;
         colour.clear           = true;
-        colour.clear_colour[0] = 0.47F;
-        colour.clear_colour[1] = 0.65F;
-        colour.clear_colour[2] = 1.0F;
+        colour.clear_colour[0] = static_cast<f32>((fog_rgb >> 16) & 0xFFU) / 255.0F;
+        colour.clear_colour[1] = static_cast<f32>((fog_rgb >> 8) & 0xFFU) / 255.0F;
+        colour.clear_colour[2] = static_cast<f32>(fog_rgb & 0xFFU) / 255.0F;
         colour.clear_colour[3] = 1.0F;
+        (void)sky_rgb;
 
         rhi::DepthAttachment depth;
         depth.image       = depth_image;
         depth.clear       = true;
         depth.clear_depth = 1.0F;
+
+        (*terrain)->upload_sky(cmd, lightmap);
 
         const std::array<rhi::ColourAttachment, 1> attachments{colour};
         cmd.begin_rendering(attachments, &depth, width, height);
@@ -566,8 +638,14 @@ int main(int argc, char** argv) {
             camera.view_projection(static_cast<f32>(width) / static_cast<f32>(height));
         const auto frustum = render::Frustum::from_view_projection(view_projection);
 
-        (*terrain)->draw(cmd, view_projection, frustum, camera.position, *atlas_image,
-                         *sampler, options.cull);
+        client::SkyFrame sky;
+        sky.lightmap   = &lightmap;
+        sky.fog_colour = fog_rgb;
+        sky.fog_start  = options.fog ? render_distance * 0.92F : 1.0e9F;
+        sky.fog_end    = options.fog ? render_distance : 1.1e9F;
+
+        (*terrain)->draw(cmd, view_projection, frustum, camera.position, *atlas_image, *sampler,
+                         sky, options.cull);
         drawn_last_frame = (*terrain)->stats().sections_drawn;
 
         cmd.end_rendering();

@@ -18,6 +18,7 @@
 #include "ov/base/types.hpp"
 #include "ov/math/vec.hpp"
 #include "ov/render/camera.hpp"
+#include "ov/render/environment.hpp"
 #include "ov/render/frustum.hpp"
 #include "ov/render/mesher.hpp"
 #include "ov/render/terrain_vertex.hpp"
@@ -65,6 +66,23 @@ struct TerrainRendererDesc {
     bool force_per_section_draws{false};
 };
 
+/// The sky, as one frame sees it.
+///
+/// Everything here is derived rather than chosen: the lightmap from the time of
+/// day, the fog colour from the biome's and the same time, the fog distances
+/// from the render distance. See ov/render/environment.hpp for the formulas and
+/// for which of them are documented.
+struct SkyFrame {
+    const render::Lightmap* lightmap{nullptr};
+    /// 0xRRGGBB, already faded for the time of day.
+    u32 fog_colour{0xC0D8FF};
+    /// Where the fog begins and where it is complete, in blocks. Cylindrical,
+    /// as vanilla's has been since 1.18.1: the fog closes in around you at a
+    /// radius, and looking up does not push it away.
+    f32 fog_start{0.0F};
+    f32 fog_end{192.0F};
+};
+
 /// What the last recorded frame cost, in objects rather than time.
 struct TerrainStats {
     u32 sections_resident{0};
@@ -100,9 +118,16 @@ public:
 
     /// Cull, write the commands, and record the draws. Must be called inside a
     /// begin_rendering / end_rendering pair.
+    /// Copy this frame's lightmap onto the GPU.
+    ///
+    /// Separate from draw and called *before* begin_rendering, because a
+    /// buffer-to-image copy is not allowed inside a render pass. Sixteen by
+    /// sixteen, so the copy is a kilobyte.
+    void upload_sky(rhi::CommandList& cmd, const render::Lightmap& lightmap);
+
     void draw(rhi::CommandList& cmd, const render::Mat4& view_projection,
               const render::Frustum& frustum, Vec3f camera, rhi::ImageHandle atlas,
-              rhi::SamplerHandle sampler, bool cull = true);
+              rhi::SamplerHandle sampler, const SkyFrame& sky, bool cull = true);
 
     [[nodiscard]] const TerrainStats& stats() const noexcept { return stats_; }
     /// False when the driver made us fall back to a draw per section.
@@ -142,7 +167,14 @@ private:
     rhi::BufferHandle                    indices_;
     /// vec4 per slot: xyz is the origin, w pads to the std430 alignment a vec4
     /// array demands.
-    rhi::BufferHandle              origins_;
+    rhi::BufferHandle origins_;
+    /// Vanilla's 16x16 lightmap, and the staging it is copied through. One
+    /// staging buffer per frame in flight, for the same reason the commands
+    /// have one: the copy for frame N+1 must not overwrite what frame N is
+    /// still reading.
+    rhi::ImageHandle               lightmap_;
+    rhi::SamplerHandle             lightmap_sampler_;
+    std::vector<rhi::BufferHandle> lightmap_staging_;
     std::vector<rhi::BufferHandle> commands_;
 
     std::array<rhi::PipelineHandle, static_cast<usize>(render::RenderLayer::Count)> pipelines_{};

@@ -2715,3 +2715,119 @@ dans l'arène à 12 chunks** (259 → 340). Les solutions sans coût mémoire on
 examinées et écartées : il ne reste pas trois bits libres dans le mot 2, et
 reprendre de la précision aux coordonnées d'atlas rejouerait exactement le bug
 documenté plus haut. L'arène passe donc de 384 à 512 Mio.
+
+## La lumière, le jour et le brouillard
+
+*2026-09-08.*
+
+Le shader calculait la luminosité ainsi :
+
+```glsl
+float light = max(float(sky), float(block)) / 15.0;
+```
+
+Une droite. Le jeu n'en utilise pas.
+
+### La courbe — documentée et vérifiée
+
+```
+brightness(L) = ambient + (1 - ambient) · f / (4 - 3f),   f = L/15
+```
+
+`ambient` vaut **0** dans l'overworld et l'End, **0,1** dans le Nether — lu dans
+nos propres `dimension_type/*.json`, pas supposé.
+
+Les seize valeurs sont publiées. Les seize reviennent à 1e-7 près. L'écart avec
+l'ancienne droite n'est pas cosmétique : **au niveau 7, 18 % au lieu de 47 %.**
+C'est exactement ce qui faisait ressembler chaque bouche de grotte à un
+après-midi couvert.
+
+> ⚠️ La page *Light* du wiki ne donne ni la formule ni la table — seulement des
+> valeurs de luminance qualitatives. La source est la documentation du mod
+> Origins, qui l'énonce mot pour mot ; recoupée en la comparant à la table de
+> TrueCraft (b1.7.3, ambient 0,05 à l'époque), dont les 32 valeurs se
+> reproduisent à trois décimales avec la même formule.
+
+**L'ordre d'évaluation est conservé exprès.** `f/(4-3f)` et `L/(60-3L)` sont
+identiques sur le papier ; en binary32 la seconde donne *exactement* 0,5 au
+niveau 12 et exactement 7/9 au niveau 14, alors que les valeurs publiées sont
+0,50000006 et 0,77777773. Ces deux nombres sont l'empreinte de l'ordre réel, et
+le test les surveille : si quelqu'un « simplifie » l'expression, il tombe.
+
+### Le cycle du jour — vérifié au tick
+
+```
+X = frac(ticks/24000 - 0.25)
+a = X + ((1 - (cos(X·π)+1)/2) - X)/3        ← le tiers qui étire l'aube
+A = clamp(2·cos(a·2π) + 0.5, 0, 1)
+A *= (1 - pluie·5/16) ; A *= (1 - orage·5/16)
+```
+
+Le jeu est documenté par les **ticks** auxquels la lumière du ciel change de
+valeur, et c'est ce qui rend la fonction vérifiable plutôt que plausible : le
+tiers de cosinus est invisible à midi et déplace ces repères de plusieurs
+centaines de ticks.
+
+| repère | tick documenté | calculé |
+|---|---|---|
+| minimum de nuit atteint | 13670 | **13670** |
+| la lumière remonte | 22331 | **22331** |
+| seuil d'apparition des monstres | 13188 | **13188** |
+| midi clair / pluie / orage | 15 / 12 / 10 | **15 / 12 / 10** |
+
+### Brouillard et ciel
+
+```
+fog.rg = biome_fog.rg · (0.94A + 0.06)
+fog.b  = biome_fog.b  · (0.91A + 0.09)
+sky    = biome_sky · A
+```
+
+Le bleu garde un plancher plus haut que le rouge et le vert, et c'est
+précisément ce qui rend le brouillard de minuit **bleu sombre et non gris**. À
+A = 1 la formule rend la couleur du biome inchangée, ce que le test vérifie —
+sinon les constantes seraient inversées.
+
+Le brouillard est **cylindrique** (`max(distance horizontale, |Δy|)`), comme
+depuis la 1.18.1 : un brouillard sphérique se referme quand on lève les yeux.
+
+> ⚠️ **Le 92 % est incertain.** La phrase du wiki (« commence à apparaître à
+> 92 % de la distance de rendu ») ne porte pas d'étiquette d'édition, et
+> `fog_start: 0.92` est aussi exactement la valeur du JSON de brouillard des
+> resource packs **Bedrock**. Retenu comme probable, à mesurer.
+
+### Ce qui n'est documenté nulle part, et qui est donc signalé plutôt que deviné
+
+Le lightmap est reconstruit à chaque frame en 16×16 sur le CPU, échantillonné en
+(lumière de bloc, lumière du ciel) — c'est le mécanisme de vanilla lui-même,
+confirmé par la documentation d'OptiFine et de Polytone. Trois choses dedans ne
+le sont pas :
+
+1. **La teinte chaude de la lumière de bloc.** Toutes les sources sont
+   qualitatives (« tire vers l'orange dans les valeurs moyennes »). La seule
+   valeur numérique existante, `block_light_tint = #FFD88C`, appartient à la
+   **26.1**, pas à la 1.20.1. L'implémentation reproduit la *description* — gris
+   en bas, teinté au milieu, blanc en haut — et non le polynôme.
+2. **La cible du lerp final.** La force 0,04 est corroborée (Polytone expose
+   `base_light`, défaut 0,04). Le gris 0,75 vers lequel on interpole n'est
+   attesté par aucune source ; c'est du folklore repris tel quel.
+3. **Comment ciel et bloc se combinent.** Un tutoriel de 2011 dit *max*, la
+   documentation moderne des dimensions dit *addition*. L'addition est retenue
+   parce qu'elle seule permet à une torche de se voir en plein jour. **Non
+   tranché par la documentation — à mesurer.**
+
+Le sablier de la 1.21.9 est à ignorer : le lightmap y est passé dans un core
+shader (`core/lightmap.fsh`, uniformes `SkyFactor`, `BlockFactor`…), donc la
+page *Shader* actuelle du wiki ne décrit pas la 1.20.1.
+
+### Un bug qui vaut d'être gardé
+
+En ajoutant le lightmap, l'écran est devenu **entièrement de la couleur du
+brouillard**. Le premier réflexe était de suspecter les distances de brouillard.
+C'était faux : le terrain ne se dessinait pas du tout. Le layout de pipeline
+place toutes les images avant tous les buffers, donc passer d'une image
+échantillonnée à deux a **décalé le storage buffer des origines de section du
+binding 1 au 2** — et le shader le déclarait toujours au 1. Un `--no-fog`, ajouté
+comme diagnostic au même titre que `--no-cull`, a tranché la question en une
+exécution : sans brouillard, l'écran restait uni, donc le brouillard était
+innocent.

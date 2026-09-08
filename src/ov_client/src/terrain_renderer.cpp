@@ -20,6 +20,25 @@ static_assert(sizeof(u32) == 4);
     return static_cast<usize>(layer);
 }
 
+/// Everything that is the same for every draw in a pass. 112 bytes, inside the
+/// 128 every implementation guarantees.
+struct TerrainPush {
+    render::Mat4       view_projection;
+    std::array<f32, 4> fog_colour;
+    /// xyz the camera, w where the fog starts.
+    std::array<f32, 4> camera_and_fog_start;
+    /// x where the fog is complete. The rest is spare.
+    std::array<f32, 4> fog_end;
+};
+
+static_assert(sizeof(TerrainPush) == 112, "the push constant block must fit the guaranteed 128");
+
+[[nodiscard]] constexpr std::array<f32, 4> unpack_rgb(u32 colour) noexcept {
+    return {static_cast<f32>((colour >> 16) & 0xFFU) / 255.0F,
+            static_cast<f32>((colour >> 8) & 0xFFU) / 255.0F,
+            static_cast<f32>(colour & 0xFFU) / 255.0F, 1.0F};
+}
+
 }  // namespace
 
 TerrainRenderer::~TerrainRenderer() {
@@ -33,6 +52,15 @@ TerrainRenderer::~TerrainRenderer() {
     }
     for (auto buffer : commands_) {
         device_->destroy(buffer);
+    }
+    for (auto buffer : lightmap_staging_) {
+        device_->destroy(buffer);
+    }
+    if (lightmap_sampler_.valid()) {
+        device_->destroy(lightmap_sampler_);
+    }
+    if (lightmap_.valid()) {
+        device_->destroy(lightmap_);
     }
     if (origins_.valid()) {
         device_->destroy(origins_);
@@ -109,6 +137,58 @@ std::expected<std::unique_ptr<TerrainRenderer>, rhi::RhiError> TerrainRenderer::
         self->commands_.push_back(*commands);
     }
 
+    // ── The lightmap ────────────────────────────────────────────────────────
+    //
+    // Sixteen by sixteen, rebuilt on the CPU every frame and sampled at
+    // (block light, sky light). This is vanilla's own mechanism rather than a
+    // formula in the terrain shader, and the reason to keep it is that the
+    // things which will move next — a torch's flicker, the brightness slider,
+    // a sunset — are all changes to this one small image.
+    auto lightmap = device.create_image(rhi::ImageDesc{render::Lightmap::kSize,
+                                                       render::Lightmap::kSize, 1,
+                                                       rhi::Format::Rgba8Unorm, true, false,
+                                                       "lightmap"});
+    if (!lightmap) {
+        return std::unexpected(lightmap.error());
+    }
+    self->lightmap_ = *lightmap;
+    // Unorm and not Srgb: these are light multipliers, not colours to be
+    // displayed, and putting them through a transfer function would darken
+    // every mid-tone in the world.
+
+    // Linear, unlike the atlas. The lightmap is a gradient sampled between
+    // texels on purpose — it is what makes light fall off smoothly across a
+    // face instead of in sixteen steps.
+    auto lightmap_sampler = device.create_sampler(
+        rhi::SamplerDesc{rhi::Filter::Linear, rhi::Filter::Linear, rhi::MipFilter::Nearest,
+                         rhi::AddressMode::ClampToEdge, 1.0F, 0.0F});
+    if (!lightmap_sampler) {
+        return std::unexpected(lightmap_sampler.error());
+    }
+    self->lightmap_sampler_ = *lightmap_sampler;
+
+    for (u32 i = 0; i < ring; ++i) {
+        auto staging = device.create_buffer(rhi::BufferDesc{
+            render::Lightmap::kBytes, rhi::BufferUsage::Upload, "lightmap staging", true});
+        if (!staging) {
+            return std::unexpected(staging.error());
+        }
+        self->lightmap_staging_.push_back(*staging);
+    }
+
+    // The image starts undefined, and the first frame transitions it from
+    // there. Giving it content now means a frame that somehow skips the upload
+    // shows a black world rather than reading uninitialised memory.
+    {
+        render::Lightmap initial;
+        initial.update(1.0F, render::kOverworldAmbientLight, 0.5F, 0.0F);
+        if (auto uploaded = device.upload_image(self->lightmap_, initial.pixels(),
+                                                render::Lightmap::kSize, render::Lightmap::kSize);
+            !uploaded) {
+            return std::unexpected(uploaded.error());
+        }
+    }
+
     // ── Pipelines: one per layer, differing only in blend and culling ───────
     rhi::VertexBinding binding;
     binding.stride = sizeof(render::TerrainVertex);
@@ -123,9 +203,10 @@ std::expected<std::unique_ptr<TerrainRenderer>, rhi::RhiError> TerrainRenderer::
         pipeline.vertex_shader               = desc.atlas_vertex_shader;
         pipeline.fragment_shader             = desc.atlas_fragment_shader;
         pipeline.vertex_bindings             = {binding};
-        pipeline.layout.sampled_image_count  = 1;
+        // Two: the block atlas and the lightmap.
+        pipeline.layout.sampled_image_count  = 2;
         pipeline.layout.storage_buffer_count = 1;
-        pipeline.layout.push_constant_size   = sizeof(render::Mat4);
+        pipeline.layout.push_constant_size   = sizeof(TerrainPush);
         pipeline.colour_format               = desc.colour_format;
         pipeline.depth_format                = desc.depth_format;
         pipeline.depth_test                  = true;
@@ -232,12 +313,32 @@ void TerrainRenderer::remove_section(u32 slot) {
     stats_.arena_largest_free = arena_->largest_free();
 }
 
+void TerrainRenderer::upload_sky(rhi::CommandList& cmd, const render::Lightmap& lightmap) {
+    const rhi::BufferHandle staging = lightmap_staging_[device_->frame_index()];
+    if (!device_->write_buffer(staging, lightmap.pixels().data(), lightmap.pixels().size())) {
+        return;
+    }
+    // Undefined rather than ShaderRead as the source state: the previous
+    // contents are of no interest, and telling the driver so lets it skip
+    // preserving them.
+    cmd.transition(lightmap_, rhi::ResourceState::Undefined, rhi::ResourceState::TransferDest);
+    cmd.copy_buffer_to_image(staging, 0, lightmap_, 0, render::Lightmap::kSize,
+                             render::Lightmap::kSize);
+    cmd.transition(lightmap_, rhi::ResourceState::TransferDest, rhi::ResourceState::ShaderRead);
+}
+
 void TerrainRenderer::draw(rhi::CommandList& cmd, const render::Mat4& view_projection,
                            const render::Frustum& frustum, Vec3f camera, rhi::ImageHandle atlas,
-                           rhi::SamplerHandle sampler, bool cull) {
-    const std::array<rhi::ImageHandle, 1>   images{atlas};
-    const std::array<rhi::SamplerHandle, 1> samplers{sampler};
+                           rhi::SamplerHandle sampler, const SkyFrame& sky, bool cull) {
+    const std::array<rhi::ImageHandle, 2>   images{atlas, lightmap_};
+    const std::array<rhi::SamplerHandle, 2> samplers{sampler, lightmap_sampler_};
     const std::array<rhi::BufferHandle, 1>  storage{origins_};
+
+    TerrainPush push;
+    push.view_projection      = view_projection;
+    push.fog_colour           = unpack_rgb(sky.fog_colour);
+    push.camera_and_fog_start = {camera.x, camera.y, camera.z, sky.fog_start};
+    push.fog_end              = {sky.fog_end, 0.0F, 0.0F, 0.0F};
 
     // One buffer per frame in flight, rotated here: frame N+1 must not write
     // over commands the GPU is still reading for frame N.
@@ -308,7 +409,7 @@ void TerrainRenderer::draw(rhi::CommandList& cmd, const render::Mat4& view_proje
 
         cmd.bind_pipeline(pipelines_[layer]);
         cmd.bind_resources(pipelines_[layer], images, samplers, storage);
-        cmd.push_constants(pipelines_[layer], &view_projection, sizeof(view_projection));
+        cmd.push_constants(pipelines_[layer], &push, sizeof(push));
 
         if (indirect_ && mapped != nullptr) {
             std::memcpy(mapped + written, scratch_.data(),

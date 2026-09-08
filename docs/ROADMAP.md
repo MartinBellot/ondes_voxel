@@ -261,7 +261,14 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       maintenant triées d'arrière en avant ; le tri des quads à l'intérieur
       d'une section reste, et demande son propre index buffer)*
 - [ ] Plafond d'upload par frame (les spikes, pas le FPS moyen, sont le risque)
-- [ ] Ciel, soleil, lune, étoiles, nuages, brouillard, météo
+- [~] Ciel, soleil, lune, étoiles, nuages, brouillard, météo
+      *(la **courbe de luminosité** (les 16 valeurs publiées à 1e-7), le
+      **lightmap 16×16** reconstruit par frame, le **cycle du jour** (13670 et
+      22331 au tick près) et le **brouillard cylindrique** avec sa couleur
+      dérivée du biome sont faits. Soleil, lune, étoiles, nuages et météo
+      restent — et deux constantes du lightmap ne sont documentées nulle part,
+      voir PROVENANCE)*
+- [x] Courbe `f/(4-3f)` et lightmap : une torche à 7 rend 18 % et non 47 %
 
 ### `ov_client` (L15) et `ov_audio` (L14)
 - [x] Fenêtre GLFW, entrées, bindings de touches
