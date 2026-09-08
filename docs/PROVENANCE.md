@@ -1622,3 +1622,40 @@ les données d'un block entity — un coffre nommé retombe donc anonyme, une
 shulker box vide. Et l'entrée `dynamic` du pot décoré, qui porte ses tessons.
 Ces fonctions laissent la pile telle quelle au lieu de la supprimer : l'objet
 tombe, son contenu non.
+
+---
+
+## Entités objet : quatre paquets, relevés plutôt que devinés
+
+Le butin ne sert à rien tant qu'il ne tombe pas. Quatre paquets suffisent, et
+leurs identifiants ont été **capturés** sur un vrai serveur 1.20.1 — la page de
+protocole archivée s'est trompée sur chacun de ceux que ce projet a vérifiés
+contre elle.
+
+Un `summon item` observé depuis un client sonde donne, dans l'ordre :
+
+| Paquet | Id | Ce qu'il porte |
+|---|---|---|
+| Spawn Entity | `0x01` | id, uuid, **type 54**, x/y/z, trois angles, données, vélocité |
+| Set Entity Metadata | `0x52` | index **8**, type **7** (un slot), puis la pile |
+| Take Item Entity | `0x67` | ramassé, ramasseur, nombre |
+| Remove Entities | `0x3E` | la liste |
+
+Sans la métadonnée, l'entité existe et **ne rend rien du tout** — ce qui
+ressemble exactement à un paquet qui ne serait jamais arrivé. `Take Item` est
+purement cosmétique et le retrait reste nécessaire ensuite, mais sans lui les
+objets s'éteignent à un bloc du joueur au lieu de voler vers lui.
+
+Les octets exacts de ces trois encodages sont figés en test
+(`src/ov_protocol/tests/test_entities.cpp`) : ce sont ceux que le jeu a produits
+pour une entité connue, cinq diamants en 3,5 / -60 / 0,5. Un champ qui bouge ou
+un varint qui grandit échoue là, et non sous la forme d'un objet invisible.
+
+**Ce qui n'est pas vanilla, et qui est dit plutôt que caché.** Une pile tombe au
+centre du bloc, sans la vitesse aléatoire que vanilla lui donne, et elle ne
+subit pas la gravité : elle reste où le bloc était. Elle n'est pas non plus
+sauvegardée — un redémarrage perd ce qui traînait au sol. Le ramassage se fait
+dans une boîte de 1,2 bloc autour du joueur plutôt que par intersection de
+volumes. Enfin, un inventaire plein laisse la pile au sol avec ce qui n'a pas
+tenu : la faire disparaître serait une perte silencieuse.
+

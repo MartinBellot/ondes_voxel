@@ -26,6 +26,7 @@ ov_add_library(ov_protocol
 
 ov_add_test(test_ov_protocol
     SOURCES
+        tests/test_entities.cpp
         tests/test_framing.cpp
         tests/test_login.cpp
         tests/test_status.cpp

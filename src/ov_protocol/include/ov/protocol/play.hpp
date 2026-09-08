@@ -59,7 +59,11 @@ inline constexpr i32 kOpenScreen          = 0x30;
 inline constexpr i32 kContainerContent    = 0x12;
 inline constexpr i32 kContainerSlot       = 0x14;
 inline constexpr i32 kCloseContainer      = 0x11;
-inline constexpr i32 kUpdateTime         = 0x5E;
+inline constexpr i32 kUpdateTime          = 0x5E;
+inline constexpr i32 kSpawnEntity         = 0x01;
+inline constexpr i32 kEntityMetadata      = 0x52;
+/// Take Item Entity — the pickup animation, then the item is removed.
+inline constexpr i32 kTakeItem = 0x67;
 }  // namespace clientbound
 
 /// Serverbound Play packet ids, protocol 763.
@@ -327,6 +331,29 @@ struct CreativeSlot {
                                                      i32 game_mode);
 
 [[nodiscard]] std::vector<u8> encode_player_info_remove(const Uuid& uuid);
+
+/// The entity type a dropped stack is, in Mojang's registry.
+inline constexpr i32 kItemEntityType = 54;
+
+/// Make a non-player entity appear. Only what an item needs is exposed: no
+/// rotation, no velocity, because a dropped stack has neither that matters.
+///
+/// Ids captured from a real 1.20.1 server rather than read off a summary: the
+/// archived wiki gave the wrong number for every packet checked against it.
+[[nodiscard]] std::vector<u8> encode_spawn_entity(i32 entity_id, const Uuid& uuid, i32 type, f64 x,
+                                                  f64 y, f64 z);
+
+/// Tell the client what a dropped entity is holding.
+///
+/// Metadata index 8, type 7 — a Slot. Without it the entity exists and renders
+/// as nothing at all, which looks exactly like a packet that never arrived.
+[[nodiscard]] std::vector<u8> encode_item_metadata(i32 entity_id, i32 item_id, i8 count);
+
+/// The pickup animation: the stack flies to the collector before vanishing.
+///
+/// Cosmetic, and the client still needs the removal afterwards — but without it
+/// items blink out of existence a block away from the player.
+[[nodiscard]] std::vector<u8> encode_take_item(i32 collected, i32 collector, i32 count);
 
 /// Make another player appear in the world.
 [[nodiscard]] std::vector<u8> encode_spawn_player(i32 entity_id, const Uuid& uuid, f64 x, f64 y,

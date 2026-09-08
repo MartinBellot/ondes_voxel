@@ -11,7 +11,7 @@
   },
   "last_updated": "2026-09-08",
   "current_milestone": "M3",
-  "current_task": "m4-item-entities",
+  "current_task": "m4-block-archetypes",
   "milestones": {
     "M0": {
       "name": "Fondations",
@@ -52,7 +52,7 @@
     "M4": {
       "name": "Monde persistant",
       "status": "in_progress",
-      "done": 10,
+      "done": 11,
       "total": 14,
       "exit_criterion": "Round-trip croisé : notre sauvegarde s'ouvre dans Minecraft vanilla et réciproquement, sans perte.",
       "blocked": []
@@ -130,7 +130,8 @@
     "survival_breaking": "8/8 conditions identiques entre le vrai serveur et le notre, mesurees par la meme sonde : herbe, pierre a main nue et a la pioche, pelle netherite, planches, verre, obsidienne a la pioche en fer et en netherite",
     "loot_tables": "1215/1215 cas identiques au vrai serveur 1.20.1 (32 tirages chacun, 1024 pour quatre qui ont demande a se departager) ; 982 blocs ont une table, 963 pools, 1128 entrees",
     "loot_table_mapping": "mesuree bloc par bloc : 920 des 1003 blocs utilisent la table qui porte leur nom, 62 en empruntent une autre (torche murale -> blocks/torch) et 21 pointent sur minecraft:empty",
-    "loot_unsupported": "copy_name, copy_nbt, copy_state, set_contents et l'entree dynamic : refuses a la compilation et sans effet a l'execution, donc un coffre nomme retombe anonyme"
+    "loot_unsupported": "copy_name, copy_nbt, copy_state, set_contents et l'entree dynamic : refuses a la compilation et sans effet a l'execution, donc un coffre nomme retombe anonyme",
+    "item_entities": "quatre paquets releves sur un vrai serveur (spawn 0x01, metadonnees 0x52 index 8 type 7, ramassage 0x67, retrait 0x3E) et figes octet pour octet en test ; casser un bloc en survie fait tomber son butin, qui se ramasse"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",

@@ -13,8 +13,10 @@
 #include "ov/base/thread.hpp"
 #include "ov/base/time.hpp"
 #include "ov/gameplay/breaking.hpp"
+#include "ov/gameplay/loot.hpp"
 #include "ov/io/file.hpp"
 #include "ov/math/block_pos.hpp"
+#include "ov/math/random.hpp"
 #include "ov/nbt/binary.hpp"
 #include "ov/nbt/region_writer.hpp"
 #include "ov/protocol/framing.hpp"
@@ -740,7 +742,7 @@ void set_chest_items(nbt::Tag& data, std::span<const net::ItemStack> slots,
 /// The stack's NBT is kept as raw bytes on purpose — re-encoding a tag we do
 /// not understand is how data gets lost — so it is decoded only when a number
 /// is actually needed from it, which is here.
-[[nodiscard]] u8 efficiency_of(const net::ItemStack& stack) {
+[[nodiscard]] u8 enchantment_level(const net::ItemStack& stack, std::string_view enchantment) {
     if (stack.nbt.empty()) {
         return 0;
     }
@@ -755,12 +757,31 @@ void set_chest_items(nbt::Tag& data, std::span<const net::ItemStack> slots,
     for (const nbt::Tag& entry : *list->list()) {
         const nbt::Tag* id  = entry.find("id");
         const nbt::Tag* lvl = entry.find("lvl");
-        if (id != nullptr && lvl != nullptr && id->as_string() == "minecraft:efficiency") {
+        if (id != nullptr && lvl != nullptr && id->as_string() == enchantment) {
             return static_cast<u8>(std::clamp<i64>(lvl->as_i64(), 0, 255));
         }
     }
     return 0;
 }
+
+/// A stack lying on the ground, waiting to be walked into.
+///
+/// Kept in a flat list on the tick thread. There are a handful at a time, and
+/// an index would cost more than the scan it saves.
+struct ItemEntity {
+    i32            entity_id{0};
+    net::Uuid      uuid{};
+    f64            x{0.0};
+    f64            y{0.0};
+    f64            z{0.0};
+    net::ItemStack stack{};
+    /// The tick it appeared, for the five minutes vanilla gives it.
+    i64 born{0};
+    /// Ticks before anyone may pick it up. Vanilla gives a dropped stack half a
+    /// second so the player who broke the block does not instantly re-absorb a
+    /// block they meant to place.
+    i32 pickup_delay{10};
+};
 
 struct Player {
     /// Held so the tick thread can send keep-alives without going through the
@@ -983,8 +1004,10 @@ int main(int argc, char** argv) {
     // drop. Built once: every query otherwise walks the tag graph, and this
     // sits on the path of every dig packet.
     std::optional<gameplay::BreakRules> break_rules;
+    std::optional<gameplay::LootTables> loot_tables;
     if (blocks && registries) {
         break_rules.emplace(*blocks, *registries);
+        loot_tables.emplace(*blocks, *registries);
     }
 
     Superflat superflat = world_available ? Superflat::from(*blocks) : Superflat{};
@@ -1008,6 +1031,15 @@ int main(int argc, char** argv) {
     // The tick the server is on, readable from the network threads. Breaking
     // is counted in ticks, and the packet handler runs on another thread.
     std::atomic<i64> server_tick{0};
+
+    // Les piles au sol. Sous le même verrou que les joueurs : elles n'existent
+    // que pour être ramassées, et le ramassage lit les deux.
+    std::vector<ItemEntity> ground_items;
+
+    // Le tirage des butins. Une seule source, sur le thread de tick : deux
+    // joueurs qui cassent le même bloc au même tick doivent obtenir deux
+    // tirages, pas le même.
+    math::XoroshiroRandomSource loot_random{0x243F6A8885A308D3ULL, 0x13198A2E03707344ULL};
 
     const std::filesystem::path level_dir = std::filesystem::path{"run"} / "world";
     const std::filesystem::path world_dir = level_dir / "region";
@@ -1250,10 +1282,134 @@ int main(int argc, char** argv) {
         gameplay::Held        holding;
         if (held.item_id != 0 && held.count > 0) {
             holding.item       = held.item_id;
-            holding.efficiency = efficiency_of(held);
+            holding.efficiency = enchantment_level(held, "minecraft:efficiency");
         }
         return break_rules->destroy_progress(state, holding,
                                              gameplay::Stance{.on_ground = who.on_ground});
+    };
+
+    /// Tirer le butin d'un bloc et le poser au sol.
+    ///
+    /// À appeler **avant** d'effacer le bloc : la table lit son état, et un
+    /// bloc déjà remplacé par de l'air ne donne rien. Les entités sont créées
+    /// ici mais diffusées par l'appelant, qui tient déjà le verrou.
+    const auto drop_loot = [&](const Player& breaker, net::WirePosition where,
+                               std::vector<ItemEntity>& out) {
+        if (!loot_tables) {
+            return;
+        }
+        registry::BlockStateId state{0};
+        registry::BlockStateId above{0};
+        registry::BlockStateId below{0};
+        {
+            const std::scoped_lock chunk_lock{chunk_mutex};
+            world::Chunk&          dug = chunk_at(where.x >> 4, where.z >> 4);
+            const auto             lx  = static_cast<usize>(where.x & 15);
+            const auto             lz  = static_cast<usize>(where.z & 15);
+            state                      = dug.get_block(lx, where.y, lz);
+            above                      = dug.get_block(lx, where.y + 1, lz);
+            below                      = dug.get_block(lx, where.y - 1, lz);
+        }
+
+        const net::ItemStack& tool = breaker.inventory[36 + static_cast<usize>(breaker.held_slot)];
+        gameplay::Held        held;
+        if (tool.item_id != 0 && tool.count > 0) {
+            held.item       = tool.item_id;
+            held.silk_touch = enchantment_level(tool, "minecraft:silk_touch");
+            held.fortune    = enchantment_level(tool, "minecraft:fortune");
+        }
+
+        std::vector<gameplay::Drop> drops;
+        loot_tables->drops(state, held, loot_random, drops,
+                           gameplay::Neighbours{.above = above, .below = below});
+
+        for (const gameplay::Drop& drop : drops) {
+            ItemEntity item;
+            item.entity_id = next_entity_id.fetch_add(1);
+            // A uuid derived from the id: unique, and free of a clock the
+            // tick loop is not allowed to read.
+            item.uuid  = net::Uuid{0x4f564954454d0000ULL | static_cast<u64>(item.entity_id),
+                                   static_cast<u64>(item.entity_id) * 0x9E3779B97F4A7C15ULL};
+            item.x     = static_cast<f64>(where.x) + 0.5;
+            item.y     = static_cast<f64>(where.y) + 0.25;
+            item.z     = static_cast<f64>(where.z) + 0.5;
+            item.stack = net::ItemStack{drop.item, static_cast<i8>(std::min(drop.count, 64)), {}};
+            item.born  = server_tick.load(std::memory_order_relaxed);
+            out.push_back(std::move(item));
+        }
+    };
+
+    /// Ranger une pile dans l'inventaire d'un joueur, et lui dire.
+    ///
+    /// Rend combien d'exemplaires ont trouvé place. Zéro veut dire un
+    /// inventaire plein, et l'appelant doit alors laisser la pile au sol
+    /// plutôt que de la faire disparaître.
+    ///
+    /// Caller holds players_mutex.
+    const auto give_to_player = [&](Player& who, const net::ItemStack& stack) -> i8 {
+        const i8 limit = registries ? registries->max_stack_size(stack.item_id) : i8{64};
+        i8       left  = stack.count;
+
+        const auto deposit = [&](usize slot) {
+            net::ItemStack& target = who.inventory[slot];
+            const bool      empty  = target.item_id == 0 || target.count <= 0;
+            if (!empty && (target.item_id != stack.item_id || !target.nbt.empty())) {
+                return;
+            }
+            const i8 room = static_cast<i8>(limit - (empty ? 0 : target.count));
+            if (room <= 0) {
+                return;
+            }
+            const i8 moved = std::min(room, left);
+            target.item_id = stack.item_id;
+            target.count   = static_cast<i8>((empty ? 0 : target.count) + moved);
+            target.nbt     = stack.nbt;
+            left           = static_cast<i8>(left - moved);
+            if (who.connection) {
+                if (const auto framed = net::encode_packet(
+                        net::clientbound::kContainerSlot,
+                        net::encode_container_slot(0, 0, static_cast<i16>(slot), target))) {
+                    who.connection->send(*framed);
+                }
+            }
+        };
+
+        // Stacks that already hold this item first, then the hotbar, then the
+        // main inventory — the order vanilla fills them in.
+        for (usize slot = 36; slot < 45 && left > 0; ++slot) {
+            if (who.inventory[slot].item_id == stack.item_id && who.inventory[slot].count > 0) {
+                deposit(slot);
+            }
+        }
+        for (usize slot = 9; slot < 36 && left > 0; ++slot) {
+            if (who.inventory[slot].item_id == stack.item_id && who.inventory[slot].count > 0) {
+                deposit(slot);
+            }
+        }
+        for (usize slot = 36; slot < 45 && left > 0; ++slot) {
+            deposit(slot);
+        }
+        for (usize slot = 9; slot < 36 && left > 0; ++slot) {
+            deposit(slot);
+        }
+        return static_cast<i8>(stack.count - left);
+    };
+
+    /// Faire apparaître les piles au sol chez tout le monde.
+    ///
+    /// Caller holds players_mutex.
+    const auto publish_items = [&](std::vector<ItemEntity>& items) {
+        for (ItemEntity& item : items) {
+            broadcast(nullptr, net::clientbound::kSpawnEntity,
+                      net::encode_spawn_entity(item.entity_id, item.uuid, net::kItemEntityType,
+                                               item.x, item.y, item.z));
+            // Sans la métadonnée l'entité existe et ne rend rien du tout, ce
+            // qui ressemble exactement à un paquet qui ne serait pas arrivé.
+            broadcast(
+                nullptr, net::clientbound::kEntityMetadata,
+                net::encode_item_metadata(item.entity_id, item.stack.item_id, item.stack.count));
+            ground_items.push_back(std::move(item));
+        }
     };
 
     const auto set_block_and_broadcast = [&](net::WirePosition      position,
@@ -1446,6 +1602,7 @@ int main(int argc, char** argv) {
                 Player player;
                 player.entity_id = next_entity_id.fetch_add(1);
                 player.identity  = uuid.to_string();
+                bool remembered  = false;
                 {
                     const std::scoped_lock lock{players_mutex};
                     if (const auto saved = saved_players.find(player.identity);
@@ -1455,7 +1612,18 @@ int main(int argc, char** argv) {
                         player.z     = saved->second.z;
                         player.yaw   = saved->second.yaw;
                         player.pitch = saved->second.pitch;
+                        remembered   = true;
                     }
+                }
+                if (!remembered) {
+                    // A first arrival stands on whatever the world's surface
+                    // happens to be. The superflat's height is a constant, a
+                    // real save's is not, and spawning at the flat world's y in
+                    // a generated one buries the player in stone.
+                    const std::scoped_lock chunk_lock{chunk_mutex};
+                    world::Chunk&          home = chunk_at(0, 0);
+                    player.y                    = static_cast<f64>(
+                        home.heightmap(world::HeightmapType::WorldSurface).first_free(0, 0));
                 }
                 {
                     const std::scoped_lock lock{states_mutex};
@@ -1520,6 +1688,19 @@ int main(int argc, char** argv) {
                             net::clientbound::kSpawnPlayer,
                             net::encode_spawn_player(other.entity_id, other.uuid, other.x, other.y,
                                                      other.z, other.yaw, other.pitch));
+                    }
+
+                    // The stacks already lying around. A joiner who is not told
+                    // walks through invisible items and picks them up out of
+                    // nowhere.
+                    for (const ItemEntity& item : ground_items) {
+                        send_packet(
+                            net::clientbound::kSpawnEntity,
+                            net::encode_spawn_entity(item.entity_id, item.uuid,
+                                                     net::kItemEntityType, item.x, item.y, item.z));
+                        send_packet(net::clientbound::kEntityMetadata,
+                                    net::encode_item_metadata(item.entity_id, item.stack.item_id,
+                                                              item.stack.count));
                     }
 
                     players[connection.get()] = player;
@@ -1676,7 +1857,10 @@ int main(int argc, char** argv) {
                             if (progress >= 1.0F) {
                                 // Fast enough to be instant, which the client
                                 // has already assumed.
+                                std::vector<ItemEntity> dropped;
+                                drop_loot(player, action->position, dropped);
                                 set_block_and_broadcast(action->position, superflat.air.air);
+                                publish_items(dropped);
                                 return true;
                             }
                             player.digging          = progress > 0.0F;
@@ -1703,7 +1887,10 @@ int main(int argc, char** argv) {
                             // behaviour the break times were measured through.
                             if (progress * (elapsed + 1.0F) >= 0.7F) {
                                 player.digging = player.delayed_dig = false;
+                                std::vector<ItemEntity> dropped;
+                                drop_loot(player, action->position, dropped);
                                 set_block_and_broadcast(action->position, superflat.air.air);
+                                publish_items(dropped);
                             } else if (progress > 0.0F) {
                                 player.digging     = false;
                                 player.delayed_dig = true;
@@ -2111,6 +2298,59 @@ int main(int argc, char** argv) {
             }
         }
 
+        // Les piles au sol : elles se ramassent, et au bout de cinq minutes
+        // elles s'en vont. Sans cette seconde moitié un monde de test finit
+        // par porter des milliers d'entités que personne ne voit passer.
+        {
+            std::unique_lock item_lock{players_mutex, std::try_to_lock};
+            if (item_lock.owns_lock() && !ground_items.empty()) {
+                const i64 now = clock.tick_count();
+                for (usize i = ground_items.size(); i-- > 0;) {
+                    ItemEntity& item = ground_items[i];
+                    if (item.pickup_delay > 0) {
+                        --item.pickup_delay;
+                        continue;
+                    }
+
+                    Player* taker = nullptr;
+                    for (auto& [key, candidate] : players) {
+                        const f64 dx = candidate.x - item.x;
+                        const f64 dy = candidate.y - item.y;
+                        const f64 dz = candidate.z - item.z;
+                        // A box rather than a sphere, and taller than it is
+                        // wide: the player's feet are the reported position,
+                        // and an item at their head still counts.
+                        if (std::abs(dx) < 1.2 && std::abs(dz) < 1.2 && dy > -1.2 && dy < 2.0) {
+                            taker = &candidate;
+                            break;
+                        }
+                    }
+
+                    if (taker != nullptr) {
+                        const i8 taken = give_to_player(*taker, item.stack);
+                        if (taken > 0) {
+                            broadcast(
+                                nullptr, net::clientbound::kTakeItem,
+                                net::encode_take_item(item.entity_id, taker->entity_id, taken));
+                            item.stack.count = static_cast<i8>(item.stack.count - taken);
+                        }
+                        if (item.stack.count > 0) {
+                            // Inventory full: the stack stays where it is, and
+                            // whatever fit has already gone. Dropping the rest
+                            // would be a quiet loss.
+                            continue;
+                        }
+                    } else if (now - item.born < 6000) {
+                        continue;
+                    }
+
+                    broadcast(nullptr, net::clientbound::kRemoveEntities,
+                              net::encode_remove_entity(item.entity_id));
+                    ground_items.erase(ground_items.begin() + static_cast<isize>(i));
+                }
+            }
+        }
+
         if (options.survival) {
             std::unique_lock dig_lock{players_mutex, std::try_to_lock};
             if (dig_lock.owns_lock()) {
@@ -2135,7 +2375,10 @@ int main(int argc, char** argv) {
                         static_cast<f32>(clock.tick_count() - digger.dig_started_tick);
                     if (progress * elapsed >= 1.0F) {
                         digger.delayed_dig = false;
+                        std::vector<ItemEntity> dropped;
+                        drop_loot(digger, where, dropped);
                         set_block_and_broadcast(where, superflat.air.air);
+                        publish_items(dropped);
                     }
                 }
             }

@@ -736,6 +736,47 @@ std::vector<u8> encode_block_update(WirePosition position, i32 state) {
     return writer.take();
 }
 
+std::vector<u8> encode_spawn_entity(i32 entity_id, const Uuid& uuid, i32 type, f64 x, f64 y,
+                                    f64 z) {
+    io::ByteWriter writer;
+    write_varint(writer, entity_id);
+    writer.write_u64(uuid.most_significant);
+    writer.write_u64(uuid.least_significant);
+    write_varint(writer, type);
+    writer.write_f64(x);
+    writer.write_f64(y);
+    writer.write_f64(z);
+    writer.write_u8(0);  // pitch
+    writer.write_u8(0);  // yaw
+    writer.write_u8(0);  // head yaw
+    write_varint(writer, 0);
+    writer.write_i16(0);  // velocity, in units of 1/8000 of a block per tick
+    writer.write_i16(0);
+    writer.write_i16(0);
+    return writer.take();
+}
+
+std::vector<u8> encode_item_metadata(i32 entity_id, i32 item_id, i8 count) {
+    io::ByteWriter writer;
+    write_varint(writer, entity_id);
+    writer.write_u8(8);  // index 8 is the stack an item entity carries
+    write_varint(writer, 7);
+    writer.write_u8(1);  // the slot is present
+    write_varint(writer, item_id);
+    writer.write_i8(count);
+    writer.write_u8(0);     // no NBT
+    writer.write_u8(0xFF);  // end of metadata
+    return writer.take();
+}
+
+std::vector<u8> encode_take_item(i32 collected, i32 collector, i32 count) {
+    io::ByteWriter writer;
+    write_varint(writer, collected);
+    write_varint(writer, collector);
+    write_varint(writer, count);
+    return writer.take();
+}
+
 std::vector<u8> encode_update_time(i64 world_age, i64 time_of_day) {
     io::ByteWriter writer;
     writer.write_i64(world_age);
