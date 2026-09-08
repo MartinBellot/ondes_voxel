@@ -25,7 +25,7 @@
     "M1": {
       "name": "Protocole 763",
       "status": "in_progress",
-      "done": 12,
+      "done": 13,
       "total": 18,
       "exit_criterion": "Le serveur apparaît dans la liste des serveurs du client vanilla, MOTD et icône corrects ; round-trip octet à octet de tous les paquets ; fuzz du décodeur sans crash.",
       "blocked": [],
@@ -84,7 +84,7 @@
   "metrics": {
     "$comment": "null = pas encore mesuré. Renseigné par la CI, jamais à la main.",
     "coverage": null,
-    "packets_763": "status 4/4, login 4/4 (start, disconnect, set_compression, success)",
+    "packets_763": "status 4/4, login 4/4 (start, disconnect, set_compression, success) ; 55 identifiants Play implementes, dont 13 paquets d'entite figes octet pour octet contre des captures du vrai serveur",
     "blockstate_parity": "24135/24135 états conformes au rapport officiel Mojang",
     "tps": 20.0,
     "frame_p99_ms": 5.91,
@@ -159,7 +159,10 @@
     "worldgen_harness": "tools/ov_parity compare notre generation au monde de reference. Il a d'abord donne 67 % : il lisait des chunks arretes a un statut partiel, dont le tableau de biomes vaut plains par defaut — ce qui faisait dire 'le jeu a choisi plains' a chaque desaccord. Filtre sur Status == minecraft:full, le meme code donne 99.912 %",
     "entity_types": "120 des 124 types mesures sur un vrai serveur 1.20.1 : boite de collision par bissection d'un selecteur, hauteur des yeux par un marqueur pose a l'ancre du regard, 622 valeurs d'attribut par la commande attribute. La sonde est etalonnee contre minecraft:interaction, dont la largeur et la hauteur SONT le NBT : cinq tailles declarees, decalage -1.5e-08 et dispersion nulle. Les 4 restants (lightning_bolt, evoker_fangs, fishing_bobber, player) sont refuses par leur nom et jamais arrondis a zero",
     "entity_storage": "EnTT en PRIVATE_DEP derriere un PIMPL ; le tick parcourt l'ordre d'insertion et non une vue, dont l'ordre est celui du stockage et change au swap-and-pop d'une destruction. Un handle vers une entite morte ne resout jamais vers celle qui a pris sa place, et un id reseau n'est jamais reutilise",
-    "measurement_trap_spawn_animals": "spawn-animals=false supprime les animaux a leur premier tick, invoques a la main et PersistenceRequired compris : le premier releve perdait 47 types pendant que la console disait 'Summoned new Cow'"
+    "measurement_trap_spawn_animals": "spawn-animals=false supprime les animaux a leur premier tick, invoques a la main et PersistenceRequired compris : le premier releve perdait 47 types pendant que la console disait 'Summoned new Cow'",
+    "entity_packets": "paquets d'entite releves sur un vrai serveur 1.20.1 par un client sonde : spawn 0x01, metadonnees 0x52, deltas 0x2B/0x2C/0x2D, velocite 0x54, attributs 0x6A, degats 0x18, retrait 0x3E. La table d'indices de metadonnees est DERIVEE et non recopiee — un champ NBT a la fois sur un zombie de reference — et les indices que rien n'a fait bouger (6, 8 vivant, 10 a 14) sont absents plutot que devines",
+    "entity_delta_units": "l'unite des paquets de deplacement mesuree : +0.75 bloc donne 3072 et -1.125 donne -4608, soit 1/4096 de bloc. Un i16 porte un peu moins de 8 blocs ; 8.0 exactement vaut 32768 et renverrait l'entite de huit blocs dans l'autre sens, donc fits_in_delta refuse a 8.0 et accepte a 7.999",
+    "attribute_cross_check": "les deux mesures independantes coincident bit pour bit : attribute base get imprime 0.23000000417232513 pour la vitesse d'un zombie, et le paquet 0x6A porte le f64 3fcd70a3e0000000 — la meme valeur, le double le plus proche du float 0.23f"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",

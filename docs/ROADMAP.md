@@ -126,9 +126,12 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [~] Les ~130 paquets Play, round-trip octet à octet
       *(44 identifiants implémentés — ceux dont la tranche verticale a besoin.
       Le reste arrive avec les entités, l'inventaire complet et le son)*
-- [~] Métadonnées d'entité (index / type / valeur)
-      *(seulement celle de l'entité-objet, figée octet pour octet contre un
-      relevé du vrai serveur. L'encodeur générique attend les mobs)*
+- [x] Métadonnées d'entité (index / type / valeur)
+      *(`MetadataWriter` couvre les 28 types de valeur de 763, et la table
+      d'indices est **dérivée** plutôt que recopiée : un champ NBT à la fois sur
+      un zombie de référence, et l'index qui bouge est la réponse. Les indices
+      que rien n'a fait bouger sont absents plutôt que devinés — voir
+      `docs/PROVENANCE.md`)*
 - [x] Format de chunk **réseau** — palette bit-packée, **distinct du disque** 🔒
       *(et **relu** : `parse_chunk_data` est le miroir exact de l'encodeur, testé
       sur 24 chunks réels comparés cellule par cellule — blocs, biomes, les deux

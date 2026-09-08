@@ -3331,3 +3331,83 @@ Deux autres propriétés sont tenues par des tests plutôt que par une intention
 - un id réseau n'est **jamais réutilisé** ;
 - une entité apparue *pendant* un tick n'est pas tiquée dans ce tick — sinon un
   mob qui en engendre un par tick empêcherait le tick de finir.
+
+---
+
+## Les paquets d'entité : relevés sur le fil, indices compris
+
+`scripts/capture_entity_packets.py` fait joindre un client sonde écrit depuis la
+spec au vrai serveur 1.20.1, invoque des mobs à côté de lui depuis la console, et
+écrit ce qui arrive, octet par octet. Ce qui est figé en test
+(`src/ov_protocol/tests/test_entity_packets.cpp`) est ce que le jeu a produit.
+
+### La table d'indices n'est pas lue, elle est dérivée
+
+Un index de métadonnée faux **n'est pas une erreur** : c'est un mob qui rend avec
+la propriété d'un autre, sans un mot. C'est la raison pour laquelle il ne fallait
+pas la recopier depuis un résumé.
+
+Le relevé pose donc un zombie de référence, puis un zombie identique **plus un
+seul champ NBT**, et regarde quel index a changé :
+
+| champ NBT | index | type | valeur observée |
+|---|---|---|---|
+| `Glowing:1b` | 0 | byte | 64 → bit 0x40 |
+| `Air:123s` | 1 | varint | 123 |
+| `CustomName` | 2 | optional_component | le JSON tel quel |
+| `CustomNameVisible:1b` | 3 | boolean | vrai |
+| `Silent:1b` | 4 | boolean | vrai |
+| `NoGravity:1b` | 5 | boolean | vrai |
+| `TicksFrozen:123` | 7 | varint | 123 |
+| `Health:7.0f` | 9 | float | 7,0 |
+| `NoAI:1b` | 15 | byte | 1 |
+| `LeftHanded:1b` | 15 | byte | 2 |
+| `IsBaby:1b` | 16 | boolean | vrai |
+
+Les indices que rien n'a fait bouger sont **absents** de `ov/protocol/entity.hpp`
+plutôt que devinés : 6 (pose), 8 sur une entité vivante, et 10 à 14. Une
+constante plausible y produirait un mob correct à l'écran et faux au fond.
+
+Deux observations qui n'étaient pas demandées :
+
+- **vanilla n'envoie que ce qui diffère du défaut.** Un zombie invoqué sans rien
+  n'envoie qu'un champ, la santé — encore une fois, la santé est envoyée même à
+  sa valeur par défaut.
+- **un armor stand n'envoie pas l'index 15.** Il n'est pas un `Mob`. Une table
+  d'indices écrite « pour toutes les entités » aurait mis des drapeaux de mob sur
+  un support d'armure.
+
+### L'unité des paquets de déplacement, mesurée
+
+`Update Entity Position` porte un delta et pas une position. L'unité a été
+mesurée plutôt que lue : un zombie téléporté d'une distance connue, `Pos` relu
+des deux côtés.
+
+| déplacement | `dX` observé | rapport |
+|---|---|---|
+| +0,75 bloc | 3072 | 4096 |
+| −1,125 bloc | −4608 | 4096 |
+
+L'unité est donc **1/4096 de bloc**, et un i16 porte un peu moins de 8 blocs.
+La borne compte : 8 blocs exactement valent 32768, un de trop, et l'entité
+repartirait de huit blocs dans l'autre sens. `fits_in_delta` refuse à 8,0 et
+accepte à 7,999.
+
+### Un ordre de champs qui n'est pas le même d'un paquet à l'autre
+
+`Spawn Entity` écrit **pitch, puis yaw**, puis head yaw. `Update Entity Position
+and Rotation` écrit **yaw, puis pitch**. Ce n'est pas une erreur dans l'un des
+deux : les deux paquets sont réellement en désaccord, et les deux ordres viennent
+de captures. Deviner l'un depuis l'autre donne un mob tourné de travers.
+
+`Entity Event` (0x1C) est le seul paquet d'entité dont l'id est un **i32 fixe** et
+non un varint.
+
+### Les deux mesures se rejoignent
+
+Le paquet `Update Attributes` d'un zombie porte
+`minecraft:generic.movement_speed` et le f64 `3fcd70a3e0000000`, soit
+**0,23000000417232513**. C'est exactement ce que `attribute … base get` imprime
+pour le type, et exactement le double le plus proche du float `0.23f`. Les deux
+relevés — la commande et le fil — sont indépendants et **coïncident bit pour
+bit**. C'est ce qui justifie de stocker les attributs en f64 dans le pack.
