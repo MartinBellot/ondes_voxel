@@ -3516,3 +3516,26 @@ C'est la même leçon que la section « Absolu plutôt que relatif » plus haut,
 par l'autre bout : les entités joueur ont évité le problème en n'envoyant que des
 téléports absolus ; les mobs paient six octets au lieu de vingt-huit et doivent
 donc tenir le compte.
+
+### Le comportement passe par `IEntityLogic`, pas à côté
+
+Le serveur ne fait pas tomber les mobs lui-même : il appelle `EntityWorld::tick`,
+et c'est `gameplay::FallingMob` — un `IEntityLogic` — qui applique la physique.
+La distinction n'est pas cosmétique. Tout l'intérêt du composant polymorphe est
+qu'un zombie et une pile au sol diffèrent par **ce qu'ils font** et non par qui
+les appelle ; un serveur qui applique la physique à la main aurait un `if` par
+type au lieu d'un appel virtuel, et le premier mob qui doit faire autre chose
+casse la boucle.
+
+Le pont entre les couches est `TickContext::user`, un pointeur opaque que
+`ov_entity` (couche 8) ne peut pas nommer et que `ov_gameplay` (couche 9)
+récupère. C'est exactement l'idiome que `CollisionWorld` utilise déjà pour lire
+le monde, et c'est ce qui permet à la couche basse de tiquer du comportement
+écrit au-dessus d'elle sans qu'aucune des deux ne connaisse l'autre.
+
+Trois choses sont vérifiées plutôt que supposées : une pile au sol tombe
+**exactement de moitié** moins loin qu'un mob au même tick (même objet de
+comportement, constantes différentes) ; un tableau, qui n'a aucun composant de
+logique, ne bouge pas du tout — un pointeur nul et zéro appel virtuel ; et un
+appelant qui oublie de renseigner le contexte obtient un mob **immobile** plutôt
+qu'un mob qui traverse le sol faute de collision.

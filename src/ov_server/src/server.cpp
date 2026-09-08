@@ -33,6 +33,7 @@
 #include "ov/registry/block_states.hpp"
 #include "ov/entity/world.hpp"
 #include "ov/gameplay/entity_physics.hpp"
+#include "ov/gameplay/mob_logic.hpp"
 #include "ov/protocol/entity.hpp"
 #include "ov/registry/registries.hpp"
 #include "ov/world/chunk.hpp"
@@ -3027,6 +3028,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 state->uuid                = uuid_for_entity(state->network_id);
                 state->broadcast_position  = state->position;
                 state->broadcast_valid     = true;
+                // Behaviour, in the one component that carries it. Falling is
+                // all any of them does so far, and it is the floor everything
+                // else will be built on rather than a placeholder.
+                mobs->set_logic(*spawned, std::make_unique<gameplay::FallingMob>());
                 OV_LOG_INFO("spawned {} as entity {} at {:.1f} {:.1f} {:.1f} "
                             "({:.2f} wide, {:.2f} tall, {:.0f} health)",
                             options.mobs[index], state->network_id, where.x, where.y, where.z,
@@ -3051,17 +3056,25 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 view.read = [&](i32 bx, i32 by, i32 bz) { return block_at({bx, by, bz}); };
                 const gameplay::CollisionWorld collisions{*blocks, &WorldView::look_up, &view};
 
-                const gameplay::EntityMotionConstants constants;
+                // The behaviour runs here, through the entity world, rather
+                // than being applied to each state by hand: the whole point of
+                // IEntityLogic is that a zombie and a dropped stack differ in
+                // what they do, not in who calls them.
+                gameplay::MobContext mob_context{&collisions};
+                mobs->tick(entity::TickContext{clock.tick_count(), &mob_context});
+
+                for (const i32 gone : mobs->removed_ids()) {
+                    broadcast(nullptr, net::clientbound::kRemoveEntities,
+                              net::encode_remove_entity(gone));
+                }
+
                 for (const entity::EntityHandle handle : mobs->handles()) {
                     entity::EntityState* state = mobs->mutable_state(handle);
                     if (state == nullptr) {
                         continue;
                     }
-                    const Vec3d before = state->position;
-                    *state             = gameplay::step_entity(*state, constants, collisions);
-
                     if (!state->broadcast_valid) {
-                        state->broadcast_position = before;
+                        state->broadcast_position = state->position;
                         state->broadcast_valid    = true;
                     }
                     // Against what the client has, not against where the mob
