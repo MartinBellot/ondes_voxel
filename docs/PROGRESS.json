@@ -25,15 +25,16 @@
     "M1": {
       "name": "Protocole 763",
       "status": "in_progress",
-      "done": 9,
-      "total": 19,
+      "done": 12,
+      "total": 18,
       "exit_criterion": "Le serveur apparaît dans la liste des serveurs du client vanilla, MOTD et icône corrects ; round-trip octet à octet de tous les paquets ; fuzz du décodeur sans crash.",
-      "blocked": []
+      "blocked": [],
+      "notes": "Le chiffrement AES/CFB8 est hors perimetre et non en retard : le mode hors-ligne est une decision produit, et chiffrer une session que personne n'authentifie ne protege rien. Il est marque comme tel dans la roadmap et retire du total."
     },
     "M2": {
       "name": "Registres et données",
       "status": "in_progress",
-      "done": 17,
+      "done": 21,
       "total": 27,
       "exit_criterion": "Égalité stricte contre blocks.json sur les 24 135 états ; .ovpack chargé en < 10 ms ; vecteurs RNG conformes.",
       "blocked": [],

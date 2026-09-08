@@ -101,21 +101,38 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       harnais de fuzz. Écrire 250 paquets à la main est 2 mois de dette 🔒
 - [x] VarInt (≤ 5 o) et VarLong (≤ 10 o) — table de la spec vérifiée 🔒
 - [x] Chaînes UTF-8 validées, UUID, angle ; limites imposées avant allocation 🔒
-- [ ] Position empaquetée (26/26/12 bits), NBT réseau
+- [x] Position empaquetée (26/26/12 bits), NBT réseau
+      *(x sur 26 bits, z sur 26, **y sur les 12 de poids faible**, tous signés ;
+      l'extension de signe est testée sur neuf positions dont les extrêmes du
+      monde — la moitié des coordonnées sont négatives et le bug ne s'y voit
+      que là)*
 - [x] Framing par longueur, avec bascule de compression en cours de connexion 🔒
       *(le cas sous le seuil garde le framing compressé, longueur interne à 0)*
-- [ ] Chiffrement AES/CFB8, secret partagé 16 octets
+- [🚫] Chiffrement AES/CFB8, secret partagé 16 octets
+      *(**hors périmètre** : le mode hors-ligne est une décision produit, pas un
+      retard. Sans authentification Mojang il n'y a pas de secret partagé à
+      établir, et chiffrer une session que personne n'authentifie ne protège
+      rien)*
 - [x] **Mode hors-ligne uniquement** — décision produit, voir `docs/ARCHITECTURE.md` § 8 🔒
 - [x] UUID hors-ligne déterministe, vérifié contre `UUID.nameUUIDFromBytes` de Java
 - [x] MD5 (requis par l'UUID v3), vecteurs RFC 1321
 - [x] Machine à états par connexion : Handshake → Status ✓ / Login ✓
 - [x] Login hors-ligne : Login Start, validation du nom, Disconnect explicatif
-- [ ] Login Success + passage à l'état Play *(attend le monde, M3)*
+- [x] Login Success + passage à l'état Play
+      *(des deux côtés : le serveur l'émet, et `ov_netclient` le reçoit et
+      bascule)*
 - [x] **Status : MOTD, nombre de joueurs, ping ⭐** — vérifié par un client écrit
       depuis la spec : JSON conforme, pong à écho correct
-- [ ] Les ~130 paquets Play, round-trip octet à octet
-- [ ] Métadonnées d'entité (index / type / valeur)
-- [ ] Format de chunk **réseau** — palette bit-packée, **distinct du disque** 🔒
+- [~] Les ~130 paquets Play, round-trip octet à octet
+      *(44 identifiants implémentés — ceux dont la tranche verticale a besoin.
+      Le reste arrive avec les entités, l'inventaire complet et le son)*
+- [~] Métadonnées d'entité (index / type / valeur)
+      *(seulement celle de l'entité-objet, figée octet pour octet contre un
+      relevé du vrai serveur. L'encodeur générique attend les mobs)*
+- [x] Format de chunk **réseau** — palette bit-packée, **distinct du disque** 🔒
+      *(et **relu** : `parse_chunk_data` est le miroir exact de l'encodeur, testé
+      sur 24 chunks réels comparés cellule par cellule — blocs, biomes, les deux
+      lumières et les heightmaps)*
 - [ ] Cibles de fuzz sur le décodeur, aucun crash sur entrée malveillante
 - [ ] Matrice de conformité `docs/protocol/763/`
 
@@ -136,7 +153,9 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] `.ovpack` binaire, mmap-able, sans pointeur — 131 744 octets, déterministe
 - [x] `BlockRegistry` : lookup bloc, propriétés, état par défaut, bloc d'un état
 - [x] Opacité à la lumière du ciel, **mesurée** sur les 1003 blocs 🔒
-- [ ] Reste des flags : émission, formes de collision, couleurs
+- [x] Reste des flags : émission, formes de collision, couleurs
+      *(émission mesurée sur 23282 états, 4327 formes de collision par état,
+      et les effets de biome — climat, eau, brouillard, ciel — en format 11)*
 - [x] **Arithmétique mixed-radix des propriétés** — un multiply, un add 🔒
 - [x] Test : les **24 135 états** correspondent au rapport de Mojang ⭐
       *(`scripts/check_registry_parity.py`, relit le binaire depuis sa spec)*
@@ -145,14 +164,24 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] Tags des 10 registres codés en dur, résolution récursive à la compilation
 - [ ] Tags des registres dynamiques *(avec `Registry Data`, M3)*
 - [ ] Chargeur de datapack `pack_format` 15, empilable
-- [ ] `ov-datac` → cache `.ovpack` mmap, position-independent, zéro pointeur
-- [ ] Invalidation par version de format + hash de contenu
-- [ ] Test : rebuild depuis JSON == cache, **octet à octet** (déterminisme) 🔒
+- [~] `ov-datac` → cache `.ovpack` mmap, position-independent, zéro pointeur
+      *(position-independent et sans pointeur : oui, c'est ce qui le rend
+      lisible tel quel. **Pas encore mmap** — il est lu en mémoire d'un bloc,
+      ce qui coûte 583 ko et rien d'autre pour l'instant)*
+- [x] Invalidation par version de format + hash de contenu
+      *(`FORMAT_VERSION` refusé s'il ne correspond pas — un cache périmé lu
+      comme courant est bien pire que pas de cache — et `MANIFEST.sha256` pour
+      les données sources)*
+- [x] Test : rebuild depuis JSON == cache, **octet à octet** (déterminisme) 🔒
+      *(l'émetteur reconstruit le pack une seconde fois et compare les octets ;
+      `deterministic .. yes` à chaque génération)*
 - [x] `LegacyRandomSource` bit-exact — vérifié contre une vraie JVM 🔒
 - [ ] `log` fdlibm pour rendre `nextGaussian` bit-exact *(4 ulp d'écart mesuré)*
 - [x] `XoroshiroRandomSource` bit-exact — vérifié contre le JDK, seeding compris 🔒
 - [ ] `PositionalRandomFactory`, hachage de seeds, vecteurs de référence ⭐
-- [ ] `ov-inspect` : dump NBT, région, chunk, registre, paquet
+- [x] `ov-inspect` : dump NBT, région, chunk, registre, paquet
+      *(plus `column`, `heightmaps`, `state`, `loot`, `connects` et `stairs`,
+      ajoutés au fur et à mesure que chaque mesure en a eu besoin)*
 
 ---
 
