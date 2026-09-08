@@ -26,6 +26,7 @@
 #include "ov/registry/registries.hpp"
 #include "ov/world/chunk.hpp"
 #include "ov/world/chunk_storage.hpp"
+#include "ov/world/level_dat.hpp"
 
 #include <fmt/format.h>
 
@@ -517,7 +518,8 @@ int main(int argc, char** argv) {
     // than a world — the real ChunkMap arrives with the tick scheduler.
     // The world on disk. Under run/, which is gitignored — a save is the
     // player's, not the repository's.
-    const std::filesystem::path world_dir = std::filesystem::path{"run"} / "world" / "region";
+    const std::filesystem::path level_dir = std::filesystem::path{"run"} / "world";
+    const std::filesystem::path world_dir = level_dir / "region";
     std::error_code             directory_error;
     std::filesystem::create_directories(world_dir, directory_error);
 
@@ -630,6 +632,21 @@ int main(int argc, char** argv) {
                 OV_LOG_WARN("could not write {}", path.string());
             }
         }
+        // level.dat every time, not once at creation: it is small, and a world
+        // whose regions are newer than its level.dat is the state a crash
+        // leaves behind.
+        world::LevelSettings settings;
+        settings.name    = "Ondes VOXEL";
+        settings.spawn_y = Superflat::kSurfaceY + 1;
+        settings.layers  = {
+            {"minecraft:bedrock", 1},
+            {"minecraft:dirt", 2},
+            {"minecraft:grass_block", 1},
+        };
+        if (!io::write_file_atomic(level_dir / "level.dat", world::encode_level_dat(settings))) {
+            OV_LOG_WARN("could not write level.dat");
+        }
+
         OV_LOG_INFO("saved {} chunks across {} regions", written, by_region.size());
         dirty_chunks.clear();
     };

@@ -912,3 +912,48 @@ le contrôle d'aller-retour d'`ov-inspect`.
 Autosave toutes les 30 secondes, en plus de l'arrêt propre : un serveur tué n'a
 jamais d'arrêt propre, et perdre une heure de construction sur un crash est la
 panne dont on se souvient. Mesuré : 4 chunks sur 3 régions, zéro surcharge de tick.
+
+---
+
+## `level.dat`, et l'aller-retour croisé avec Minecraft
+
+Sans `level.dat`, Minecraft ne voit **aucun monde**, quels que soient les
+fichiers région présents : la liste des sauvegardes se construit à partir de ce
+fichier. Il est en **gzip**, alors que les chunks à l'intérieur d'une région sont
+en zlib — rien ne signale la différence, et un `level.dat` écrit avec le mauvais
+conteneur se lit comme un fichier corrompu.
+
+Il déclare aussi le **générateur**, ce qui compte plus qu'il n'y paraît : un monde
+dont les régions ont été faites à plat mais dont le `level.dat` annonce « noise »
+fera pousser du terrain normal dès que le joueur dépassera ce qui était
+sauvegardé, avec un mur visible à la jonction.
+
+### Le serveur vanilla comme oracle
+
+Premier essai : le vrai serveur a répondu **`key missing: DragonFight`**. Une
+erreur qui nomme exactement le champ manquant — bien meilleure que la plupart, et
+un bon rappel que le jeu est l'oracle de test le moins cher disponible. Ajouté,
+puis **zéro erreur**.
+
+### Les deux sens, prouvés
+
+| Sens | Preuve |
+|---|---|
+| Notre sauvegarde → Minecraft | Le serveur 1.20.1 charge notre monde sans une erreur et **sert notre colonne de 8 pierres** dans ses propres paquets de chunk |
+| Minecraft → notre sauvegarde | Le fichier région passe de 1 à 529 chunks — vanilla l'a réécrit — et notre serveur le relit avec les bons blocs |
+
+La seconde ligne est établie sans ambiguïté par les champs présents dans le
+chunk : `PostProcessing`, `isLightOn`, `structures`, `LastUpdate: 828` et
+**25 sections** (vanilla en écrit une de plus pour la lumière). Aucun n'est écrit
+par nous. Le chunk relu est donc bien celui de vanilla.
+
+Cette section supplémentaire est ignorée au chargement : elle tombe hors de la
+forme du monde et n'a nulle part où aller.
+
+### Un test qui a échoué de mon fait
+
+J'ai tenté de faire poser des blocs de diamant **par** le serveur vanilla via un
+client scripté, pour un test plus direct. La pose n'a jamais abouti : le serveur
+valide quelque chose que mon client ne satisfait pas. C'est une limite de mon
+harnais, pas du code, et la preuve par les champs ci-dessus est plus forte de
+toute façon — mais elle est notée plutôt que passée sous silence.

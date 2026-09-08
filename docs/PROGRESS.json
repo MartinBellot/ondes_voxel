@@ -11,7 +11,7 @@
   },
   "last_updated": "2026-09-08",
   "current_milestone": "M3",
-  "current_task": "m4-cross-load-with-vanilla",
+  "current_task": "m4-block-entities-and-player-data",
   "milestones": {
     "M0": {
       "name": "Fondations",
@@ -52,7 +52,7 @@
     "M4": {
       "name": "Monde persistant",
       "status": "in_progress",
-      "done": 3,
+      "done": 5,
       "total": 10,
       "exit_criterion": "Round-trip croisé : notre sauvegarde s'ouvre dans Minecraft vanilla et réciproquement, sans perte.",
       "blocked": []
@@ -113,7 +113,8 @@
     "player_state": "position et rotation retenues entre sessions ; chunks centres sur le joueur a la reconnexion (verifie a 1234,-777 : chunk 77,-49)",
     "chunk_streaming": "un pas d'un chunk echange 17 chunks, un saut de 5 en diagonale 157 ; le total reste a 289 et reste centre sur le joueur",
     "region_write": "17879/17879 chunks reecrits octet-identiques sur un monde reel",
-    "persistence": "monde sauvegarde en Anvil et recharge : tour, trou et lumiere identiques apres redemarrage ; autosave 30 s, 4 chunks / 3 regions sans surcharge de tick"
+    "persistence": "monde sauvegarde en Anvil et recharge : tour, trou et lumiere identiques apres redemarrage ; autosave 30 s, 4 chunks / 3 regions sans surcharge de tick",
+    "cross_load": "notre sauvegarde chargee par le vrai serveur 1.20.1 sans erreur ; chunk reecrit par lui (PostProcessing, isLightOn, structures, 25 sections) relu par nous avec les bons blocs"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",
