@@ -40,6 +40,10 @@ struct Held {
     /// The item's wire id, or nothing for an empty hand.
     std::optional<registry::ProtocolId> item;
     u8                                  efficiency{0};
+    /// Silk Touch and Fortune levels, which decide what drops rather than how
+    /// fast it comes off.
+    u8 silk_touch{0};
+    u8 fortune{0};
 };
 
 /// How the player stands, which vanilla lets change the answer fivefold.

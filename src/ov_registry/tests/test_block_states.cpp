@@ -267,14 +267,16 @@ TEST_CASE("a corrupt pack is rejected", "[registry][blockstates][malformed]") {
     REQUIRE(BlockRegistry::from_bytes({}).error() == RegistryError::Corrupt);
     REQUIRE(BlockRegistry::from_bytes(std::vector<u8>(10, 0)).error() == RegistryError::Corrupt);
 
-    // Right size, wrong magic.
-    std::vector<u8> wrong_magic(200, 0);
+    // Big enough to hold a header — the check for a short file comes first, and
+    // a buffer shorter than the header would be refused before the magic is
+    // ever read.
+    std::vector<u8> wrong_magic(512, 0);
     wrong_magic[0] = 'N';
     REQUIRE(BlockRegistry::from_bytes(wrong_magic).error() == RegistryError::Corrupt);
 
     // Right magic, wrong version — a stale cache read as current would produce
     // plausible, wrong ids.
-    std::vector<u8> wrong_version(200, 0);
+    std::vector<u8> wrong_version(512, 0);
     wrong_version[0] = 'O';
     wrong_version[1] = 'V';
     wrong_version[2] = 'P';

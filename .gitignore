@@ -42,3 +42,6 @@ perf.data*
 # Python caches from the measurement scripts.
 __pycache__/
 *.pyc
+
+# Agent scratch space: settings and the isolated worktrees agents run in.
+.claude/

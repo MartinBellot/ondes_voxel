@@ -197,7 +197,8 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [ ] `DataVersion`, refus explicite des versions non supportées
 - [ ] Les ~20 archétypes de blocs dont dérivent ~80 % des 1003 types
 - [x] Durées de cassage et outils corrects : vérifiés tick pour tick sur 985 des 996 blocs
-- [ ] Silk Touch, Fortune et tables de butin
+- [x] Tables de butin, Silk Touch et Fortune : tirages comparés à ceux du vrai serveur
+- [ ] Entités objet : les butins tombent au sol et se ramassent
 - [x] Conteneurs : ouverture, clic gauche et droit, hotbar
 - [x] Shift-clic : fusion jusqu'à la taille de pile réelle, mesurée item par item
 - [ ] Glissés, touches numériques, inventaire du joueur autoritatif

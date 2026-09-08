@@ -7,13 +7,16 @@ ov_add_library(ov_gameplay
     LAYER 9
     SOURCES
         src/breaking.cpp
+        src/loot.cpp
     DEPS
         ov_registry
+        ov_math
 )
 
 ov_add_test(test_ov_gameplay
     SOURCES
         tests/test_breaking.cpp
+        tests/test_loot.cpp
     DEPS ov_gameplay
     LABELS unit
 )

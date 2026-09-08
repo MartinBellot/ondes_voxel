@@ -34,6 +34,8 @@ proves nothing.
 from __future__ import annotations
 
 import json
+
+import loot
 import struct
 import sys
 from pathlib import Path
@@ -49,9 +51,12 @@ MAGIC = b"OVPK"
 # Bumped by hand whenever the layout changes, so a stale cache is detected
 # rather than misread. A mismatched cache read as if it were current is far
 # worse than no cache at all.
-FORMAT_VERSION = 7
+FORMAT_VERSION = 8
 
-HEADER_SIZE = 128
+_loot_report = ""
+
+# Le pack a dépassé 128 octets d'en-tête en gagnant les tables de butin.
+HEADER_SIZE = 256
 
 
 class StringTable:
@@ -80,7 +85,7 @@ def align8(data: bytearray) -> None:
 
 def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
           opacity_doc: dict, stacks_doc: dict, motion_doc: dict,
-          hardness_doc: dict) -> bytes:
+          hardness_doc: dict, loot_dir, loot_map_doc: dict) -> bytes:
     blocks = blocks_doc["blocks"]
     state_count = blocks_doc["state_count"]
 
@@ -216,6 +221,22 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
     item_entries = registries_doc["registries"]["minecraft:item"]["entries"]
     stack_bytes = bytes(min(255, max_stack.get(name, 64)) for name in item_entries)
 
+    # ── Tables de butin ─────────────────────────────────────────────────────
+    #
+    # Aplaties à la compilation, comme les tags : descendre un arbre de
+    # conditions à chaque bloc cassé mettrait un parcours de graphe dans le
+    # chemin du joueur.
+    item_index = {name: i for i, name in enumerate(item_entries)}
+    item_tags = tags_doc["tags"].get("minecraft:item", {})
+    loot_sections = loot.compile_block_tables(loot_dir, blocks, item_index,
+                                              lambda tag: item_tags[tag], strings.intern,
+                                              loot_map_doc["tables"])
+    loot_bytes = loot.pack(loot_sections)
+
+    global _loot_report
+    _loot_report = (f"{loot_sections['present']} blocks, {len(loot_sections['pools'])} pools, "
+                    f"{len(loot_sections['entries'])} entries")
+
     string_blob = strings.blob()
 
     # ── Assemble ────────────────────────────────────────────────────────────
@@ -240,6 +261,12 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
     # Dureté par bloc, en float 32. -1 veut dire incassable, ce que le serveur
     # dit lui-même en ne cassant jamais le bloc — ce n'est pas une valeur par
     # défaut mais une mesure.
+    loot_offsets = {}
+    for key in ("tables", "pools", "entries", "conds", "funcs", "floats", "ints"):
+        loot_offsets[key] = HEADER_SIZE + len(body)
+        body += loot_bytes[key]
+        align8(body)
+
     hardness_offset = HEADER_SIZE + len(body)
     for block in blocks:
         body += struct.pack("<f", float(hardness.get(block["name"], {}).get("hardness", -1.0)))
@@ -292,7 +319,7 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
     align8(body)
 
     header = struct.pack(
-        "<4sIIIIIIIIIIIIIIIIIIIIIIIII",
+        "<4s" + "I" * 38,
         MAGIC,
         FORMAT_VERSION,
         len(block_records),
@@ -318,6 +345,19 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
         len(item_entries),
         fluid_offset,
         hardness_offset,
+        loot_offsets["tables"],
+        loot_offsets["pools"],
+        loot_offsets["entries"],
+        loot_offsets["conds"],
+        loot_offsets["funcs"],
+        loot_offsets["floats"],
+        loot_offsets["ints"],
+        len(loot_sections["pools"]),
+        len(loot_sections["entries"]),
+        len(loot_sections["conds"]),
+        len(loot_sections["funcs"]),
+        len(loot_sections["floats"]),
+        len(loot_sections["ints"]),
         0,  # reserved
     )
     assert len(header) <= HEADER_SIZE
@@ -355,9 +395,14 @@ def main() -> int:
         motion_doc = json.load(f)
     with open(NORMALIZED / "hardness.json") as f:
         hardness_doc = json.load(f)
+    with open(NORMALIZED / "loot_tables.json") as f:
+        loot_map_doc = json.load(f)
+    loot_dir = (NORMALIZED.parent / "generated" / "data" / "minecraft" / "loot_tables" / "blocks")
+    if not loot_dir.is_dir():
+        sys.exit(f"error: {loot_dir} not found. Run tools/ov_datagen/datagen.py first.")
 
     payload = build(blocks_doc, registries_doc, tags_doc, opacity_doc, stacks_doc,
-                    motion_doc, hardness_doc)
+                    motion_doc, hardness_doc, loot_dir, loot_map_doc)
     tag_records_count = [t for g in tags_doc["tags"].values() for t in g]
     member_count_total = sum(len(v) for g in tags_doc["tags"].values() for v in g.values())
     OUTPUT.write_bytes(payload)
@@ -371,12 +416,13 @@ def main() -> int:
     print(f"    stack sizes .... {stacks_doc['measured']} items measured")
     print(f"    motion flags ... {motion_doc['measured']} blocks measured")
     print(f"    hardness ....... {hardness_doc['count']} blocks")
+    print(f"    loot tables .... {_loot_report}")
     print(f"    size ........... {len(payload):,} bytes")
 
     # Byte-stability is the property the manifest depends on. Checking it here
     # costs nothing and catches a non-deterministic dict order immediately.
     if build(blocks_doc, registries_doc, tags_doc, opacity_doc, stacks_doc,
-             motion_doc, hardness_doc) != payload:
+             motion_doc, hardness_doc, loot_dir, loot_map_doc) != payload:
         sys.exit("error: emitter is not deterministic")
     print("    deterministic .. yes")
     return 0

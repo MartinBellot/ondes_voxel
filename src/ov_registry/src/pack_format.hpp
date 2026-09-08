@@ -23,9 +23,10 @@ namespace ov::registry {
 /// were current is far worse than no cache: the ids would be plausible and
 /// wrong, and nothing would report an error until a vanilla client crashed on
 /// an entity type that does not exist.
-inline constexpr u32 kFormatVersion = 7;
+inline constexpr u32 kFormatVersion = 8;
 
-inline constexpr u32 kHeaderSize = 128;
+/// Grew past 128 when the loot tables arrived.
+inline constexpr u32 kHeaderSize = 256;
 
 struct PackHeader {
     char magic[4];
@@ -55,6 +56,22 @@ struct PackHeader {
     u32 fluid_offset;
     /// One float per block: how long it takes to break, -1 for never.
     u32 hardness_offset;
+
+    /// The compiled block loot tables. See ov/registry/loot_data.hpp.
+    u32 loot_tables_offset;
+    u32 loot_pools_offset;
+    u32 loot_entries_offset;
+    u32 loot_conds_offset;
+    u32 loot_funcs_offset;
+    u32 loot_floats_offset;
+    u32 loot_ints_offset;
+    u32 loot_pool_count;
+    u32 loot_entry_count;
+    u32 loot_cond_count;
+    u32 loot_func_count;
+    u32 loot_float_count;
+    u32 loot_int_count;
+
     u32 reserved;
 };
 

@@ -7,4 +7,5 @@ ov_add_executable(ov_inspect
         ov_nbt
         ov_world
         ov_registry
+        ov_gameplay
 )

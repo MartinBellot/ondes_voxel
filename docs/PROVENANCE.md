@@ -1514,3 +1514,111 @@ tôt, donc le « + 1 » y est déjà. Un décalage d'un tick n'est pas cosmétiq
 client prédit la même arithmétique, et un bloc cassé un tick trop tôt
 réapparaît sous les yeux du joueur.
 
+---
+
+## Tables de butin : la seule partie vraiment data-driven
+
+Contrairement à la dureté ou à l'opacité, les tables de butin **sont** des
+données en vanilla. Elles vivent dans le datapack, on les régénère localement
+avec le data generator officiel, et rien n'a besoin d'être mesuré pour les
+obtenir. Ce qui est du code, c'est l'**interpréteur** — et c'est lui qu'on
+écrit et qu'on vérifie.
+
+### Un vocabulaire fermé, et refusé bruyamment quand il déborde
+
+Les 925 fichiers de tables de blocs de 1.20.1 n'emploient qu'un vocabulaire
+petit et clos, ce qu'un relevé exhaustif confirme avant d'écrire une ligne :
+
+| | |
+|---|---|
+| entrées | `item` (895), `alternatives` (72), `dynamic` (17) |
+| conditions | `survives_explosion` (689), `block_state_property` (222), `match_tool` (138), `table_bonus` (27), `any_of` (15), `inverted` (13), `random_chance` (7), `location_check` (4), `entity_properties` (2) |
+| fonctions | `set_count` (209), `explosion_decay` (136), `copy_name` (45), `copy_nbt` (37), `apply_bonus` (31), `set_contents` (17), `limit_count` (5), `copy_state` (2) |
+| `match_tool` | **quatre** prédicats distincts en tout : Silk Touch, les cisailles, et deux tags |
+| poids d'entrée | aucun n'est explicite : tous valent un |
+| `rolls` | toujours une constante |
+
+Tout ce qui sort de cette liste est **refusé à la compilation** plutôt que
+compilé au jugé, et les fonctions qui demandent les données d'un block entity —
+un coffre nommé, une shulker box remplie — laissent la pile telle quelle au lieu
+de la supprimer. Une table à moitié comprise donne des objets qui n'existent
+pas.
+
+L'aplatissement se fait au build, comme pour les tags : descendre un arbre de
+conditions à chaque bloc cassé mettrait un parcours de graphe dans le chemin du
+joueur.
+
+### La table d'un bloc ne porte pas toujours son nom
+
+C'est le piège du jalon, et il est du genre à passer inaperçu. `wall_torch.json`
+**n'existe pas** : une torche murale renvoie à `blocks/torch`, un panneau mural à
+`blocks/oak_sign`, une tête murale à celle de la tête posée. Déduire la table du
+nom du bloc marche pour **920 blocs sur 1003** — juste assez pour avoir l'air
+juste, et la première comparaison a bien montré 48 blocs muraux qui ne
+donnaient rien chez nous et un objet chez vanilla.
+
+La correspondance est donc mesurée, pas devinée : la commande `/loot` journalise
+`from loot table minecraft:blocks/X` avec le X qu'elle a réellement employé.
+`scripts/measure_loot_tables.py` la relève pour les 1003 blocs. Vingt et un
+d'entre eux pointent sur `minecraft:empty` — l'air, les fluides, la tête de
+piston, le bedrock — ce qui est une réponse différente de « une table qui n'a
+rien donné ».
+
+### L'oracle : `/loot`, qui tire la table sans casser le bloc
+
+`execute as <joueur> at <joueur> run loot give <joueur> mine <x> <y> <z> mainhand`
+tire exactement la table du bloc avec l'objet tenu, et le résultat se lit dans
+l'inventaire. Pas de durée, pas de position, pas de physique : juste le tirage.
+
+Deux précautions que le banc a dû apprendre :
+
+* **L'inventaire ne tient que 35 piles** une fois l'outil posé. Un minerai
+  généreux sous Fortune III le remplit, et le total s'arrête alors net sur
+  2240 — un chiffre parfaitement plausible et entièrement faux. Les tirages se
+  font donc par paquets de vingt-quatre.
+* **Un désaccord ne se retient pas sans être rejoué.** Un minerai sous Fortune
+  multiplie un compte aléatoire par un multiplicateur aléatoire, et la variance
+  du produit est bien plus large que la racine du total : sur trente-deux
+  tirages, deux échantillons corrects diffèrent couramment assez pour passer
+  pour une erreur. Trois cas ont ainsi été signalés à tort avant d'être rejoués
+  plus longtemps.
+
+### Ce que la comparaison a corrigé
+
+`apply_bonus` en formule `ore_drops` tire `nextInt(niveau + 2) - 1`, plancher à
+zéro, et le multiplicateur est ce résultat **plus un** : à Fortune III, 1, 1, 2,
+3, 4 à chances égales, soit une moyenne de 2,2. Plancher le tirage à un au lieu
+de zéro donne 1,6 — une valeur d'apparence raisonnable, et un tiers trop basse.
+Le vrai serveur a tranché : 27 diamants pour douze tirages.
+
+### Le vert qui ne prouvait rien
+
+`tall_grass` et `large_fern` passaient la comparaison, et pour la mauvaise
+raison. Leur table exige, par un `location_check`, que la moitié haute de la
+plante soit bien là ; nous répondions faux faute de savoir regarder au-dessus,
+et l'oracle répondait faux aussi — parce que le banc ne pose que la moitié
+basse. Deux erreurs qui s'annulent donnent un vert.
+
+Les quatre `location_check` des tables de blocs sont tous de la même forme,
+« le bloc à un cran au-dessus ou au-dessous est X dans l'état Y », et servent
+uniquement aux deux plantes à deux blocs. C'est donc implémenté, avec un
+émetteur qui **refuse** toute autre forme plutôt que de supposer qu'elle se
+comporte pareil. Mesuré ensuite sur la vraie plante entière : le serveur donne
+22 graines pour 200 tirages, et rien du tout quand la moitié haute manque.
+
+### Résultat
+
+`scripts/check_loot.py` tire chaque cas des deux côtés et compare. La matrice
+est ciblée : chaque configuration d'outil n'est essayée que sur les tables qui
+la mentionnent, parce que tirer Fortune sur neuf cents tables qui l'ignorent
+coûte une heure et ne prouve rien.
+
+**1215 cas sur 1215 concordent**, sur 32 tirages chacun, quatre d'entre eux
+ayant demandé 1024 tirages pour se départager.
+
+Ce qui n'est **pas** fait, et qui est refusé bruyamment plutôt que compilé au
+jugé : `copy_name`, `copy_nbt`, `copy_state` et `set_contents`, qui demandent
+les données d'un block entity — un coffre nommé retombe donc anonyme, une
+shulker box vide. Et l'entrée `dynamic` du pot décoré, qui porte ses tessons.
+Ces fonctions laissent la pile telle quelle au lieu de la supprimer : l'objet
+tombe, son contenu non.

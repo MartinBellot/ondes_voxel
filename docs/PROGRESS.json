@@ -11,7 +11,7 @@
   },
   "last_updated": "2026-09-08",
   "current_milestone": "M3",
-  "current_task": "m4-loot-tables-and-drops",
+  "current_task": "m4-item-entities",
   "milestones": {
     "M0": {
       "name": "Fondations",
@@ -52,8 +52,8 @@
     "M4": {
       "name": "Monde persistant",
       "status": "in_progress",
-      "done": 9,
-      "total": 13,
+      "done": 10,
+      "total": 14,
       "exit_criterion": "Round-trip croisé : notre sauvegarde s'ouvre dans Minecraft vanilla et réciproquement, sans perte.",
       "blocked": []
     },
@@ -127,7 +127,10 @@
     "motion_state_dependence": "10 paires d'etats contrastes (neige 1 et 8 couches, trappe, portillon, porte, dalle double, echafaudage, dripleaf) : 10 accords, donc le predicat est par bloc. L'eau, elle, est par etat : waterlogged true/false mesures separement",
     "break_times": "985/996 blocs donnent exactement le nombre de ticks predit, mesure sur un vrai serveur 1.20.1 ; 11 hors de portee du banc (air, fluides, 4 blocs recalcitrants) et dragon_egg qui se teleporte au lieu de se casser",
     "tool_speeds": "bois 2, pierre 4, or 12, fer 6, diamant 8, netherite 9 ; efficacite ajoute niveau^2+1 ; la famille de l'outil conditionne la recolte et pas seulement le palier (pelle netherite sur pierre : 150 ticks, comme a main nue)",
-    "survival_breaking": "8/8 conditions identiques entre le vrai serveur et le notre, mesurees par la meme sonde : herbe, pierre a main nue et a la pioche, pelle netherite, planches, verre, obsidienne a la pioche en fer et en netherite"
+    "survival_breaking": "8/8 conditions identiques entre le vrai serveur et le notre, mesurees par la meme sonde : herbe, pierre a main nue et a la pioche, pelle netherite, planches, verre, obsidienne a la pioche en fer et en netherite",
+    "loot_tables": "1215/1215 cas identiques au vrai serveur 1.20.1 (32 tirages chacun, 1024 pour quatre qui ont demande a se departager) ; 982 blocs ont une table, 963 pools, 1128 entrees",
+    "loot_table_mapping": "mesuree bloc par bloc : 920 des 1003 blocs utilisent la table qui porte leur nom, 62 en empruntent une autre (torche murale -> blocks/torch) et 21 pointent sur minecraft:empty",
+    "loot_unsupported": "copy_name, copy_nbt, copy_state, set_contents et l'entree dynamic : refuses a la compilation et sans effet a l'execution, donc un coffre nomme retombe anonyme"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",

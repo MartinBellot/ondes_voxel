@@ -99,9 +99,31 @@ std::expected<BlockRegistry, RegistryError> BlockRegistry::from_bytes(std::vecto
     registry.hardness_ =
         std::span{reinterpret_cast<const f32*>(registry.data_.data() + header.hardness_offset),
                   header.block_count};
+    registry.loot_ = LootData{
+        std::span{reinterpret_cast<const LootTableRecord*>(registry.data_.data() +
+                                                           header.loot_tables_offset),
+                  header.block_count},
+        std::span{reinterpret_cast<const LootPoolRecord*>(registry.data_.data() +
+                                                          header.loot_pools_offset),
+                  header.loot_pool_count},
+        std::span{reinterpret_cast<const LootEntryRecord*>(registry.data_.data() +
+                                                           header.loot_entries_offset),
+                  header.loot_entry_count},
+        std::span{reinterpret_cast<const LootConditionRecord*>(registry.data_.data() +
+                                                               header.loot_conds_offset),
+                  header.loot_cond_count},
+        std::span{reinterpret_cast<const LootFunctionRecord*>(registry.data_.data() +
+                                                              header.loot_funcs_offset),
+                  header.loot_func_count},
+        std::span{reinterpret_cast<const f32*>(registry.data_.data() + header.loot_floats_offset),
+                  header.loot_float_count},
+        std::span{reinterpret_cast<const u32*>(registry.data_.data() + header.loot_ints_offset),
+                  header.loot_int_count},
+    };
 
     const auto* string_base =
         reinterpret_cast<const char*>(registry.data_.data() + header.strings_offset);
+    registry.strings_blob_   = std::string_view{string_base, header.string_bytes};
     const usize string_bytes = header.string_bytes;
 
     auto view_at = [&](u32 offset) -> std::string_view {
@@ -249,6 +271,14 @@ bool BlockRegistry::holds_fluid(BlockStateId state) const noexcept {
         return false;
     }
     return (fluid_bits_[index] & (1U << (state.value() & 7))) != 0;
+}
+
+std::string_view BlockRegistry::string_at(u32 offset) const noexcept {
+    if (offset >= strings_blob_.size()) {
+        return {};
+    }
+    const auto text = strings_blob_.substr(offset);
+    return text.substr(0, text.find('\0'));
 }
 
 std::string_view BlockRegistry::block_name(BlockId block) const noexcept {

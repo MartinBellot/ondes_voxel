@@ -22,6 +22,7 @@
 #pragma once
 
 #include "ov/base/types.hpp"
+#include "ov/registry/loot_data.hpp"
 
 #include <expected>
 #include <filesystem>
@@ -212,6 +213,17 @@ public:
     /// ticks a bare hand does, where a wooden pickaxe takes 23.
     [[nodiscard]] bool requires_correct_tool(BlockId block) const noexcept;
 
+    /// The text an interned offset points at, or nothing for an offset outside
+    /// the table. Loot records name properties this way rather than carrying
+    /// the characters, so the same name costs four bytes wherever it appears.
+    [[nodiscard]] std::string_view string_at(u32 offset) const noexcept;
+
+    /// The compiled loot tables, indexed by block.
+    ///
+    /// Handed out as plain arrays rather than as an evaluator: the rules for
+    /// reading them are gameplay, and gameplay lives above this module.
+    [[nodiscard]] LootData loot() const noexcept { return loot_; }
+
     /// Does this **state** hold a fluid? MOTION_BLOCKING is the highest block
     /// that either stops movement or does.
     ///
@@ -238,6 +250,8 @@ private:
     std::span<const u8>           block_flags_;
     std::span<const u8>           fluid_bits_;
     std::span<const f32>          hardness_;
+    LootData                      loot_;
+    std::string_view              strings_blob_;
     const void*                   header_{nullptr};
 };
 

@@ -9,6 +9,7 @@
 #define OV_LOG_CATEGORY "inspect"
 
 #include "ov/base/log.hpp"
+#include "ov/gameplay/loot.hpp"
 #include "ov/io/compression.hpp"
 #include "ov/io/file.hpp"
 #include "ov/io/zip.hpp"
@@ -17,6 +18,7 @@
 #include "ov/nbt/region_writer.hpp"
 #include "ov/nbt/tag.hpp"
 #include "ov/registry/block_states.hpp"
+#include "ov/registry/registries.hpp"
 #include "ov/world/chunk.hpp"
 #include "ov/world/heightmap.hpp"
 #include "ov/world/light_array.hpp"
@@ -1219,6 +1221,68 @@ int inspect_columns(const std::filesystem::path& directory) {
     return 0;
 }
 
+/// Roll a block's loot table many times and report what came out.
+///
+/// The point is comparison: the same cases are rolled on a real 1.20.1 server
+/// through its own `/loot` command, and the two distributions are compared.
+/// Reads "block silk fortune tool samples" lines, one case per line, and prints
+/// one line per case.
+int inspect_loot(const std::filesystem::path& pack_path) {
+    auto blocks     = registry::BlockRegistry::load(pack_path);
+    auto registries = registry::Registries::load(pack_path);
+    if (!blocks || !registries) {
+        fmt::print(stderr, "cannot read {}\n", pack_path.string());
+        return 1;
+    }
+    const gameplay::LootTables tables{*blocks, *registries};
+    const auto                 items = registries->find("minecraft:item");
+
+    // A fixed seed: the run has to be repeatable, and the comparison is between
+    // distributions rather than between individual rolls.
+    math::XoroshiroRandomSource random{0x9E3779B97F4A7C15ULL, 0xBF58476D1CE4E5B9ULL};
+
+    std::string block_name;
+    int         silk    = 0;
+    int         fortune = 0;
+    std::string tool_name;
+    int         samples = 0;
+
+    while (std::cin >> block_name >> silk >> fortune >> tool_name >> samples) {
+        const auto block = blocks->find_block(block_name);
+        if (!block) {
+            fmt::print("{} ?\n", block_name);
+            continue;
+        }
+        gameplay::Held held;
+        held.silk_touch = static_cast<u8>(silk);
+        held.fortune    = static_cast<u8>(fortune);
+        if (tool_name != "-" && items) {
+            held.item = registries->protocol_id(*items, tool_name);
+        }
+
+        std::map<i32, std::pair<i64, i64>> totals;  // item -> (count, occurrences)
+        std::vector<gameplay::Drop>        out;
+        for (int i = 0; i < samples; ++i) {
+            out.clear();
+            tables.drops(blocks->default_state(*block), held, random, out);
+            for (const gameplay::Drop& drop : out) {
+                auto& entry = totals[drop.item];
+                entry.first += drop.count;
+                entry.second += 1;
+            }
+        }
+
+        fmt::print("{}", block_name);
+        for (const auto& [item, tally] : totals) {
+            fmt::print(" {}:{}:{}",
+                       items ? registries->entry_of(*items, item) : std::string_view{"?"},
+                       tally.first, tally.second);
+        }
+        fmt::print("\n");
+    }
+    return 0;
+}
+
 void print_usage() {
     fmt::print(
         "ov-inspect — read Minecraft's binary formats\n"
@@ -1230,6 +1294,7 @@ void print_usage() {
         "  ov-inspect light  <region-dir>        block, block light and sky light per 'x y z'\n"
         "  ov-inspect column <region-dir>        block and the four heightmaps per 'x y z'\n"
         "  ov-inspect heightmaps <region-dir> [--pack=P]  recompute them and compare\n"
+        "  ov-inspect loot   <pack>              roll loot tables per 'block silk fortune tool n'\n"
         "\n"
         "  --tree      print the tag tree\n"
         "  --verify    decode, re-encode, and compare the bytes\n"
@@ -1253,7 +1318,7 @@ int main(int argc, char** argv) {
 
     const std::string_view command{argv[1]};
     if (command != "nbt" && command != "region" && command != "zip" && command != "chunk" &&
-        command != "light" && command != "column" && command != "heightmaps") {
+        command != "light" && command != "column" && command != "heightmaps" && command != "loot") {
         fmt::print(stderr, "unknown command '{}'\n", command);
         print_usage();
         return 1;
@@ -1297,6 +1362,9 @@ int main(int argc, char** argv) {
     }
     if (command == "heightmaps") {
         return inspect_heightmaps(argv[2], pack);
+    }
+    if (command == "loot") {
+        return inspect_loot(argv[2]);
     }
     return inspect_nbt(argv[2], tree, verify, max_depth);
 }
