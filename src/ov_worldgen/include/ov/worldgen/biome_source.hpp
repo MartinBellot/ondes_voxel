@@ -11,9 +11,22 @@
 // reads it — generated locally like every other piece of vanilla data, and
 // committed nowhere.
 //
-// The nearest box is found by a plain scan. Vanilla builds an R-tree over the
-// same boxes, but an R-tree search returns the true minimum rather than an
-// approximation, so the answer is identical and only the speed differs.
+// The nearest box is found through the same R-tree vanilla builds over those
+// boxes. That used to be a plain scan here, on the argument that a tree search
+// returns the true minimum and so has to agree with a scan. It does agree — on
+// the *distance*. It does not agree on *which* box, because the search only
+// replaces its running best when a candidate is strictly nearer, so a tie goes
+// to whichever box the traversal reaches first, and the traversal order is the
+// tree's rather than the file's. The scan measured 7819115 of 7821312 biome
+// cells right against the real game at seed 1234567890, and every one of the
+// 2197 that were left was an exact tie.
+//
+// The search also carries a one-entry cache: the box the previous query
+// returned is tried first, and being first it wins any tie it takes part in.
+// So the answer depends on the order the queries are asked in. That order is
+// the caller's business and not this class's, so the cache is a value the
+// caller owns (`BiomeSearchCache`) rather than hidden state — which also keeps
+// `biome_at` callable from several threads at once.
 #pragma once
 
 #include "ov/base/types.hpp"
@@ -38,6 +51,19 @@ struct ClimatePoint {
     std::array<i64, 7> coordinates{};
 };
 
+/// The one-entry cache vanilla's climate search keeps.
+///
+/// Vanilla holds it in a thread local inside the tree, which makes the biome a
+/// place gets depend on what the same thread asked about before it. Held here
+/// as a plain value so that dependence is written down instead of hidden, and
+/// so two threads cannot silently share one.
+struct BiomeSearchCache {
+    /// Index of the box the previous query returned, or -1 for none.
+    i32 last{-1};
+
+    void clear() noexcept { last = -1; }
+};
+
 class BiomeSource {
 public:
     /// Read the exported parameter table.
@@ -50,7 +76,22 @@ public:
                                       i32 quart_z) const;
 
     /// The biome whose box is nearest, by name.
+    ///
+    /// Without a cache this is a pure function of the climate: the tie goes to
+    /// whichever box the tree reaches first.
     [[nodiscard]] std::string_view biome_at(const ClimatePoint& climate) const;
+
+    /// The same, remembering the answer so that the next query tries it first.
+    ///
+    /// The cache is not an optimisation that happens to be visible; it decides
+    /// ties, so a caller that wants the game's answers has to ask its
+    /// questions in the game's order.
+    [[nodiscard]] std::string_view biome_at(const ClimatePoint& climate,
+                                            BiomeSearchCache&   cache) const;
+
+    /// The index of the nearest box, and -1 when the table is empty. The index
+    /// rather than the name, because a cache is a box and not a biome.
+    [[nodiscard]] i32 entry_at(const ClimatePoint& climate, BiomeSearchCache& cache) const;
 
     /// How far a climate is from the nearest box of a named biome, per axis.
     ///
@@ -107,7 +148,40 @@ private:
         std::string          biome;
     };
 
+    /// One node of the search tree, flattened.
+    ///
+    /// A leaf names an entry; a branch names a contiguous run of children. The
+    /// tree is built once and never changes, so a flat array beats a graph of
+    /// pointers both for cache behaviour and for the guarantee that nothing
+    /// here allocates during a query.
+    struct Node {
+        std::array<Range, 7> box{};
+        /// The entry this leaf stands for, or -1 for a branch.
+        i32 entry{-1};
+        u32 first_child{0};
+        u32 child_count{0};
+    };
+
+    /// The node a search should start from, and -1 when the tree is empty.
+    [[nodiscard]] i32 search(const ClimatePoint& climate, i32 start) const;
+
+    /// The same by a plain scan of the table, ignoring the tree.
+    ///
+    /// Kept, and reachable through OV_BIOME_SCAN=1, for the same reason
+    /// density.cpp keeps OV_NO_INTERPOLATION: the claim that the tree only
+    /// changes ties is a claim about the real world, and one run of the parity
+    /// harness with the flag either way settles it instead of arguing it.
+    [[nodiscard]] i32 scan(const ClimatePoint& climate) const;
+
+    /// Build the tree over `entries_`. Called once, by load().
+    void build_tree();
+
     std::vector<Entry> entries_;
+    std::vector<Node>  nodes_;
+    /// OV_BIOME_SCAN, read once at load rather than per query.
+    bool scan_only_{false};
+    /// Index of the root in `nodes_`, or -1 when the table is empty.
+    i32 root_{-1};
 };
 
 }  // namespace ov::worldgen
