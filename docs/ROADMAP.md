@@ -167,7 +167,8 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [ ] Sections copy-on-write en `shared_ptr<const>` 🔒
 - [ ] Pool de jobs enkiTS : pinned tasks + priorités
 - [x] Générateur superflat
-- [ ] Moteur de lumière : ciel et bloc, propagation et suppression
+- [x] Lumière du ciel : sunlight direct + propagation par flood fill *(intra-chunk)*
+- [ ] Lumière de bloc, suppression, propagation inter-chunks
 - [x] Tableaux de lumière nullables à valeur uniforme (divise l'empreinte par 2)
 - [x] Heightmaps : stockage, packing 9 bits, sémantique vérifiée sur monde réel
 - [x] `WORLD_SURFACE` calculé et maintenu incrémentalement *(air suffit)*

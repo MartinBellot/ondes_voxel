@@ -782,3 +782,28 @@ session qui a planté est précisément le cas qu'on remarque.
 En mémoire seulement. Un redémarrage du serveur l'oublie, exactement comme il
 oublie les chunks — et n'en persister qu'une des deux replacerait quelqu'un à
 l'intérieur d'un bloc qui n'existe plus.
+
+### Le flood fill, et la graine qui manquait
+
+La lumière directe seule laisse une **tache noire à bord net** sous le moindre
+toit d'un bloc — mesuré : 0 sous le bloc, 15 dans la colonne voisine au même y.
+C'est la première chose qu'un joueur remarque.
+
+Le flood fill corrige ça : la lumière se propage dans les six directions en
+perdant un niveau par pas. Sous un toit 3×3 : **15** dehors, **14** au pourtour,
+**13** au centre.
+
+La première version donnait **13 au lieu de 14** juste sous un bloc isolé. Cause :
+je n'ensemençais que la cellule la plus basse de chaque colonne, en supposant que
+tout au-dessus est déjà entouré de lumière. C'est faux exactement là où deux
+colonnes ont des hauteurs différentes — c'est-à-dire précisément là où une
+construction projette son ombre. Toutes les cellules directement éclairées de la
+bande sont désormais des sources.
+
+Coût mesuré : connexion complète (289 chunks générés, éclairés et envoyés) en
+**0,75 s en build debug**.
+
+Deux limites, écrites plutôt que sous-entendues : la propagation **s'arrête au
+bord du chunk**, donc une construction à cheval sur une frontière ne projette pas
+d'ombre chez le voisin ; et « non-air » tient lieu d'« opaque », donc du verre
+ferait de l'ombre.

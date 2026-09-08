@@ -27,6 +27,8 @@
 
 #include <fmt/format.h>
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <charconv>
 #include <chrono>
@@ -37,6 +39,7 @@
 #include <string_view>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 
 // Where the locally generated vanilla data lives. The build defines this as an
 // absolute path; the fallback exists so the file still compiles on its own,
@@ -74,45 +77,128 @@ struct Options {
 /// connection or the ids are ambiguous.
 enum class ConnectionState { Handshaking, Status, Login, Play };
 
-/// Direct sky light for one column, derived from WORLD_SURFACE.
+/// Sky light for a whole chunk: direct sunlight, then flood fill.
 ///
-/// Everything at or above the first free space sees the sky at full strength;
-/// everything below it sees none. That is the whole of "direct" sky light: no
-/// horizontal propagation, so it lights the inside of a shaft correctly and
-/// does not light the sides of an overhang. A real light engine is M3's
-/// remaining work.
+/// Two phases, and the second is the one that makes builds look right.
 ///
-/// It reads the heightmap rather than a fixed surface height on purpose. Baking
-/// the light from a constant at generation time works exactly until a player
-/// digs: the heightmap follows the hole, the baked array does not, and the hole
-/// is still dark the next time the chunk is sent. That was a real bug, found by
-/// digging a hole and rejoining.
+/// Direct sunlight first: every column is lit to 15 from the top down to its
+/// first obstruction, which WORLD_SURFACE already knows. That alone lights open
+/// ground and the inside of a shaft correctly.
 ///
-/// Non-air is used as a stand-in for opaque, which is right for every block a
-/// flat world contains and wrong for glass. It stops being an approximation
-/// when the block-state flag table exists.
-void relight_column(world::Chunk& chunk, usize x, usize z) {
-    const i32 first_free = chunk.heightmap(world::HeightmapType::WorldSurface).first_free(x, z);
+/// Then the light spreads sideways and downward, losing one level per step.
+/// Without this, a single block placed as a roof leaves a hard black square
+/// underneath with a sharp edge against the lit ground beside it — measured, and
+/// exactly what a player notices first.
+///
+/// Two limits, both stated rather than implied:
+///
+///   * Propagation stops at the chunk's edge. A build straddling a border casts
+///     no shadow into its neighbour, so a seam is visible there. Cross-chunk
+///     light needs the neighbours loaded and a scheduler to order the work.
+///   * Non-air stands in for opaque, so glass would cast a shadow. That ends
+///     with the block-state flag table.
+void relight_chunk(world::Chunk& chunk, const world::AirStates& air) {
+    const auto  shape   = chunk.shape();
+    const auto& surface = chunk.heightmap(world::HeightmapType::WorldSurface);
 
-    for (usize i = 0; i < chunk.shape().section_count(); ++i) {
-        const i32            bottom  = chunk.shape().min_y + static_cast<i32>(i) * 16;
-        world::ChunkSection* section = chunk.section_for_y(bottom);
-        if (section == nullptr) {
-            continue;
-        }
-        for (usize local_y = 0; local_y < 16; ++local_y) {
-            const i32 y = bottom + static_cast<i32>(local_y);
-            section->sky_light().set(world::section_index(x, local_y, z),
-                                     y >= first_free ? world::kMaxLightLevel : 0);
+    // Only the occupied band needs work. Everything above the tallest column is
+    // open sky and everything below the world is nothing, and walking all 384
+    // levels of 289 chunks on every join would be felt.
+    i32 highest = shape.min_y;
+    for (usize z = 0; z < 16; ++z) {
+        for (usize x = 0; x < 16; ++x) {
+            highest = std::max(highest, surface.first_free(x, z));
         }
     }
-}
+    const i32 top = std::min(highest + 1, shape.max_y());
 
-/// Drop the storage of any section whose light came out uniform.
-void compact_light(world::Chunk& chunk) {
-    for (usize i = 0; i < chunk.shape().section_count(); ++i) {
-        const i32            bottom  = chunk.shape().min_y + static_cast<i32>(i) * 16;
-        world::ChunkSection* section = chunk.section_for_y(bottom);
+    const auto light_at = [&](usize x, i32 y, usize z) -> u8 {
+        const world::ChunkSection* section = chunk.section_for_y(y);
+        return section == nullptr ? 0
+                                  : section->sky_light().get(
+                                        world::section_index(x, static_cast<usize>(y & 15), z));
+    };
+    const auto set_light = [&](usize x, i32 y, usize z, u8 value) {
+        world::ChunkSection* section = chunk.section_for_y(y);
+        if (section != nullptr) {
+            section->sky_light().set(world::section_index(x, static_cast<usize>(y & 15), z), value);
+        }
+    };
+
+    // ── Direct sunlight ─────────────────────────────────────────────────────
+    struct Cell {
+        u8  x;
+        i32 y;
+        u8  z;
+    };
+
+    std::vector<Cell> frontier;
+
+    for (usize z = 0; z < 16; ++z) {
+        for (usize x = 0; x < 16; ++x) {
+            const i32 first_free = surface.first_free(x, z);
+            for (usize i = 0; i < shape.section_count(); ++i) {
+                const i32            bottom  = shape.min_y + static_cast<i32>(i) * 16;
+                world::ChunkSection* section = chunk.section_for_y(bottom);
+                if (section == nullptr) {
+                    continue;
+                }
+                for (usize local_y = 0; local_y < 16; ++local_y) {
+                    const i32 y = bottom + static_cast<i32>(local_y);
+                    section->sky_light().set(world::section_index(x, local_y, z),
+                                             y >= first_free ? world::kMaxLightLevel : 0);
+                }
+            }
+            // Every directly lit cell in the band is a source, not just the
+            // lowest one of each column. Seeding only the lowest assumes
+            // everything above it is surrounded by light, which is false wherever
+            // two columns have different heights — and that boundary is exactly
+            // where a build casts its shadow. Measured: the cell under a
+            // one-block roof came out at 13 instead of 14, because the lit cell
+            // beside it at the same height was never a source.
+            for (i32 y = std::max(first_free, shape.min_y); y <= top; ++y) {
+                frontier.push_back(Cell{static_cast<u8>(x), y, static_cast<u8>(z)});
+            }
+        }
+    }
+
+    // ── Flood fill ──────────────────────────────────────────────────────────
+    for (usize head = 0; head < frontier.size(); ++head) {
+        const Cell cell    = frontier[head];
+        const u8   current = light_at(cell.x, cell.y, cell.z);
+        if (current <= 1) {
+            continue;
+        }
+        const u8 spread = static_cast<u8>(current - 1);
+
+        const std::array<Cell, 6> neighbours{{
+            {static_cast<u8>(cell.x - 1), cell.y, cell.z},
+            {static_cast<u8>(cell.x + 1), cell.y, cell.z},
+            {cell.x, cell.y, static_cast<u8>(cell.z - 1)},
+            {cell.x, cell.y, static_cast<u8>(cell.z + 1)},
+            {cell.x, cell.y - 1, cell.z},
+            {cell.x, cell.y + 1, cell.z},
+        }};
+
+        for (const Cell& next : neighbours) {
+            // Unsigned wrap makes an x of -1 become 255, so one comparison
+            // covers both edges.
+            if (next.x >= 16 || next.z >= 16 || next.y < shape.min_y || next.y > top) {
+                continue;
+            }
+            if (!air.is_air(chunk.get_block(next.x, next.y, next.z))) {
+                continue;
+            }
+            if (light_at(next.x, next.y, next.z) >= spread) {
+                continue;
+            }
+            set_light(next.x, next.y, next.z, spread);
+            frontier.push_back(next);
+        }
+    }
+
+    for (usize i = 0; i < shape.section_count(); ++i) {
+        world::ChunkSection* section = chunk.section_for_y(shape.min_y + static_cast<i32>(i) * 16);
         if (section != nullptr) {
             section->sky_light().compact();
         }
@@ -171,12 +257,7 @@ struct Superflat {
         // Light comes from the heightmap, through the same function block edits
         // use. Two code paths that compute light differently agree right up
         // until someone digs.
-        for (usize z = 0; z < 16; ++z) {
-            for (usize x = 0; x < 16; ++x) {
-                relight_column(chunk, x, z);
-            }
-        }
-        compact_light(chunk);
+        relight_chunk(chunk, air);
         return chunk;
     }
 };
@@ -451,11 +532,13 @@ int main(int argc, char** argv) {
             const auto local_z = static_cast<usize>(position.z & 15);
             it->second.set_block(local_x, position.y, local_z, state);
 
-            // WORLD_SURFACE has just moved, so the column's sky light has too.
+            // WORLD_SURFACE has just moved, so the chunk's sky light has too.
+            // Relighting the whole chunk rather than the column: light spreads
+            // sideways, so one block placed changes cells several away from it.
             // Without this a hole stays lit as if it were still filled, and the
             // error only shows after a reload — the client lights its own edits
             // locally and never notices the server disagreeing.
-            relight_column(it->second, local_x, local_z);
+            relight_chunk(it->second, superflat.air);
         }
 
         const auto framed =
