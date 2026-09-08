@@ -428,6 +428,94 @@ struct Superflat {
     }
 };
 
+/// The state a block takes when placed, given how the player placed it.
+///
+/// Vanilla decides this in each block's own Java code, so there is no data file
+/// to read. What *is* data — and what the registry gives us — is which
+/// properties a block has, so the rules below are applied only where the
+/// property exists and the block is left at its default otherwise.
+///
+/// The conventions, and they are not uniform in vanilla either:
+///
+///   axis    from the face that was clicked. A log placed against a wall lies
+///           down; one placed on the ground stands up.
+///   facing  from the player's yaw. Which way is **not** uniform in vanilla, and
+///           it is not guessable — see kFacesAwayFromPlayer below.
+///   half    top when the click was on the underside of a block, or on the
+///           upper half of a side. This is what puts a stair upside down.
+///   type    the same rule for slabs. "double" needs to know that the target is
+///           already a slab of the same kind, which is placement logic this
+///           does not have yet.
+///
+/// Not handled: stair `shape`, which vanilla derives from the neighbours, so
+/// corners will read as straight until that lands.
+/// Blocks whose `facing` is the direction the player is looking, rather than
+/// the opposite.
+///
+/// Vanilla is not uniform here and the split does not follow families, so this
+/// was **measured** rather than reasoned: eighteen blocks were placed on a real
+/// 1.20.1 server with the player facing south, and the resulting state read
+/// back. Twelve came out north (facing the player) and four south.
+///
+/// Two of them are exactly why guessing does not work. An observer follows the
+/// player's direction, which reads backwards from how the block behaves. A
+/// trapdoor is opposite, although doors and fence gates — its obvious family —
+/// are not.
+///
+/// Measured directly: stairs, fence gates, doors, observer. The suffix rules
+/// extend those to the wood and stone variants, which share their Java class.
+/// Anything not listed takes the majority convention, and an anvil is wrong in
+/// a third way again — it came back rotated a quarter turn — so it is left at
+/// its default rather than turned the wrong way with confidence.
+[[nodiscard]] bool faces_away_from_player(std::string_view name) {
+    return name == "minecraft:observer" || name.ends_with("_stairs") ||
+           name.ends_with("_fence_gate") || name.ends_with("_door");
+}
+
+[[nodiscard]] registry::BlockStateId placed_state(const registry::BlockRegistry& blocks,
+                                                  registry::BlockId              block,
+                                                  const net::UseItemOn& place, f32 player_yaw) {
+    registry::BlockStateId state = blocks.default_state(block);
+
+    const auto set = [&](std::string_view name, std::string_view value) {
+        const auto property = blocks.find_property(block, name);
+        if (!property) {
+            return;
+        }
+        for (u16 index = 0; index < property->values.size(); ++index) {
+            if (property->values[index] == value) {
+                state = blocks.with_property(state, *property, index);
+                return;
+            }
+        }
+    };
+
+    // Faces are ordered -Y, +Y, -Z, +Z, -X, +X.
+    switch (place.face) {
+        case 0:
+        case 1: set("axis", "y"); break;
+        case 2:
+        case 3: set("axis", "z"); break;
+        default: set("axis", "x"); break;
+    }
+
+    // Yaw runs 0 at south and increases westward, so rounding to the nearest
+    // quarter turn gives the direction the player faces.
+    constexpr std::array<std::string_view, 4> kFacing{"south", "west", "north", "east"};
+    const auto quarter = static_cast<i32>(std::floor(static_cast<f64>(player_yaw) / 90.0 + 0.5));
+    // Modulo of a negative yaw is negative in C++, and a negative index would
+    // read off the front of the array.
+    const auto looking  = static_cast<usize>(((quarter % 4) + 4) % 4);
+    const auto opposite = (looking + 2) % 4;
+    set("facing", kFacing[faces_away_from_player(blocks.block_name(block)) ? looking : opposite]);
+
+    const bool upper = place.face == 0 || (place.face >= 2 && place.cursor_y > 0.5F);
+    set("half", upper ? "top" : "bottom");
+    set("type", upper ? "top" : "bottom");
+
+    return state;
+}
+
 /// The numeric id a biome carries in the codec we sent.
 ///
 /// The client learns biome ids from our codec and from nowhere else, so a chunk
@@ -705,7 +793,7 @@ int main(int argc, char** argv) {
     /// bridge between them is the name: `minecraft:stone` the item places
     /// `minecraft:stone` the block. Most items that are not blocks simply have
     /// no block of the same name, which is exactly the test.
-    const auto block_state_for_item = [&](i32 item_id) -> std::optional<registry::BlockStateId> {
+    const auto block_for_item = [&](i32 item_id) -> std::optional<registry::BlockId> {
         if (!registries || !item_registry || !blocks) {
             return std::nullopt;
         }
@@ -713,11 +801,7 @@ int main(int argc, char** argv) {
         if (name.empty()) {
             return std::nullopt;
         }
-        const auto block = blocks->find_block(name);
-        if (!block) {
-            return std::nullopt;
-        }
-        return blocks->default_state(*block);
+        return blocks->find_block(name);
     };
 
     std::unordered_map<const net::Connection*, Player> players;
@@ -1241,8 +1325,8 @@ int main(int argc, char** argv) {
                         acknowledge(connection, place->sequence);
 
                         const i32  item       = player.hotbar[static_cast<usize>(player.held_slot)];
-                        const auto held_state = block_state_for_item(item);
-                        if (!held_state) {
+                        const auto held_block = block_for_item(item);
+                        if (!held_block || !blocks) {
                             // An empty hand or a non-block item. The
                             // acknowledgement above still matters: without it
                             // the client waits, then rolls back its guess.
@@ -1252,7 +1336,8 @@ int main(int argc, char** argv) {
                         // The clicked block is not where the new one goes: the
                         // face says which side, and it lands one step along it.
                         const auto target = net::offset_by_face(place->position, place->face);
-                        set_block_and_broadcast(target, *held_state);
+                        set_block_and_broadcast(
+                            target, placed_state(*blocks, *held_block, *place, player.yaw));
                         return true;
                     }
 

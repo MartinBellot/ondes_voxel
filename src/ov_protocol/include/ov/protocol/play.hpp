@@ -186,7 +186,16 @@ struct PlayerAction {
 struct UseItemOn {
     WirePosition position;
     i32          face{0};
-    i32          sequence{0};
+
+    /// Where on the face the player clicked, 0..1 along each axis. Only the
+    /// vertical one is used so far, and it is what decides whether a slab is a
+    /// top or a bottom — clicking the upper half of a block's side places the
+    /// upper slab.
+    f32 cursor_x{0.0F};
+    f32 cursor_y{0.0F};
+    f32 cursor_z{0.0F};
+
+    i32 sequence{0};
 };
 
 [[nodiscard]] std::optional<UseItemOn> parse_use_item_on(std::span<const u8> payload);

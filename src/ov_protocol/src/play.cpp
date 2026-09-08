@@ -415,17 +415,19 @@ std::optional<UseItemOn> parse_use_item_on(std::span<const u8> payload) {
     if (!hand || !packed || !face) {
         return std::nullopt;
     }
-    // Cursor position and the inside-block flag are read past rather than
-    // used: block placement here does not yet depend on where on the face the
-    // player clicked, but the sequence after them does.
-    if (!reader.read_f32() || !reader.read_f32() || !reader.read_f32() || !reader.read_u8()) {
+    const auto cursor_x = reader.read_f32();
+    const auto cursor_y = reader.read_f32();
+    const auto cursor_z = reader.read_f32();
+    // The inside-block flag is read past rather than used: it matters for
+    // placing against a block the player is standing in, which needs collision.
+    if (!cursor_x || !cursor_y || !cursor_z || !reader.read_u8()) {
         return std::nullopt;
     }
     const auto sequence = read_varint(reader);
     if (!sequence) {
         return std::nullopt;
     }
-    return UseItemOn{unpack_position(*packed), *face, *sequence};
+    return UseItemOn{unpack_position(*packed), *face, *cursor_x, *cursor_y, *cursor_z, *sequence};
 }
 
 std::optional<CreativeSlot> parse_set_creative_slot(std::span<const u8> payload) {

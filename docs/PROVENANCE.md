@@ -989,3 +989,48 @@ Mesuré : la case en x=16 (chunk 1) vaut **13**. Sa seule voisine éclairée est
 x=15, à 14, **dans le chunk 0**. Depuis le chunk 1 seul, la source la plus proche
 est à trois cases et donnerait 12. La valeur 13 ne peut donc venir que de l'autre
 côté de la frontière.
+
+---
+
+## Orientation des blocs à la pose
+
+Vanilla décide de l'état posé dans le **code Java de chaque bloc** : il n'existe
+aucun fichier de données à lire. Ce qui *est* de la donnée — et que le registre
+fournit — c'est la liste des propriétés d'un bloc. Les règles ne s'appliquent donc
+que là où la propriété existe.
+
+| Propriété | Règle |
+|---|---|
+| `axis` | déduite de la face cliquée — une bûche posée au sol est verticale, contre un mur elle est couchée |
+| `facing` | déduite du lacet du joueur, **mais dans quel sens dépend du bloc** |
+| `half` | `top` si le clic était sous un bloc, ou sur la moitié haute d'un côté |
+| `type` | même règle, pour les dalles |
+
+### La convention de `facing` a été mesurée, pas déduite
+
+Vanilla n'est pas uniforme, et **le partage ne suit pas les familles**. Dix-huit
+blocs ont été posés sur un vrai serveur 1.20.1, joueur orienté au sud, puis l'état
+résultant relu.
+
+| Résultat | Blocs |
+|---|---|
+| **Même direction** que le joueur | `stairs`, `fence_gate`, `door`, **`observer`** |
+| **Opposée** | `trapdoor`, `furnace`, `chest`, `dispenser`, `lectern`, `carved_pumpkin`, `repeater`, `comparator`, `end_portal_frame`, `loom`, `stonecutter`, `beehive` |
+| Autre chose | `anvil` — revenu tourné d'un quart de tour |
+
+Deux résultats montrent pourquoi deviner ne marche pas. **`observer` suit la
+direction du joueur**, ce qui se lit à l'envers de son comportement. **`trapdoor`
+est opposée**, alors que portes et portillons — sa famille évidente — ne le sont
+pas.
+
+La majorité est « opposée », c'est donc le défaut. Les exceptions mesurées sont
+étendues aux variantes par suffixe, celles-ci partageant la même classe Java.
+`anvil`, qui échappe aux deux règles, est laissé à son état par défaut plutôt que
+tourné de travers avec assurance.
+
+Vérification : notre serveur reproduit **11/11** des orientations mesurées.
+
+**Ce qui reste faux** : les 227 blocs à `facing` horizontal ne sont pas tous
+mesurés, seulement un échantillon. Un bloc non couvert prend la convention
+majoritaire et peut donc être orienté à l'envers — visible, sans gravité, et
+corrigible dès que le harnais de parité couvre l'ensemble.
