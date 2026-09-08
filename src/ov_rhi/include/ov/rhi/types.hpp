@@ -157,6 +157,14 @@ enum class BlendMode : u8 {
 
 enum class VertexInputRate : u8 { Vertex, Instance };
 
+/// What the vertices make.
+///
+/// Lines are here for the two things the game draws that are not surfaces: the
+/// wireframe around the block you are aiming at, and the crosshair. Both are a
+/// handful of segments, and drawing them as thin quads instead would mean
+/// building geometry that faces the camera for something a line already does.
+enum class PrimitiveTopology : u8 { TriangleList, LineList };
+
 struct VertexAttribute {
     u32    location{0};
     Format format{Format::Rgba32Float};
@@ -204,8 +212,9 @@ struct GraphicsPipelineDesc {
     bool      depth_test{true};
     bool      depth_write{true};
     CompareOp depth_compare{CompareOp::Less};
-    CullMode  cull_mode{CullMode::Back};
-    BlendMode blend{BlendMode::None};
+    CullMode          cull_mode{CullMode::Back};
+    BlendMode         blend{BlendMode::None};
+    PrimitiveTopology topology{PrimitiveTopology::TriangleList};
 
     std::string_view debug_name;
 };

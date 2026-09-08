@@ -317,6 +317,11 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] Courbe `f/(4-3f)` et lightmap : une torche à 7 rend 18 % et non 47 %
 
 ### `ov_client` (L15) et `ov_audio` (L14)
+- [x] Surbrillance du bloc visé et réticule
+      *(un seul pipeline en `LineList`, deux espaces de coordonnées : la boîte
+      passe par la view-projection, le réticule est déjà en clip space. La visée
+      ignore les fluides — un rayon lancé au-dessus d'un étang doit atteindre le
+      fond, pas s'arrêter à la surface)*
 - [x] Fenêtre GLFW, entrées, bindings de touches
 - [x] Serveur intégré sur son propre thread
       *(le serveur a quitté `apps/` pour devenir `ov_server` ; `ov_voxel

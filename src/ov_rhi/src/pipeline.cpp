@@ -128,7 +128,9 @@ std::expected<PipelineHandle, RhiError> Device::create_graphics_pipeline(
 
     VkPipelineInputAssemblyStateCreateInfo assembly{};
     assembly.sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    assembly.topology = desc.topology == PrimitiveTopology::LineList
+                            ? VK_PRIMITIVE_TOPOLOGY_LINE_LIST
+                            : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
     // Viewport and scissor are dynamic. A pipeline baked against a window size
     // has to be rebuilt on every resize, which on a driver that compiles

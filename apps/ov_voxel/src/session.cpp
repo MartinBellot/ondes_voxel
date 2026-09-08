@@ -72,6 +72,18 @@ gameplay::FluidSample Session::fluid_at(i32 x, i32 y, i32 z) const {
     return {};
 }
 
+bool Session::is_interaction_target(i32 x, i32 y, i32 z) const {
+    const auto state = block_at(x, y, z);
+    if (state == registry::kAirState) {
+        return false;
+    }
+    if (!fluids_known_) {
+        return true;
+    }
+    const auto block = blocks_->block_of(state);
+    return block != water_block_ && block != lava_block_;
+}
+
 gameplay::FluidWorld Session::fluids() const {
     const auto lookup = [](void* context, i32 x, i32 y, i32 z) {
         return static_cast<const Session*>(context)->fluid_at(x, y, z);

@@ -77,6 +77,13 @@ public:
     /// What fluid stands at a position, and how tall.
     [[nodiscard]] gameplay::FluidSample fluid_at(i32 x, i32 y, i32 z) const;
 
+    /// Can a click hit this block?
+    ///
+    /// Air cannot, and neither can water or lava: a ray aimed across a pond
+    /// must reach the bottom rather than stop at the surface. A waterlogged
+    /// fence still can — it is a fence that happens to be wet.
+    [[nodiscard]] bool is_interaction_target(i32 x, i32 y, i32 z) const;
+
     [[nodiscard]] usize chunk_count() const noexcept { return chunks_.size(); }
     [[nodiscard]] usize pending_sections() const noexcept { return dirty_.size(); }
     /// Sections that have geometry and are resident on the GPU.

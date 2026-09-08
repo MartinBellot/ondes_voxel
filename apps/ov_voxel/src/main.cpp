@@ -17,6 +17,7 @@
 
 #include "ov/base/log.hpp"
 #include "ov/base/time.hpp"
+#include "ov/client/overlay.hpp"
 #include "ov/client/terrain_renderer.hpp"
 #include "ov/client/window.hpp"
 #include "ov/registry/block_states.hpp"
@@ -562,6 +563,13 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    auto overlay = client::Overlay::create(device, device.swapchain_format(),
+                                           rhi::Format::Depth32Float);
+    if (!overlay) {
+        OV_LOG_ERROR("overlay: {}", rhi::to_string(overlay.error()));
+        return 1;
+    }
+
     // ── The server ──────────────────────────────────────────────────────────
     std::atomic<bool> stop_server{false};
     std::thread       server_thread;
@@ -676,7 +684,8 @@ int main(int argc, char** argv) {
         readback = *buffer;
     }
 
-    bool     dig_sent   = false;
+    std::optional<RayHit> aimed;
+    bool                  dig_sent   = false;
     bool     place_sent = false;
     BlockPos dig_target{};
     BlockPos place_target{};
@@ -845,17 +854,22 @@ int main(int argc, char** argv) {
                 place_sent = true;
             }
 
-            // Breaking and placing. The ray starts at the eye and runs vanilla's
-            // survival reach; the face it entered through is the side a new
-            // block attaches to.
-            if (input.attack_pressed || input.use_pressed) {
+            // Where the player is looking, every frame rather than only on a
+            // click: the outline has to follow the aim, and the click then uses
+            // the same answer the player was shown.
+            {
                 const Vec3d eye{player.position.x, player.position.y + 1.62, player.position.z};
                 const Vec3f look = camera.forward();
                 const Vec3d forward{static_cast<f64>(look.x), static_cast<f64>(look.y),
                                     static_cast<f64>(look.z)};
-                const auto  hit = raycast_voxels(eye, forward, 4.5, [&](BlockPos block) {
-                    return session->block_at(block.x, block.y, block.z) != registry::kAirState;
+                aimed = raycast_voxels(eye, forward, 4.5, [&](BlockPos block) {
+                    return session->is_interaction_target(block.x, block.y, block.z);
                 });
+            }
+
+            // Breaking and placing use exactly what the outline showed.
+            if (input.attack_pressed || input.use_pressed) {
+                const auto& hit = aimed;
                 if (hit) {
                     const i32 face = static_cast<i32>(hit->face);
                     if (input.attack_pressed) {
@@ -1015,6 +1029,19 @@ int main(int argc, char** argv) {
         (*terrain)->draw(cmd, view_projection, frustum, camera.position, *atlas_image, *sampler,
                          sky, options.cull);
         drawn_last_frame = (*terrain)->stats().sections_drawn;
+
+        // The two lines the game is played with. After the terrain, so the
+        // outline blends over the face it surrounds rather than under it.
+        if (aimed) {
+            (*overlay)->draw_block_outline(cmd, view_projection,
+                                           Vec3d{static_cast<f64>(camera.position.x),
+                                                 static_cast<f64>(camera.position.y),
+                                                 static_cast<f64>(camera.position.z)},
+                                           aimed->block.x, aimed->block.y, aimed->block.z);
+        }
+        if (online) {
+            (*overlay)->draw_crosshair(cmd, width, height);
+        }
 
         cmd.end_rendering();
 

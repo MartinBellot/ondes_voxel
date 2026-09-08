@@ -5,6 +5,7 @@
 ov_add_library(ov_client
     LAYER 15
     SOURCES
+        src/overlay.cpp
         src/terrain_renderer.cpp
         src/window.cpp
     DEPS
@@ -20,6 +21,8 @@ ov_add_shaders(ov_client_shaders
     SOURCES
         shaders/debug_triangle.vert
         shaders/debug_triangle.frag
+        shaders/overlay.vert
+        shaders/overlay.frag
         shaders/terrain.vert
         shaders/terrain.frag
 )
