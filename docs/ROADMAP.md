@@ -198,7 +198,8 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [ ] Les ~20 archétypes de blocs dont dérivent ~80 % des 1003 types
 - [ ] Casse et pose : durées, outils corrects, Silk Touch, Fortune
 - [x] Conteneurs : ouverture, clic gauche et droit, hotbar
-- [ ] Shift-clic, glissés, touches numériques, inventaire du joueur autoritatif
+- [x] Shift-clic : fusion jusqu'à la taille de pile réelle, mesurée item par item
+- [ ] Glissés, touches numériques, inventaire du joueur autoritatif
 - [x] Mode créatif, sélection d'items
 - [x] Sauvegarde périodique et à l'arrêt *(asynchrone via COW : à venir)*
 - [x] **Round-trip croisé avec Minecraft vanilla, sans perte** ⭐

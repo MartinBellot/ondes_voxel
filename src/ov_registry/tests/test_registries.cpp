@@ -359,3 +359,41 @@ TEST_CASE("an unknown tag yields nothing", "[registry][tags][malformed]") {
     REQUIRE(r->tag_name(TagId{60000}).empty());
     REQUIRE_FALSE(r->tag_contains(TagId{60000}, 0));
 }
+
+TEST_CASE("stack sizes are the measured ones", "[registry][items]") {
+    if (loaded() == nullptr) {
+        SKIP("no registry pack");
+    }
+    const auto* r     = loaded();
+    const auto  items = r->find("minecraft:item");
+    REQUIRE(items.has_value());
+
+    // One item per measured bucket. Picked because they are the ones a wrong
+    // table breaks first: a chest full of pearls, a sword that stacks, a stone
+    // pile that stops at 16.
+    const auto size_of = [&](std::string_view name) {
+        const auto id = r->protocol_id(*items, name);
+        REQUIRE(id.has_value());
+        return r->max_stack_size(*id);
+    };
+
+    REQUIRE(size_of("minecraft:stone") == 64);
+    REQUIRE(size_of("minecraft:oak_planks") == 64);
+    REQUIRE(size_of("minecraft:ender_pearl") == 16);
+    REQUIRE(size_of("minecraft:snowball") == 16);
+    REQUIRE(size_of("minecraft:diamond_sword") == 1);
+    REQUIRE(size_of("minecraft:water_bucket") == 1);
+    REQUIRE(size_of("minecraft:elytra") == 1);
+
+    // Every item answers something usable. A zero would empty a slot on the
+    // first merge, and a negative one would loop forever filling it.
+    for (ProtocolId id = r->first_id(*items); id < r->first_id(*items) + 1255; ++id) {
+        const i8 size = r->max_stack_size(id);
+        REQUIRE(size >= 1);
+        REQUIRE(size <= 64);
+    }
+
+    // Out of range answers the majority, not garbage read past the section.
+    REQUIRE(r->max_stack_size(-1) == 64);
+    REQUIRE(r->max_stack_size(1'000'000) == 64);
+}

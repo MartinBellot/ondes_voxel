@@ -52,8 +52,8 @@
     "M4": {
       "name": "Monde persistant",
       "status": "in_progress",
-      "done": 7,
-      "total": 11,
+      "done": 8,
+      "total": 12,
       "exit_criterion": "Round-trip croisé : notre sauvegarde s'ouvre dans Minecraft vanilla et réciproquement, sans perte.",
       "blocked": []
     },

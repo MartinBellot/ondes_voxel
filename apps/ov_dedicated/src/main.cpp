@@ -1727,13 +1727,79 @@ int main(int argc, char** argv) {
                         };
 
                         bool handled = false;
+
+                        if (click->mode == 1 && click->slot >= 0) {
+                            // Shift-click: the stack moves to the other half of
+                            // the window. Merging comes first and only then an
+                            // empty slot, which is what vanilla does and what
+                            // makes a shift-click feel like one move rather than
+                            // scattering a stack across free slots.
+                            net::ItemStack* from = slot_ref(click->slot);
+                            if (from != nullptr && !from->empty()) {
+                                const bool from_chest = click->slot < 27;
+                                const i16  first      = from_chest ? 27 : 0;
+                                const i16  last       = from_chest ? 63 : 27;
+                                const i8   limit =
+                                    registries ? registries->max_stack_size(from->item_id) : i8{64};
+
+                                for (i16 index = first; index < last && !from->empty(); ++index) {
+                                    net::ItemStack* into = slot_ref(index);
+                                    if (into == nullptr || into->empty() ||
+                                        into->item_id != from->item_id) {
+                                        continue;
+                                    }
+                                    const i8 room = static_cast<i8>(limit - into->count);
+                                    if (room <= 0) {
+                                        continue;
+                                    }
+                                    const i8 moved = std::min(room, from->count);
+                                    into->count    = static_cast<i8>(into->count + moved);
+                                    from->count    = static_cast<i8>(from->count - moved);
+                                    if (from->count <= 0) {
+                                        *from = {};
+                                    }
+                                }
+                                for (i16 index = first; index < last && !from->empty(); ++index) {
+                                    net::ItemStack* into = slot_ref(index);
+                                    if (into != nullptr && into->empty()) {
+                                        // A stack that is already legal moves
+                                        // whole; there is no splitting to do,
+                                        // because it came from a slot that held
+                                        // it.
+                                        *into = *from;
+                                        *from = {};
+                                    }
+                                }
+                                handled = true;
+                            }
+                        }
+
                         if (click->mode == 0 && click->slot >= 0) {
                             net::ItemStack* slot = slot_ref(click->slot);
                             if (slot != nullptr) {
                                 if (click->button == 0) {
-                                    // Left click: the carried stack and the slot
-                                    // trade places.
-                                    std::swap(*slot, player.carried);
+                                    // Left click: onto a matching stack it
+                                    // merges up to the item's limit, otherwise
+                                    // the two trade places.
+                                    const i8 limit =
+                                        registries
+                                            ? registries->max_stack_size(player.carried.item_id)
+                                            : i8{64};
+                                    if (!player.carried.empty() && !slot->empty() &&
+                                        slot->item_id == player.carried.item_id &&
+                                        slot->count < limit) {
+                                        const i8 moved =
+                                            std::min(static_cast<i8>(limit - slot->count),
+                                                     player.carried.count);
+                                        slot->count = static_cast<i8>(slot->count + moved);
+                                        player.carried.count =
+                                            static_cast<i8>(player.carried.count - moved);
+                                        if (player.carried.count <= 0) {
+                                            player.carried = {};
+                                        }
+                                    } else {
+                                        std::swap(*slot, player.carried);
+                                    }
                                     handled = true;
                                 } else if (click->button == 1) {
                                     // Right click: put one down, or pick up
@@ -1750,13 +1816,25 @@ int main(int argc, char** argv) {
                                                 *slot = {};
                                             }
                                         }
-                                    } else if (slot->empty()) {
-                                        *slot       = player.carried;
-                                        slot->count = 1;
-                                        player.carried.count =
-                                            static_cast<i8>(player.carried.count - 1);
-                                        if (player.carried.count <= 0) {
-                                            player.carried = {};
+                                    } else {
+                                        const i8 limit =
+                                            registries
+                                                ? registries->max_stack_size(player.carried.item_id)
+                                                : i8{64};
+                                        const bool same = !slot->empty() &&
+                                                          slot->item_id == player.carried.item_id;
+                                        if (slot->empty() || (same && slot->count < limit)) {
+                                            if (slot->empty()) {
+                                                *slot       = player.carried;
+                                                slot->count = 1;
+                                            } else {
+                                                slot->count = static_cast<i8>(slot->count + 1);
+                                            }
+                                            player.carried.count =
+                                                static_cast<i8>(player.carried.count - 1);
+                                            if (player.carried.count <= 0) {
+                                                player.carried = {};
+                                            }
                                         }
                                     }
                                     handled = true;

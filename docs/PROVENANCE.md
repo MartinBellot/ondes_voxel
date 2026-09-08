@@ -1252,11 +1252,55 @@ dur : un coffre 9×3 n'a pas le même numéro qu'un 9×6, et se tromper ouvre un
 fenêtre de la mauvaise taille sur les bonnes données.
 
 **Ce qui est traité et ce qui ne l'est pas.** Les clics gauche et droit (mode 0)
-sont appliqués côté serveur. Le shift-clic, les glissés et les touches
-numériques ne le sont pas : la fenêtre est **réémise en entier** après chaque
-clic, donc ce que le serveur n'a pas implémenté disparaît de l'écran au lieu d'y
-rester sous forme d'objet qui n'existe pas. C'est visible et sans danger ; la
-duplication, elle, ne le serait pas.
+et le shift-clic (mode 1) sont appliqués côté serveur. Les glissés et les
+touches numériques ne le sont pas : la fenêtre est **réémise en entier** après
+chaque clic, donc ce que le serveur n'a pas implémenté disparaît de l'écran au
+lieu d'y rester sous forme d'objet qui n'existe pas. C'est visible et sans
+danger ; la duplication, elle, ne le serait pas.
 
 Cliquer un coffre l'ouvre toujours. Vanilla ne pose contre un coffre que si le
 joueur est accroupi, ce qui n'est pas encore suivi.
+
+---
+
+## Taille de pile maximale par objet
+
+Le shift-clic ne peut pas être écrit sans elle. Déplacer une pile vers un coffre
+veut dire « fusionner dans les piles compatibles, puis remplir un slot vide » —
+et « compatible » s'arrête à une limite qui n'est ni 64 pour tout le monde, ni
+déductible du nom de l'objet. Une épée ne s'empile pas, une perle de l'Ender
+s'arrête à 16, une pomme va à 64. Deviner produit soit des piles impossibles que
+le client refuse d'afficher, soit de la duplication.
+
+La valeur n'est **pas** dans `registries.json` : ce rapport liste les
+identifiants, pas les propriétés des objets. Elle n'est pas non plus dans les
+modèles ni dans les tags. Elle vit dans le code Java, ce que nous ne lisons pas.
+
+**Mesure.** Un joueur (`scripts/keepalive_client.py`, qui répond aux keep-alive
+et confirme les téléportations, sans quoi le serveur le déconnecte au bout de
+30 s) reste connecté à un vrai serveur 1.20.1. Les commandes sont envoyées par
+un FIFO sur son entrée standard, pour chacun des 1255 objets du registre :
+
+```
+clear StackProbe
+give  StackProbe <item> 65
+say   PROBE <item>
+data get entity StackProbe Inventory
+```
+
+Demander **65** est ce qui fait la mesure : le serveur découpe la donation en
+autant de piles que nécessaire, et le `Count` de la première pile *est* la
+limite. Le `say` sert d'ancre pour associer chaque réponse à son objet, la
+sortie de `data get` n'en portant pas le nom.
+
+**Résultat : 1254 / 1255.** 1032 objets à 64, 45 à 16, 177 à 1. Le seul non
+mesuré est `minecraft:air`, que `give` refuse — sans conséquence, un slot
+d'air est un slot vide.
+
+**Stockage.** Un octet par objet, dans l'ordre du registre `minecraft:item`,
+dans le `.ovpack` (format v5, section `stacks_offset`). Lu par
+`Registries::max_stack_size(ProtocolId)`, qui répond 64 pour un identifiant hors
+table — c'est la valeur de la grande majorité, donc la moins nuisible en cas de
+pack périmé. La table brute n'est pas commitée : elle est régénérée dans
+`data/vanilla/1.20.1/normalized/stack_sizes.json`, gitignoré comme le reste des
+données dérivées de Mojang.

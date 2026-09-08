@@ -123,6 +123,12 @@ std::expected<Registries, RegistryError> Registries::from_bytes(std::vector<u8> 
                                    record.member_first, record.member_count});
     }
 
+    const auto* stacks = pack_at<u8>(data_view, header.stacks_offset, header.item_count);
+    if (stacks == nullptr) {
+        return std::unexpected{RegistryError::Corrupt};
+    }
+    result.stack_sizes_ = std::span{stacks, header.item_count};
+
     return result;
 }
 
@@ -151,6 +157,18 @@ std::span<const ProtocolId> Registries::tag_members(TagId tag) const noexcept {
     }
     const Tag& entry = tags_[tag.value()];
     return members_.subspan(entry.member_first, entry.member_count);
+}
+
+i8 Registries::max_stack_size(ProtocolId item) const noexcept {
+    // Out of range, or an item the pack never measured: 64. That is the
+    // majority answer and the safe direction — over-stacking one tool is
+    // visible and fixable, under-stacking every block would make each chest
+    // behave oddly.
+    if (item < 0 || static_cast<usize>(item) >= stack_sizes_.size()) {
+        return 64;
+    }
+    const u8 measured = stack_sizes_[static_cast<usize>(item)];
+    return measured == 0 ? i8{64} : static_cast<i8>(measured);
 }
 
 bool Registries::tag_contains(TagId tag, ProtocolId id) const noexcept {

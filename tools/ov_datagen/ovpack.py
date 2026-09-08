@@ -21,6 +21,7 @@ Layout, all little-endian, every section 8-byte aligned:
     members     one numeric id per tag member, already flattened and sorted
     blocks      one record per block, in registry order
     flags       one byte per block: measured properties the reports do not carry
+    stacks      one byte per item: its maximum stack size, also measured
     properties  one record per property, grouped by block
     values      one string offset per property value
     state_index one block index per block state, for O(1) reverse lookup
@@ -48,7 +49,7 @@ MAGIC = b"OVPK"
 # Bumped by hand whenever the layout changes, so a stale cache is detected
 # rather than misread. A mismatched cache read as if it were current is far
 # worse than no cache at all.
-FORMAT_VERSION = 4
+FORMAT_VERSION = 5
 
 HEADER_SIZE = 128
 
@@ -78,7 +79,7 @@ def align8(data: bytearray) -> None:
 
 
 def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
-          opacity_doc: dict) -> bytes:
+          opacity_doc: dict, stacks_doc: dict) -> bytes:
     blocks = blocks_doc["blocks"]
     state_count = blocks_doc["state_count"]
 
@@ -165,6 +166,14 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
     opacity = opacity_doc["opacity"]
     flag_bytes = bytes(opacity.get(block["name"], 2) for block in blocks)
 
+    # Maximum stack size per item, in the item registry's own order so the
+    # numeric id indexes it directly. Nothing in the reports carries this
+    # either. An item that was never measured gets 64, the majority answer;
+    # `air` is the only one, and it is never stacked.
+    max_stack = stacks_doc["max_stack"]
+    item_entries = registries_doc["registries"]["minecraft:item"]["entries"]
+    stack_bytes = bytes(min(255, max_stack.get(name, 64)) for name in item_entries)
+
     string_blob = strings.blob()
 
     # ── Assemble ────────────────────────────────────────────────────────────
@@ -176,6 +185,10 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
 
     flags_offset = HEADER_SIZE + len(body)
     body += flag_bytes
+    align8(body)
+
+    stacks_offset = HEADER_SIZE + len(body)
+    body += stack_bytes
     align8(body)
 
     registries_offset = HEADER_SIZE + len(body)
@@ -225,7 +238,7 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
     align8(body)
 
     header = struct.pack(
-        "<4sIIIIIIIIIIIIIIIIIIIII",
+        "<4sIIIIIIIIIIIIIIIIIIIIIII",
         MAGIC,
         FORMAT_VERSION,
         len(block_records),
@@ -247,6 +260,8 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
         tags_offset,
         members_offset,
         flags_offset,
+        stacks_offset,
+        len(item_entries),
         0,  # reserved
     )
     assert len(header) <= HEADER_SIZE
@@ -278,8 +293,10 @@ def main() -> int:
         tags_doc = json.load(f)
     with open(NORMALIZED / "light_opacity.json") as f:
         opacity_doc = json.load(f)
+    with open(NORMALIZED / "stack_sizes.json") as f:
+        stacks_doc = json.load(f)
 
-    payload = build(blocks_doc, registries_doc, tags_doc, opacity_doc)
+    payload = build(blocks_doc, registries_doc, tags_doc, opacity_doc, stacks_doc)
     tag_records_count = [t for g in tags_doc["tags"].values() for t in g]
     member_count_total = sum(len(v) for g in tags_doc["tags"].values() for v in g.values())
     OUTPUT.write_bytes(payload)
@@ -290,11 +307,12 @@ def main() -> int:
     print(f"    registries ..... {len(registries_doc['registries'])}")
     print(f"    tags ........... {len(tag_records_count)} ({member_count_total} members)")
     print(f"    light opacity .. {opacity_doc['measured']} blocks measured")
+    print(f"    stack sizes .... {stacks_doc['measured']} items measured")
     print(f"    size ........... {len(payload):,} bytes")
 
     # Byte-stability is the property the manifest depends on. Checking it here
     # costs nothing and catches a non-deterministic dict order immediately.
-    if build(blocks_doc, registries_doc, tags_doc, opacity_doc) != payload:
+    if build(blocks_doc, registries_doc, tags_doc, opacity_doc, stacks_doc) != payload:
         sys.exit("error: emitter is not deterministic")
     print("    deterministic .. yes")
     return 0

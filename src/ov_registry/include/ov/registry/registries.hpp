@@ -82,6 +82,17 @@ public:
     /// the case for anything arriving from a peer.
     [[nodiscard]] std::string_view entry_of(RegistryId registry, ProtocolId id) const noexcept;
 
+    /// How many of an item fit in one slot.
+    ///
+    /// Not in Mojang's reports either — it is Java code — so this was measured
+    /// by giving a real 1.20.1 server 65 of every item and reading back how it
+    /// split them. 1032 items stack to 64, 45 to 16, and 177 to a single one.
+    ///
+    /// Defaults to 64 for an id the pack does not cover, which is the majority
+    /// answer and the safe direction: over-stacking a tool is visible, while
+    /// under-stacking blocks would make every chest behave oddly.
+    [[nodiscard]] i8 max_stack_size(ProtocolId item) const noexcept;
+
     // ── Tags ────────────────────────────────────────────────────────────────
     //
     // Tags are how the game asks "is this one of the logs?" without listing
@@ -129,6 +140,7 @@ private:
     std::vector<Entry>            registries_;
     std::vector<std::string_view> entry_names_;
     std::vector<Tag>              tags_;
+    std::span<const u8>           stack_sizes_;
     std::span<const ProtocolId>   members_;
 };
 
