@@ -7,6 +7,7 @@
 ov_add_library(ov_world
     LAYER 6
     SOURCES
+        src/block_ticks.cpp
         src/chunk.cpp
         src/chunk_section.cpp
         src/chunk_storage.cpp
@@ -22,6 +23,7 @@ ov_add_library(ov_world
 
 ov_add_test(test_ov_world
     SOURCES
+        tests/test_block_ticks.cpp
         tests/test_chunk.cpp
         tests/test_chunk_section.cpp
         tests/test_chunk_storage.cpp
