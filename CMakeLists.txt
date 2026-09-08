@@ -122,6 +122,7 @@ endif()
 
 # ── Tools ───────────────────────────────────────────────────────────────────
 add_subdirectory(tools/ov_inspect)
+add_subdirectory(tools/ov_parity)
 add_subdirectory(tools/ov_assetimport)
 
 if(OV_BUILD_CLIENT)

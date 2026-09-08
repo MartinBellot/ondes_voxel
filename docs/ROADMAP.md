@@ -362,8 +362,15 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [ ] `old_blended_noise` — le bruit de terrain 1.17, dont dépend `final_density`
 - [ ] `NoiseChunk` : échantillonnage sur la grille de cellules et interpolation
       *(c'est ce qui rend `interpolated` inexact point par point)*
-- [ ] **Multi-noise biome source** : temperature, humidity, continentalness,
+- [x] **Multi-noise biome source** : temperature, humidity, continentalness,
       erosion, depth, weirdness
+      *(**613857 cellules de biome sur 614400 identiques au vrai jeu** à la
+      seed 1234567890 — 99,912 %. Les 543 restantes sont des **égalités
+      exactes** : deux boîtes à la même distance, départagées chez vanilla par
+      l'ordre de parcours d'un R-tree et par un cache du résultat précédent.
+      Le calcul du climat, lui, est identique)*
+- [ ] Départage des égalités : ordre de construction du R-tree et cache
+      `lastResult` *(les 0,088 % restants)*
 - [ ] `surface_rules`
 - [ ] Carvers : grottes, ravins, cheese / spaghetti / noodle
 - [ ] Aquifères, lave, niveaux d'eau

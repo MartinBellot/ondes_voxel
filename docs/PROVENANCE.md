@@ -3139,3 +3139,54 @@ Reste aussi le `NoiseChunk` : le terrain est échantillonné sur une grille de
 cellules (4 blocs en horizontal, 8 en vertical pour l'overworld) puis interpolé
 entre. C'est ce qui rend `interpolated` inexact point par point — exact pour le
 climat, qui n'en utilise pas, et pas pour la densité finale.
+
+## Les biomes : 613857 sur 614400
+
+*2026-09-08.*
+
+Premier chiffre de parité de terrain, et il est bon : **613857 cellules de biome
+sur 614400 identiques à celles que le vrai serveur 1.20.1 a écrites pour la même
+seed — 99,912 %**, sur 400 chunks entièrement générés.
+
+### La table n'est pas dans le datapack
+
+`multi_noise_biome_source_parameter_list/overworld.json` ne contient qu'un
+`{"preset": "minecraft:overworld"}` : les ~7600 boîtes du monde sont du code
+Java. Elles sont en revanche **exportées par le générateur de données officiel**
+dans `reports/biome_parameters`, qui est d'où elles sont lues — généré
+localement comme tout le reste, commité nulle part.
+
+### Le harnais s'est trompé avant le générateur
+
+La première mesure donnait **67 %**, et tous les désaccords disaient « le jeu a
+choisi plains ». C'était le harnais : une région force-chargée contient des
+chunks arrêtés à un statut intermédiaire, dont le tableau de biomes vaut
+**plains par défaut**. Ce ne sont pas des résultats de génération.
+
+Filtré sur `Status == minecraft:full`, **le même code donne 99,912 %**. La leçon
+n'est pas nouvelle mais elle vaut d'être répétée : un chiffre de parité mesure
+autant l'oracle que le code, et le premier réflexe quand il est mauvais doit
+être de douter des deux.
+
+### Les 543 restants sont tous des égalités
+
+Pas « surtout » : **tous**. Pour chacun, la boîte du biome choisi par le jeu et
+celle du nôtre sont **exactement à la même distance** du point climatique.
+Autrement dit le calcul du climat — le bruit, les octaves, les décalages, les
+splines, la quantification — est **identique**, et seule la départition diffère.
+
+Vanilla range les boîtes dans un R-tree et prend la première trouvée au minimum
+(`if (l > m)`, strictement) ; l'ordre des feuilles vient de la construction de
+l'arbre, et le résultat **précédent** sert de borne initiale — si bien que la
+réponse peut dépendre de la requête d'avant. Nous faisons un balayage linéaire
+et gardons la première strictement plus proche. Reproduire les 0,088 % restants
+demande de reproduire l'ordre de construction du R-tree *et* ce cache.
+
+### Ce que le harnais a exclu
+
+Avant de trouver le vrai problème, l'outil a fait son travail : il a montré que
+distordre `continentalness`, `erosion` ou `weirdness` n'améliorait rien — ces
+axes étaient déjà justes — et qu'aucune échelle ni aucun décalage sur la
+température ne remontait au-dessus de 88 %, donc que l'erreur n'était pas un
+facteur. Les deux conclusions étaient correctes : l'erreur n'était dans aucun
+axe.
