@@ -13,6 +13,7 @@
 #include "ov/base/thread.hpp"
 #include "ov/base/time.hpp"
 #include "ov/gameplay/breaking.hpp"
+#include "ov/gameplay/connections.hpp"
 #include "ov/gameplay/loot.hpp"
 #include "ov/io/compression.hpp"
 #include "ov/io/file.hpp"
@@ -1022,11 +1023,13 @@ int main(int argc, char** argv) {
     // How long each block takes to break, and whether the held tool lets it
     // drop. Built once: every query otherwise walks the tag graph, and this
     // sits on the path of every dig packet.
-    std::optional<gameplay::BreakRules> break_rules;
-    std::optional<gameplay::LootTables> loot_tables;
+    std::optional<gameplay::BreakRules>  break_rules;
+    std::optional<gameplay::LootTables>  loot_tables;
+    std::optional<gameplay::Connections> connections;
     if (blocks && registries) {
         break_rules.emplace(*blocks, *registries);
         loot_tables.emplace(*blocks, *registries);
+        connections.emplace(*blocks, *registries);
     }
 
     Superflat superflat = world_available ? Superflat::from(*blocks) : Superflat{};
@@ -1479,6 +1482,26 @@ int main(int argc, char** argv) {
         }
     };
 
+    /// Read a block without holding the lock twice.
+    ///
+    /// Caller holds chunk_mutex.
+    const auto block_at = [&](net::WirePosition where) -> registry::BlockStateId {
+        const auto shape = world::WorldShape::overworld();
+        if (!shape.contains_y(where.y)) {
+            return registry::BlockStateId{0};
+        }
+        return chunk_at(where.x >> 4, where.z >> 4)
+            .get_block(static_cast<usize>(where.x & 15), where.y, static_cast<usize>(where.z & 15));
+    };
+
+    /// The four horizontal neighbours, in the order the side properties name
+    /// them: north, south, west, east.
+    const auto neighbours_of = [&](net::WirePosition where) {
+        return std::array<registry::BlockStateId, 4>{
+            block_at({where.x, where.y, where.z - 1}), block_at({where.x, where.y, where.z + 1}),
+            block_at({where.x - 1, where.y, where.z}), block_at({where.x + 1, where.y, where.z})};
+    };
+
     const auto set_block_and_broadcast = [&](net::WirePosition      position,
                                              registry::BlockStateId state) {
         const auto shape = world::WorldShape::overworld();
@@ -1532,6 +1555,47 @@ int main(int argc, char** argv) {
             if (other.connection) {
                 other.connection->send(*framed);
             }
+        }
+    };
+
+    /// Place a block, then let it and its neighbours reshape around each other.
+    ///
+    /// A fence placed next to a fence has to reach out, and so does the one
+    /// already standing there — the change goes both ways, which is why this
+    /// cannot live inside placement alone. Breaking a block runs it too: the
+    /// fence that was reaching for it has to let go.
+    const auto set_block_connected = [&](net::WirePosition position, registry::BlockStateId state) {
+        if (!connections) {
+            set_block_and_broadcast(position, state);
+            return;
+        }
+
+        std::array<std::pair<net::WirePosition, registry::BlockStateId>, 5> changes{};
+        usize                                                               count = 0;
+        {
+            const std::scoped_lock lock{chunk_mutex};
+            const auto             around = neighbours_of(position);
+            changes[count++]              = {position, connections->reshape(state, around)};
+
+            constexpr std::array<net::WirePosition, 4> kSteps{
+                net::WirePosition{0, 0, -1}, net::WirePosition{0, 0, 1},
+                net::WirePosition{-1, 0, 0}, net::WirePosition{1, 0, 0}};
+            for (usize i = 0; i < kSteps.size(); ++i) {
+                const net::WirePosition      side{position.x + kSteps[i].x, position.y,
+                                                  position.z + kSteps[i].z};
+                const registry::BlockStateId before = around[i];
+                // The neighbour sees the new block, not the old one, so its own
+                // view has to be built with the change already in place.
+                auto view                          = neighbours_of(side);
+                view[i ^ 1]                        = state;
+                const registry::BlockStateId after = connections->reshape(before, view);
+                if (after != before) {
+                    changes[count++] = {side, after};
+                }
+            }
+        }
+        for (usize i = 0; i < count; ++i) {
+            set_block_and_broadcast(changes[i].first, changes[i].second);
         }
     };
 
@@ -1907,7 +1971,7 @@ int main(int argc, char** argv) {
                             // Creative breaks on the first packet: the block is
                             // already gone on the client when it arrives.
                             if (action->status == 0 || action->status == 2) {
-                                set_block_and_broadcast(action->position, superflat.air.air);
+                                set_block_connected(action->position, superflat.air.air);
                             }
                             return true;
                         }
@@ -1926,7 +1990,7 @@ int main(int argc, char** argv) {
                                 // has already assumed.
                                 std::vector<ItemEntity> dropped;
                                 drop_loot(player, action->position, dropped);
-                                set_block_and_broadcast(action->position, superflat.air.air);
+                                set_block_connected(action->position, superflat.air.air);
                                 publish_items(dropped);
                                 return true;
                             }
@@ -1956,7 +2020,7 @@ int main(int argc, char** argv) {
                                 player.digging = player.delayed_dig = false;
                                 std::vector<ItemEntity> dropped;
                                 drop_loot(player, action->position, dropped);
-                                set_block_and_broadcast(action->position, superflat.air.air);
+                                set_block_connected(action->position, superflat.air.air);
                                 publish_items(dropped);
                             } else if (progress > 0.0F) {
                                 player.digging     = false;
@@ -2061,7 +2125,7 @@ int main(int argc, char** argv) {
                         // face says which side, and it lands one step along it.
                         const auto target = net::offset_by_face(place->position, place->face);
                         const auto placed = placed_state(*blocks, *held_block, *place, player.yaw);
-                        set_block_and_broadcast(target, placed);
+                        set_block_connected(target, placed);
 
                         // Doors and beds take two blocks. Placing only the half
                         // the player clicked leaves a door that cannot open and
@@ -2497,7 +2561,7 @@ int main(int argc, char** argv) {
                         digger.delayed_dig = false;
                         std::vector<ItemEntity> dropped;
                         drop_loot(digger, where, dropped);
-                        set_block_and_broadcast(where, superflat.air.air);
+                        set_block_connected(where, superflat.air.air);
                         publish_items(dropped);
                     }
                 }

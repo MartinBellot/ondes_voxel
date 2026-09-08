@@ -9,6 +9,7 @@
 #define OV_LOG_CATEGORY "inspect"
 
 #include "ov/base/log.hpp"
+#include "ov/gameplay/connections.hpp"
 #include "ov/gameplay/loot.hpp"
 #include "ov/io/compression.hpp"
 #include "ov/io/file.hpp"
@@ -1318,6 +1319,48 @@ int inspect_columns(const std::filesystem::path& directory) {
     return 0;
 }
 
+/// Answer, for each "state face" pair, whether an oak fence reaches for it.
+///
+/// The point is to replay the measurement through the code that ships rather
+/// than through the prototype that derived the rule. The corpus is 23358 faces
+/// read off a real 1.20.1 server.
+///
+/// The face named is the **neighbour's own**, which is the opposite of the side
+/// the fence reaches along. Feeding it in as the side inverts asymmetric blocks
+/// and leaves symmetric ones looking right — doors fail, stone does not.
+int inspect_connects(const std::filesystem::path& pack_path) {
+    auto blocks     = registry::BlockRegistry::load(pack_path);
+    auto registries = registry::Registries::load(pack_path);
+    if (!blocks || !registries) {
+        fmt::print(stderr, "cannot read {}\n", pack_path.string());
+        return 1;
+    }
+    const gameplay::Connections rules{*blocks, *registries};
+    const auto                  fence = blocks->find_block("minecraft:oak_fence");
+    if (!fence) {
+        fmt::print(stderr, "no oak fence in this pack\n");
+        return 1;
+    }
+    const gameplay::ConnectingKind kind = rules.kind_of(*fence);
+
+    int         state = 0;
+    std::string side;
+    while (std::cin >> state >> side) {
+        gameplay::Side which = gameplay::Side::North;
+        for (u8 index = 0; index < 4; ++index) {
+            if (gameplay::kSideNames[index] == side) {
+                // North's opposite is South, West's is East: the pairs sit
+                // next to each other in the enum.
+                which = static_cast<gameplay::Side>(index ^ 1);
+            }
+        }
+        fmt::print(
+            "{} {} {}\n", state, side,
+            rules.attaches(kind, which, registry::BlockStateId{static_cast<u16>(state)}) ? 1 : 0);
+    }
+    return 0;
+}
+
 /// Roll a block's loot table many times and report what came out.
 ///
 /// The point is comparison: the same cases are rolled on a real 1.20.1 server
@@ -1392,6 +1435,7 @@ void print_usage() {
         "  ov-inspect column <region-dir>        block and the four heightmaps per 'x y z'\n"
         "  ov-inspect heightmaps <region-dir> [--pack=P]  recompute them and compare\n"
         "  ov-inspect loot   <pack>              roll loot tables per 'block silk fortune tool n'\n"
+        "  ov-inspect connects <pack>            does an oak fence reach, per 'state side'\n"
         "  ov-inspect state  <region-dir>        full block state per 'x y z'\n"
         "\n"
         "  --tree      print the tag tree\n"
@@ -1417,7 +1461,7 @@ int main(int argc, char** argv) {
     const std::string_view command{argv[1]};
     if (command != "nbt" && command != "region" && command != "zip" && command != "chunk" &&
         command != "light" && command != "column" && command != "heightmaps" && command != "loot" &&
-        command != "state") {
+        command != "state" && command != "connects") {
         fmt::print(stderr, "unknown command '{}'\n", command);
         print_usage();
         return 1;
@@ -1467,6 +1511,9 @@ int main(int argc, char** argv) {
     }
     if (command == "state") {
         return inspect_states(argv[2]);
+    }
+    if (command == "connects") {
+        return inspect_connects(argv[2]);
     }
     return inspect_nbt(argv[2], tree, verify, max_depth);
 }

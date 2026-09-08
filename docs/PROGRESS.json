@@ -11,7 +11,7 @@
   },
   "last_updated": "2026-09-08",
   "current_milestone": "M3",
-  "current_task": "m4-block-connections",
+  "current_task": "m4-walls-and-stair-shapes",
   "milestones": {
     "M0": {
       "name": "Fondations",
@@ -46,14 +46,14 @@
       "total": 20,
       "exit_criterion": "Un client Minecraft vanilla 1.20.1 non modifié se connecte, marche, casse et pose un bloc — sans une ligne de Vulkan.",
       "blocked": [
-        "Collisions et mouvement autoritatif : necessitent les formes de collision, pas encore mesurees. MOTION_BLOCKING et OCEAN_FLOOR ne les attendaient pas : le predicat est un booleen par bloc, mesure."
+        "Mouvement autoritatif : les formes de collision sont desormais dans le pack (4327 formes, par etat), donc le blocage est leve ; reste a ecrire la physique."
       ]
     },
     "M4": {
       "name": "Monde persistant",
       "status": "in_progress",
-      "done": 13,
-      "total": 15,
+      "done": 15,
+      "total": 17,
       "exit_criterion": "Round-trip croisé : notre sauvegarde s'ouvre dans Minecraft vanilla et réciproquement, sans perte.",
       "blocked": []
     },
@@ -135,7 +135,9 @@
     "placement_states": "dalle doublee, porte a deux moities et lit a deux blocs : etats identiques a ceux du vrai serveur 1.20.1, releves par scripts/measure_placement.py puis rejoues chez nous",
     "placement_blocked": "les connexions attendent le predicat de face pleine, qui est par etat et par face : une dalle basse n'accroche pas une cloture, la meme en double si",
     "data_version_guard": "level.dat lu au demarrage et compare a 3465 ; un chunk present mais illisible sert du terrain genere et n'est jamais reecrit, ce qui detruisait sinon la sauvegarde",
-    "fence_connects": "23358 faces relevees sur 841 blocs : 695 repondent pareil sur tous leurs etats, 146 varient (escaliers, portes, trappes, portillons) — d'ou le refus de livrer une table par bloc ; les connexions attendent les formes de collision"
+    "fence_connects": "23358 faces relevees sur 841 blocs : 695 repondent pareil sur tous leurs etats, 146 varient (escaliers, portes, trappes, portillons) — d'ou le refus de livrer une table par bloc ; les connexions attendent les formes de collision",
+    "collision_shapes": "4327 formes, 12054 boites en unites de 1/32, par etat ; verifiees indirectement : la regle de connexion reconstruite a partir d'elles reproduit 23358/23358 faces mesurees sur un vrai serveur, et le rejeu par le code livre donne le meme chiffre",
+    "connection_rule": "clotures, portillons, vitres et barreaux ; liste d'exceptions derivee des ecarts plutot que recopiee (feuillages, shulker box, barriere, citrouilles, melon, target) et deux blocs dont la forme de support est pleine quand la collision ne l'est pas (mud, soul_sand)"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",

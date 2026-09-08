@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 
+import collision
 import loot
 import struct
 import sys
@@ -51,7 +52,7 @@ MAGIC = b"OVPK"
 # Bumped by hand whenever the layout changes, so a stale cache is detected
 # rather than misread. A mismatched cache read as if it were current is far
 # worse than no cache at all.
-FORMAT_VERSION = 8
+FORMAT_VERSION = 9
 
 _loot_report = ""
 
@@ -85,7 +86,8 @@ def align8(data: bytearray) -> None:
 
 def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
           opacity_doc: dict, stacks_doc: dict, motion_doc: dict,
-          hardness_doc: dict, loot_dir, loot_map_doc: dict) -> bytes:
+          hardness_doc: dict, loot_dir, loot_map_doc: dict,
+          collision_doc: dict) -> bytes:
     blocks = blocks_doc["blocks"]
     state_count = blocks_doc["state_count"]
 
@@ -237,6 +239,22 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
     _loot_report = (f"{loot_sections['present']} blocks, {len(loot_sections['pools'])} pools, "
                     f"{len(loot_sections['entries'])} entries")
 
+    # ── Formes de collision ─────────────────────────────────────────────────
+    #
+    # En unités de 1/32, ce qui les fait tenir sur un octet par coordonnée. Le
+    # masque des faces pleines est calculé ici plutôt qu'à l'exécution : c'est
+    # une grille de 32x32 par face, et la question se pose à chaque bloc posé.
+    shape_boxes = bytearray()
+    shape_records = []
+    for boxes in collision_doc["shapes"]:
+        first = len(shape_boxes) // 6
+        for box in boxes:
+            # Signé : une boîte déborde parfois du cube — une tête de piston va
+            # de -8/32 à 48/32 — et un octet non signé la replierait en silence.
+            shape_boxes += struct.pack("<6b", *box)
+        shape_records.append((first, len(boxes), collision.sturdy_bits(boxes)))
+    state_shapes = b"".join(struct.pack("<H", index) for index in collision_doc["states"])
+
     string_blob = strings.blob()
 
     # ── Assemble ────────────────────────────────────────────────────────────
@@ -266,6 +284,19 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
         loot_offsets[key] = HEADER_SIZE + len(body)
         body += loot_bytes[key]
         align8(body)
+
+    boxes_offset = HEADER_SIZE + len(body)
+    body += bytes(shape_boxes)
+    align8(body)
+
+    shapes_offset = HEADER_SIZE + len(body)
+    for first, count, sturdy in shape_records:
+        body += struct.pack("<IHH", first, count, sturdy)
+    align8(body)
+
+    state_shapes_offset = HEADER_SIZE + len(body)
+    body += state_shapes
+    align8(body)
 
     hardness_offset = HEADER_SIZE + len(body)
     for block in blocks:
@@ -319,7 +350,7 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
     align8(body)
 
     header = struct.pack(
-        "<4s" + "I" * 38,
+        "<4s" + "I" * 43,
         MAGIC,
         FORMAT_VERSION,
         len(block_records),
@@ -358,6 +389,11 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
         len(loot_sections["funcs"]),
         len(loot_sections["floats"]),
         len(loot_sections["ints"]),
+        boxes_offset,
+        shapes_offset,
+        state_shapes_offset,
+        len(shape_boxes) // 6,
+        len(shape_records),
         0,  # reserved
     )
     assert len(header) <= HEADER_SIZE
@@ -397,12 +433,14 @@ def main() -> int:
         hardness_doc = json.load(f)
     with open(NORMALIZED / "loot_tables.json") as f:
         loot_map_doc = json.load(f)
+    with open(NORMALIZED / "collision_shapes.json") as f:
+        collision_doc = json.load(f)
     loot_dir = (NORMALIZED.parent / "generated" / "data" / "minecraft" / "loot_tables" / "blocks")
     if not loot_dir.is_dir():
         sys.exit(f"error: {loot_dir} not found. Run tools/ov_datagen/datagen.py first.")
 
     payload = build(blocks_doc, registries_doc, tags_doc, opacity_doc, stacks_doc,
-                    motion_doc, hardness_doc, loot_dir, loot_map_doc)
+                    motion_doc, hardness_doc, loot_dir, loot_map_doc, collision_doc)
     tag_records_count = [t for g in tags_doc["tags"].values() for t in g]
     member_count_total = sum(len(v) for g in tags_doc["tags"].values() for v in g.values())
     OUTPUT.write_bytes(payload)
@@ -417,12 +455,15 @@ def main() -> int:
     print(f"    motion flags ... {motion_doc['measured']} blocks measured")
     print(f"    hardness ....... {hardness_doc['count']} blocks")
     print(f"    loot tables .... {_loot_report}")
+    print(f"    collision ...... {len(collision_doc['shapes'])} shapes, "
+          f"{sum(len(s) for s in collision_doc['shapes'])} boxes")
     print(f"    size ........... {len(payload):,} bytes")
 
     # Byte-stability is the property the manifest depends on. Checking it here
     # costs nothing and catches a non-deterministic dict order immediately.
     if build(blocks_doc, registries_doc, tags_doc, opacity_doc, stacks_doc,
-             motion_doc, hardness_doc, loot_dir, loot_map_doc) != payload:
+             motion_doc, hardness_doc, loot_dir, loot_map_doc,
+             collision_doc) != payload:
         sys.exit("error: emitter is not deterministic")
     print("    deterministic .. yes")
     return 0

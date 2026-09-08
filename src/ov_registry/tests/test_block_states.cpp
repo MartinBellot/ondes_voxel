@@ -404,3 +404,80 @@ TEST_CASE("holding a fluid is a property of the state", "[registry][blocks][heig
 
     REQUIRE_FALSE(r->holds_fluid(r->default_state(*r->find_block("minecraft:stone"))));
 }
+
+TEST_CASE("collision shapes, and the faces they fill", "[registry][blocks][collision]") {
+    if (loaded_registry() == nullptr) {
+        SKIP("no registry pack");
+    }
+    const auto* r = loaded_registry();
+
+    const auto state = [&](std::string_view name) {
+        const auto block = r->find_block(name);
+        REQUIRE(block.has_value());
+        return r->default_state(*block);
+    };
+    const auto all_faces = [&](BlockStateId id) {
+        usize count = 0;
+        for (u8 face = 0; face < 6; ++face) {
+            count += r->face_is_sturdy(id, static_cast<BlockRegistry::Face>(face)) ? 1 : 0;
+        }
+        return count;
+    };
+
+    // A full cube, in thirty-seconds of a block.
+    const auto stone = state("minecraft:stone");
+    REQUIRE(r->collision_boxes(stone).size() == 1);
+    const BlockRegistry::Box& cube = r->collision_boxes(stone)[0];
+    REQUIRE(cube.min_x == 0);
+    REQUIRE(cube.min_y == 0);
+    REQUIRE(cube.min_z == 0);
+    REQUIRE(cube.max_x == 32);
+    REQUIRE(cube.max_y == 32);
+    REQUIRE(cube.max_z == 32);
+    REQUIRE(all_faces(stone) == 6);
+
+    // Nothing to walk into, and no face to attach to.
+    REQUIRE(r->collision_boxes(state("minecraft:air")).empty());
+    REQUIRE(all_faces(state("minecraft:air")) == 0);
+    REQUIRE(r->collision_boxes(state("minecraft:torch")).empty());
+    REQUIRE(all_faces(state("minecraft:torch")) == 0);
+
+    // Leaves are a full cube and fill every face. That they refuse a fence is a
+    // rule about leaves, not a fact about their shape — the two are separate
+    // and conflating them is what makes a fence attach to a tree.
+    REQUIRE(all_faces(state("minecraft:oak_leaves")) == 6);
+}
+
+TEST_CASE("a slab fills the face it sits against", "[registry][blocks][collision]") {
+    if (loaded_registry() == nullptr) {
+        SKIP("no registry pack");
+    }
+    const auto* r     = loaded_registry();
+    const auto  block = r->find_block("minecraft:oak_slab");
+    REQUIRE(block.has_value());
+    const auto type = r->find_property(*block, "type");
+    REQUIRE(type.has_value());
+
+    const auto with = [&](std::string_view value) {
+        const auto it = std::ranges::find(type->values, value);
+        REQUIRE(it != type->values.end());
+        return r->with_property(r->first_state(*block), *type,
+                                static_cast<u16>(std::distance(type->values.begin(), it)));
+    };
+
+    using Face = BlockRegistry::Face;
+
+    // The half that touches the floor fills the floor's face and nothing else.
+    // This is why a per-block table would be wrong: the same block answers
+    // three different ways.
+    REQUIRE(r->face_is_sturdy(with("bottom"), Face::Down));
+    REQUIRE_FALSE(r->face_is_sturdy(with("bottom"), Face::Up));
+    REQUIRE_FALSE(r->face_is_sturdy(with("bottom"), Face::East));
+
+    REQUIRE(r->face_is_sturdy(with("top"), Face::Up));
+    REQUIRE_FALSE(r->face_is_sturdy(with("top"), Face::Down));
+
+    for (u8 face = 0; face < 6; ++face) {
+        REQUIRE(r->face_is_sturdy(with("double"), static_cast<Face>(face)));
+    }
+}

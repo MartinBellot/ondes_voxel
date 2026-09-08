@@ -218,6 +218,31 @@ public:
     /// the characters, so the same name costs four bytes wherever it appears.
     [[nodiscard]] std::string_view string_at(u32 offset) const noexcept;
 
+    /// One box of a collision shape, in units of a thirty-second of a block.
+    ///
+    /// Signed, because a box can leave the cube: an extended piston head runs
+    /// from -8 to 48. Integers rather than floats, because every coordinate the
+    /// game uses lands on this grid and comparing them has to be exact.
+    struct Box {
+        i8 min_x, min_y, min_z;
+        i8 max_x, max_y, max_z;
+    };
+
+    /// The faces of a block, in the order a placement packet numbers them.
+    enum class Face : u8 { Down, Up, North, South, West, East };
+
+    /// The boxes a state collides with. Empty for anything you can walk
+    /// through.
+    [[nodiscard]] std::span<const Box> collision_boxes(BlockStateId state) const noexcept;
+
+    /// Does this state present a full square on that face?
+    ///
+    /// The predicate fences, panes and walls attach to. Derived from the shape
+    /// at build time rather than at every placement — it is a 32 by 32 grid per
+    /// face — and checked against 23358 faces measured on a real 1.20.1 server:
+    /// the connection rule rebuilt from these shapes reproduces every one.
+    [[nodiscard]] bool face_is_sturdy(BlockStateId state, Face face) const noexcept;
+
     /// The compiled loot tables, indexed by block.
     ///
     /// Handed out as plain arrays rather than as an evaluator: the rules for
@@ -251,6 +276,9 @@ private:
     std::span<const u8>           fluid_bits_;
     std::span<const f32>          hardness_;
     LootData                      loot_;
+    std::span<const Box>          boxes_;
+    std::span<const u32>          shape_records_;
+    std::span<const u16>          state_shapes_;
     std::string_view              strings_blob_;
     const void*                   header_{nullptr};
 };

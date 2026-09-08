@@ -22,6 +22,15 @@ struct BlockRecord {
     u16 padding;
 };
 
+/// A shape: where its boxes start, how many, and which faces are full.
+struct ShapeRecord {
+    u32 first;
+    u16 count;
+    u16 sturdy;
+};
+
+static_assert(sizeof(ShapeRecord) == 8, "layout must match the emitter");
+
 struct PropertyRecord {
     u32 name_offset;
     u32 value_first;
@@ -77,9 +86,15 @@ std::expected<BlockRegistry, RegistryError> BlockRegistry::from_bytes(std::vecto
     const u32   fluid_bytes = (header.state_count + 7) / 8;
     const auto* fluids      = pack_at<u8>(data, header.fluid_offset, fluid_bytes);
     const auto* hardness    = pack_at<f32>(data, header.hardness_offset, header.block_count);
+    const auto* shape_boxes =
+        pack_at<BlockRegistry::Box>(data, header.boxes_offset, header.box_count);
+    const auto* shape_records =
+        pack_at<ShapeRecord>(data, header.shapes_offset, header.shape_count);
+    const auto* state_shapes = pack_at<u16>(data, header.state_shapes_offset, header.state_count);
 
     if (blocks == nullptr || props == nullptr || values == nullptr || states == nullptr ||
-        flags == nullptr || fluids == nullptr || hardness == nullptr) {
+        flags == nullptr || fluids == nullptr || hardness == nullptr || shape_boxes == nullptr ||
+        shape_records == nullptr || state_shapes == nullptr) {
         return std::unexpected{RegistryError::Corrupt};
     }
     if (header.strings_offset + header.string_bytes > data.size()) {
@@ -99,6 +114,16 @@ std::expected<BlockRegistry, RegistryError> BlockRegistry::from_bytes(std::vecto
     registry.hardness_ =
         std::span{reinterpret_cast<const f32*>(registry.data_.data() + header.hardness_offset),
                   header.block_count};
+    registry.boxes_ = std::span{
+        reinterpret_cast<const BlockRegistry::Box*>(registry.data_.data() + header.boxes_offset),
+        header.box_count};
+    registry.shape_records_ =
+        std::span{reinterpret_cast<const u32*>(registry.data_.data() + header.shapes_offset),
+                  header.shape_count * 2};
+    registry.state_shapes_ =
+        std::span{reinterpret_cast<const u16*>(registry.data_.data() + header.state_shapes_offset),
+                  header.state_count};
+
     registry.loot_ = LootData{
         std::span{reinterpret_cast<const LootTableRecord*>(registry.data_.data() +
                                                            header.loot_tables_offset),
@@ -250,6 +275,41 @@ bool BlockRegistry::motion_measured(BlockId block) const noexcept {
         return false;
     }
     return (block_flags_[block.value()] & kMeasuredBit) != 0;
+}
+
+namespace {
+
+/// The record for a state's shape, or nothing when the pack does not cover it.
+[[nodiscard]] const ShapeRecord* shape_of(std::span<const u32> records,
+                                          std::span<const u16> state_shapes,
+                                          BlockStateId         state) noexcept {
+    if (state.value() >= state_shapes.size()) {
+        return nullptr;
+    }
+    const u16 index = state_shapes[state.value()];
+    if (static_cast<usize>(index) * 2 >= records.size()) {
+        return nullptr;
+    }
+    return reinterpret_cast<const ShapeRecord*>(records.data()) + index;
+}
+
+}  // namespace
+
+std::span<const BlockRegistry::Box> BlockRegistry::collision_boxes(
+    BlockStateId state) const noexcept {
+    const ShapeRecord* record = shape_of(shape_records_, state_shapes_, state);
+    if (record == nullptr || record->first + record->count > boxes_.size()) {
+        return {};
+    }
+    return boxes_.subspan(record->first, record->count);
+}
+
+bool BlockRegistry::face_is_sturdy(BlockStateId state, Face face) const noexcept {
+    const ShapeRecord* record = shape_of(shape_records_, state_shapes_, state);
+    if (record == nullptr) {
+        return false;
+    }
+    return (record->sturdy >> static_cast<u16>(face) & 1U) != 0;
 }
 
 f32 BlockRegistry::hardness(BlockId block) const noexcept {

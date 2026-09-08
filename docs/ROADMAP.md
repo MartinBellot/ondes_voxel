@@ -196,7 +196,9 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] `level.dat` : version Anvil, générateur, spawn, bordure, DragonFight : gzip, racine `Data`, écriture sûre via `level.dat_old`
 - [x] `DataVersion` : refus explicite, et jamais de réécriture d'un chunk illisible
 - [x] Pose : dalles doubles, portes et lits à deux blocs, conventions mesurées
-- [ ] Connexions (clôtures, vitres, murets) et forme des escaliers : demandent la face pleine, par état
+- [x] Formes de collision par état, et faces pleines : 23358/23358 faces mesurées reproduites
+- [x] Connexions des clôtures, portillons, vitres et barreaux, dans les deux sens
+- [ ] Murets (`low`/`tall`/`up`) et forme des escaliers
 - [x] Durées de cassage et outils corrects : vérifiés tick pour tick sur 985 des 996 blocs
 - [x] Tables de butin, Silk Touch et Fortune : tirages comparés à ceux du vrai serveur
 - [x] Entités objet : les butins tombent au sol et se ramassent *(sans gravité ni sauvegarde)*

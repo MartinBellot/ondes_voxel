@@ -23,7 +23,7 @@ namespace ov::registry {
 /// were current is far worse than no cache: the ids would be plausible and
 /// wrong, and nothing would report an error until a vanilla client crashed on
 /// an entity type that does not exist.
-inline constexpr u32 kFormatVersion = 8;
+inline constexpr u32 kFormatVersion = 9;
 
 /// Grew past 128 when the loot tables arrived.
 inline constexpr u32 kHeaderSize = 256;
@@ -71,6 +71,14 @@ struct PackHeader {
     u32 loot_func_count;
     u32 loot_float_count;
     u32 loot_int_count;
+
+    /// Collision shapes: boxes in units of 1/32, one record per shape, and one
+    /// shape index per block state.
+    u32 boxes_offset;
+    u32 shapes_offset;
+    u32 state_shapes_offset;
+    u32 box_count;
+    u32 shape_count;
 
     u32 reserved;
 };

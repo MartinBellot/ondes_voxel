@@ -1985,3 +1985,72 @@ brut. Lui passer les octets compressés échoue en silence, ce qui se lit comme
 y compris ceux qu'on venait d'écrire. C'est le test du cas positif qui l'a
 attrapé, pas celui du cas négatif, qui passait très bien.
 
+---
+
+## Formes de collision : une source tierce, vérifiée par une mesure indépendante
+
+Les formes de collision sont du code Java. **PrismarineJS/minecraft-data** (MIT,
+autorisé par `CLAUDE.md`) les publie **par état**, ce qui est la bonne
+granularité — c'est de là que vient la table.
+
+La question était comment la vérifier. La réponse était déjà sur l'étagère : une
+face est « pleine » quand la tranche de la forme sur cette face couvre le carré
+entier, et c'est **exactement** le prédicat qui décide si une clôture s'accroche
+— qu'on avait mesuré face par face sur un vrai serveur, 23 358 fois.
+
+### Ce que la confrontation a donné
+
+En reconstruisant la règle de connexion à partir des seules formes :
+
+| | |
+|---|---|
+| face pleine seule | 22 341 / 23 358 — **95,6 %** |
+| + la règle de famille (clôtures entre elles, portillons perpendiculairement) | 23 043 |
+| + la liste d'exceptions **dérivée des écarts restants** | 23 350 |
+| + la clôture en brique du Nether, qui ne fréquente qu'elle-même | **23 358 / 23 358** |
+
+Autrement dit, les deux classes de désaccord initiales n'étaient pas des erreurs
+mais les deux **autres termes de la règle**, et elles se sont laissé lire
+directement dans les écarts. La liste d'exceptions n'a donc pas été recopiée
+d'ailleurs : elle a été **mesurée**. Elle contient les feuillages, les shulker
+box, la barrière, les citrouilles, le melon, la lanterne — et `target`, que rien
+n'aurait fait deviner.
+
+Deux blocs, `mud` et `soul_sand`, accrochent alors que leur boîte de collision
+est plus basse d'un seizième : vanilla interroge la forme de **support**, pas
+celle de collision, et pour ces deux-là elles diffèrent. Ce sont les deux
+derniers désaccords sur 23 358, et rien d'autre dans le jeu ne fait ça.
+
+### Le format
+
+Toutes les coordonnées tombent sur une grille de 1/32 — l'émetteur le vérifie au
+lieu de le supposer — donc un octet **signé** par coordonnée : une boîte déborde
+parfois du cube, une tête de piston étendue va de -8 à 48. 4327 formes, 12054
+boîtes, plus un masque de six bits par forme pour les faces pleines, calculé à
+la compilation parce que c'est une grille de 32 × 32 par face et que la question
+se pose à chaque bloc posé.
+
+### Et le rejeu par le code livré
+
+Le prototype qui a dérivé la règle et le code qui tourne sont deux choses
+différentes, donc le corpus est rejoué à travers le second :
+`ov-inspect connects` répond pour chaque paire (état, face) et redonne
+**23 358 / 23 358**.
+
+Une erreur s'y est fait prendre au passage, et elle est instructive : la première
+version du rejeu tombait à 87 %, les portes en tête. Le corpus note la face **du
+voisin**, et l'outil la réinversait une seconde fois. Sur un bloc symétrique
+l'inversion ne se voit pas ; sur une porte, si. Un test qui n'aurait porté que
+sur de la pierre serait passé.
+
+### Ce qui est livré, et ce qui ne l'est pas
+
+Clôtures, portillons, vitres et barreaux se connectent, et se reconnectent quand
+un voisin change — le changement va dans les deux sens, donc casser un bloc fait
+aussi lâcher prise à la clôture qui le tenait.
+
+Les **murets** sont reconnus et pas encore remodelés : ils ont trois valeurs par
+côté au lieu de deux, et `low` contre `tall` dépend de ce qu'il y a au-dessus.
+La **forme des escaliers** attend de même. Les deux sont maintenant à portée,
+puisque les formes sont là.
+
