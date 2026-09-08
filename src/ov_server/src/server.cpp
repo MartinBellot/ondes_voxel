@@ -1720,9 +1720,18 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         spawn.entity_id = state.network_id;
         spawn.uuid      = state.uuid;
         spawn.type      = state.type;
-        spawn.x         = state.position.x;
-        spawn.y         = state.position.y;
-        spawn.z         = state.position.z;
+        // The position the other clients already hold, not the true one.
+        //
+        // They differ by at most one 1/4096 quantum, and sending the true one
+        // would leave a client that joined mid-fall permanently that far from
+        // everyone else: it would anchor on the truth and then receive deltas
+        // computed against the quantised copy. Vanilla tracks a position per
+        // viewer; this server broadcasts to all of them at once, so the copy
+        // has to be the shared one.
+        const Vec3d anchor = state.broadcast_valid ? state.broadcast_position : state.position;
+        spawn.x            = anchor.x;
+        spawn.y            = anchor.y;
+        spawn.z            = anchor.z;
         spawn.yaw       = state.yaw;
         spawn.pitch     = state.pitch;
         spawn.head_yaw  = state.head_yaw;
