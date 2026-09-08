@@ -19,4 +19,6 @@ ov_add_shaders(ov_client_shaders
     SOURCES
         shaders/debug_triangle.vert
         shaders/debug_triangle.frag
+        shaders/terrain.vert
+        shaders/terrain.frag
 )

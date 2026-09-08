@@ -267,6 +267,10 @@ std::expected<void, RhiError> Device::upload_buffer(BufferHandle handle, std::sp
     if (!staging) {
         return std::unexpected(staging.error());
     }
+    // Re-fetch: the pool is vector-backed, so creating the staging buffer may
+    // have reallocated it and the pointer taken above is stale. Caught by the
+    // validation layers as a copy into a VkBuffer that does not exist.
+    destination = impl_->buffers.get(handle);
     std::memcpy(impl_->buffers.get(*staging)->mapped, data.data(), data.size());
 
     auto cmd = impl_->begin_one_shot();
@@ -296,6 +300,9 @@ std::expected<void, RhiError> Device::upload_image(ImageHandle handle, std::span
     if (!staging) {
         return std::unexpected(staging.error());
     }
+    // The image pool is a different vector, but the same rule applies to any
+    // pointer held across a pool insertion.
+    image = impl_->images.get(handle);
     std::memcpy(impl_->buffers.get(*staging)->mapped, pixels.data(), pixels.size());
 
     auto cmd = impl_->begin_one_shot();

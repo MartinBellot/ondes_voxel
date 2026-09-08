@@ -56,6 +56,12 @@ public:
     }
 
     /// The stored value, or nullptr if the handle is stale or was never valid.
+    ///
+    /// ⚠️ The pointer is invalidated by the next insert. The storage is a
+    /// vector, so it reallocates; hold the handle across anything that might
+    /// create a resource, and look it up again afterwards. This is exactly the
+    /// mistake the handle exists to make survivable — a stale pointer is a
+    /// silent corruption, a stale handle is a null.
     [[nodiscard]] T* get(HandleType handle) noexcept {
         if (!handle.valid() || handle.index >= slots_.size()) {
             return nullptr;

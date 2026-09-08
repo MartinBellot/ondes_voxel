@@ -224,18 +224,18 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [ ] Handles de texture en `u32` — bindless **préparé, non implémenté** 🔒
 
 ### `ov_render` (L14)
-- [~] Triangle → quad texturé → cube + profondeur + caméra *(le triangle
-      s'affiche ; `ov_voxel --frames=8 --screenshot=…` le vérifie sans œil humain)*
+- [x] Triangle → quad texturé → cube + profondeur + caméra
 - [x] **Pipeline blockstate → variant → model → parent → elements → faces →
       rotations → uvlock** *(1005 blockstates, 6081 références, 62227 quads,
       0 échec — `ov_modelbake run/assets`)*
-- [ ] Stitcher d'atlas, mips, animations `.mcmeta`
-- [ ] Mailleur **par face depuis le modèle**, occlusion ambiante par sommet
-      *(pas greedy : le plan se trompait, voir PROVENANCE — la règle AO et la
-      lumière lissée sont écrites et testées, le mailleur reste à faire)*
-- [x] Vertex packé 8 octets
+- [x] Stitcher d'atlas, mips, animations `.mcmeta` *(animations lues et
+      conservées, pas encore jouées)*
+- [x] Mailleur **par face depuis le modèle**, occlusion ambiante par sommet
+      *(pas greedy : le plan se trompait, voir PROVENANCE)*
+- [x] Vertex packé **12 octets** *(8 ne tient pas : 70 bits nécessaires, le
+      calcul est dans PROVENANCE — 8 bits d'`uv` n'adressent pas un atlas)*
 - [ ] Arène device-local 384 Mo, free-list en pages de 4 Ko
-- [ ] **Index buffer statique partagé** (supprime la mémoire d'index par section)
+- [x] **Index buffer statique partagé** (supprime la mémoire d'index par section)
 - [ ] Culling frustum CPU → `drawIndexedIndirect`, 4 draws pour le terrain
 - [ ] Passe translucide triée, index buffer mutable dédié
 - [ ] Plafond d'upload par frame (les spikes, pas le FPS moyen, sont le risque)

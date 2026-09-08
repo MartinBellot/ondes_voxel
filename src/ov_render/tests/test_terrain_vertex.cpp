@@ -7,30 +7,28 @@ using namespace ov;
 using namespace ov::render;
 using Catch::Approx;
 
-TEST_CASE("the vertex is eight bytes and every field has its own bits", "[vertex]") {
-    STATIC_REQUIRE(sizeof(TerrainVertex) == 8);
+TEST_CASE("the vertex is twelve bytes and every field has its own bits", "[vertex]") {
+    STATIC_REQUIRE(sizeof(TerrainVertex) == 12);
 
-    // Changing any one field must change the packed word and nothing else.
-    // Overlapping bit ranges are the classic packing bug and they show up as
+    // Overlapping bit ranges are the classic packing bug, and they show up as
     // lighting that flickers when a texture coordinate changes.
     TerrainVertexAttributes attributes;
     attributes.position    = {1.0F, 2.0F, 3.0F};
-    attributes.u           = 4.0F;
-    attributes.v           = 5.0F;
+    attributes.u           = 0.25F;
+    attributes.v           = 0.75F;
     attributes.sky_light   = 11;
     attributes.block_light = 7;
     attributes.ao          = 2;
     attributes.facing      = Direction::North;
     attributes.tint        = TintChannel::Foliage;
 
-    const auto packed   = pack_vertex(attributes);
-    const auto unpacked = unpack_vertex(packed);
+    const auto unpacked = unpack_vertex(pack_vertex(attributes));
 
     CHECK(unpacked.position.x == Approx(1.0F));
     CHECK(unpacked.position.y == Approx(2.0F));
     CHECK(unpacked.position.z == Approx(3.0F));
-    CHECK(unpacked.u == Approx(4.0F));
-    CHECK(unpacked.v == Approx(5.0F));
+    CHECK(unpacked.u == Approx(0.25F).margin(1e-4));
+    CHECK(unpacked.v == Approx(0.75F).margin(1e-4));
     CHECK(unpacked.sky_light == 11);
     CHECK(unpacked.block_light == 7);
     CHECK(unpacked.ao == 2);
@@ -39,39 +37,40 @@ TEST_CASE("the vertex is eight bytes and every field has its own bits", "[vertex
     CHECK(unpacked.tint == TintChannel::Foliage);
 }
 
-TEST_CASE("the two commonest texture coordinates are exact", "[vertex]") {
-    // Every full-face quad in the game carries u or v of 0 and 16. A packing
-    // that could only get near them would shrink every block face by a
-    // fraction of a texel, which is exactly the kind of error that is invisible
-    // in a screenshot and obvious as a seam.
-    TerrainVertexAttributes attributes;
-    attributes.u = 16.0F;
-    attributes.v = 0.0F;
+TEST_CASE("texture coordinates address a texel of a real atlas", "[vertex]") {
+    // This is the check the eight-byte layout failed, and the reason the format
+    // is twelve bytes. Eight bits of u put every vertex on a four-texel grid of
+    // a 1024 atlas, so every block sampled the wrong part of its own texture —
+    // and a round-trip test that only asked "did the value come back" said
+    // nothing about it.
+    constexpr u32 kAtlasSize = 1024;
 
-    auto unpacked = unpack_vertex(pack_vertex(attributes));
-    CHECK(unpacked.u == 16.0F);
-    CHECK(unpacked.v == 0.0F);
+    for (u32 texel : {0u, 1u, 17u, 511u, 512u, 1023u}) {
+        TerrainVertexAttributes attributes;
+        attributes.u = static_cast<f32>(texel) / static_cast<f32>(kAtlasSize);
 
-    attributes.u = 8.5F;
-    unpacked     = unpack_vertex(pack_vertex(attributes));
-    CHECK(unpacked.u == 8.5F);
+        const auto unpacked = unpack_vertex(pack_vertex(attributes));
+        const auto recovered =
+            static_cast<u32>(std::lround(unpacked.u * static_cast<f32>(kAtlasSize)));
+        CHECK(recovered == texel);
+    }
 }
 
-TEST_CASE("position keeps its quantisation step", "[vertex]") {
-    // 1/64 of a block is the documented precision. A value on the grid has to
-    // survive exactly; one between grid points snaps to the nearer step.
-    TerrainVertexAttributes attributes;
-    attributes.position = {0.015625F, 0.0F, 15.984375F};
+TEST_CASE("every coordinate a model can state survives exactly", "[vertex]") {
+    // Model coordinates are sixteenths of a block, and the scale is a power of
+    // two, so none of them is ever rounded.
+    for (i32 sixteenth = -16; sixteenth <= 32; ++sixteenth) {
+        TerrainVertexAttributes attributes;
+        attributes.position.x = static_cast<f32>(sixteenth) / 16.0F;
 
-    const auto unpacked = unpack_vertex(pack_vertex(attributes));
-    CHECK(unpacked.position.x == Approx(0.015625F));
-    CHECK(unpacked.position.z == Approx(15.984375F));
+        const auto unpacked = unpack_vertex(pack_vertex(attributes));
+        CHECK(unpacked.position.x == static_cast<f32>(sixteenth) / 16.0F);
+    }
 }
 
 TEST_CASE("an element that overhangs its block still fits", "[vertex]") {
     // The model format lets `from`/`to` run from -16 to 32 sixteenths, so a
-    // vertex can sit a whole block outside the section it belongs to. The range
-    // is wider than that on purpose.
+    // vertex can sit a whole block outside the section it belongs to.
     TerrainVertexAttributes attributes;
     attributes.position = {-1.0F, 17.0F, -1.0F};
 
@@ -85,7 +84,7 @@ TEST_CASE("out-of-range values clamp instead of wrapping", "[vertex]") {
     // as a stray triangle across the world and is very hard to trace back.
     TerrainVertexAttributes attributes;
     attributes.position    = {-1000.0F, 1000.0F, 0.0F};
-    attributes.u           = 999.0F;
+    attributes.u           = 9.0F;
     attributes.sky_light   = 200;
     attributes.block_light = 200;
     attributes.ao          = 200;
@@ -93,7 +92,7 @@ TEST_CASE("out-of-range values clamp instead of wrapping", "[vertex]") {
     const auto unpacked = unpack_vertex(pack_vertex(attributes));
     CHECK(unpacked.position.x == Approx(kPositionMin));
     CHECK(unpacked.position.y == Approx(kPositionMax));
-    CHECK(unpacked.u == Approx(kTexCoordMax));
+    CHECK(unpacked.u == Approx(1.0F));
     CHECK(unpacked.sky_light == 15);
     CHECK(unpacked.block_light == 15);
     CHECK(unpacked.ao == 3);

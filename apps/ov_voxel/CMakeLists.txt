@@ -3,6 +3,7 @@
 ov_add_executable(ov_voxel
     SOURCES
         src/main.cpp
+        src/scene.cpp
     DEPS
         ov_client
         ov_render

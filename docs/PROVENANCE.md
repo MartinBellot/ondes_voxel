@@ -1985,3 +1985,135 @@ brut. Lui passer les octets compressés échoue en silence, ce qui se lit comme
 y compris ceux qu'on venait d'écrire. C'est le test du cas positif qui l'a
 attrapé, pas celui du cas négatif, qui passait très bien.
 
+
+---
+
+## Le renderer : `ov_rhi`, l'atlas, le mailleur (`ov_rhi`, `ov_render`, `ov_client`)
+
+### Le SDK Vulkan, tel qu'il est réellement installé
+
+`1.4.357.1` (LunarG, macOS). Le loader et les ICD sont posés dans `/usr/local`,
+donc **rien n'a besoin d'exporter `VULKAN_SDK`** : `libvulkan.dylib` est sur le
+chemin de `dyld` et le loader trouve seul `/usr/local/share/vulkan/icd.d`.
+`glslc` et `glslangValidator` sont dans `/usr/local/bin`. `cmake/OvShaders.cmake`
+cherche quand même `$ENV{VULKAN_SDK}/bin` en premier, pour la machine où
+l'installation n'est pas globale.
+
+⚠️ **Deux pilotes répondent pour le même GPU** : MoltenVK 1.4.2 et
+`DRIVER_ID_MESA_KOSMICKRISP`, tous deux annonçant « Apple M2 ». Prendre le
+premier énuméré ferait dépendre le comportement du renderer de l'ordre
+d'installation des ICD. `ov_rhi` classe les devices et préfère explicitement
+MoltenVK, qui est la cible du projet et celui dont parle le risque R6.
+
+### Ce que les couches de validation ont trouvé, et qui n'aurait pas été trouvé autrement
+
+Cinq bugs réels, tous à la première exécution, tous invisibles autrement :
+
+1. Un buffer `Upload` créé avec `TRANSFER_SRC` seul ne peut pas **recevoir** une
+   relecture. La copie était silencieusement fausse.
+2. Une capture d'écran prise *après* `end_frame` touche une image de swapchain
+   qui n'est plus acquise. Corrigé en changeant l'API, pas en rustinant :
+   `copy_swapchain_to_buffer` s'enregistre **dans** la frame propriétaire de
+   l'image. Un state tracker automatique aurait masqué exactement ça.
+3. Le `VkSwapchainKHR` n'était jamais détruit.
+4. `HandlePool` est adossé à un `std::vector` : un pointeur obtenu par `get()`
+   **dangle** dès l'insertion suivante. `upload_buffer` gardait le pointeur de
+   destination pendant qu'il créait son buffer de staging. C'est précisément la
+   faute que les handles existent pour rendre survivable — un pointeur périmé
+   corrompt en silence, un handle périmé rend `nullptr`.
+5. `discard` en GLSL compile vers `OpDemoteToHelperInvocation` en Vulkan 1.3, et
+   demande `shaderDemoteToHelperInvocation`. Toute la couche cutout en dépend.
+
+Un sixième, attrapé par un test et non par le pilote : `Camera::turn` corrigeait
+le yaw d'**un** tour, donc un coup de souris rapide le laissait à 14 640°. Le
+protocole envoie le yaw dans `[-180, 180]` ; ce n'est pas cosmétique.
+
+### Le vertex de terrain fait 12 octets, pas 8
+
+Le plan disait 8. En comptant les champs contre un vrai atlas :
+
+| champ | bits | pourquoi |
+|---|---|---|
+| position, 3 axes | 33 | 1/64 de bloc sur 32 blocs |
+| u, v dans l'atlas | 22 | un demi-texel sur un atlas 1024 |
+| lumière ciel + bloc | 8 | les 4+4 de vanilla |
+| occlusion ambiante | 2 | les quatre niveaux de vanilla |
+| `facing` | 3 | six directions, plus « non ombré » |
+| canal de teinte | 2 | aucun, herbe, feuillage, eau |
+| **total** | **70** | |
+
+Huit octets font 64 : il manque 6 bits. La première version tenait en donnant
+**8 bits** aux coordonnées de texture, ce qui suffit pour un sprite et pas du
+tout pour un atlas — 256 pas sur 1024 texels place chaque sommet sur une grille
+de 4 texels, et chaque bloc du jeu aurait échantillonné le mauvais morceau de sa
+propre texture. Le test de packing ne l'a pas vu : il ne demandait que « la
+valeur revient-elle ». Il demande maintenant qu'un texel d'un atlas 1024 fasse
+l'aller-retour exactement.
+
+Douze octets laissent 26 bits libres — la place du second `uv` d'un overlay ou
+d'une normale, sans nouveau changement de format.
+
+**Huit octets restent atteignables**, et c'est noté pour ne pas perdre l'option :
+une **palette de sprites par section**, un index de 6 bits, un `uv` local au
+sprite, et la teinte déplacée dans l'entrée de palette — une teinte est une
+propriété de matériau, pas de sommet. Cela échange une lecture dépendante dans
+le shader contre 4 octets par sommet, et personne n'a mesuré si ça paie. Le faire
+avant d'en avoir besoin, c'est finir avec un format astucieux et pas d'image.
+
+### Une des trois lacunes de la session précédente est levée
+
+Le tableau `uv` laissait trois questions ouvertes. L'image les tranche en partie.
+
+✅ **L'orientation de `v` sur les faces latérales est confirmée.** La texture
+`grass_block_side` porte sa frange verte **en haut**. Rendue par notre chaîne,
+elle apparaît en haut. Un `v` inversé l'aurait mise en bas. `v = 16 − y` est donc
+juste, et ce n'était pas discriminable sans image.
+
+❌ **La chiralité absolue reste ouverte.** Un tableau entièrement miroité sur les
+quatre côtés donnerait la même frange au même endroit ; il faut une capture du
+client vanilla sur un bloc à texture asymétrique pour la trancher.
+
+❌ **Le signe de la rotation d'élément reste ouvert.** Les seuls éléments tournés
+de vanilla sont symétriques à ±45°, et la scène de démonstration n'en contient
+aucun d'asymétrique.
+
+### Décisions du RHI, et leurs raisons
+
+- **La couture entre fenêtre et Vulkan est un `void*`.** Une surface a besoin
+  d'une fenêtre et d'une instance au même instant. Remonter un `VkSurfaceKHR`
+  mettrait Vulkan dans `ov_client` ; descendre un `NSWindow` mettrait de
+  l'Objective-C dans `ov_rhi`. Le client passe son `GLFWwindow` en pointeur
+  opaque, `ov_rhi` lie GLFW en privé pour le seul appel qui le convertit.
+- **Deux frames en vol, pas trois.** La troisième coûte une frame de latence et
+  une copie de plus de chaque buffer ; sur une mémoire unifiée, la ressource
+  rare est la bande passante.
+- **Un sémaphore `render_finished` par image de swapchain**, pas par frame en
+  vol. Un sémaphore attendu par un present ne peut pas être réutilisé avant que
+  l'image revienne ; l'indexer par frame est l'erreur que les couches signalent
+  comme « semaphore already in use ».
+- **Swapchain sRGB.** Les textures de Minecraft sont en sRGB, et les mélanger
+  comme si elles étaient linéaires est la première raison pour laquelle une
+  réimplémentation paraît délavée.
+- **FIFO.** Le seul mode que toute implémentation doit supporter, et le tearing
+  ne doit pas être un compromis pris par accident.
+- **Timestamps GPU dès la première frame.** Un renderer qui les ajoute plus tard
+  les obtient après les décisions qu'ils auraient dû éclairer.
+- **`OV_FORBID_ov_rhi` excluait `ov_base`.** « Rien du jeu » avait été écrit
+  `${OV_ALL_MODULES}`, ce qui interdisait aussi les entiers de largeur fixe et
+  le log par lequel les couches de validation remontent. `ov_base` est
+  l'exception unique, écrite en toutes lettres pour que `check_layers.py`, qui
+  lit cette ligne littéralement, ne puisse pas diverger de CMake.
+
+### Ce que la première image prouve
+
+`ov_voxel --frames=10 --assets=run/assets --screenshot=…` construit une scène à
+la main à partir de **vrais** blockstates 1.20.1, la maille, stitche l'atlas
+depuis le pack, et dessine : 1666 quads, 12 sprites, atlas 128×128 avec 5
+niveaux de mip, ~0,95 ms de GPU, zéro erreur de validation. Sur l'image : le
+dégradé de terre et de pierre sous une surface d'herbe **teintée**, un escalier
+en pierre taillée, deux chênes dont les feuilles sont en couche *cutout* — on
+voit à travers —, une vitre, et l'ombrage directionnel par face.
+
+Ce que cela vérifie d'un coup : la résolution des modèles, le bake, la table
+`uv`, le stitching, les mips, le mailleur par face, le culling par `cullface`,
+l'occlusion ambiante, le vertex packé, la caméra, et tout `ov_rhi`.

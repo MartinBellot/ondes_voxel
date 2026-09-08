@@ -9,21 +9,36 @@
 # simdjson is a PRIVATE_DEP on purpose: it is exactly the template-heavy header
 # CLAUDE.md § 5 keeps out of public headers, and it appears in src/json.cpp and
 # nowhere else.
+# libspng is PRIVATE for the same reason, plus one of its own: it is a C header
+# full of unprefixed macros, and it belongs to src/png.cpp alone. vcpkg names
+# the target after the linkage it built.
+find_package(SPNG CONFIG REQUIRED)
+if(TARGET spng::spng)
+    set(OV_SPNG_TARGET spng::spng)
+else()
+    set(OV_SPNG_TARGET spng::spng_static)
+endif()
+
 ov_add_library(ov_render
     LAYER 14
     SOURCES
         src/asset_path.cpp
         src/asset_source.cpp
+        src/atlas.cpp
         src/bake.cpp
+        src/camera.cpp
         src/block_state_model.cpp
         src/json.cpp
+        src/mesher.cpp
         src/model.cpp
+        src/png.cpp
         src/terrain_vertex.cpp
     DEPS
         ov_io
         ov_math
     PRIVATE_DEPS
         simdjson::simdjson
+        ${OV_SPNG_TARGET}
 )
 
 ov_add_test(test_ov_render
@@ -31,10 +46,14 @@ ov_add_test(test_ov_render
         tests/test_ambient_occlusion.cpp
         tests/test_asset_path.cpp
         tests/test_asset_source.cpp
+        tests/test_atlas.cpp
         tests/test_bake.cpp
         tests/test_block_state_model.cpp
+        tests/test_camera.cpp
+        tests/test_mesher.cpp
         tests/test_json.cpp
         tests/test_model.cpp
+        tests/test_png.cpp
         tests/test_terrain_vertex.cpp
     DEPS ov_render
     LABELS unit
