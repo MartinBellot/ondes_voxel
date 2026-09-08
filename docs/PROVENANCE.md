@@ -807,3 +807,31 @@ Deux limites, écrites plutôt que sous-entendues : la propagation **s'arrête a
 bord du chunk**, donc une construction à cheval sur une frontière ne projette pas
 d'ombre chez le voisin ; et « non-air » tient lieu d'« opaque », donc du verre
 ferait de l'ombre.
+
+### Streaming de chunks, et le tick qu'il bloquait
+
+Envoyer seulement la **différence** : un pas d'un chunk échange 17 chunks, un
+saut de cinq en diagonale 157, et le total détenu reste à 289 centré sur le
+joueur. Réémettre le carré entier à chaque franchissement ferait 289 chunks à
+quelques pas d'intervalle, et le client passerait son temps à reconstruire des
+maillages qu'il avait déjà.
+
+**Le défaut que ça a révélé.** Le gestionnaire de paquets tient `players_mutex`
+pendant toute la génération et l'envoi — des centaines de millisecondes pour un
+grand saut — et le thread de tick attendait dessus pour ses keep-alive. Mesuré :
+un événement « can't keep up » exactement pendant un saut de cinq chunks.
+
+Le tick prend désormais ce verrou en `try_lock`. Un keep-alive différé d'un tick
+est sans conséquence ; un tick bloqué derrière le réseau ne l'est pas. Deux
+pièges évités au passage : sauter la passe avec `continue` aurait franchi le
+`sleep` en fin de boucle et fait tourner le thread de tick à plein régime
+précisément quand le serveur est chargé, et parcourir la map sans le verrou
+serait une course à part entière.
+
+Ce n'est **pas** la règle « un seul écrivain » du projet — c'est du verrouillage
+honnête en attendant que le monde vive sur le thread de tick, ce qui est le
+travail `ov_sim`.
+
+Limite connue : le cache de chunks ne se vide jamais. Marcher longtemps le fait
+croître sans borne. Une éviction demande de savoir quels chunks sont encore
+référencés, c'est-à-dire le système de tickets.

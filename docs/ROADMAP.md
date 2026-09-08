@@ -173,7 +173,7 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] Heightmaps : stockage, packing 9 bits, sémantique vérifiée sur monde réel
 - [x] `WORLD_SURFACE` calculé et maintenu incrémentalement *(air suffit)*
 - [ ] `MOTION_BLOCKING` et `OCEAN_FLOOR` *(bloqués : table de flags d'état)*
-- [x] Envoi des chunks à la connexion *(streaming dynamique : à venir)*
+- [x] Streaming de chunks selon la distance de vue *(envoi et déchargement)*
 - [ ] Physique du joueur : AABB, marche, saut, sprint, accroupissement, nage
 - [ ] Gestion des joueurs, keep-alive, liste des joueurs
 - [ ] `ov_netclient` + `ClientLevel` (réplique séparée)

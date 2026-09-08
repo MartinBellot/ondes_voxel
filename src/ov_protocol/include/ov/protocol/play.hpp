@@ -41,6 +41,7 @@ inline constexpr i32 kSetDefaultSpawn     = 0x50;
 inline constexpr i32 kDisconnect          = 0x1A;
 inline constexpr i32 kAcknowledgeDig      = 0x06;
 inline constexpr i32 kBlockUpdate         = 0x0A;
+inline constexpr i32 kUnloadChunk         = 0x1E;
 }  // namespace clientbound
 
 /// Serverbound Play packet ids, protocol 763.
@@ -95,6 +96,14 @@ struct LoginPlay {
 /// Sent before the chunks themselves; a client that receives chunks with no
 /// centre keeps them and renders nothing.
 [[nodiscard]] std::vector<u8> encode_set_center_chunk(i32 chunk_x, i32 chunk_z);
+
+/// Tell the client to forget a chunk.
+///
+/// Note the field order: **x then z**, unlike the chunk packet's own header
+/// which is also x then z but which people routinely mirror wrongly. Sending
+/// them swapped unloads a chunk the player is standing in and keeps one they
+/// have left, which looks like chunks failing at random.
+[[nodiscard]] std::vector<u8> encode_unload_chunk(i32 chunk_x, i32 chunk_z);
 
 [[nodiscard]] std::vector<u8> encode_keep_alive(i64 id);
 

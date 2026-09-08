@@ -39,6 +39,7 @@
 #include <string_view>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // Where the locally generated vanilla data lives. The build defines this as an
@@ -320,6 +321,15 @@ struct Player {
 
     /// The key this player is remembered under between sessions.
     std::string identity;
+
+    /// Chunks this client currently holds, so streaming sends each one once and
+    /// unloads exactly what left range. Recomputing the difference from the
+    /// player's position alone would be equivalent right up to the first time a
+    /// send fails or the view distance changes.
+    std::unordered_set<i64> loaded_chunks;
+    i32                     centre_x{0};
+    i32                     centre_z{0};
+    bool                    streaming{false};
 };
 
 /// Where a player was when they last left.
@@ -496,6 +506,71 @@ int main(int argc, char** argv) {
     std::unordered_map<std::string, SavedPlayer>       saved_players;
     std::mutex                                         players_mutex;
     std::atomic<i32>                                   next_entity_id{1};
+
+    /// Bring a player's loaded chunks in line with where they are.
+    ///
+    /// Called at join and whenever they cross a chunk boundary. Sending only the
+    /// difference matters: re-sending the whole square on every boundary would
+    /// be 289 chunks a few steps apart, and the client would spend its time
+    /// rebuilding meshes it already had.
+    const auto stream_chunks = [&](const net::ConnectionPtr& connection, Player& player) {
+        constexpr i32 kRadius = 8;
+
+        const i32 centre_x = static_cast<i32>(std::floor(player.x)) >> 4;
+        const i32 centre_z = static_cast<i32>(std::floor(player.z)) >> 4;
+        if (player.streaming && centre_x == player.centre_x && centre_z == player.centre_z) {
+            return;
+        }
+        player.centre_x  = centre_x;
+        player.centre_z  = centre_z;
+        player.streaming = true;
+
+        const auto send = [&](i32 id, std::span<const u8> payload) {
+            if (const auto framed = net::encode_packet(id, payload)) {
+                connection->send(*framed);
+            }
+        };
+
+        // The centre first: a client that receives chunks it considers out of
+        // range discards them.
+        send(net::clientbound::kSetCenterChunk, net::encode_set_center_chunk(centre_x, centre_z));
+
+        std::unordered_set<i64> wanted;
+        wanted.reserve(static_cast<usize>((2 * kRadius + 1) * (2 * kRadius + 1)));
+        for (i32 dz = -kRadius; dz <= kRadius; ++dz) {
+            for (i32 dx = -kRadius; dx <= kRadius; ++dx) {
+                wanted.insert(chunk_key(centre_x + dx, centre_z + dz));
+            }
+        }
+
+        for (const i64 key : wanted) {
+            if (player.loaded_chunks.contains(key)) {
+                continue;
+            }
+            const auto cx = static_cast<i32>(key >> 32);
+            const auto cz = static_cast<i32>(static_cast<u32>(key & 0xFFFFFFFF));
+            {
+                const std::scoped_lock lock{chunk_mutex};
+                auto                   it = chunk_cache.find(key);
+                if (it == chunk_cache.end()) {
+                    it = chunk_cache.emplace(key, superflat.generate(ChunkPos{cx, cz})).first;
+                }
+                send(net::clientbound::kChunkDataAndLight, net::encode_chunk_data(it->second));
+            }
+            player.loaded_chunks.insert(key);
+        }
+
+        for (auto it = player.loaded_chunks.begin(); it != player.loaded_chunks.end();) {
+            if (wanted.contains(*it)) {
+                ++it;
+                continue;
+            }
+            const auto cx = static_cast<i32>(*it >> 32);
+            const auto cz = static_cast<i32>(static_cast<u32>(*it & 0xFFFFFFFF));
+            send(net::clientbound::kUnloadChunk, net::encode_unload_chunk(cx, cz));
+            it = player.loaded_chunks.erase(it);
+        }
+    };
 
     /// Confirm a change the client already predicted.
     ///
@@ -719,30 +794,7 @@ int main(int argc, char** argv) {
                 // The centre has to arrive before the chunks: a client that
                 // receives chunks with no centre keeps them and renders
                 // nothing.
-                // Centred on wherever the player actually is, not on the origin:
-                // someone who logs out a thousand blocks away and comes back to
-                // chunks around spawn falls through an empty world.
-                const i32 centre_x = static_cast<i32>(std::floor(player.x)) >> 4;
-                const i32 centre_z = static_cast<i32>(std::floor(player.z)) >> 4;
-                send_packet(net::clientbound::kSetCenterChunk,
-                            net::encode_set_center_chunk(centre_x, centre_z));
-
-                constexpr i32 kRadius = 8;
-                for (i32 dz = -kRadius; dz <= kRadius; ++dz) {
-                    for (i32 dx = -kRadius; dx <= kRadius; ++dx) {
-                        const i32              cx  = centre_x + dx;
-                        const i32              cz  = centre_z + dz;
-                        const i64              key = chunk_key(cx, cz);
-                        const std::scoped_lock lock{chunk_mutex};
-                        auto                   it = chunk_cache.find(key);
-                        if (it == chunk_cache.end()) {
-                            it = chunk_cache.emplace(key, superflat.generate(ChunkPos{cx, cz}))
-                                     .first;
-                        }
-                        send_packet(net::clientbound::kChunkDataAndLight,
-                                    net::encode_chunk_data(it->second));
-                    }
-                }
+                stream_chunks(connection, player);
 
                 // Reason 13: "start waiting for level chunks". This is what
                 // takes the client off the loading screen.
@@ -814,6 +866,13 @@ int main(int argc, char** argv) {
                         // case people actually notice.
                         saved_players[player.identity] =
                             SavedPlayer{player.x, player.y, player.z, player.yaw, player.pitch};
+
+                        // Crossing a chunk boundary is what triggers streaming;
+                        // stream_chunks returns immediately otherwise, so this
+                        // is cheap to call twenty times a second.
+                        if (movement->x) {
+                            stream_chunks(connection, player);
+                        }
                         return true;
                     }
 
@@ -930,19 +989,38 @@ int main(int argc, char** argv) {
                                     std::chrono::steady_clock::now().time_since_epoch())
                                     .count();
 
-            const std::scoped_lock lock{players_mutex};
-            for (auto& [key, player] : players) {
-                if (now_ms - player.last_keep_alive_sent_ms < 10000) {
-                    continue;
-                }
-                player.last_keep_alive_sent_ms = now_ms;
-                player.keep_alive_id           = now_ms;
-                player.awaiting_keep_alive     = true;
+            // try_lock, not lock. The packet handler holds this mutex while it
+            // generates and sends chunks, which for a long jump is hundreds of
+            // milliseconds — and a tick thread waiting behind that misses its
+            // deadline and logs an overload. Measured: exactly that, during a
+            // five-chunk jump.
+            //
+            // A keep-alive deferred by one tick is harmless; a tick blocked
+            // behind the network is not. The real fix is the world moving onto
+            // the tick thread — the single-writer rule the project is built on,
+            // arriving with ov_sim. This keeps the two apart until then rather
+            // than pretending they already are.
+            //
+            // The whole pass sits inside the check: skipping it with `continue`
+            // would jump past the sleep at the bottom of the loop and spin the
+            // tick thread exactly when the server is already busy, and walking
+            // the map without the lock would be a race of its own.
+            std::unique_lock lock{players_mutex, std::try_to_lock};
+            if (lock.owns_lock()) {
+                for (auto& [key, player] : players) {
+                    if (now_ms - player.last_keep_alive_sent_ms < 10000) {
+                        continue;
+                    }
+                    player.last_keep_alive_sent_ms = now_ms;
+                    player.keep_alive_id           = now_ms;
+                    player.awaiting_keep_alive     = true;
 
-                if (const auto framed = net::encode_packet(
-                        net::clientbound::kKeepAlive, net::encode_keep_alive(player.keep_alive_id));
-                    framed && player.connection) {
-                    player.connection->send(*framed);
+                    if (const auto framed =
+                            net::encode_packet(net::clientbound::kKeepAlive,
+                                               net::encode_keep_alive(player.keep_alive_id));
+                        framed && player.connection) {
+                        player.connection->send(*framed);
+                    }
                 }
             }
         }

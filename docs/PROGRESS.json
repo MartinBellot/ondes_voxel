@@ -11,7 +11,7 @@
   },
   "last_updated": "2026-09-08",
   "current_milestone": "M3",
-  "current_task": "m3-cross-chunk-light-and-streaming",
+  "current_task": "m3-cross-chunk-light",
   "milestones": {
     "M0": {
       "name": "Fondations",
@@ -42,7 +42,7 @@
     "M3": {
       "name": "Tranche verticale",
       "status": "in_progress",
-      "done": 9,
+      "done": 10,
       "total": 17,
       "exit_criterion": "Un client Minecraft vanilla 1.20.1 non modifié se connecte, marche, casse et pose un bloc — sans une ligne de Vulkan.",
       "blocked": [
@@ -110,7 +110,8 @@
     "m3_vertical_slice": "client vanilla 1.20.1 non modifie : connexion, spawn dans un superflat eclaire, deplacement, cassage et pose de blocs.",
     "chunk_packet": "encodage identique section par section a celui du vrai serveur vanilla (largeurs de bits, tailles de palette, nombres de longs, octets aux memes offsets)",
     "sky_light": "sunlight direct + flood fill intra-chunk ; sous un toit 3x3 : 15 dehors, 14 au pourtour, 13 au centre. Connexion complete (289 chunks) 0.75 s en debug",
-    "player_state": "position et rotation retenues entre sessions ; chunks centres sur le joueur a la reconnexion (verifie a 1234,-777 : chunk 77,-49)"
+    "player_state": "position et rotation retenues entre sessions ; chunks centres sur le joueur a la reconnexion (verifie a 1234,-777 : chunk 77,-49)",
+    "chunk_streaming": "un pas d'un chunk echange 17 chunks, un saut de 5 en diagonale 157 ; le total reste a 289 et reste centre sur le joueur"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",

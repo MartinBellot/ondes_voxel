@@ -160,6 +160,13 @@ std::vector<u8> encode_set_center_chunk(i32 chunk_x, i32 chunk_z) {
     return writer.take();
 }
 
+std::vector<u8> encode_unload_chunk(i32 chunk_x, i32 chunk_z) {
+    io::ByteWriter writer;
+    writer.write_i32(chunk_x);
+    writer.write_i32(chunk_z);
+    return writer.take();
+}
+
 std::vector<u8> encode_keep_alive(i64 id) {
     io::ByteWriter writer;
     writer.write_i64(id);
