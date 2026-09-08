@@ -245,6 +245,145 @@ std::vector<u8> encode_remove_entity(i32 entity_id) {
     return writer.take();
 }
 
+void write_slot(io::ByteWriter& writer, const ItemStack& stack) {
+    if (stack.empty()) {
+        writer.write_u8(0);
+        return;
+    }
+    writer.write_u8(1);
+    write_varint(writer, stack.item_id);
+    writer.write_i8(stack.count);
+    if (stack.nbt.empty()) {
+        writer.write_u8(0);  // TAG_End: no tag
+    } else {
+        writer.write_bytes(stack.nbt);
+    }
+}
+
+std::optional<ItemStack> read_slot(io::ByteReader& reader) {
+    const auto present = reader.read_u8();
+    if (!present) {
+        return std::nullopt;
+    }
+    if (*present == 0) {
+        return ItemStack{};
+    }
+
+    const auto item_id = read_varint(reader);
+    const auto count   = reader.read_i8();
+    if (!item_id || !count) {
+        return std::nullopt;
+    }
+
+    ItemStack stack{*item_id, *count, {}};
+
+    // The item's NBT. A single zero byte means there is none; anything else is
+    // a tag that has to be consumed, or every field after this slot is read
+    // from the middle of it.
+    const usize start  = reader.position();
+    const auto  marker = reader.read_u8();
+    if (!marker) {
+        return std::nullopt;
+    }
+    if (*marker == 0) {
+        return stack;
+    }
+
+    // Parsed and then kept as the original bytes. The server understands none
+    // of what is in here — enchantments, custom names — and re-encoding a tag
+    // it does not understand is how data gets lost.
+    reader.seek(start);
+    if (!nbt::read(reader)) {
+        return std::nullopt;
+    }
+    const usize end = reader.position();
+    reader.seek(start);
+    const auto bytes = reader.read_bytes(end - start);
+    if (!bytes) {
+        return std::nullopt;
+    }
+    stack.nbt.assign(bytes->begin(), bytes->end());
+    return stack;
+}
+
+std::vector<u8> encode_open_screen(i32 window_id, i32 type, std::string_view title) {
+    io::ByteWriter writer;
+    write_varint(writer, window_id);
+    write_varint(writer, type);
+    write_chat_component(writer, title);
+    return writer.take();
+}
+
+std::vector<u8> encode_container_content(u8 window_id, i32 state_id,
+                                         std::span<const ItemStack> slots,
+                                         const ItemStack&           carried) {
+    io::ByteWriter writer;
+    writer.write_u8(window_id);
+    write_varint(writer, state_id);
+    write_varint(writer, static_cast<i32>(slots.size()));
+    for (const ItemStack& slot : slots) {
+        write_slot(writer, slot);
+    }
+    write_slot(writer, carried);
+    return writer.take();
+}
+
+std::vector<u8> encode_container_slot(i8 window_id, i32 state_id, i16 slot,
+                                      const ItemStack& stack) {
+    io::ByteWriter writer;
+    writer.write_i8(window_id);
+    write_varint(writer, state_id);
+    writer.write_i16(slot);
+    write_slot(writer, stack);
+    return writer.take();
+}
+
+std::vector<u8> encode_close_container(u8 window_id) {
+    io::ByteWriter writer;
+    writer.write_u8(window_id);
+    return writer.take();
+}
+
+std::optional<ContainerClick> parse_container_click(std::span<const u8> payload) {
+    io::ByteReader reader{payload};
+    const auto     window_id = reader.read_u8();
+    const auto     state_id  = read_varint(reader);
+    const auto     slot      = reader.read_i16();
+    const auto     button    = reader.read_i8();
+    const auto     mode      = read_varint(reader);
+    if (!window_id || !state_id || !slot || !button || !mode) {
+        return std::nullopt;
+    }
+
+    // The changed-slot array is the client telling us what it *believes*
+    // happened. It is read past rather than trusted: a server that applies it
+    // lets any client write its own inventory.
+    const auto changed = read_varint(reader);
+    if (!changed) {
+        return std::nullopt;
+    }
+    for (i32 i = 0; i < *changed; ++i) {
+        if (!reader.read_i16() || !read_slot(reader)) {
+            return std::nullopt;
+        }
+    }
+
+    const auto carried = read_slot(reader);
+    if (!carried) {
+        return std::nullopt;
+    }
+    return ContainerClick{*window_id, *state_id, *slot, *button, *mode, *carried};
+}
+
+std::optional<u8> parse_close_container(std::span<const u8> payload) {
+    io::ByteReader reader{payload};
+    const auto     window_id = reader.read_u8();
+    if (!window_id) {
+        return std::nullopt;
+    }
+    return *window_id;
+}
+
 std::vector<u8> encode_keep_alive(i64 id) {
     io::ByteWriter writer;
     writer.write_i64(id);
@@ -571,15 +710,14 @@ std::optional<CreativeSlot> parse_set_creative_slot(std::span<const u8> payload)
         return std::nullopt;
     }
     if (*present == 0) {
-        return CreativeSlot{*slot, std::nullopt};
+        return CreativeSlot{*slot, std::nullopt, 0};
     }
     const auto item_id = read_varint(reader);
-    if (!item_id) {
+    const auto count   = reader.read_i8();
+    if (!item_id || !count) {
         return std::nullopt;
     }
-    // Count and the item's NBT follow. Neither is needed to know which block
-    // the player is holding, and the frame length already bounds the packet.
-    return CreativeSlot{*slot, *item_id};
+    return CreativeSlot{*slot, *item_id, *count};
 }
 
 std::optional<i16> parse_set_held_item(std::span<const u8> payload) {

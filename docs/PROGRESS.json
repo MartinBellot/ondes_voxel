@@ -11,7 +11,7 @@
   },
   "last_updated": "2026-09-08",
   "current_milestone": "M3",
-  "current_task": "m4-chests-and-containers",
+  "current_task": "m4-shift-click-and-survival",
   "milestones": {
     "M0": {
       "name": "Fondations",
@@ -52,7 +52,7 @@
     "M4": {
       "name": "Monde persistant",
       "status": "in_progress",
-      "done": 7,
+      "done": 8,
       "total": 10,
       "exit_criterion": "Round-trip croisé : notre sauvegarde s'ouvre dans Minecraft vanilla et réciproquement, sans perte.",
       "blocked": []
@@ -120,7 +120,8 @@
     "light_emission_harness": "technique validee : setblock via la console vanilla puis lecture de BlockLight ; exact pour glowstone, stone, redstone_ore, respawn_anchor, furnace ; contamine pour d'autres etats",
     "block_entities": "panneaux de bout en bout : pose, ecriture, diffusion, sauvegarde Anvil, rechargement avec le bon type_id resolu depuis le registre",
     "light_opacity": "mesuree sur un vrai serveur 1.20.1 pour les 1003 blocs : 483 transparents, 443 opaques, 77 attenuants",
-    "real_1201_world": "monde vanilla 1.20.1 genere par le jeu : 2601 chunks octet-identiques en lecture et en reecriture ; servi par notre serveur avec 180/180 positions identiques au fichier sur 13 types de blocs"
+    "real_1201_world": "monde vanilla 1.20.1 genere par le jeu : 2601 chunks octet-identiques en lecture et en reecriture ; servi par notre serveur avec 180/180 positions identiques au fichier sur 13 types de blocs",
+    "chests": "ouverture, clic gauche et droit, fermeture, sauvegarde Anvil et rechargement : 64 diamants deposes survivent a un redemarrage du serveur"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",

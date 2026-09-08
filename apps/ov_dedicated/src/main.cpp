@@ -599,6 +599,67 @@ struct Superflat {
     return json;
 }
 
+/// A chest's 27 slots, read out of its block entity NBT.
+///
+/// Vanilla stores them as a list of `{Slot, id, Count}` and omits empty ones,
+/// so the list is not indexed by slot and its length says nothing about the
+/// chest's size.
+[[nodiscard]] std::array<net::ItemStack, 27> chest_items(
+    const nbt::Tag& data, const registry::Registries* registries,
+    std::optional<registry::RegistryId> item_registry) {
+    std::array<net::ItemStack, 27> slots{};
+    const nbt::Tag*                items = data.find("Items");
+    if (items == nullptr || items->list() == nullptr || registries == nullptr || !item_registry) {
+        return slots;
+    }
+    for (const nbt::Tag& entry : *items->list()) {
+        const nbt::Tag* slot  = entry.find("Slot");
+        const nbt::Tag* id    = entry.find("id");
+        const nbt::Tag* count = entry.find("Count");
+        if (slot == nullptr || id == nullptr || count == nullptr) {
+            continue;
+        }
+        const auto index = static_cast<usize>(slot->as_i64());
+        if (index >= slots.size()) {
+            continue;
+        }
+        const auto item = registries->protocol_id(*item_registry, id->as_string());
+        if (!item) {
+            continue;  // an item this version does not have
+        }
+        slots[index] = net::ItemStack{*item, static_cast<i8>(count->as_i64()), {}};
+    }
+    return slots;
+}
+
+/// Write the slots back, in the shape vanilla reads.
+void set_chest_items(nbt::Tag& data, std::span<const net::ItemStack> slots,
+                     const registry::Registries*         registries,
+                     std::optional<registry::RegistryId> item_registry) {
+    nbt::Tag items = nbt::Tag::make_list(nbt::TagType::Compound);
+    if (registries != nullptr && item_registry) {
+        for (usize i = 0; i < slots.size(); ++i) {
+            if (slots[i].empty()) {
+                continue;  // empty slots are omitted, not stored as air
+            }
+            const std::string_view name = registries->entry_of(*item_registry, slots[i].item_id);
+            if (name.empty()) {
+                continue;
+            }
+            nbt::Tag entry = nbt::Tag::make_compound();
+            entry.compound()->push_back(nbt::CompoundEntry{"Slot", nbt::Tag{static_cast<i8>(i)}});
+            entry.compound()->push_back(nbt::CompoundEntry{"id", nbt::Tag{std::string{name}}});
+            entry.compound()->push_back(nbt::CompoundEntry{"Count", nbt::Tag{slots[i].count}});
+            items.list()->push_back(std::move(entry));
+        }
+    }
+    if (data.compound() == nullptr) {
+        data = nbt::Tag::make_compound();
+    }
+    std::erase_if(*data.compound(), [](const nbt::CompoundEntry& e) { return e.name == "Items"; });
+    data.compound()->push_back(nbt::CompoundEntry{"Items", std::move(items)});
+}
+
 /// The numeric id a biome carries in the codec we sent.
 ///
 /// The client learns biome ids from our codec and from nowhere else, so a chunk
@@ -681,16 +742,27 @@ struct Player {
     i64  keep_alive_id{0};
     bool awaiting_keep_alive{false};
 
-    /// The creative hotbar, as item ids. Slots 36..44 of the inventory are the
-    /// hotbar; the client tells us what it puts there, and that is the only way
-    /// to know which block a placement means.
-    std::array<i32, 9> hotbar{};
-    i16                held_slot{0};
-    f64                x{0.5};
-    f64                y{static_cast<f64>(Superflat::kSurfaceY) + 1.0};
-    f64                z{0.5};
-    f32                yaw{0.0F};
-    f32                pitch{0.0F};
+    /// The player's own 46 slots, as the protocol numbers them: 0 is the
+    /// crafting result, 1..4 the grid, 5..8 armour, 9..35 the main inventory,
+    /// 36..44 the hotbar, 45 the off hand.
+    ///
+    /// In creative the client owns this and tells us about every change, which
+    /// is the only way to know what a player is holding.
+    std::array<net::ItemStack, 46> inventory{};
+    i16                            held_slot{0};
+
+    /// The container this player has open, if any.
+    u8             window_id{0};
+    bool           window_open{false};
+    net::ItemStack carried{};
+    i32            window_x{0};
+    i32            window_y{0};
+    i32            window_z{0};
+    f64            x{0.5};
+    f64            y{static_cast<f64>(Superflat::kSurfaceY) + 1.0};
+    f64            z{0.5};
+    f32            yaw{0.0F};
+    f32            pitch{0.0F};
 
     /// The key this player is remembered under between sessions.
     std::string identity;
@@ -848,6 +920,15 @@ int main(int argc, char** argv) {
     const auto item_registry = registries ? registries->find("minecraft:item") : std::nullopt;
     const auto block_entity_registry =
         registries ? registries->find("minecraft:block_entity_type") : std::nullopt;
+
+    // The menu type a chest opens. minecraft:menu is another registry the
+    // client hard-codes, so a 9x3 chest is not the same number as a 9x6 one and
+    // guessing opens a window of the wrong size over the right data.
+    const auto menu_registry = registries ? registries->find("minecraft:menu") : std::nullopt;
+    const i32  menu_generic_9x3 =
+        registries && menu_registry
+            ? registries->protocol_id(*menu_registry, "minecraft:generic_9x3").value_or(2)
+            : 2;
 
     Superflat superflat = world_available ? Superflat::from(*blocks) : Superflat{};
     if (world_available) {
@@ -1467,12 +1548,12 @@ int main(int argc, char** argv) {
                         if (!creative) {
                             return false;
                         }
-                        // Inventory slots 36..44 are the hotbar. Anything else
-                        // is a slot the server does not model yet.
-                        const int index = creative->slot - 36;
-                        if (index >= 0 && index < 9) {
-                            player.hotbar[static_cast<usize>(index)] =
-                                creative->item_id.value_or(0);
+                        if (creative->slot >= 0 &&
+                            creative->slot < static_cast<i16>(player.inventory.size())) {
+                            player.inventory[static_cast<usize>(creative->slot)] =
+                                net::ItemStack{creative->item_id.value_or(0),
+                                               creative->item_id ? creative->count : i8{0},
+                                               {}};
                         }
                         return true;
                     }
@@ -1501,8 +1582,51 @@ int main(int argc, char** argv) {
                         }
                         acknowledge(connection, place->sequence);
 
-                        const i32  item       = player.hotbar[static_cast<usize>(player.held_slot)];
-                        const auto held_block = block_for_item(item);
+                        // Clicking a chest opens it rather than placing against
+                        // it. Vanilla only places when the player is sneaking,
+                        // which is not tracked yet, so the chest always wins —
+                        // stated rather than silently surprising.
+                        {
+                            const std::scoped_lock chunk_lock{chunk_mutex};
+                            world::Chunk&          clicked_chunk =
+                                chunk_at(place->position.x >> 4, place->position.z >> 4);
+                            const world::BlockEntity* entity = clicked_chunk.block_entity_at(
+                                static_cast<usize>(place->position.x & 15), place->position.y,
+                                static_cast<usize>(place->position.z & 15));
+                            if (entity != nullptr && entity->type == "minecraft:chest") {
+                                player.window_id   = 1;
+                                player.window_open = true;
+                                player.window_x    = place->position.x;
+                                player.window_y    = place->position.y;
+                                player.window_z    = place->position.z;
+
+                                std::vector<net::ItemStack> slots;
+                                slots.reserve(63);
+                                const auto chest =
+                                    chest_items(entity->data, registries ? &*registries : nullptr,
+                                                item_registry);
+                                slots.insert(slots.end(), chest.begin(), chest.end());
+                                // Then the player's own 27 main slots and 9
+                                // hotbar slots, in that order: a window shows
+                                // the container first and the player second.
+                                for (usize i = 9; i < 45; ++i) {
+                                    slots.push_back(player.inventory[i]);
+                                }
+
+                                send_packet(net::clientbound::kOpenScreen,
+                                            net::encode_open_screen(player.window_id,
+                                                                    menu_generic_9x3, "Chest"));
+                                send_packet(
+                                    net::clientbound::kContainerContent,
+                                    net::encode_container_content(player.window_id, 1, slots, {}));
+                                return true;
+                            }
+                        }
+
+                        const net::ItemStack& held =
+                            player.inventory[36 + static_cast<usize>(player.held_slot)];
+                        const auto held_block =
+                            held.empty() ? std::nullopt : block_for_item(held.item_id);
                         if (!held_block || !blocks) {
                             // An empty hand or a non-block item. The
                             // acknowledgement above still matters: without it
@@ -1519,6 +1643,27 @@ int main(int argc, char** argv) {
                         // A sign needs a block entity to hold its text, and the
                         // editor has to be opened or it can never be written on.
                         const std::string_view block_name = blocks->block_name(*held_block);
+
+                        if (block_name == "minecraft:chest" && registries &&
+                            block_entity_registry) {
+                            const auto type_id =
+                                registries->protocol_id(*block_entity_registry, "minecraft:chest");
+                            const std::scoped_lock chunk_lock{chunk_mutex};
+                            world::Chunk& target_chunk = chunk_at(target.x >> 4, target.z >> 4);
+
+                            world::BlockEntity entity;
+                            entity.x       = static_cast<u8>(target.x & 15);
+                            entity.y       = target.y;
+                            entity.z       = static_cast<u8>(target.z & 15);
+                            entity.type    = "minecraft:chest";
+                            entity.type_id = type_id.value_or(0);
+                            entity.data    = nbt::Tag::make_compound();
+                            set_chest_items(entity.data, std::array<net::ItemStack, 27>{},
+                                            &*registries, item_registry);
+                            target_chunk.set_block_entity(std::move(entity));
+                            dirty_chunks.insert(chunk_key(target.x >> 4, target.z >> 4));
+                        }
+
                         if (block_name.ends_with("_sign") && registries && block_entity_registry) {
                             const auto type_id =
                                 registries->protocol_id(*block_entity_registry, "minecraft:sign");
@@ -1538,6 +1683,109 @@ int main(int argc, char** argv) {
                             send_packet(net::clientbound::kOpenSignEditor,
                                         net::encode_open_sign_editor(target, true));
                         }
+                        return true;
+                    }
+
+                    case net::serverbound::kCloseContainer: {
+                        player.window_open = false;
+                        return true;
+                    }
+
+                    case net::serverbound::kClickContainer: {
+                        const auto click = net::parse_container_click(body);
+                        if (!click || !player.window_open || click->window_id != player.window_id) {
+                            return true;
+                        }
+
+                        const std::scoped_lock chunk_lock{chunk_mutex};
+                        world::Chunk&          chest_chunk =
+                            chunk_at(player.window_x >> 4, player.window_z >> 4);
+                        world::BlockEntity* entity = chest_chunk.block_entity_at(
+                            static_cast<usize>(player.window_x & 15), player.window_y,
+                            static_cast<usize>(player.window_z & 15));
+                        if (entity == nullptr || entity->type != "minecraft:chest") {
+                            player.window_open = false;
+                            return true;
+                        }
+
+                        auto chest = chest_items(entity->data, registries ? &*registries : nullptr,
+                                                 item_registry);
+
+                        // Slot numbering inside the window: 0..26 the chest,
+                        // 27..53 the player's main inventory, 54..62 the hotbar.
+                        // The player's own slots are 9..44, so the mapping is
+                        // not the identity and getting it wrong moves items
+                        // between the wrong two places.
+                        const auto slot_ref = [&](i16 index) -> net::ItemStack* {
+                            if (index >= 0 && index < 27) {
+                                return &chest[static_cast<usize>(index)];
+                            }
+                            if (index >= 27 && index < 63) {
+                                return &player.inventory[static_cast<usize>(index - 27 + 9)];
+                            }
+                            return nullptr;
+                        };
+
+                        bool handled = false;
+                        if (click->mode == 0 && click->slot >= 0) {
+                            net::ItemStack* slot = slot_ref(click->slot);
+                            if (slot != nullptr) {
+                                if (click->button == 0) {
+                                    // Left click: the carried stack and the slot
+                                    // trade places.
+                                    std::swap(*slot, player.carried);
+                                    handled = true;
+                                } else if (click->button == 1) {
+                                    // Right click: put one down, or pick up
+                                    // half. Rounding up on the half is what
+                                    // vanilla does, and rounding down loses an
+                                    // item on odd stacks.
+                                    if (player.carried.empty()) {
+                                        if (!slot->empty()) {
+                                            const i8 half  = static_cast<i8>((slot->count + 1) / 2);
+                                            player.carried = *slot;
+                                            player.carried.count = half;
+                                            slot->count = static_cast<i8>(slot->count - half);
+                                            if (slot->count <= 0) {
+                                                *slot = {};
+                                            }
+                                        }
+                                    } else if (slot->empty()) {
+                                        *slot       = player.carried;
+                                        slot->count = 1;
+                                        player.carried.count =
+                                            static_cast<i8>(player.carried.count - 1);
+                                        if (player.carried.count <= 0) {
+                                            player.carried = {};
+                                        }
+                                    }
+                                    handled = true;
+                                }
+                            }
+                        }
+
+                        if (handled) {
+                            set_chest_items(entity->data, chest,
+                                            registries ? &*registries : nullptr, item_registry);
+                            dirty_chunks.insert(
+                                chunk_key(player.window_x >> 4, player.window_z >> 4));
+                        }
+
+                        // Whether the click was handled or not, the window is
+                        // resent in full. The client has already applied its own
+                        // guess; anything the server did not implement — shift
+                        // clicks, drags, number keys — would otherwise stay on
+                        // screen as an item that does not exist.
+                        std::vector<net::ItemStack> slots;
+                        slots.reserve(63);
+                        slots.insert(slots.end(), chest.begin(), chest.end());
+                        for (usize i = 9; i < 45; ++i) {
+                            slots.push_back(player.inventory[i]);
+                        }
+                        send_packet(
+                            net::clientbound::kContainerContent,
+                            net::encode_container_content(player.window_id, click->state_id + 1,
+                                                          slots, player.carried));
                         return true;
                     }
 

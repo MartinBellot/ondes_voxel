@@ -310,6 +310,7 @@ struct UseItemOn {
 struct CreativeSlot {
     i16                slot{0};
     std::optional<i32> item_id;
+    i8                 count{0};
 };
 
 [[nodiscard]] std::optional<CreativeSlot> parse_set_creative_slot(std::span<const u8> payload);

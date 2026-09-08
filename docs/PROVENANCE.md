@@ -1230,3 +1230,33 @@ Observation de performance : charger et envoyer les 289 chunks d'une connexion
 prend **environ 10 secondes en build debug** sur un monde réel, contre 0,75 s sur
 un superflat généré. La différence est le décodage des palettes et le calcul de
 lumière sur des chunks pleins.
+
+### Coffres
+
+La numérotation des slots dans une fenêtre n'est pas l'identité : **0 à 26** sont
+le coffre, **27 à 53** l'inventaire principal du joueur, **54 à 62** sa barre
+d'action — alors que les slots *du joueur* sont numérotés 9 à 44. Se tromper de
+correspondance déplace des objets entre les deux mauvais endroits.
+
+Vanilla stocke le contenu comme une liste de `{Slot, id, Count}` en **omettant
+les slots vides**. La liste n'est donc pas indexée par slot et sa longueur ne dit
+rien de la taille du coffre.
+
+Le NBT d'un objet est **conservé tel quel**, en octets bruts. Le serveur ne
+comprend ni enchantements ni noms personnalisés, et ré-encoder une balise qu'on
+ne comprend pas est la façon dont on perd des données. La laisser passer intacte
+ne le peut pas.
+
+`minecraft:generic_9x3` est lu dans le registre `minecraft:menu`, pas codé en
+dur : un coffre 9×3 n'a pas le même numéro qu'un 9×6, et se tromper ouvre une
+fenêtre de la mauvaise taille sur les bonnes données.
+
+**Ce qui est traité et ce qui ne l'est pas.** Les clics gauche et droit (mode 0)
+sont appliqués côté serveur. Le shift-clic, les glissés et les touches
+numériques ne le sont pas : la fenêtre est **réémise en entier** après chaque
+clic, donc ce que le serveur n'a pas implémenté disparaît de l'écran au lieu d'y
+rester sous forme d'objet qui n'existe pas. C'est visible et sans danger ; la
+duplication, elle, ne le serait pas.
+
+Cliquer un coffre l'ouvre toujours. Vanilla ne pose contre un coffre que si le
+joueur est accroupi, ce qui n'est pas encore suivi.
