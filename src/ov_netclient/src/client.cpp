@@ -452,6 +452,19 @@ void Client::send_place(i32 x, i32 y, i32 z, i32 face, f32 cursor_x, f32 cursor_
     impl_->send_raw(net::serverbound::kUseItemOn, writer.data());
 }
 
+void Client::send_creative_slot(i16 slot, i32 item_id, i8 count) {
+    io::ByteWriter writer;
+    writer.write_i16(slot);
+    if (item_id <= 0 || count <= 0) {
+        writer.write_u8(0);
+    } else {
+        writer.write_u8(1);
+        net::write_varint(writer, item_id);
+        writer.write_u8(static_cast<u8>(count));
+    }
+    impl_->send_raw(net::serverbound::kSetCreativeSlot, writer.data());
+}
+
 void Client::send_held_slot(i16 slot) {
     io::ByteWriter writer;
     writer.write_i16(slot);

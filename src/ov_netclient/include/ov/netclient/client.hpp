@@ -127,6 +127,15 @@ public:
     /// Which hotbar slot is selected, 0 to 8.
     void send_held_slot(i16 slot);
 
+    /// Put an item into an inventory slot. Creative only — a server in
+    /// survival ignores this, and honouring it there would let any client hand
+    /// itself anything.
+    ///
+    /// Slot 36 is the first of the hotbar in the player's own window; the
+    /// hotbar is slots 36 to 44 and not 0 to 8, which is the mistake this
+    /// comment exists to stop.
+    void send_creative_slot(i16 slot, i32 item_id, i8 count);
+
 private:
     struct Impl;
 

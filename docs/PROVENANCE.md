@@ -2901,3 +2901,29 @@ fonctionnent contre un monde qui arrive par le réseau.
 - **Le serveur a signalé `can't keep up`** pendant l'envoi initial des 289
   chunks. Relevé plutôt que corrigé : c'est l'envoi de chunks qui n'a pas de
   budget, le pendant serveur du budget de maillage côté client.
+
+### Casser et poser, vérifiés par le monde et non par le paquet
+
+Un `--dig` a été ajouté au client pour la même raison que `--no-fog` : rendre
+vérifiable une chose qu'aucune capture d'écran ne tranche. Il casse le bloc sous
+le joueur, en pose un deux blocs plus loin, puis **regarde le monde** — pas le
+fait qu'un paquet soit parti.
+
+```
+dug (0, 39, 4): minecraft:stone -> minecraft:air  BROKEN
+placed at (2, 40, 4): minecraft:diamond_block     PLACED
+```
+
+Deux choses se sont mal passées avant d'y arriver, et les deux sont
+instructives :
+
+1. **La main était vide.** Sans `Set Creative Slot`, le serveur n'a rien à poser
+   et ignore le clic en silence. Un envoi de placement parfaitement formé et un
+   inventaire vide donnent exactement la même trace.
+2. **Le premier essai posait le bloc sous les pieds du joueur.** Le serveur a
+   refusé — correctement : un bloc ne peut pas apparaître dans un joueur, règle
+   mesurée sur vanilla et implémentée côté serveur il y a plusieurs séances. Le
+   symptôme était identique à celui d'un paquet de pose cassé.
+
+C'est le même piège deux fois : côté client, « le paquet est parti » ne dit rien
+du tout. Seul l'état du monde le dit.

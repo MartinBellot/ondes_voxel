@@ -20,6 +20,7 @@
 #include "ov/client/terrain_renderer.hpp"
 #include "ov/client/window.hpp"
 #include "ov/registry/block_states.hpp"
+#include "ov/registry/registries.hpp"
 #include "ov/render/atlas.hpp"
 #include "ov/render/biome_colours.hpp"
 #include "ov/render/block_models.hpp"
@@ -79,6 +80,15 @@ struct Options {
     /// loop testable without a human at the keyboard, which is the only way a
     /// physics regression gets caught by a script.
     bool walk{false};
+    /// Break the block under the player once it has settled, then report
+    /// whether the world actually changed. The end-to-end check of
+    /// client -> server -> client that no screenshot can make.
+    bool dig{false};
+    /// What to hold, by registry name. Creative only: the client asks the
+    /// server to put it in the hotbar. Without it the hand is empty and every
+    /// placement is silently a no-op — which looks exactly like a broken
+    /// placement packet.
+    std::string hold{"minecraft:stone"};
     /// Draw the terrain the old way, one call a section, for comparison.
     bool indirect{true};
     /// Time of day in ticks. 6000 is noon, 18000 midnight.
@@ -160,6 +170,10 @@ struct Options {
             options.username = value("--username=");
         } else if (argument == "--walk") {
             options.walk = true;
+        } else if (argument == "--dig") {
+            options.dig = true;
+        } else if (argument.starts_with("--hold=")) {
+            options.hold = value("--hold=");
         }
     }
     return options;
@@ -245,6 +259,15 @@ int main(int argc, char** argv) {
         return 1;
     }
     OV_LOG_INFO("registry: {} blocks, {} states", blocks->block_count(), blocks->state_count());
+
+    // The item registry, for turning a held block's name into the id the
+    // creative-slot packet carries. Same file, different section.
+    auto registries_result = registry::Registries::load(options.registry);
+    const registry::Registries* registries =
+        registries_result ? &*registries_result : nullptr;
+    if (!registries) {
+        OV_LOG_WARN("item registry unavailable; nothing can be held");
+    }
 
     const std::filesystem::path assets_root(options.assets);
     if (!std::filesystem::is_directory(assets_root / "assets")) {
@@ -604,6 +627,12 @@ int main(int argc, char** argv) {
         readback = *buffer;
     }
 
+    bool     dig_sent   = false;
+    bool     place_sent = false;
+    BlockPos dig_target{};
+    BlockPos place_target{};
+    registry::BlockStateId dig_before{};
+
     auto       start_time       = std::chrono::steady_clock::now();
     auto       last_tick        = start_time;
     f64        tick_accumulator = 0.0;
@@ -639,6 +668,24 @@ int main(int argc, char** argv) {
             }
 
             client->poll(events);
+            if (events.teleport && !spawned) {
+                // The first teleport is the spawn. Ask for something in hand
+                // once, here: the server has just accepted the login and the
+                // inventory it will place from is the one it owns.
+                std::optional<registry::ProtocolId> item;
+                if (registries) {
+                    if (const auto items = registries->find("minecraft:item")) {
+                        item = registries->protocol_id(*items, options.hold);
+                    }
+                }
+                if (item) {
+                    client->send_creative_slot(36, *item, 1);
+                    client->send_held_slot(0);
+                    OV_LOG_INFO("holding {} (item {})", options.hold, *item);
+                } else {
+                    OV_LOG_WARN("{} is not an item; the hand stays empty", options.hold);
+                }
+            }
             if (events.teleport) {
                 // The server is authoritative about where the player is. A
                 // teleport is not a suggestion: it arrives at the spawn, and
@@ -720,6 +767,33 @@ int main(int argc, char** argv) {
             camera.position = Vec3f{static_cast<f32>(player.position.x),
                                     static_cast<f32>(player.position.y + 1.62),
                                     static_cast<f32>(player.position.z)};
+
+            // The scripted dig: wait until the player has been standing for a
+            // moment, break what is under its feet, and remember what was
+            // there. Whether the server agreed is decided by looking at the
+            // world afterwards, not by the fact that a packet was sent.
+            if (options.dig && ground_ready && !dig_sent && rendered > 120) {
+                dig_target = BlockPos{static_cast<i32>(std::floor(player.position.x)),
+                                      static_cast<i32>(std::floor(player.position.y)) - 1,
+                                      static_cast<i32>(std::floor(player.position.z))};
+                dig_before = session->block_at(dig_target.x, dig_target.y, dig_target.z);
+                client->send_dig(dig_target.x, dig_target.y, dig_target.z, 0, 1);
+                client->send_dig(dig_target.x, dig_target.y, dig_target.z, 2, 1);
+                dig_sent = true;
+            }
+
+            // And place one, two blocks to the side — not where the player is
+            // standing. The first attempt put it under its own feet and the
+            // server refused, correctly: a block may not appear inside a
+            // player, and that is a rule this project measured from vanilla
+            // and implemented on the server side. The failure looked exactly
+            // like a broken placement packet.
+            if (options.dig && dig_sent && !place_sent && rendered > 260) {
+                place_target = BlockPos{dig_target.x + 2, dig_target.y + 1, dig_target.z};
+                client->send_place(place_target.x, place_target.y - 1, place_target.z, 1, 0.5F,
+                                   1.0F, 0.5F);
+                place_sent = true;
+            }
 
             // Breaking and placing. The ray starts at the eye and runs vanilla's
             // survival reach; the face it entered through is the side a new
@@ -952,6 +1026,20 @@ int main(int argc, char** argv) {
                percentile(gpu, 0.99), percentile(gpu, 1.0));
 
     if (online) {
+        if (dig_sent) {
+            const auto after = session->block_at(dig_target.x, dig_target.y, dig_target.z);
+            fmt::print("dug ({}, {}, {}): {} -> {}  {}\n", dig_target.x, dig_target.y,
+                       dig_target.z, blocks->block_name(blocks->block_of(dig_before)),
+                       blocks->block_name(blocks->block_of(after)),
+                       after == registry::kAirState ? "BROKEN" : "unchanged");
+            if (place_sent) {
+                const auto placed =
+                    session->block_at(place_target.x, place_target.y, place_target.z);
+                fmt::print("placed at ({}, {}, {}): {}  {}\n", place_target.x, place_target.y,
+                           place_target.z, blocks->block_name(blocks->block_of(placed)),
+                           placed == registry::kAirState ? "NOTHING WAS PLACED" : "PLACED");
+            }
+        }
         fmt::print("player at ({:.2f}, {:.2f}, {:.2f}), {}, {} chunks, {} sections resident\n",
                    player.position.x, player.position.y, player.position.z,
                    player.on_ground ? "standing" : "in the air", session->chunk_count(),
