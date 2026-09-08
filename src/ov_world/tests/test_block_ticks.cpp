@@ -14,7 +14,7 @@ namespace {
     std::vector<std::string> out;
     out.reserve(ticks.size());
     for (const ScheduledTick& tick : ticks) {
-        out.push_back(tick.what);
+        out.emplace_back(tick.what);
     }
     return out;
 }
@@ -136,12 +136,14 @@ TEST_CASE("the Anvil round trip keeps position, name, priority and delay", "[blo
     REQUIRE(first.find("z")->as_i64() == 7);
     REQUIRE((*list.list())[1].find("p")->as_i64() == -2);
 
-    std::vector<ScheduledTick> read;
-    REQUIRE(ticks_from_nbt(list, 2000, read));
+    BlockTickScheduler reloaded;
+    REQUIRE(ticks_from_nbt(list, 2000, reloaded));
+    const std::vector<ScheduledTick> read = reloaded.snapshot();
     REQUIRE(read.size() == 2);
     // The delay was relative, so re-reading at a different game time moves the
     // absolute tick with it. That is the point of storing a delay.
     REQUIRE(read[0].when == 2005);
+    REQUIRE(read[0].what == "minecraft:flowing_water");
     REQUIRE(read[1].when == 2030);
     REQUIRE(read[1].priority == TickPriority::VeryHigh);
 }
@@ -157,7 +159,7 @@ TEST_CASE("serialising a chunk column takes only that column's ticks", "[block_t
 }
 
 TEST_CASE("a malformed tick list is refused rather than guessed", "[block_ticks]") {
-    std::vector<ScheduledTick> out;
+    BlockTickScheduler out;
 
     // Not a list at all.
     REQUIRE_FALSE(ticks_from_nbt(nbt::Tag{i32{7}}, 0, out));
@@ -173,6 +175,8 @@ TEST_CASE("a malformed tick list is refused rather than guessed", "[block_ticks]
     entry.put("y", nbt::Tag{i32{0}});
     list.push(std::move(entry));
     REQUIRE_FALSE(ticks_from_nbt(list, 0, out));
+    // And nothing was taken in on the way to refusing.
+    REQUIRE(out.pending() == 0);
 
     // A priority outside the -3..3 the format defines.
     nbt::Tag bad_priority = nbt::Tag::make_list(nbt::TagType::Compound);
@@ -185,26 +189,68 @@ TEST_CASE("a malformed tick list is refused rather than guessed", "[block_ticks]
     with_bad.put("z", nbt::Tag{i32{0}});
     bad_priority.push(std::move(with_bad));
     REQUIRE_FALSE(ticks_from_nbt(bad_priority, 0, out));
+    REQUIRE(out.pending() == 0);
+}
+
+TEST_CASE("a half-valid list loads nothing at all", "[block_ticks]") {
+    // The first entry is perfectly good and the second is not. Loading the
+    // first and then failing would leave a chunk holding a fraction of its own
+    // pending work, which is worse than refusing the file.
+    nbt::Tag list = nbt::Tag::make_list(nbt::TagType::Compound);
+    nbt::Tag good = nbt::Tag::make_compound();
+    good.put("i", nbt::Tag{std::string{"minecraft:water"}});
+    good.put("p", nbt::Tag{i32{0}});
+    good.put("t", nbt::Tag{i32{5}});
+    good.put("x", nbt::Tag{i32{0}});
+    good.put("y", nbt::Tag{i32{0}});
+    good.put("z", nbt::Tag{i32{0}});
+    list.push(std::move(good));
+    nbt::Tag bad = nbt::Tag::make_compound();
+    bad.put("i", nbt::Tag{std::string{"minecraft:lava"}});
+    bad.put("t", nbt::Tag{i32{5}});
+    list.push(std::move(bad));
+
+    BlockTickScheduler out;
+    REQUIRE_FALSE(ticks_from_nbt(list, 0, out));
+    REQUIRE(out.pending() == 0);
 }
 
 TEST_CASE("an empty list round-trips", "[block_ticks]") {
     // Vanilla writes an empty list with element type End, so the element type
     // may only be checked when there is something in it.
-    std::vector<ScheduledTick> out;
+    BlockTickScheduler out;
     REQUIRE(ticks_from_nbt(nbt::Tag::make_list(nbt::TagType::End), 0, out));
-    REQUIRE(out.empty());
+    REQUIRE(out.pending() == 0);
 }
 
-TEST_CASE("adopted ticks keep their list order and sort after existing ones", "[block_ticks]") {
-    BlockTickScheduler scheduler;
-    std::vector<ScheduledTick> loaded{
-        ScheduledTick{BlockPos{0, 0, 0}, "first", 10, TickPriority::Normal, 0},
-        ScheduledTick{BlockPos{1, 0, 0}, "second", 10, TickPriority::Normal, 0},
-        ScheduledTick{BlockPos{2, 0, 0}, "third", 10, TickPriority::Normal, 0},
-    };
-    scheduler.adopt(std::move(loaded));
+TEST_CASE("loaded ticks keep the order the file listed them in", "[block_ticks]") {
+    // The format stores no sequence number, so list order is the only tiebreak
+    // there is — and two chunks loaded in either order have to give the same
+    // queue.
+    BlockTickScheduler source;
+    source.schedule(BlockPos{0, 0, 0}, "first", 10, 0);
+    source.schedule(BlockPos{1, 0, 0}, "second", 10, 0);
+    source.schedule(BlockPos{2, 0, 0}, "third", 10, 0);
+
+    BlockTickScheduler reloaded;
+    REQUIRE(ticks_from_nbt(ticks_to_nbt(source.snapshot(), 0, 0, 0), 0, reloaded));
 
     std::vector<ScheduledTick> due;
-    scheduler.collect_due(10, due);
+    reloaded.collect_due(10, due);
     REQUIRE(names_of(due) == std::vector<std::string>{"first", "second", "third"});
+}
+
+TEST_CASE("a name costs one allocation however many ticks carry it", "[block_ticks]") {
+    // The tick body runs under a no-allocation guard, so a scheduled tick may
+    // not own its name. It borrows one the scheduler interns, and every tick
+    // with the same name borrows the very same characters.
+    BlockTickScheduler scheduler;
+    for (i32 i = 0; i < 64; ++i) {
+        scheduler.schedule(BlockPos{i, 0, 0}, "minecraft:flowing_water", 1, 0);
+    }
+    const std::vector<ScheduledTick> all = scheduler.snapshot();
+    REQUIRE(all.size() == 64);
+    for (const ScheduledTick& tick : all) {
+        REQUIRE(tick.what.data() == all.front().what.data());
+    }
 }

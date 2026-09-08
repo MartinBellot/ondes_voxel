@@ -43,6 +43,8 @@
 #include "ov/math/block_pos.hpp"
 #include "ov/nbt/tag.hpp"
 
+#include <deque>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -69,11 +71,17 @@ enum class TickPriority : i8 {
 /// format carries, and because the two queues name things from two different
 /// registries — a numeric id here would have to say which registry it came
 /// from, and the string already does.
+///
+/// It is a **view**, not a string, and it is owned by the scheduler that handed
+/// it out. A `std::string` here would allocate on every schedule, and a pool
+/// under load schedules thousands per tick — straight through the no-allocation
+/// rule the tick body is guarded by. The scheduler interns the handful of names
+/// that ever appear and every tick borrows one.
 struct ScheduledTick {
-    BlockPos     pos{};
-    std::string  what;
-    i64          when{0};
-    TickPriority priority{TickPriority::Normal};
+    BlockPos         pos{};
+    std::string_view what;
+    i64              when{0};
+    TickPriority     priority{TickPriority::Normal};
 
     /// Insertion order, the final tiebreak. Assigned by the scheduler; a caller
     /// never sets it.
@@ -108,12 +116,6 @@ public:
 
     [[nodiscard]] bool is_scheduled(BlockPos pos, std::string_view what) const noexcept;
 
-    /// Take in ticks read from disk, keeping the order they were listed in.
-    ///
-    /// Their sequence numbers are re-stamped rather than trusted: the format
-    /// does not store one, and two chunks loaded in either order have to give
-    /// the same queue. List order is the tiebreak, which is what vanilla saved.
-    void adopt(std::vector<ScheduledTick> ticks);
 
     [[nodiscard]] usize pending() const noexcept { return pending_.size(); }
 
@@ -137,8 +139,19 @@ public:
     void clear() noexcept;
 
 private:
+    /// Intern a name, returning a view that outlives every tick holding it.
+    [[nodiscard]] std::string_view intern(std::string_view name);
+
     std::vector<ScheduledTick> pending_;
     u64                        next_sequence_{0};
+
+    /// The names ever seen, kept for the life of the scheduler.
+    ///
+    /// A deque and not a vector: a vector reallocating would move its strings,
+    /// and short ones live inside the string object rather than on the heap, so
+    /// every view handed out so far would dangle. There are a few dozen of
+    /// these in a whole world.
+    std::deque<std::string> names_;
 };
 
 // ── Anvil ──────────────────────────────────────────────────────────────────
@@ -153,16 +166,19 @@ private:
 /// `now` turns absolute tick numbers back into the relative delays the format
 /// wants. An empty list is still returned rather than nothing; the caller
 /// decides whether to write it, since vanilla omits empty lists.
-[[nodiscard]] nbt::Tag ticks_to_nbt(const std::vector<ScheduledTick>& ticks, i32 chunk_x,
+[[nodiscard]] nbt::Tag ticks_to_nbt(std::span<const ScheduledTick> ticks, i32 chunk_x,
                                     i32 chunk_z, i64 now);
 
-/// Read one of the two lists back.
+/// Read one of the two lists back into a scheduler.
 ///
-/// Returns nothing if the tag is not a list of compounds shaped the way the
-/// format says. A malformed entry is refused rather than defaulted: a tick with
-/// a guessed position is a block that updates somewhere else, and nothing about
-/// the world would say where the mistake came from.
-[[nodiscard]] bool ticks_from_nbt(const nbt::Tag& list, i64 now,
-                                  std::vector<ScheduledTick>& out);
+/// Loads rather than returns, because a tick's name is interned by the
+/// scheduler that holds it — there is nowhere for a free-standing one to live.
+/// The order of the list is kept as the tiebreak, which is what vanilla saved.
+///
+/// Returns false, having loaded nothing, if the tag is not a list of compounds
+/// shaped the way the format says. A malformed entry is refused rather than
+/// defaulted: a tick with a guessed position is a block that updates somewhere
+/// else, and nothing about the world would say where the mistake came from.
+[[nodiscard]] bool ticks_from_nbt(const nbt::Tag& list, i64 now, BlockTickScheduler& into);
 
 }  // namespace ov::world

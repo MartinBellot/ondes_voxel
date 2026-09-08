@@ -15,6 +15,18 @@ bool ScheduledTick::runs_before(const ScheduledTick& other) const noexcept {
     return sequence < other.sequence;
 }
 
+std::string_view BlockTickScheduler::intern(std::string_view name) {
+    for (const std::string& known : names_) {
+        if (known == name) {
+            return known;
+        }
+    }
+    // Linear, because there are a few dozen distinct names in a whole world and
+    // a hash map would cost more than the scan it replaces.
+    names_.emplace_back(name);
+    return names_.back();
+}
+
 void BlockTickScheduler::schedule(BlockPos pos, std::string_view what, i64 delay, i64 now,
                                   TickPriority priority) {
     if (is_scheduled(pos, what)) {
@@ -23,23 +35,13 @@ void BlockTickScheduler::schedule(BlockPos pos, std::string_view what, i64 delay
     // A negative delay would mean "already due", which the drain would then run
     // inside the tick that scheduled it. Vanilla clamps rather than refuses.
     const i64 when = now + (delay < 0 ? 0 : delay);
-    pending_.push_back(ScheduledTick{pos, std::string{what}, when, priority, next_sequence_++});
+    pending_.push_back(ScheduledTick{pos, intern(what), when, priority, next_sequence_++});
 }
 
 bool BlockTickScheduler::is_scheduled(BlockPos pos, std::string_view what) const noexcept {
     return std::any_of(pending_.begin(), pending_.end(), [&](const ScheduledTick& tick) {
         return tick.pos == pos && tick.what == what;
     });
-}
-
-void BlockTickScheduler::adopt(std::vector<ScheduledTick> ticks) {
-    for (ScheduledTick& tick : ticks) {
-        if (is_scheduled(tick.pos, tick.what)) {
-            continue;
-        }
-        tick.sequence = next_sequence_++;
-        pending_.push_back(std::move(tick));
-    }
 }
 
 void BlockTickScheduler::collect_due(i64 now, std::vector<ScheduledTick>& out) {
@@ -75,12 +77,14 @@ void BlockTickScheduler::forget_chunk(i32 chunk_x, i32 chunk_z) {
 
 void BlockTickScheduler::clear() noexcept {
     pending_.clear();
+    // The interned names stay: they cost nothing, and dropping them would
+    // dangle any view a caller still holds from an earlier snapshot.
     // The sequence counter is deliberately *not* reset: it only ever has to be
     // increasing, and restarting it after a partial clear would let a new tick
     // sort ahead of an old one that is still queued.
 }
 
-nbt::Tag ticks_to_nbt(const std::vector<ScheduledTick>& ticks, i32 chunk_x, i32 chunk_z, i64 now) {
+nbt::Tag ticks_to_nbt(std::span<const ScheduledTick> ticks, i32 chunk_x, i32 chunk_z, i64 now) {
     nbt::Tag list = nbt::Tag::make_list(nbt::TagType::Compound);
     for (const ScheduledTick& tick : ticks) {
         if (floor_div(tick.pos.x, kSectionSize) != chunk_x ||
@@ -88,7 +92,7 @@ nbt::Tag ticks_to_nbt(const std::vector<ScheduledTick>& ticks, i32 chunk_x, i32 
             continue;
         }
         nbt::Tag entry = nbt::Tag::make_compound();
-        entry.put("i", nbt::Tag{tick.what});
+        entry.put("i", nbt::Tag{std::string{tick.what}});
         entry.put("p", nbt::Tag{static_cast<i32>(tick.priority)});
         // Relative to the chunk's game time, which is what the format stores.
         entry.put("t", nbt::Tag{static_cast<i32>(tick.when - now)});
@@ -100,7 +104,7 @@ nbt::Tag ticks_to_nbt(const std::vector<ScheduledTick>& ticks, i32 chunk_x, i32 
     return list;
 }
 
-bool ticks_from_nbt(const nbt::Tag& list, i64 now, std::vector<ScheduledTick>& out) {
+bool ticks_from_nbt(const nbt::Tag& list, i64 now, BlockTickScheduler& into) {
     const std::vector<nbt::Tag>* entries = list.list();
     if (entries == nullptr) {
         return false;
@@ -110,6 +114,18 @@ bool ticks_from_nbt(const nbt::Tag& list, i64 now, std::vector<ScheduledTick>& o
     if (!entries->empty() && list.list_element_type() != nbt::TagType::Compound) {
         return false;
     }
+
+    // Read everything before scheduling anything: a malformed entry halfway
+    // down has to leave the scheduler exactly as it was, not half-loaded with
+    // the chunk's first few ticks.
+    struct Pending {
+        BlockPos     pos;
+        std::string  what;
+        i64          delay;
+        TickPriority priority;
+    };
+    std::vector<Pending> loaded;
+    loaded.reserve(entries->size());
 
     for (const nbt::Tag& entry : *entries) {
         const nbt::Tag* name = entry.find("i");
@@ -133,11 +149,15 @@ bool ticks_from_nbt(const nbt::Tag& list, i64 now, std::vector<ScheduledTick>& o
             return false;
         }
 
-        out.push_back(ScheduledTick{
+        loaded.push_back(Pending{
             BlockPos{static_cast<i32>(x->as_i64()), static_cast<i32>(y->as_i64()),
                      static_cast<i32>(z->as_i64())},
-            std::string{name->as_string()}, now + t->as_i64(),
-            static_cast<TickPriority>(priority), 0});
+            std::string{name->as_string()}, t->as_i64(),
+            static_cast<TickPriority>(priority)});
+    }
+
+    for (const Pending& entry : loaded) {
+        into.schedule(entry.pos, entry.what, entry.delay, now, entry.priority);
     }
     return true;
 }
