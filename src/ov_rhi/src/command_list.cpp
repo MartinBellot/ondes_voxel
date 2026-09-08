@@ -175,9 +175,15 @@ void CommandList::bind_index_buffer(BufferHandle buffer, u64 offset) {
 
 void CommandList::bind_textures(PipelineHandle pipeline, std::span<const ImageHandle> images,
                                 std::span<const SamplerHandle> samplers) {
+    bind_resources(pipeline, images, samplers, {});
+}
+
+void CommandList::bind_resources(PipelineHandle pipeline, std::span<const ImageHandle> images,
+                                 std::span<const SamplerHandle> samplers,
+                                 std::span<const BufferHandle>  storage_buffers) {
     auto&                   impl     = *static_cast<Device::Impl*>(device_);
     const PipelineResource* resource = impl.pipelines.get(pipeline);
-    if (resource == nullptr || resource->set_layout == VK_NULL_HANDLE || images.empty()) {
+    if (resource == nullptr || resource->set_layout == VK_NULL_HANDLE) {
         return;
     }
 
@@ -198,10 +204,12 @@ void CommandList::bind_textures(PipelineHandle pipeline, std::span<const ImageHa
         return;
     }
 
-    std::vector<VkDescriptorImageInfo> infos;
-    std::vector<VkWriteDescriptorSet>  writes;
+    std::vector<VkDescriptorImageInfo>  infos;
+    std::vector<VkDescriptorBufferInfo> buffer_infos;
+    std::vector<VkWriteDescriptorSet>   writes;
     infos.reserve(images.size());
-    writes.reserve(images.size());
+    buffer_infos.reserve(storage_buffers.size());
+    writes.reserve(images.size() + storage_buffers.size());
 
     for (usize i = 0; i < images.size(); ++i) {
         const ImageResource*   image = impl.images.get(images[i]);
@@ -225,10 +233,36 @@ void CommandList::bind_textures(PipelineHandle pipeline, std::span<const ImageHa
         write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes.push_back(write);
     }
-    // pImageInfo has to be filled after the vector has stopped growing, or the
-    // pointers dangle.
-    for (usize i = 0; i < writes.size(); ++i) {
+    const usize image_writes = writes.size();
+
+    for (usize i = 0; i < storage_buffers.size(); ++i) {
+        const BufferResource* buffer = impl.buffers.get(storage_buffers[i]);
+        if (buffer == nullptr) {
+            continue;
+        }
+
+        VkDescriptorBufferInfo info{};
+        info.buffer = buffer->buffer;
+        info.offset = 0;
+        info.range  = VK_WHOLE_SIZE;
+        buffer_infos.push_back(info);
+
+        VkWriteDescriptorSet write{};
+        write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet          = set;
+        write.dstBinding      = resource->sampled_image_count + static_cast<u32>(i);
+        write.descriptorCount = 1;
+        write.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes.push_back(write);
+    }
+
+    // pImageInfo and pBufferInfo have to be filled after the vectors have
+    // stopped growing, or the pointers dangle.
+    for (usize i = 0; i < image_writes; ++i) {
         writes[i].pImageInfo = &infos[i];
+    }
+    for (usize i = image_writes; i < writes.size(); ++i) {
+        writes[i].pBufferInfo = &buffer_infos[i - image_writes];
     }
 
     if (!writes.empty()) {

@@ -5,6 +5,7 @@
 ov_add_library(ov_client
     LAYER 15
     SOURCES
+        src/terrain_renderer.cpp
         src/window.cpp
     DEPS
         ov_rhi

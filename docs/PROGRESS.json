@@ -60,8 +60,8 @@
     "M5": {
       "name": "Client Ondes VOXEL",
       "status": "in_progress",
-      "done": 13,
-      "total": 26,
+      "done": 16,
+      "total": 27,
       "exit_criterion": "Deux clients pour un même serveur ; p99 de frame time <= 20 ms à 12 chunks sur M2 ; golden images vertes sur lavapipe.",
       "blocked": []
     },
@@ -88,7 +88,7 @@
     "packets_763": "status 4/4, login 4/4 (start, disconnect, set_compression, success)",
     "blockstate_parity": "24135/24135 états conformes au rapport officiel Mojang",
     "tps": 20.0,
-    "frame_p99_ms": null,
+    "frame_p99_ms": 17.77,
     "worker_threads": 4,
     "clean_build_seconds": 6.5,
     "incremental_rebuild_seconds": 5.33,
@@ -141,7 +141,10 @@
     "container_modes": "les six modes de clic appliques cote serveur : clic simple, shift-clic, touche numerique, lacher et glisse ; un glisse gauche de 64 pierres sur trois slots donne 21/21/21 avec le reste sur le curseur, comme vanilla",
     "collision": "boites par etat depuis le pack, chevauchement et glissement axe par axe dans l'ordre Y/X/Z ; poser un bloc dans un joueur est refuse et corrige chez le client",
     "player_physics": "ajustee sur 1238 positions rapportees par un vrai client 1.20.1 : gravite 0.079998, trainee 0.980014 (erreur 3.7e-4 sur 33 ticks rejoues), marche 0.21578/tick, sprint 0.28058, accroupi 0.06474, saut 0.420000 ; le terme d'entree 0.98 vient de la documentation et la mesure le confirme a la quatrieme decimale",
-    "light_emission": "23282/24135 etats mesures dans une salle sans ciel : deux passes, par bloc puis par etat pour les 60 familles qui varient, ce qui corrige 241 valeurs ; les 27 blocs restants ne tiennent pas sur un sol de pierre"
+    "light_emission": "23282/24135 etats mesures dans une salle sans ciel : deux passes, par bloc puis par etat pour les 60 familles qui varient, ce qui corrige 241 valeurs ; les 27 blocs restants ne tiennent pas sur un sol de pierre",
+    "terrain_draw_calls": "2491 sections dessinees en 3 appels indirects a 12 chunks, contre 2491 appels et 9674 VkBuffer separes avant ; l'enregistrement CPU passe de 5.64 a 0.12 ms en p50 et de 10.49 a 0.83 ms en p99, mesure A/B sur la meme scene avec --no-indirect",
+    "frame_time_m2_radius12": "2560x1440, monde 1.20.1 reel, M2 : vsync p50 16.68 / p99 17.77 ms ; sans vsync enregistrement CPU p50 0.13 / p99 0.41 ms et GPU p50 4.81 / p99 10.91 ms. Le p50 sous vsync est l'intervalle de rafraichissement, pas le travail — d'ou --no-vsync, qui est un instrument de mesure et pas un reglage de vitesse",
+    "terrain_arena": "384 Mio device-local, pages de 3072 octets (256 sommets) ; 259 Mio et un seul bloc libre a 12 chunks, 9674 sections. La free-list est testee unitairement, y compris 40 rounds de churn aleatoire qui verifient qu'aucun octet n'est donne deux fois"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",

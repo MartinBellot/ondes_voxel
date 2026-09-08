@@ -49,6 +49,7 @@ struct PipelineResource {
     VkPipelineLayout      layout{VK_NULL_HANDLE};
     VkDescriptorSetLayout set_layout{VK_NULL_HANDLE};
     u32                   sampled_image_count{0};
+    u32                   storage_buffer_count{0};
     u32                   push_constant_size{0};
 };
 

@@ -412,9 +412,29 @@ std::expected<std::unique_ptr<Device>, RhiError> Device::create(const DeviceDesc
     // confusing place to find out.
     features13.shaderDemoteToHelperInvocation = VK_TRUE;
 
+    // The terrain is drawn with one indirect call per layer, and the section a
+    // command belongs to is carried in its firstInstance — the only per-draw
+    // channel an indirect command has that reaches the vertex shader. Both
+    // features are core Vulkan 1.0 and optional, so they are asked for only
+    // when the driver says it has them, and the renderer is told which it got.
+    VkPhysicalDeviceFeatures2 supported{};
+    supported.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    vkGetPhysicalDeviceFeatures2(impl.physical, &supported);
+
     VkPhysicalDeviceFeatures2 features{};
     features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
     features.pNext = &features13;
+    features.features.multiDrawIndirect = supported.features.multiDrawIndirect;
+    features.features.drawIndirectFirstInstance =
+        supported.features.drawIndirectFirstInstance;
+    impl.info.indirect_first_instance =
+        supported.features.multiDrawIndirect == VK_TRUE &&
+        supported.features.drawIndirectFirstInstance == VK_TRUE;
+    if (!impl.info.indirect_first_instance) {
+        OV_LOG_WARN(
+            "no multiDrawIndirect/drawIndirectFirstInstance: the terrain falls back to one "
+            "draw per section");
+    }
 
     const f32               priority = 1.0F;
     VkDeviceQueueCreateInfo queue_info{};
@@ -509,8 +529,9 @@ std::expected<std::unique_ptr<Device>, RhiError> Device::create(const DeviceDesc
         fence.flags = VK_FENCE_CREATE_SIGNALED_BIT;
         vkCreateFence(impl.device, &fence, nullptr, &frame.in_flight);
 
-        const std::array<VkDescriptorPoolSize, 1> sizes{
-            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 64}};
+        const std::array<VkDescriptorPoolSize, 2> sizes{
+            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 64},
+            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 64}};
         VkDescriptorPoolCreateInfo descriptor_pool{};
         descriptor_pool.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         descriptor_pool.maxSets       = 64;
@@ -579,6 +600,14 @@ const DeviceInfo& Device::info() const noexcept {
 
 f64 Device::last_frame_gpu_ms() const noexcept {
     return impl_->last_gpu_ms;
+}
+
+u32 Device::frames_in_flight() noexcept {
+    return kFramesInFlight;
+}
+
+u32 Device::frame_index() const noexcept {
+    return impl_->frame_index;
 }
 
 void Device::wait_idle() {

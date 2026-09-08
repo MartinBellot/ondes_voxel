@@ -59,6 +59,12 @@ public:
     /// Bind the images a pipeline samples, in binding order, on set 0.
     void bind_textures(PipelineHandle pipeline, std::span<const ImageHandle> images,
                        std::span<const SamplerHandle> samplers);
+    /// The same, plus the storage buffers, which take the bindings after the
+    /// images. One descriptor set, written and bound in a single call: there
+    /// is one of these per layer per frame, so nothing here is worth caching.
+    void bind_resources(PipelineHandle pipeline, std::span<const ImageHandle> images,
+                        std::span<const SamplerHandle> samplers,
+                        std::span<const BufferHandle>  storage_buffers);
     void push_constants(PipelineHandle pipeline, const void* data, u32 size);
 
     void draw(u32 vertex_count, u32 instance_count = 1, u32 first_vertex = 0,
@@ -122,6 +128,16 @@ struct DeviceDesc {
 
     /// Where the SPIR-V compiled at build time lives.
     std::string shader_directory;
+
+    /// FIFO when true, which is the right default: tearing is not a trade to
+    /// make by accident.
+    ///
+    /// Turning it off is not a performance feature, it is a measurement one.
+    /// Under FIFO every frame time is quantised to the refresh interval, so a
+    /// renderer doing 4 ms of work and one doing 15 both report 16.67 ms and
+    /// the p99 the milestone is judged on says nothing at all. The number only
+    /// means something when nothing is waiting on the display.
+    bool vsync{true};
 };
 
 /// What the device turned out to be. Reported rather than assumed, because on
@@ -134,6 +150,10 @@ struct DeviceInfo {
     u32         api_minor{0};
     bool        validation_enabled{false};
     bool        portability_subset{false};
+    /// Whether one indirect call can draw many sections and still tell the
+    /// vertex shader which is which. False means the renderer has to fall back
+    /// to a draw per section, so it is reported rather than assumed.
+    bool indirect_first_instance{false};
 };
 
 class Device {
@@ -197,6 +217,15 @@ public:
     /// renderer that gains them later gets them after the decisions they should
     /// have informed.
     [[nodiscard]] f64 last_frame_gpu_ms() const noexcept;
+
+    /// How many frames the device lets the CPU run ahead. Anything the caller
+    /// writes from the CPU and the GPU reads in a frame — an indirect command
+    /// buffer, above all — needs this many copies, or frame N+1 overwrites
+    /// what frame N is still reading.
+    [[nodiscard]] static u32 frames_in_flight() noexcept;
+
+    /// Which of those copies the frame in progress is using.
+    [[nodiscard]] u32 frame_index() const noexcept;
 
     /// Block until the device is idle. Only for teardown and resize.
     void wait_idle();

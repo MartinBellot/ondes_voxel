@@ -105,6 +105,16 @@ struct BufferDesc {
     BufferUsage usage{BufferUsage::Upload};
     /// Shown in captures and validation messages. Worth the bytes.
     std::string_view debug_name;
+    /// Ask for memory the CPU can write into directly, whatever the usage.
+    ///
+    /// For the indirect command buffer this is not an optimisation but the
+    /// point: the commands are rewritten every frame from a frustum cull that
+    /// ran on the CPU a microsecond earlier, and staging them through a copy
+    /// would add a barrier and a second buffer to save nothing. On unified
+    /// memory it is free; on a discrete GPU it trades read bandwidth for the
+    /// staging copy, which is the right way round for write-once/read-once
+    /// data.
+    bool host_visible{false};
 };
 
 struct ImageDesc {
@@ -169,7 +179,13 @@ struct VertexBinding {
 struct PipelineLayoutDesc {
     /// Combined image samplers, in binding order, on set 0.
     u32 sampled_image_count{0};
-    /// Push constant bytes. The whole per-draw state fits here for now.
+    /// Read-only storage buffers, on set 0, in the bindings that follow the
+    /// images. One indirect draw covers every section of a layer, so anything
+    /// that used to vary per draw — a section's origin, above all — has to be
+    /// something the shader can look up rather than something the CPU pushes.
+    u32 storage_buffer_count{0};
+    /// Push constant bytes. What is left is genuinely per pass: the view
+    /// projection, and nothing else.
     u32 push_constant_size{0};
 };
 

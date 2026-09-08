@@ -16,9 +16,22 @@ layout(location = 2) in uint in_word2;
 
 layout(push_constant) uniform Push {
     mat4 view_projection;
-    vec4 section_origin;  // xyz used; w pads to the std430 alignment
 }
 push;
+
+// The section origins, one vec4 a slot, looked up rather than pushed.
+//
+// A single indirect call draws every section of a layer, so there is no moment
+// between two of them at which the CPU could push anything. What an indirect
+// command does carry is firstInstance, and Vulkan defines gl_InstanceIndex as
+// the instance number plus that — so with one instance per command it is
+// exactly the slot the CPU wrote the origin into. vec4 and not vec3: std430
+// aligns a vec3 array element to 16 bytes anyway, and the padding written
+// explicitly is padding nobody has to remember.
+layout(std430, set = 0, binding = 1) readonly buffer Sections {
+    vec4 origins[];
+}
+sections;
 
 layout(location = 0) out vec2 v_uv;
 layout(location = 1) out float v_brightness;
@@ -66,5 +79,6 @@ void main() {
     float shade  = kFaceShade[min(facing, kFacingUnshaded)];
     v_brightness = light * shade * kAmbient[ao];
 
-    gl_Position = push.view_projection * vec4(vec3(x, y, z) + push.section_origin.xyz, 1.0);
+    vec3 origin = sections.origins[gl_InstanceIndex].xyz;
+    gl_Position = push.view_projection * vec4(vec3(x, y, z) + origin, 1.0);
 }

@@ -228,6 +228,8 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       un buffer jetable, ce qui va pour le démarrage et pas pour une frame)*
 - [x] Timestamps GPU dès le départ
 - [ ] Handles de texture en `u32` — bindless **préparé, non implémenté** 🔒
+- [x] `multiDrawIndirect` et `drawIndirectFirstInstance` demandés seulement si
+      le pilote les annonce, et repli mesuré sur un draw par section
 
 ### `ov_render` (L14)
 - [x] Triangle → quad texturé → cube + profondeur + caméra
@@ -240,11 +242,16 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       *(pas greedy : le plan se trompait, voir PROVENANCE)*
 - [x] Vertex packé **12 octets** *(8 ne tient pas : 70 bits nécessaires, le
       calcul est dans PROVENANCE — 8 bits d'`uv` n'adressent pas un atlas)*
-- [ ] Arène device-local 384 Mo, free-list en pages de 4 Ko
+- [x] Arène device-local 384 Mo, free-list en pages de **3 Ko**
+      *(pas 4 Ko : le `vertexOffset` d'une commande indirecte compte des
+      sommets, et 4096 n'est pas un multiple du sommet de 12 octets. 3072 l'est
+      — 256 sommets, 64 quads. 259 Mo utilisés à 12 chunks)*
 - [x] **Index buffer statique partagé** (supprime la mémoire d'index par section)
-- [~] Culling frustum CPU → `drawIndexedIndirect`, 4 draws pour le terrain
-      *(le culling frustum est fait et supprime 55 % des sections ; les draws
-      indirects restent — la mesure à 12 chunks les justifie maintenant)*
+- [x] Culling frustum CPU → `drawIndexedIndirect`, **3 draws** pour le terrain
+      *(3 et non 4 : la couche `cutout_mipped` est vide sur ce monde. 2491
+      sections dessinées en 3 appels ; l'origine de section, qui ne peut plus
+      être poussée, est lue dans un storage buffer indexé par le
+      `firstInstance` de la commande)*
 - [~] Passe translucide triée, index buffer mutable dédié *(la couche existe
       et l'eau s'y dessine ; le tri par distance reste)*
 - [ ] Plafond d'upload par frame (les spikes, pas le FPS moyen, sont le risque)
@@ -256,7 +263,10 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [ ] Prédiction de mouvement et réconciliation
 - [ ] Interpolation d'entités
 - [ ] Mixeur audio, sons 3D atténués, catégories de volume
-- [ ] **Deux clients pour un serveur · p99 ≤ 20 ms à 12 chunks** ⭐
+- [~] **Deux clients pour un serveur · p99 ≤ 20 ms à 12 chunks** ⭐
+      *(le p99 est tenu : 17,77 ms avec vsync, dont 0,41 ms d'enregistrement
+      CPU et 10,91 ms de GPU, à 12 chunks sur M2 en 2560×1440. Les deux
+      clients pour un serveur restent — ils attendent le serveur intégré)*
 - [ ] Golden images en CI sur **Linux + lavapipe** (MoltenVK n'est pas un oracle)
 
 ---

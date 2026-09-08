@@ -69,8 +69,30 @@ std::expected<void, RhiError> Device::Impl::create_swapchain(u32 width, u32 heig
     create.compositeAlpha   = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     // FIFO is the only mode every implementation must support, and it is the
     // right default: tearing is not a trade this project wants to make by
-    // accident.
-    create.presentMode  = VK_PRESENT_MODE_FIFO_KHR;
+    // accident. It is also a measuring instrument that reads 16.67 ms whatever
+    // the renderer does, so a caller that wants a real frame time asks for a
+    // mode that does not block, and takes the one the driver actually offers.
+    create.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+    if (!desc.vsync) {
+        u32 mode_count = 0;
+        vkGetPhysicalDeviceSurfacePresentModesKHR(physical, surface, &mode_count, nullptr);
+        std::vector<VkPresentModeKHR> modes(mode_count);
+        vkGetPhysicalDeviceSurfacePresentModesKHR(physical, surface, &mode_count, modes.data());
+
+        const auto supports = [&](VkPresentModeKHR mode) {
+            return std::ranges::find(modes, mode) != modes.end();
+        };
+        // IMMEDIATE first: it is the only one of the three that never waits, so
+        // it is the only one that measures the renderer rather than the
+        // compositor. MAILBOX still blocks when the queue is full.
+        if (supports(VK_PRESENT_MODE_IMMEDIATE_KHR)) {
+            create.presentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+        } else if (supports(VK_PRESENT_MODE_MAILBOX_KHR)) {
+            create.presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+        } else {
+            OV_LOG_WARN("no non-blocking present mode; frame times stay quantised to the refresh");
+        }
+    }
     create.clipped      = VK_TRUE;
     create.oldSwapchain = swapchain;
 

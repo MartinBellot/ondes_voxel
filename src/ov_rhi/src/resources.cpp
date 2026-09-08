@@ -96,7 +96,7 @@ std::expected<BufferHandle, RhiError> Device::create_buffer(const BufferDesc& de
     info.usage = usage_flags(desc.usage);
 
     VmaAllocationCreateInfo allocation{};
-    if (desc.usage == BufferUsage::Upload) {
+    if (desc.usage == BufferUsage::Upload || desc.host_visible) {
         allocation.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
         allocation.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
                            VMA_ALLOCATION_CREATE_MAPPED_BIT;

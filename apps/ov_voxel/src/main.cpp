@@ -16,6 +16,7 @@
 
 #include "ov/base/log.hpp"
 #include "ov/base/time.hpp"
+#include "ov/client/terrain_renderer.hpp"
 #include "ov/client/window.hpp"
 #include "ov/registry/block_states.hpp"
 #include "ov/render/atlas.hpp"
@@ -62,6 +63,12 @@ struct Options {
     /// flag answers each in one run instead of a rebuild.
     bool cull{true};
     bool backface{true};
+    /// FIFO by default. --no-vsync is a measuring instrument, not a speed
+    /// setting: under FIFO every frame reads back the refresh interval and the
+    /// p99 the milestone is judged on measures the display, not the renderer.
+    bool vsync{true};
+    /// Draw the terrain the old way, one call a section, for comparison.
+    bool indirect{true};
     /// x,y,z,yaw,pitch. Exists so a face can be put in front of the camera and
     /// looked at, which is how the questions a unit test cannot answer — is
     /// this texture mirrored? — actually get settled.
@@ -107,6 +114,10 @@ struct Options {
             options.backface = false;
         } else if (argument == "--no-validation") {
             options.validation = false;
+        } else if (argument == "--no-vsync") {
+            options.vsync = false;
+        } else if (argument == "--no-indirect") {
+            options.indirect = false;
         }
     }
     return options;
@@ -140,19 +151,6 @@ bool write_ppm(const std::filesystem::path& path, std::span<const u8> rgba, u32 
     }
     return static_cast<bool>(file);
 }
-
-struct PushConstants {
-    render::Mat4       view_projection;
-    std::array<f32, 4> section_origin;
-};
-
-/// One meshed section, on the GPU.
-struct SectionDraw {
-    Vec3f               origin;
-    rhi::BufferHandle   vertices;
-    u32                 index_count{0};
-    render::RenderLayer layer{render::RenderLayer::Solid};
-};
 
 [[nodiscard]] std::span<const u8> as_bytes(const auto& container) {
     return std::span(
@@ -301,6 +299,7 @@ int main(int argc, char** argv) {
     desc.validation          = options.validation;
     desc.shader_directory    = (base / "shaders").string();
     desc.pipeline_cache_path = (base / "cache" / "pipelines.bin").string();
+    desc.vsync               = options.vsync;
 
     auto device_result = rhi::Device::create(desc);
     if (!device_result) {
@@ -336,100 +335,55 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // One vertex buffer per section per layer, and ONE index buffer shared by
-    // all of them. At six 32-bit indices a quad, every section that does not
-    // store its own saves 24 bytes per quad — here, several megabytes.
+    // Every section's vertices go into one device-local arena and the terrain
+    // is drawn with one indirect call per layer. What was here before — a
+    // VkBuffer per section per layer, a bind and a push and a draw for each —
+    // cost 10.49 ms at the 99th percentile just to record, at a radius of 12
+    // on an M2. The plan called for this; the measurement is what justified
+    // doing it now rather than later.
     usize max_quads = 0;
     for (const auto& mesh : meshes) {
         for (const auto& layer : mesh.buffers.layers) {
             max_quads = std::max(max_quads, layer.size() / 4);
         }
     }
-    const auto        indices = render::build_shared_quad_indices(static_cast<u32>(max_quads));
-    rhi::BufferHandle index_buffer;
-    {
-        const auto bytes  = as_bytes(indices);
-        auto       buffer = device.create_buffer(
-            rhi::BufferDesc{bytes.size(), rhi::BufferUsage::Index, "shared quad indices"});
-        if (!buffer || !device.upload_buffer(*buffer, bytes)) {
-            return 1;
-        }
-        index_buffer = *buffer;
+
+    client::TerrainRendererDesc terrain_desc;
+    terrain_desc.colour_format         = device.swapchain_format();
+    terrain_desc.backface_culling      = options.backface;
+    terrain_desc.force_per_section_draws = !options.indirect;
+    terrain_desc.max_quads_per_section = static_cast<u32>(std::max<usize>(max_quads, 1));
+    terrain_desc.max_sections =
+        static_cast<u32>(std::max<usize>(meshes.size() * static_cast<usize>(render::RenderLayer::Count), 1024));
+
+    auto terrain = client::TerrainRenderer::create(device, terrain_desc);
+    if (!terrain) {
+        OV_LOG_ERROR("terrain renderer: {}", rhi::to_string(terrain.error()));
+        return 1;
     }
 
-    std::vector<SectionDraw> draws;
-    usize                    vertex_bytes = 0;
+    usize uploaded_sections = 0;
     for (const auto& mesh : meshes) {
         for (usize i = 0; i < static_cast<usize>(render::RenderLayer::Count); ++i) {
             const auto& vertices = mesh.buffers.layers[i];
             if (vertices.empty()) {
                 continue;
             }
-            const auto bytes  = as_bytes(vertices);
-            auto       buffer = device.create_buffer(
-                rhi::BufferDesc{bytes.size(), rhi::BufferUsage::Vertex, "section"});
-            if (!buffer || !device.upload_buffer(*buffer, bytes)) {
+            if (!(*terrain)->add_section(mesh.origin, static_cast<render::RenderLayer>(i),
+                                         vertices)) {
+                OV_LOG_ERROR("the terrain arena would not take section {}", uploaded_sections);
                 return 1;
             }
-            vertex_bytes += bytes.size();
-            draws.push_back(SectionDraw{mesh.origin, *buffer,
-                                        static_cast<u32>(vertices.size() / 4 * 6),
-                                        static_cast<render::RenderLayer>(i)});
+            ++uploaded_sections;
         }
     }
-    // Draw solid first, then cutout, then translucent: the order the layers
-    // exist for.
-    std::ranges::stable_sort(draws, [](const SectionDraw& a, const SectionDraw& b) {
-        return static_cast<u8>(a.layer) < static_cast<u8>(b.layer);
-    });
-    OV_LOG_INFO("gpu: {} draws, {:.1f} MiB of vertices, {:.1f} MiB of shared indices", draws.size(),
-                static_cast<f64>(vertex_bytes) / (1024.0 * 1024.0),
-                static_cast<f64>(indices.size() * 4) / (1024.0 * 1024.0));
-
-    // Three uint attributes rather than one uvec3: R32G32B32_UINT is not
-    // universally supported for vertex input, and a uvec3 attribute occupies
-    // one location rather than three.
-    rhi::VertexBinding binding;
-    binding.stride = sizeof(render::TerrainVertex);
-    binding.attributes.push_back(rhi::VertexAttribute{0, rhi::Format::R32Uint, 0});
-    binding.attributes.push_back(rhi::VertexAttribute{1, rhi::Format::R32Uint, 4});
-    binding.attributes.push_back(rhi::VertexAttribute{2, rhi::Format::R32Uint, 8});
-
-    const auto make_pipeline = [&](rhi::BlendMode blend, bool depth_write, rhi::CullMode cull) {
-        rhi::GraphicsPipelineDesc pipeline;
-        pipeline.vertex_shader              = "terrain.vert.spv";
-        pipeline.fragment_shader            = "terrain.frag.spv";
-        pipeline.vertex_bindings            = {binding};
-        pipeline.layout.sampled_image_count = 1;
-        pipeline.layout.push_constant_size  = sizeof(PushConstants);
-        pipeline.colour_format              = device.swapchain_format();
-        pipeline.depth_format               = rhi::Format::Depth32Float;
-        pipeline.depth_test                 = true;
-        pipeline.depth_write                = depth_write;
-        pipeline.cull_mode                  = cull;
-        pipeline.blend                      = blend;
-        pipeline.debug_name                 = "terrain";
-        return device.create_graphics_pipeline(pipeline);
-    };
-
-    auto solid_pipeline = make_pipeline(
-        rhi::BlendMode::None, true, options.backface ? rhi::CullMode::Back : rhi::CullMode::None);
-    if (!solid_pipeline) {
-        OV_LOG_ERROR("pipeline: {}", rhi::to_string(solid_pipeline.error()));
-        return 1;
-    }
-    // Cutout models are not closed solids — a leaf block's faces are visible
-    // from both sides — so back-face culling would eat half of them.
-    auto cutout_pipeline = make_pipeline(rhi::BlendMode::None, true, rhi::CullMode::None);
-    if (!cutout_pipeline) {
-        return 1;
-    }
-    // Translucent blends and does NOT write depth, so that what is behind a
-    // pane of water still draws. Sorting it back to front is the next step and
-    // is not done yet.
-    auto translucent_pipeline = make_pipeline(rhi::BlendMode::Alpha, false, rhi::CullMode::None);
-    if (!translucent_pipeline) {
-        return 1;
+    {
+        const auto& terrain_stats = (*terrain)->stats();
+        OV_LOG_INFO("gpu: {} sections in one arena, {:.1f} of {} MiB used, {} free block(s)",
+                    terrain_stats.sections_resident,
+                    static_cast<f64>(terrain_stats.arena_used) / (1024.0 * 1024.0),
+                    terrain_stats.arena_capacity / (1024 * 1024),
+                    terrain_stats.arena_largest_free == 0 ? 0 : 1);
     }
 
     rhi::ImageHandle depth_image;
@@ -502,6 +456,7 @@ int main(int argc, char** argv) {
     }
 
     std::vector<f64> cpu_frame_ms;
+    std::vector<f64> record_ms;
     std::vector<f64> gpu_frame_ms;
     u32              drawn_last_frame = 0;
     u32              rendered         = 0;
@@ -559,7 +514,12 @@ int main(int argc, char** argv) {
             return 1;
         }
 
-        rhi::CommandList& cmd    = **frame;
+        // The timer starts here and not before begin_frame: acquiring an image
+        // waits on the display and on the frame the GPU is still running, and
+        // folding that into "what the CPU spends" would make the number report
+        // the GPU's cost as the CPU's.
+        const auto        record_start = std::chrono::steady_clock::now();
+        rhi::CommandList& cmd          = **frame;
         const u32         width  = device.swapchain_width();
         const u32         height = device.swapchain_height();
 
@@ -587,49 +547,10 @@ int main(int argc, char** argv) {
 
         const auto view_projection =
             camera.view_projection(static_cast<f32>(width) / static_cast<f32>(height));
-        const std::array<rhi::ImageHandle, 1>   images{*atlas_image};
-        const std::array<rhi::SamplerHandle, 1> samplers{*sampler};
+        const auto frustum = render::Frustum::from_view_projection(view_projection);
 
-        cmd.bind_index_buffer(index_buffer);
-
-        // Frustum culling on the CPU, before anything is bound. One plane test
-        // against a box removes most of the world at a stroke; the compute
-        // shader version comes after this is measured and found wanting.
-        const auto frustum   = render::Frustum::from_view_projection(view_projection);
-        u32        submitted = 0;
-
-        render::RenderLayer bound = render::RenderLayer::Count;
-        for (const auto& draw : draws) {
-            const Vec3f minimum = draw.origin;
-            const Vec3f maximum{draw.origin.x + 16.0F, draw.origin.y + 16.0F,
-                                draw.origin.z + 16.0F};
-            if (options.cull && !frustum.intersects(minimum, maximum)) {
-                continue;
-            }
-            ++submitted;
-
-            if (draw.layer != bound) {
-                bound               = draw.layer;
-                const auto pipeline = draw.layer == render::RenderLayer::Solid ? *solid_pipeline
-                                      : draw.layer == render::RenderLayer::Translucent
-                                          ? *translucent_pipeline
-                                          : *cutout_pipeline;
-                cmd.bind_pipeline(pipeline);
-                cmd.bind_textures(pipeline, images, samplers);
-            }
-            const auto pipeline = draw.layer == render::RenderLayer::Solid ? *solid_pipeline
-                                  : draw.layer == render::RenderLayer::Translucent
-                                      ? *translucent_pipeline
-                                      : *cutout_pipeline;
-
-            PushConstants push;
-            push.view_projection = view_projection;
-            push.section_origin  = {draw.origin.x, draw.origin.y, draw.origin.z, 0.0F};
-            cmd.push_constants(pipeline, &push, sizeof(push));
-            cmd.bind_vertex_buffer(0, draw.vertices);
-            cmd.draw_indexed(draw.index_count);
-        }
-        drawn_last_frame = submitted;
+        (*terrain)->draw(cmd, view_projection, frustum, *atlas_image, *sampler, options.cull);
+        drawn_last_frame = (*terrain)->stats().sections_drawn;
 
         cmd.end_rendering();
 
@@ -645,6 +566,10 @@ int main(int argc, char** argv) {
             cmd.transition_swapchain(rhi::ResourceState::ColourAttachment,
                                      rhi::ResourceState::Present);
         }
+
+        record_ms.push_back(
+            std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - record_start)
+                .count());
 
         auto presented = device.end_frame();
         ++rendered;
@@ -705,13 +630,19 @@ int main(int argc, char** argv) {
         }
         return samples;
     };
-    const auto cpu = drop(cpu_frame_ms);
-    const auto gpu = drop(gpu_frame_ms);
+    const auto cpu    = drop(cpu_frame_ms);
+    const auto record = drop(record_ms);
+    const auto gpu    = drop(gpu_frame_ms);
 
-    fmt::print("{} frames ({} after warm-up), {} of {} sections drawn last frame\n", rendered,
-               cpu.size(), drawn_last_frame, draws.size());
-    fmt::print("cpu  p50 {:.2f} ms   p99 {:.2f} ms   max {:.2f} ms\n", percentile(cpu, 0.50),
-               percentile(cpu, 0.99), percentile(cpu, 1.0));
+    const auto& terrain_stats = (*terrain)->stats();
+    fmt::print("{} frames ({} after warm-up), {} of {} sections drawn last frame in {} call(s)\n",
+               rendered, cpu.size(), drawn_last_frame, terrain_stats.sections_resident,
+               terrain_stats.draw_calls);
+    fmt::print("cpu  p50 {:.2f} ms   p99 {:.2f} ms   max {:.2f} ms{}\n", percentile(cpu, 0.50),
+               percentile(cpu, 0.99), percentile(cpu, 1.0),
+               options.vsync ? "   (vsync: this is the refresh, not the work)" : "");
+    fmt::print("rec  p50 {:.2f} ms   p99 {:.2f} ms   max {:.2f} ms\n", percentile(record, 0.50),
+               percentile(record, 0.99), percentile(record, 1.0));
     fmt::print("gpu  p50 {:.2f} ms   p99 {:.2f} ms   max {:.2f} ms\n", percentile(gpu, 0.50),
                percentile(gpu, 0.99), percentile(gpu, 1.0));
     return 0;

@@ -2559,3 +2559,84 @@ Le vertex packé couvre `[-8, 24)` bloc **relatif à l'origine de la section**, 
 c'est ce qui rend la position d'une section un push constant plutôt qu'une
 coordonnée absolue : une coordonnée monde y = 319 n'entre pas dans 16 bits à
 1/2048 de bloc. Le mailleur émet donc en local et la matrice ajoute l'origine.
+
+## Le terrain en trois appels — et une mesure à refaire
+
+*2026-09-08.*
+
+### D'abord : la mesure précédente était fausse
+
+La section ci-dessus conclut « **le critère de sortie n'est pas tenu** : 32,5 ms
+côté CPU ». Ce chiffre a été relevé dans un build **debug**, et sous **vsync**.
+Les deux invalident la conclusion, chacun pour sa propre raison :
+
+- en debug, `-O0` ; ce n'est pas le binaire dont le jalon parle ;
+- sous FIFO, chaque frame attend le rafraîchissement. Un renderer qui travaille
+  4 ms et un qui en travaille 15 rapportent tous les deux 16,67 ms. Le p50 de
+  16,66 ms de la mesure précédente n'est pas une coïncidence : c'est
+  exactement 1/60 s. **On mesurait l'écran.**
+
+Refaite en release, la même scène donne un p99 CPU de **17,83 ms** — sous les
+20 — et un p99 GPU de **12,28 ms**. Le critère était déjà tenu, et le chiffre
+qui le disait ne mesurait rien.
+
+Deux corollaires, tirés depuis :
+
+1. `--no-vsync` existe maintenant, et c'est un **instrument de mesure, pas un
+   réglage de vitesse**. `DeviceDesc::vsync` le dit dans son commentaire.
+2. Le chronomètre part **après** `begin_frame`. Acquérir une image attend
+   l'écran *et* la frame que le GPU n'a pas finie ; l'inclure fait rapporter le
+   coût du GPU comme s'il était celui du CPU. Avec le chronomètre au mauvais
+   endroit l'enregistrement semblait coûter 3,2 ms ; au bon, 0,13.
+
+### Ce qui restait à faire, et ce qu'il rapporte
+
+Le vrai coût, une fois mesuré proprement, était bien celui que le plan avait
+nommé : 2491 draws, chacun avec son bind de vertex buffer et son push constant,
+puisés dans **9674 `VkBuffer` distincts**. Soit **5,64 ms p50 / 10,49 ms p99**
+d'enregistrement CPU, pour un budget de frame de 20.
+
+Les sommets vivent désormais dans **une seule arène device-local de 384 Mio**
+(259 utilisés à 12 chunks, en un seul bloc), et le terrain se dessine en **un
+`vkCmdDrawIndexedIndirect` par couche**.
+
+Décomposition A/B, même monde, même caméra, même arène, seul le chemin de
+soumission change (`--no-indirect`) :
+
+| chemin | draws | enregistrement CPU p50 / p99 |
+|---|---|---|
+| un `VkBuffer` par section, un draw chacun | 2491 | 5,64 / 10,49 ms |
+| arène partagée, un draw par section | 2491 | 2,22 / 2,76 ms |
+| arène partagée, **indirect par couche** | **3** | **0,12 / 0,83 ms** |
+
+L'arène supprime le rebind ; l'indirect supprime le reste. Les deux moitiés se
+voient séparément, ce qui est le seul moyen de savoir laquelle a servi.
+
+Sous vsync — c'est-à-dire tel que le jeu tourne — à 12 chunks en 2560×1440 sur
+M2 : **CPU p99 17,77 ms**, dont **0,41 ms d'enregistrement**, et **GPU p99
+10,91 ms**.
+
+### Deux points de spécification
+
+**La page de l'allocateur ne peut pas faire 4 Ko.** Le plan l'annonçait ainsi.
+Mais le `vertexOffset` d'un `VkDrawIndexedIndirectCommand` compte des
+**sommets**, pas des octets — c'est ce qui permet à toutes les sections de
+partager le même index buffer — donc toute allocation doit commencer sur un
+sommet entier. 4096 n'est pas un multiple de 12. **3072 l'est** : 256 sommets,
+64 quads. Source : Vulkan 1.3, `VkDrawIndexedIndirectCommand`.
+
+**L'origine de section n'est plus poussée, elle est lue.** Un seul appel
+indirect dessine toutes les sections d'une couche : il n'existe plus d'instant
+entre deux draws où le CPU pourrait pousser quoi que ce soit. Le seul canal
+par-draw d'une commande indirecte qui atteigne le vertex shader est
+`firstInstance`, et Vulkan définit `gl_InstanceIndex` comme le numéro
+d'instance **plus** `firstInstance` — donc avec une instance par commande, il
+vaut exactement le slot où le CPU a écrit l'origine. Les origines sont dans un
+storage buffer indexé par lui. Source : Vulkan 1.3, « Built-in Variables »,
+`InstanceIndex`, et `VkDrawIndexedIndirectCommand::firstInstance`.
+
+Cela demande `multiDrawIndirect` **et** `drawIndirectFirstInstance`, deux
+features optionnelles. Elles ne sont demandées que si le pilote les annonce, et
+`DeviceInfo::indirect_first_instance` dit lesquelles ont été obtenues ; sinon le
+renderer retombe sur un draw par section — qui garde l'arène et la lecture
+d'origine, et ne perd que l'appel unique. MoltenVK sur M2 les fournit.

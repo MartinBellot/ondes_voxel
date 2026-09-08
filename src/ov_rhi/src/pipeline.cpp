@@ -185,8 +185,9 @@ std::expected<PipelineHandle, RhiError> Device::create_graphics_pipeline(
 
     // ── Layout ──────────────────────────────────────────────────────────────
     PipelineResource resource;
-    resource.sampled_image_count = desc.layout.sampled_image_count;
-    resource.push_constant_size  = desc.layout.push_constant_size;
+    resource.sampled_image_count  = desc.layout.sampled_image_count;
+    resource.storage_buffer_count = desc.layout.storage_buffer_count;
+    resource.push_constant_size   = desc.layout.push_constant_size;
 
     std::vector<VkDescriptorSetLayoutBinding> set_bindings;
     for (u32 i = 0; i < desc.layout.sampled_image_count; ++i) {
@@ -195,6 +196,16 @@ std::expected<PipelineHandle, RhiError> Device::create_graphics_pipeline(
         binding.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         binding.descriptorCount = 1;
         binding.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+        set_bindings.push_back(binding);
+    }
+    // Vertex stage: the one thing these carry today is the per-section origin,
+    // read once per vertex now that the draw cannot push it.
+    for (u32 i = 0; i < desc.layout.storage_buffer_count; ++i) {
+        VkDescriptorSetLayoutBinding binding{};
+        binding.binding         = desc.layout.sampled_image_count + i;
+        binding.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        binding.descriptorCount = 1;
+        binding.stageFlags      = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         set_bindings.push_back(binding);
     }
 

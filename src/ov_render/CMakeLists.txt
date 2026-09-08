@@ -36,6 +36,7 @@ ov_add_library(ov_render
         src/model.cpp
         src/png.cpp
         src/terrain_vertex.cpp
+        src/vertex_arena.cpp
     DEPS
         ov_io
         ov_math
@@ -62,6 +63,7 @@ ov_add_test(test_ov_render
         tests/test_model.cpp
         tests/test_png.cpp
         tests/test_terrain_vertex.cpp
+        tests/test_vertex_arena.cpp
     DEPS ov_render
     LABELS unit
 )
