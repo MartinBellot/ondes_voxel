@@ -825,6 +825,12 @@ struct Player {
     std::array<net::ItemStack, 46> inventory{};
     i16                            held_slot{0};
 
+    /// A drag in progress: the slots painted so far, and which button started
+    /// it. Vanilla calls this "painting" and sends it as three packets — start,
+    /// each slot, end — so the state has to live between them.
+    std::vector<i16> drag_slots;
+    i8               drag_button{-1};
+
     /// The container this player has open, if any.
     u8             window_id{0};
     bool           window_open{false};
@@ -1959,6 +1965,12 @@ int main(int argc, char** argv) {
                     }
 
                     case net::serverbound::kSetCreativeSlot: {
+                        if (options.survival) {
+                            // In survival the server owns the inventory. Vanilla
+                            // ignores this packet outside creative, and honouring
+                            // it would let any client hand itself anything.
+                            return true;
+                        }
                         const auto creative = net::parse_set_creative_slot(body);
                         if (!creative) {
                             return false;
@@ -2248,6 +2260,127 @@ int main(int argc, char** argv) {
                         };
 
                         bool handled = false;
+
+                        // Number keys: the clicked slot and a hotbar slot trade
+                        // places. The hotbar is 54..62 in the window and 36..44
+                        // in the player, which is the same off-by-nine as
+                        // everywhere else in this numbering.
+                        if (click->mode == 2 && click->button >= 0 && click->button < 9) {
+                            net::ItemStack* slot = slot_ref(click->slot);
+                            net::ItemStack* hotbar =
+                                &player.inventory[36 + static_cast<usize>(click->button)];
+                            if (slot != nullptr && slot != hotbar) {
+                                std::swap(*slot, *hotbar);
+                            }
+                            handled = true;
+                        }
+
+                        // Dropping. Vanilla sends this as a click on a slot with
+                        // mode 4, or on nothing at all with slot -999 to throw
+                        // what the cursor holds.
+                        if (click->mode == 4) {
+                            net::ItemStack* slot =
+                                click->slot == -999 ? &player.carried : slot_ref(click->slot);
+                            if (slot != nullptr && !slot->empty()) {
+                                const i8 amount =
+                                    click->button == 1 ? slot->count : static_cast<i8>(1);
+                                net::ItemStack thrown = *slot;
+                                thrown.count          = amount;
+                                slot->count           = static_cast<i8>(slot->count - amount);
+                                if (slot->count <= 0) {
+                                    *slot = {};
+                                }
+
+                                ItemEntity item;
+                                item.entity_id = next_entity_id.fetch_add(1);
+                                item.uuid      = net::Uuid{
+                                    0x4f564954454d0000ULL | static_cast<u64>(item.entity_id),
+                                    static_cast<u64>(item.entity_id) * 0x9E3779B97F4A7C15ULL};
+                                item.x     = player.x;
+                                item.y     = player.y + 1.0;
+                                item.z     = player.z;
+                                item.stack = thrown;
+                                item.born  = server_tick.load(std::memory_order_relaxed);
+                                // Longer than a broken block's: a player who
+                                // throws something away must be able to step
+                                // aside before it comes back.
+                                item.pickup_delay = 40;
+                                std::vector<ItemEntity> thrown_items;
+                                thrown_items.push_back(std::move(item));
+                                publish_items(thrown_items);
+                            }
+                            handled = true;
+                        }
+
+                        // Dragging, which vanilla calls painting: one packet to
+                        // start, one per slot crossed, one to end. Nothing moves
+                        // until the end, so a drag that is never finished costs
+                        // nothing.
+                        if (click->mode == 5) {
+                            const i8 phase = static_cast<i8>(click->button % 4);
+                            if (phase == 0) {
+                                player.drag_slots.clear();
+                                player.drag_button = static_cast<i8>(click->button);
+                            } else if (phase == 1) {
+                                if (player.drag_button >= 0 &&
+                                    std::ranges::find(player.drag_slots, click->slot) ==
+                                        player.drag_slots.end()) {
+                                    player.drag_slots.push_back(click->slot);
+                                }
+                            } else if (phase == 2 && player.drag_button >= 0) {
+                                const bool one_each = player.drag_button >= 4;
+                                const i8   limit =
+                                    registries ? registries->max_stack_size(player.carried.item_id)
+                                               : i8{64};
+                                // Left drag splits evenly and keeps the
+                                // remainder on the cursor; right drag puts one
+                                // in each. Slots that already hold something
+                                // else are skipped rather than overwritten.
+                                std::vector<net::ItemStack*> targets;
+                                for (const i16 index : player.drag_slots) {
+                                    net::ItemStack* slot = slot_ref(index);
+                                    if (slot == nullptr || player.carried.empty()) {
+                                        continue;
+                                    }
+                                    if (slot->empty() || (slot->item_id == player.carried.item_id &&
+                                                          slot->count < limit)) {
+                                        targets.push_back(slot);
+                                    }
+                                }
+                                if (!targets.empty() && !player.carried.empty()) {
+                                    const i8 share =
+                                        one_each ? i8{1}
+                                                 : static_cast<i8>(player.carried.count /
+                                                                   static_cast<i8>(targets.size()));
+                                    for (net::ItemStack* slot : targets) {
+                                        if (player.carried.count <= 0 || share <= 0) {
+                                            break;
+                                        }
+                                        const i8 room = static_cast<i8>(
+                                            limit - (slot->empty() ? 0 : slot->count));
+                                        const i8 moved =
+                                            std::min({share, room, player.carried.count});
+                                        if (moved <= 0) {
+                                            continue;
+                                        }
+                                        if (slot->empty()) {
+                                            *slot       = player.carried;
+                                            slot->count = moved;
+                                        } else {
+                                            slot->count = static_cast<i8>(slot->count + moved);
+                                        }
+                                        player.carried.count =
+                                            static_cast<i8>(player.carried.count - moved);
+                                    }
+                                    if (player.carried.count <= 0) {
+                                        player.carried = {};
+                                    }
+                                }
+                                player.drag_slots.clear();
+                                player.drag_button = -1;
+                            }
+                            handled = true;
+                        }
 
                         if (click->mode == 1 && click->slot >= 0) {
                             // Shift-click: the stack moves to the other half of

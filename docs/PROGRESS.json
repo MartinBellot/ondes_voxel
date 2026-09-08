@@ -51,8 +51,8 @@
     },
     "M4": {
       "name": "Monde persistant",
-      "status": "in_progress",
-      "done": 17,
+      "status": "done",
+      "done": 18,
       "total": 18,
       "exit_criterion": "Round-trip croisé : notre sauvegarde s'ouvre dans Minecraft vanilla et réciproquement, sans perte.",
       "blocked": []
@@ -139,7 +139,8 @@
     "collision_shapes": "4327 formes, 12054 boites en unites de 1/32, par etat ; verifiees indirectement : la regle de connexion reconstruite a partir d'elles reproduit 23358/23358 faces mesurees sur un vrai serveur, et le rejeu par le code livre donne le meme chiffre",
     "connection_rule": "clotures, portillons, vitres et barreaux ; liste d'exceptions derivee des ecarts plutot que recopiee (feuillages, shulker box, barriere, citrouilles, melon, target) et deux blocs dont la forme de support est pleine quand la collision ne l'est pas (mud, soul_sand)",
     "stair_shapes": "256 cas releves en entier sur un vrai serveur (4 orientations x 2 moities x 4 cotes x 4 x 2), plus 64 cas pour le troisieme bloc qui annule le coin : 32 empeches, 32 conserves ; rejeu par le code livre 256/256",
-    "wall_states": "releve croisant 6 configurations de voisinage et 6 blocs au-dessus, plus 7 sortes de voisin : un cote monte a tall quand le bloc du dessus remplit sa face inferieure, et le poteau tombe quand les connexions sont symetriques sur les deux axes — la croix complete comprise"
+    "wall_states": "releve croisant 6 configurations de voisinage et 6 blocs au-dessus, plus 7 sortes de voisin : un cote monte a tall quand le bloc du dessus remplit sa face inferieure, et le poteau tombe quand les connexions sont symetriques sur les deux axes — la croix complete comprise",
+    "container_modes": "les six modes de clic appliques cote serveur : clic simple, shift-clic, touche numerique, lacher et glisse ; un glisse gauche de 64 pierres sur trois slots donne 21/21/21 avec le reste sur le curseur, comme vanilla"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",

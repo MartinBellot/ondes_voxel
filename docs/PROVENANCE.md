@@ -1251,12 +1251,27 @@ ne le peut pas.
 dur : un coffre 9×3 n'a pas le même numéro qu'un 9×6, et se tromper ouvre une
 fenêtre de la mauvaise taille sur les bonnes données.
 
-**Ce qui est traité et ce qui ne l'est pas.** Les clics gauche et droit (mode 0)
-et le shift-clic (mode 1) sont appliqués côté serveur. Les glissés et les
-touches numériques ne le sont pas : la fenêtre est **réémise en entier** après
-chaque clic, donc ce que le serveur n'a pas implémenté disparaît de l'écran au
-lieu d'y rester sous forme d'objet qui n'existe pas. C'est visible et sans
-danger ; la duplication, elle, ne le serait pas.
+**Les six modes de clic.** Tous sont désormais appliqués côté serveur : clic
+gauche et droit (0), shift-clic (1), touche numérique (2), lâcher (4) et glissé
+(5). La fenêtre est réémise en entier après chaque clic, donc un mode non traité
+disparaîtrait de l'écran au lieu d'y laisser un objet qui n'existe pas — visible
+et sans danger, là où la duplication ne le serait pas.
+
+Le glissé est envoyé en trois temps — un paquet pour commencer, un par slot
+traversé, un pour finir — donc son état vit entre les paquets. Rien ne bouge
+avant la fin, si bien qu'un glissé jamais terminé ne coûte rien. À gauche la
+pile se répartit à parts égales et le reste demeure sur le curseur : 64 pierres
+sur trois slots donnent 21, 21, 21 et un exemplaire en main. À droite, un
+exemplaire par slot.
+
+Les numéros de slot restent le piège : la barre d'action est 54 à 62 dans la
+fenêtre et 36 à 44 chez le joueur. Une touche numérique sur la fenêtre 55 avec
+le bouton 1 désigne **le même slot des deux côtés**, et le premier essai n'a
+donc rien échangé — ce qui ressemblait à un bug et n'en était pas un.
+
+**L'inventaire est autoritatif en survie.** Le paquet qui règle un slot en
+créatif est ignoré hors créatif, comme le fait vanilla : l'honorer laisserait
+n'importe quel client se donner n'importe quoi.
 
 Cliquer un coffre l'ouvre toujours. Vanilla ne pose contre un coffre que si le
 joueur est accroupi, ce qui n'est pas encore suivi.

@@ -205,7 +205,7 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] Entités objet : les butins tombent au sol et se ramassent *(sans gravité ni sauvegarde)*
 - [x] Conteneurs : ouverture, clic gauche et droit, hotbar
 - [x] Shift-clic : fusion jusqu'à la taille de pile réelle, mesurée item par item
-- [ ] Glissés, touches numériques, inventaire du joueur autoritatif
+- [x] Glissés, touches numériques, lâcher d'objet, inventaire autoritatif en survie
 - [x] Mode créatif, sélection d'items
 - [x] Sauvegarde périodique et à l'arrêt *(asynchrone via COW : à venir)*
 - [x] **Round-trip croisé avec Minecraft vanilla, sans perte** ⭐
