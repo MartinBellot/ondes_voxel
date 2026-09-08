@@ -1207,3 +1207,26 @@ C'est mesuré **par bloc**, pas par état : la variation selon l'état n'a pas �
 sondée. Les blocs atténuants sont traités comme transparents — se tromper d'un
 niveau ou deux vaut mieux que de quinze. Et les **formes de collision**, qui
 bloquent le mouvement autoritatif, restent non mesurées.
+
+### Vérification sur un vrai monde 1.20.1
+
+Les vérifications d'aller-retour précédentes portaient sur un monde **1.21
+moddé** — la seule sauvegarde réelle disponible. Un monde généré par le jeu en
+**1.20.1**, la version cible, permet enfin de fermer la boucle sur la bonne
+version.
+
+| Mesure | Résultat |
+|---|---|
+| `level.dat` (gzip, DataVersion 3465) | aller-retour **octet-identique** |
+| 4 fichiers région, 2601 chunks | **2601/2601** identiques en lecture |
+| Les mêmes, réécrits par notre écrivain | **2601/2601** identiques |
+| Blocs servis par notre serveur vs le fichier | **180/180** positions, 13 types de blocs |
+
+Les 13 types rencontrés — air, andésite, bedrock, deepslate, minerai d'or du
+deepslate, diorite, terre, granite, herbe, gravier, pierre, tuff, eau — couvrent
+du terrain généré réel, pas un superflat.
+
+Observation de performance : charger et envoyer les 289 chunks d'une connexion
+prend **environ 10 secondes en build debug** sur un monde réel, contre 0,75 s sur
+un superflat généré. La différence est le décodage des palettes et le calcul de
+lumière sur des chunks pleins.
