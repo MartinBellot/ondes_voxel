@@ -111,6 +111,12 @@ void ChunkGenerator::generate(world::Chunk& chunk) const {
     }
 
     chunk.recompute_heightmaps();
+
+    // The surface rules, after the biomes and never before: they ask which
+    // biome a block is in on almost every line.
+    if (surface_ != nullptr) {
+        surface_->build(chunk, *router_, *biomes_, *blocks_);
+    }
 }
 
 }  // namespace ov::worldgen
