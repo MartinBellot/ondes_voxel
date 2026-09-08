@@ -221,11 +221,14 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 
 ### `ov_render` (L14)
 - [ ] Triangle → quad texturé → cube + profondeur + caméra
-- [ ] **Pipeline blockstate → variant → model → parent → elements → faces →
-      rotations → uvlock** *(1-2 semaines, la vraie surprise du jalon)*
+- [x] **Pipeline blockstate → variant → model → parent → elements → faces →
+      rotations → uvlock** *(1005 blockstates, 6081 références, 62227 quads,
+      0 échec — `ov_modelbake run/assets`)*
 - [ ] Stitcher d'atlas, mips, animations `.mcmeta`
-- [ ] Mesher greedy avec occlusion ambiante par sommet
-- [ ] Vertex packé 8 octets
+- [ ] Mailleur **par face depuis le modèle**, occlusion ambiante par sommet
+      *(pas greedy : le plan se trompait, voir PROVENANCE — la règle AO et la
+      lumière lissée sont écrites et testées, le mailleur reste à faire)*
+- [x] Vertex packé 8 octets
 - [ ] Arène device-local 384 Mo, free-list en pages de 4 Ko
 - [ ] **Index buffer statique partagé** (supprime la mémoire d'index par section)
 - [ ] Culling frustum CPU → `drawIndexedIndirect`, 4 draws pour le terrain

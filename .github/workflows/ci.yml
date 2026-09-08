@@ -72,6 +72,17 @@ jobs:
       - run: cmake --build --preset linux-server-only
       - run: ctest --preset linux-server-only
 
+      - name: The renderer was not even compiled
+        # The frontier is a build-graph fact, not just a link-time one. If
+        # ov_render ever appears here, something has moved a client module
+        # below OV_BUILD_CLIENT and the headless guarantee has quietly gone.
+        run: |
+          if [ -e build/linux-server-only/src/ov_render ]; then
+            echo "::error::ov_render was configured into the headless build."
+            exit 1
+          fi
+          echo "No renderer in the headless build tree."
+
       - name: The dedicated server links against no rendering library
         run: |
           BIN=build/linux-server-only/bin/ov_dedicated

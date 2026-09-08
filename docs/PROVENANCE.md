@@ -1514,3 +1514,216 @@ tôt, donc le « + 1 » y est déjà. Un décalage d'un tick n'est pas cosmétiq
 client prédit la même arithmétique, et un bloc cassé un tick trop tôt
 réapparaît sous les yeux du joueur.
 
+
+---
+
+## Modèles de blocs : blockstate → variant → modèle → parent → faces (`ov_render`)
+
+Le rendu de vanilla est **piloté par les modèles**, pas par une géométrie écrite
+en dur. Chaque état de bloc traverse `blockstates/<bloc>.json`, y trouve une
+référence de modèle et une rotation, puis `models/<chemin>.json` et sa chaîne de
+`parent` jusqu'à une liste de boîtes. Un escalier n'est pas un cas particulier
+du moteur : c'est trois boîtes dans un fichier JSON.
+
+Source : `https://minecraft.wiki/w/Tutorials/Models` et
+`https://minecraft.wiki/w/Model` (format de modèle et de blockstate). Les
+assets eux-mêmes — 1005 blockstates, 2016 modèles de bloc de l'instance 1.20.1
+— servent d'oracle secondaire partout où la documentation reste vague.
+
+### Écart assumé au plan : pas de mailleur greedy
+
+Le plan initial prévoyait « mesher greedy + AO ». **C'est une erreur pour un
+objectif de parité, et elle est corrigée ici.** Un mailleur greedy fusionne des
+faces adjacentes en un grand quad. Cela suppose deux choses que vanilla ne
+respecte pas :
+
+1. **que les blocs soient des cubes.** Un escalier, une clôture, une fleur, une
+   dalle, une trappe — la majorité du contenu — ne sont pas des cubes pleins. Un
+   greedy ne peut fusionner que le sous-ensemble cubique et doit émettre le
+   reste face par face de toute façon, donc il ajoute un chemin de code sans
+   supprimer l'autre ;
+2. **que l'éclairage soit constant sur la face fusionnée.** L'occlusion
+   ambiante et la lumière lissée de vanilla sont **par sommet**, calculées
+   depuis les voisins de chaque coin. Fusionner deux faces détruit les sommets
+   intermédiaires, donc détruit l'information. Le résultat n'est pas « presque
+   pareil » : les dégradés disparaissent et le terrain devient plat.
+
+L'émission est donc **par face, depuis le modèle baké**, ce que fait vanilla.
+La ligne correspondante de `ROADMAP.md` a été réécrite.
+
+### La règle que la documentation ne donne pas : l'`uv` généré
+
+Le format documente `uv` comme « optionnel, généré depuis la position de
+l'élément » sans dire *comment*. Il a fallu le retrouver.
+
+D'abord par la géométrie : sur chacune des quatre faces latérales, la texture
+doit apparaître **non miroitée vue de l'extérieur**, `v` croissant vers le bas.
+Cela donne un axe `u` et un axe `v` par face. Ensuite par les données : les
+modèles de vanilla écrivent souvent un `uv` explicite qui reproduit exactement
+ce que le générateur aurait produit, ce qui rend l'hypothèse mesurable.
+
+| Face | u | v |
+|---|---|---|
+| `down` | `x` | `z` |
+| `up` | `x` | `z` |
+| `north` | `16 − x` | `16 − y` |
+| `south` | `x` | `16 − y` |
+| `west` | `z` | `16 − y` |
+| `east` | `16 − z` | `16 − y` |
+
+`down` et `up` partagent la même base — `down` est donc miroitée par rapport à
+la règle « vue de l'extérieur ». Ce n'est pas une simplification de notre part :
+c'est ce que les données imposent, unanimement (12 faces asymétriques sur 12).
+
+Corroboration directe, `block/stairs`, élément supérieur `from [8,8,0]`
+`to [16,16,16]` : les cinq `uv` écrits à la main dans le fichier de vanilla —
+`up [8,0,16,16]`, `north [0,0,8,8]`, `south [8,0,16,8]`, `west [0,0,16,8]`,
+`east [0,0,16,8]` — sont **exactement** ceux que la table ci-dessus génère. Un
+test unitaire les rejoue.
+
+### Mesure à l'échelle du corpus, et l'expérience qui tranche
+
+`tools/ov_modelbake` rejoue la table sur les 55 503 faces qui écrivent un `uv`
+explicite et compte celles où la valeur écrite à la main est celle qu'on aurait
+générée :
+
+| Face | `uv` écrits | d'accord | table retenue | table miroir |
+|---|---|---|---|---|
+| `down` | 6 647 | 4 656 | **70,0 %** | — |
+| `up` | 9 778 | 7 809 | **79,9 %** | — |
+| `north` | 10 547 | 6 254 | **59,3 %** | 35,1 % |
+| `south` | 10 377 | 6 922 | **66,7 %** | — |
+| `west` | 9 485 | 6 470 | **68,2 %** | — |
+| `east` | 8 669 | 5 515 | **63,6 %** | 55,3 % |
+| **total** | **55 503** | **37 626** | **67,8 %** | 61,9 % |
+
+Le taux n'est pas de 100 % et ne doit pas l'être : un `uv` explicite sert
+justement, la plupart du temps, à s'écarter du défaut (un escalier réutilise la
+moitié de la texture de son côté). Ce qui compte est qu'**aucune face ne
+s'effondre**. `north` et `east` étaient les deux orientations dont un premier
+échantillon de dix fichiers laissait douter ; l'expérience a été faite dans les
+deux sens, et la table retenue gagne nettement sur les deux.
+
+⚠️ **Ce que cette mesure ne prouve pas.** Elle valide l'orientation *relative*
+et l'échelle, pas la chiralité absolue : une table entièrement miroitée sur les
+quatre côtés produirait les mêmes rectangles. Seule une comparaison visuelle
+avec le client vanilla la tranchera, et elle est à faire dès que le renderer
+dessine.
+
+### Le sens des rotations, mesuré et non choisi
+
+Les degrés du format tournent **dans le sens horaire autour de l'axe positif**,
+c'est-à-dire l'inverse de la matrice de rotation usuelle. Deux blocs le fixent
+sans ambiguïté :
+
+- `minecraft:furnace` est modélisé face au nord et utilise `y: 90` pour
+  `facing=east` → `rotate_y(90)` envoie `−Z` sur `+X` ;
+- `minecraft:observer` est modélisé face au nord et utilise `x: 90` pour
+  `facing=down` → `rotate_x(90)` envoie `−Z` sur `−Y`.
+
+Écrire les matrices dans l'autre sens met tous les blocs directionnels sur le
+mauvais mur. Les deux faits sont des assertions de test.
+
+⚠️ Le **signe de la rotation d'élément** (`rotation.angle` dans le modèle) n'est
+lui pas discriminé par les données : les seuls éléments tournés de vanilla —
+`cross`, `big_dripleaf` — sont symétriques à ±45°. La même convention que la
+rotation de blockstate est appliquée, par cohérence ; à confirmer visuellement.
+
+### `ambientocclusion` vient de la racine, pas de la feuille
+
+Le format dit « only works on Parent file ». Vérifié sur les assets 1.20.1 :
+tout modèle qui déclare `ambientocclusion` est lui-même une racine de chaîne.
+C'est la valeur de la **racine** qui est retenue. Sans cela, `block/cross`
+perdrait son `false` et l'herbe recevrait un éclairage lissé qu'elle ne doit
+pas avoir.
+
+### Autres points tranchés par les données
+
+- **`cullface: "bottom"`** est une orthographe acceptée de `"down"`, et pas une
+  hypothèse : quatre faces des assets 1.20.1 l'utilisent.
+- **`"elements": []`** ne veut pas dire « hérite » : la liste la plus proche
+  dans la chaîne remplace celle du parent, vide comprise.
+- **Une clé de variante vide (`""`)** est une vraie clé, celle des blocs à un
+  seul modèle. Un parseur JSON qui confond « clé vide » et « clé absente » perd
+  tous ces blocs.
+- **Les variantes pondérées sont toutes conservées**, jamais choisies ici :
+  vanilla tire au sort d'après la position du bloc, donc seul le mailleur, qui
+  connaît la position, peut choisir — et il doit choisir la même à chaque
+  remaillage.
+
+### Vérification de bout en bout
+
+```
+$ ov_modelbake run/assets
+blockstate files .....   1005  (0 failed)
+model references .....   6081
+models resolved ......   6081  (0 failed)
+distinct models cached   1810
+quads baked ..........  62227
+missing sprites ......      0
+```
+
+Aucun asset n'est commité : l'outil lit `run/assets`, produit par
+`ov_assetimport` et exclu par `.gitignore`.
+
+### Occlusion ambiante et lumière lissée
+
+La règle par sommet vient de trois voisins de chaque coin — les deux côtés dans
+le plan de la face, et la diagonale :
+
+```
+si côté1 et côté2 : 0
+sinon             : 3 − (côté1 + côté2 + diagonale)
+```
+
+Le cas particulier « deux côtés pleins → 0 quelle que soit la diagonale » n'est
+pas un détail : c'est lui qui creuse un angle rentrant au lieu de le gonfler.
+La lumière par sommet moyenne les quatre valeurs mais **saute les voisins
+opaques** — un bloc opaque a une lumière de 0, et le compter assombrirait le
+sommet deux fois, une fois par l'occlusion et une fois par la moyenne. Les deux
+fonctions doivent s'accorder sur ce qui est visible, sinon un sommet est à la
+fois totalement occlus et pleinement éclairé.
+
+### Vertex de 8 octets : ce qui n'y tient pas
+
+Le budget est une contrainte, pas une préférence : à 12 chunks de distance, ce
+sont les **pics d'upload en déplacement** qui décident du p99, pas le FPS moyen.
+
+```
+ 0-10  x       11 bits   1/64 de bloc, plage [-8, 24[
+11-21  y       11 bits
+22-32  z       11 bits
+33-40  u        8 bits   1/8 d'unité de sprite
+41-48  v        8 bits
+49-52  sky      4 bits
+53-56  block    4 bits
+57-58  ao       2 bits
+59-61  facing   3 bits   0-5 une Direction, 6 « non ombré »
+62-63  tint     2 bits
+```
+
+Deux décisions à assumer :
+
+1. **L'échelle des `uv` est 1/8 d'unité de sprite, pas 1/16.** Un premier
+   découpage à 1/16 rendait `u = 16` — la valeur la plus fréquente du corpus,
+   celle de toute face pleine — non représentable exactement, ce qui rétrécit
+   chaque face d'un fragment de texel. Le test l'a attrapé avant le renderer.
+2. **Il n'y a pas de couleur de sommet.** Vanilla multiplie la teinte de biome
+   dedans côté CPU ; trois octets de plus ne rentrent pas. Le champ `tint`
+   nomme le canal (herbe, feuillage, eau) et le shader va chercher la couleur.
+   C'est un mécanisme **différent** de celui de vanilla, choisi pour le budget,
+   et valide tant que la teinte est constante sur un quad — ce qu'elle est pour
+   un bloc.
+
+### Ce qui n'est pas encore vérifié
+
+- La chiralité absolue de la table `uv` (voir plus haut).
+- Le signe de la rotation d'élément.
+- Le comportement exact d'`uvlock` sous une rotation en `x`. L'implémentation
+  est générique — elle défait la rotation subie par la base tangente de la face
+  — et le cas `y` est verrouillé par un test qui vérifie la définition même
+  (« un point du bloc qui n'a pas bougé garde sa coordonnée de texture »). Le
+  cas `x` n'a pas d'équivalent mesurable sans image de référence.
+
+Ces trois points se tranchent en une session dès que le renderer affiche un
+chunk, et ils sont listés ici pour ne pas être oubliés.
