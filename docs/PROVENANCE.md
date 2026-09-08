@@ -2975,3 +2975,68 @@ Ce qui reste du plan sur ce point : le transport est aujourd'hui une socket TCP
 sur la boucle locale, donc les octets sont bien sérialisés. Le `LoopbackTransport`
 prévu remplace la socket par une file SPSC portant **les mêmes octets**, et rien
 au-dessus du transport ne change quand il arrivera.
+
+## L'eau et la lave
+
+*2026-09-08.*
+
+Le joueur coulait dans l'eau exactement comme dans l'air. Le point d'apparition
+de ce monde étant sous l'eau, c'était la première chose qu'on voyait.
+
+Dans un fluide, vanilla ne ralentit pas le tick terrestre : **il le remplace**.
+Il n'y a ni glissance, ni vitesse de marche, ni multiplicateur de sprint, ni
+saut — seulement une accélération d'un cinquantième, une traînée, et une gravité
+bien plus faible.
+
+```
+saut tenu    -> vy += 0.04            accroupi -> vy -= 0.04
+f = sprint ? 0.9 : 0.8                a = 0.02
+deplacer, puis  vx *= f ; vy *= 0.8 ; vz *= f
+si non sprint : vy -= 0.08/16 = 0.005
+```
+
+La lave : traînée 0,5, traînée verticale 0,8 en eau peu profonde et 0,5 en eau
+profonde, et **une gravité au quart** — 0,02.
+
+### Pourquoi ces chiffres sont vérifiables
+
+Une vitesse terminale est le meilleur test possible d'une traînée : sous une
+accélération `a` et une traînée `d` par tick, la vitesse se stabilise à
+`a·0,98/(1−d)`, et le jeu **publie** ces vitesses en mètres par seconde. Six le
+sont, les six reviennent :
+
+| | calculé | publié |
+|---|---|---|
+| nage | 1,960 m/s | 1,97 |
+| nage sprintée | 3,920 m/s | 3,918 |
+| enfoncement dans la lave profonde | 0,800 m/s | 0,8 |
+
+### Trois erreurs, trois causes différentes
+
+Le premier jet ratait les trois, et aucune des trois n'avait la même cause :
+
+1. **La nage sortait à 1,568 au lieu de 1,960** — exactement un facteur 0,8, la
+   traînée elle-même. La vitesse *publiée* est la **distance parcourue en un
+   tick**, c'est-à-dire la vélocité au moment du déplacement : après
+   l'accélération du tick et avant sa traînée. Lue après, elle est un cinquième
+   trop basse et ressemble à une constante fausse.
+2. **La lave donnait 1,0 au lieu de 0,8.** J'appliquais la gravité de l'eau *en
+   plus* de celle de la lave : 0,005 + 0,02 = 0,025, divisé par 0,5, donne
+   exactement 0,05 bloc/tick. La lave n'a que son quart de gravité.
+3. **Un saut dans une flaque devenait une brasse.** Le test répondait « eau » à
+   toutes les hauteurs, donc la colonne entière comptait et la profondeur
+   dépassait le seuil de 0,4. C'était le test qui était faux, pas le code — mais
+   il aurait pu être l'inverse, et rien dans l'image ne l'aurait dit.
+
+### Ce qui n'a pas été retenu faute de certitude
+
+La recherche signale une clause spéciale produisant −0,003 dans la gravité de
+l'eau. Elle est **inatteignable** à gravité normale : ses deux conditions
+s'excluent quand `gravité/16 == 0,005`. Elle ne devient vivante que sous Chute
+Lente. Non implémentée, et notée ici pour que la prochaine personne ne la
+cherche pas.
+
+Deux figures publiées ne se déduisent pas des constantes — la nage en surface
+(2,20 m/s mesuré, 1,96 calculé) et la nage sprintée vers le haut (6,98 contre
+~5). Elles sont donc à mesurer contre un vrai client, comme la physique
+terrestre l'a été.

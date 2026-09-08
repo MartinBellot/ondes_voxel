@@ -179,7 +179,12 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] Streaming de chunks selon la distance de vue *(envoi et déchargement)*
 - [x] Collisions : boîtes par état, chevauchement et glissement axe par axe
 - [x] Physique du joueur : marche, sprint, accroupissement, saut, chute — ajustés sur une trace du vrai client
-- [ ] Nage, échelles, glace et slime : glissance par bloc
+- [~] Nage, échelles, glace et slime : glissance par bloc
+      *(**l'eau et la lave sont faites** : traînée 0,8 (0,9 en nage sprintée),
+      accélération 0,02, gravité au seizième dans l'eau et au quart dans la
+      lave, poussée de 0,04 vers le haut, seuil de 0,4 qui distingue une flaque
+      d'une piscine. Les six vitesses publiées sont reproduites. Échelles,
+      glace et slime restent)*
 - [x] Gestion des joueurs, keep-alive, liste des joueurs
 - [x] Entités joueur : apparition, mouvement, rotation de tête, retrait
 - [x] `ov_netclient` + `ClientLevel` (réplique séparée)

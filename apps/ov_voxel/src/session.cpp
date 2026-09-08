@@ -24,7 +24,60 @@ Session::Session(const registry::BlockRegistry& blocks, render::BlockModelCache&
       models_(&models),
       atlas_(&atlas),
       tints_(&tints),
-      terrain_(&terrain) {}
+      terrain_(&terrain) {
+    // Resolved once. A name comparison per cell would put a string compare
+    // inside the physics tick, which runs over the player's whole box every
+    // twentieth of a second.
+    if (const auto water = blocks.find_block("minecraft:water")) {
+        water_block_ = *water;
+        if (const auto lava = blocks.find_block("minecraft:lava")) {
+            lava_block_   = *lava;
+            fluids_known_ = true;
+        }
+    }
+}
+
+gameplay::FluidSample Session::fluid_at(i32 x, i32 y, i32 z) const {
+    if (!fluids_known_) {
+        return {};
+    }
+    const auto state = block_at(x, y, z);
+    if (state == registry::kAirState) {
+        return {};
+    }
+    const auto block = blocks_->block_of(state);
+
+    if (block == water_block_ || block == lava_block_) {
+        // A fluid's rendered height is its `amount` over nine. Level 0 is a
+        // source and level 1 to 7 are the flowing steps; level 8 and above are
+        // falling, and fill their block.
+        u16 level = 0;
+        for (const auto& property : blocks_->properties(block)) {
+            if (property.name == "level") {
+                level = blocks_->property_index(state, property);
+                break;
+            }
+        }
+        const f64 amount = level >= 8 ? 8.0 : 8.0 - static_cast<f64>(level);
+        return gameplay::FluidSample{
+            block == water_block_ ? gameplay::Fluid::Water : gameplay::Fluid::Lava, amount / 9.0};
+    }
+
+    // A waterlogged block holds a full source. This is why the registry keeps
+    // the flag per state rather than per block: a fence in the sea is wet and
+    // the same fence on land is not.
+    if (blocks_->holds_fluid(state)) {
+        return gameplay::FluidSample{gameplay::Fluid::Water, 8.0 / 9.0};
+    }
+    return {};
+}
+
+gameplay::FluidWorld Session::fluids() const {
+    const auto lookup = [](void* context, i32 x, i32 y, i32 z) {
+        return static_cast<const Session*>(context)->fluid_at(x, y, z);
+    };
+    return gameplay::FluidWorld{lookup, const_cast<Session*>(this)};
+}
 
 const world::Chunk* Session::chunk_at(i32 chunk_x, i32 chunk_z) const {
     const auto found = chunks_.find({chunk_x, chunk_z});

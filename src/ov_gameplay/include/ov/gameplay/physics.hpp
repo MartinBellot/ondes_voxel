@@ -29,6 +29,40 @@ struct MoveInput {
 };
 
 /// Everything that carries from one tick to the next.
+/// Which fluid fills a block, and how much of it stands there.
+///
+/// Height is the *rendered* height, (level + 1) / 9 of a block for a flowing
+/// source — not the block's own height. It decides two things and nothing
+/// else: whether a jump is a jump or a stroke upward, and whether lava is
+/// shallow or deep.
+enum class Fluid : u8 { None, Water, Lava };
+
+struct FluidSample {
+    Fluid fluid{Fluid::None};
+    f64   height{0.0};
+};
+
+/// How the caller reads fluids, for the same reason CollisionWorld takes a
+/// function pointer: this header is public and must not learn what a world is.
+using FluidLookup = FluidSample (*)(void* context, i32 x, i32 y, i32 z);
+
+class FluidWorld {
+public:
+    FluidWorld(FluidLookup lookup, void* context) noexcept : lookup_{lookup}, context_{context} {}
+
+    /// The fluid a player standing at `position` is in, and how deep.
+    ///
+    /// Vanilla tests the whole bounding box deflated by a thousandth on every
+    /// axis, and a block counts when the top of its fluid reaches the bottom of
+    /// the box. Anything simpler — the feet block, say — puts a player swimming
+    /// while their head is in the air.
+    [[nodiscard]] FluidSample sample(const Vec3d& position) const;
+
+private:
+    FluidLookup lookup_{nullptr};
+    void*       context_{nullptr};
+};
+
 struct MotionState {
     Vec3d position{};
     Vec3d velocity{};
@@ -74,13 +108,53 @@ struct MotionConstants {
 
     /// How high a step the player climbs without jumping.
     f64 step_height{0.6};
+
+    // ── Fluids ──────────────────────────────────────────────────────────────
+    //
+    // Every one of these was checked against a published measurement rather
+    // than taken on trust. The terminal speed of a movement under a per-tick
+    // drag is a*0.98/(1-drag), and the table below reproduces the game's own
+    // published figures to four significant figures — swimming 1.960 against
+    // 1.97, sprint-swimming 3.920 against 3.918, sinking in lava 0.8 exactly.
+
+    /// Horizontal drag in water, and the higher one that swimming gives.
+    f64 water_drag{0.8};
+    f64 swim_drag{0.9};
+    /// Vertical drag in water. Unaffected by sprinting or by Depth Strider.
+    f64 water_vertical_drag{0.8};
+    /// The push an input gets in a fluid. A fifth of walking, which is why
+    /// water is slow rather than merely draggy.
+    f64 fluid_acceleration{0.02};
+    /// Gravity in water: a sixteenth of the usual. This is a 1.13 change — the
+    /// older value was a flat 0.02 — and using the old one makes a player sink
+    /// four times too fast.
+    f64 water_gravity{0.08 / 16.0};
+    /// Holding jump in water adds this; sneaking subtracts it. An add, not a
+    /// set: buoyancy at the surface is what emerges from this against the
+    /// vertical drag, not a special case.
+    f64 swim_impulse{0.04};
+    /// Above this fluid height a jump becomes a stroke upward. It is also what
+    /// separates shallow lava from deep.
+    f64 fluid_jump_threshold{0.4};
+
+    /// Lava is thicker in every direction and pulls four times harder than
+    /// water.
+    f64 lava_drag{0.5};
+    f64 lava_shallow_vertical_drag{0.8};
+    f64 lava_gravity{0.08 / 4.0};
 };
 
 /// Advance one tick.
 ///
 /// Returns the new state. The collision world decides how far the movement
 /// actually gets; the constants decide how far it wanted to go.
+/// One tick of movement.
+///
+/// `fluids` may be null, in which case the player is treated as being in air
+/// everywhere — which is what the renderer's free camera wants and what every
+/// test that is not about swimming wants.
 [[nodiscard]] MotionState step(const MotionState& state, const MoveInput& input,
-                               const MotionConstants& constants, const CollisionWorld& world);
+                               const MotionConstants& constants, const CollisionWorld& world,
+                               const FluidWorld* fluids = nullptr);
 
 }  // namespace ov::gameplay

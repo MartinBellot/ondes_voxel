@@ -31,8 +31,144 @@ namespace {
 
 }  // namespace
 
+FluidSample FluidWorld::sample(const Vec3d& position) const {
+    FluidSample deepest;
+    if (lookup_ == nullptr) {
+        return deepest;
+    }
+    // Vanilla deflates the box by a thousandth on every axis before asking, so
+    // that standing exactly against a wall of water does not count as being in
+    // it. Reproduced rather than rounded away: without it a player walking
+    // along a shoreline flickers in and out of swimming.
+    constexpr f64 kShrink = 0.001;
+    const AABB    box     = player_box(position);
+
+    const auto floor_i = [](f64 value) {
+        const auto floored = static_cast<i32>(value);
+        return value < static_cast<f64>(floored) ? floored - 1 : floored;
+    };
+
+    const i32 min_x = floor_i(box.min.x + kShrink);
+    const i32 max_x = floor_i(box.max.x - kShrink);
+    const i32 min_y = floor_i(box.min.y + kShrink);
+    const i32 max_y = floor_i(box.max.y - kShrink);
+    const i32 min_z = floor_i(box.min.z + kShrink);
+    const i32 max_z = floor_i(box.max.z - kShrink);
+
+    for (i32 y = min_y; y <= max_y; ++y) {
+        for (i32 z = min_z; z <= max_z; ++z) {
+            for (i32 x = min_x; x <= max_x; ++x) {
+                const FluidSample here = lookup_(context_, x, y, z);
+                if (here.fluid == Fluid::None) {
+                    continue;
+                }
+                // The top of the fluid has to reach the bottom of the box for
+                // the block to count at all.
+                const f64 top = static_cast<f64>(y) + here.height;
+                if (top < box.min.y + kShrink) {
+                    continue;
+                }
+                // Lava wins over water: a player in both is burning, not
+                // swimming.
+                const f64 depth = top - (box.min.y + kShrink);
+                if (deepest.fluid == Fluid::None || here.fluid == Fluid::Lava ||
+                    (here.fluid == deepest.fluid && depth > deepest.height)) {
+                    deepest.fluid  = here.fluid;
+                    deepest.height = depth;
+                }
+            }
+        }
+    }
+    return deepest;
+}
+
+/// The water and lava branches, which replace the whole land tick rather than
+/// adjusting it.
+///
+/// Worth stating plainly because it is the shape of the thing: in a fluid there
+/// is no slipperiness, no walk speed, no sprint multiplier and no jump — only
+/// an acceleration of a fiftieth, a drag, and a much smaller gravity. A player
+/// in water moves like a player in water and not like a slowed-down walker.
+[[nodiscard]] MotionState step_in_fluid(const MotionState& state, const MoveInput& input,
+                                        const MotionConstants& constants,
+                                        const CollisionWorld& world, const FluidSample& fluid) {
+    MotionState next  = state;
+    const bool  water = fluid.fluid == Fluid::Water;
+
+    // Holding jump is a stroke upward, and sneaking is a stroke down. An add
+    // rather than a set, which is what makes bobbing at the surface emerge
+    // from the drag instead of needing a case of its own.
+    if (input.jump) {
+        next.velocity.y += constants.swim_impulse;
+    }
+    if (input.sneak) {
+        next.velocity.y -= constants.swim_impulse;
+    }
+
+    // Sprinting in water is the swimming pose: less drag, and no gravity at
+    // all while it lasts.
+    const f64 horizontal_drag =
+        water ? (input.sprint ? constants.swim_drag : constants.water_drag) : constants.lava_drag;
+    const bool deep_lava = !water && fluid.height > constants.fluid_jump_threshold;
+    const f64  vertical_drag = water ? constants.water_vertical_drag
+                                     : (deep_lava ? constants.lava_drag
+                                                  : constants.lava_shallow_vertical_drag);
+
+    const Vec3d push = input_vector(input, constants.fluid_acceleration * constants.input_scale);
+    next.velocity.x += push.x;
+    next.velocity.z += push.z;
+
+    const AABB  box     = player_box(next.position);
+    const Vec3d allowed = world.slide(box, next.velocity);
+    next.position.x += allowed.x;
+    next.position.y += allowed.y;
+    next.position.z += allowed.z;
+
+    next.on_ground = allowed.y != next.velocity.y && next.velocity.y < 0.0;
+    if (allowed.x != next.velocity.x) {
+        next.velocity.x = 0.0;
+    }
+    if (allowed.z != next.velocity.z) {
+        next.velocity.z = 0.0;
+    }
+    if (allowed.y != next.velocity.y) {
+        next.velocity.y = 0.0;
+    }
+
+    next.velocity.x *= horizontal_drag;
+    next.velocity.y *= vertical_drag;
+    next.velocity.z *= horizontal_drag;
+
+    if (water) {
+        // Skipped entirely while sprinting: a swimming player gets no downward
+        // pull at all, which is why sprint-swimming holds a line.
+        if (!input.sprint) {
+            next.velocity.y -= constants.water_gravity;
+        }
+    } else {
+        // A quarter of the usual gravity, and *only* that — not water's
+        // sixteenth as well. Applying both settles a sinking player at one
+        // metre a second where the game's published figure is 0.8, which is
+        // how this was caught.
+        next.velocity.y -= constants.lava_gravity;
+    }
+
+    return next;
+}
+
 MotionState step(const MotionState& state, const MoveInput& input, const MotionConstants& constants,
-                 const CollisionWorld& world) {
+                 const CollisionWorld& world, const FluidWorld* fluids) {
+    if (fluids != nullptr) {
+        const FluidSample fluid = fluids->sample(state.position);
+        // On the ground in shallow water a jump is still a jump. That is the
+        // whole job of the threshold, and it is why wading through a puddle
+        // does not turn into swimming.
+        const bool shallow_enough = fluid.height <= constants.fluid_jump_threshold;
+        if (fluid.fluid != Fluid::None && !(state.on_ground && shallow_enough)) {
+            return step_in_fluid(state, input, constants, world, fluid);
+        }
+    }
+
     MotionState next = state;
 
     // The block underfoot decides how much of last tick's speed survives. Ice

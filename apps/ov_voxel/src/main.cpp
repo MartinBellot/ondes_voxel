@@ -801,7 +801,8 @@ int main(int argc, char** argv) {
                 move.sneak  = input.held(client::Key::Down);
 
                 const auto world_view = session->collision();
-                player = gameplay::step(player, move, motion, world_view);
+                const auto fluid_view = session->fluids();
+                player = gameplay::step(player, move, motion, world_view, &fluid_view);
 
                 netclient::PlayerInput report;
                 report.position  = player.position;

@@ -21,6 +21,7 @@
 #include "ov/base/types.hpp"
 #include "ov/client/terrain_renderer.hpp"
 #include "ov/gameplay/collision.hpp"
+#include "ov/gameplay/physics.hpp"
 #include "ov/netclient/client.hpp"
 #include "ov/registry/block_states.hpp"
 #include "ov/render/atlas.hpp"
@@ -68,6 +69,14 @@ public:
     /// A collision view over the level, for the player's physics.
     [[nodiscard]] gameplay::CollisionWorld collision() const;
 
+    /// A fluid view over the same level. Separate from the collision one
+    /// because water stops nothing and changes everything: it has no boxes and
+    /// its own movement rules.
+    [[nodiscard]] gameplay::FluidWorld fluids() const;
+
+    /// What fluid stands at a position, and how tall.
+    [[nodiscard]] gameplay::FluidSample fluid_at(i32 x, i32 y, i32 z) const;
+
     [[nodiscard]] usize chunk_count() const noexcept { return chunks_.size(); }
     [[nodiscard]] usize pending_sections() const noexcept { return dirty_.size(); }
     /// Sections that have geometry and are resident on the GPU.
@@ -114,6 +123,12 @@ private:
     /// queue, so that a section changed twice before it is drawn is meshed
     /// once.
     std::vector<SectionKey> dirty_;
+
+    /// The two fluid blocks, resolved once. Looking them up by name per cell
+    /// would put a string comparison in the physics tick.
+    registry::BlockId water_block_{};
+    registry::BlockId lava_block_{};
+    bool              fluids_known_{false};
 
     usize resident_{0};
     /// Scratch, kept between calls so meshing allocates nothing per section.

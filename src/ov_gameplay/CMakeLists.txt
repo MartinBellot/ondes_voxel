@@ -20,6 +20,7 @@ ov_add_test(test_ov_gameplay
     SOURCES
         tests/test_breaking.cpp
         tests/test_collision.cpp
+        tests/test_fluid_physics.cpp
         tests/test_physics.cpp
         tests/test_connections.cpp
         tests/test_loot.cpp
