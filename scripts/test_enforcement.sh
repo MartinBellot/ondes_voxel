@@ -15,12 +15,36 @@ cd "$ROOT"
 PASS=0
 FAIL=0
 
+# The three files this script plants violations in. Restoring is done from
+# copies taken up front rather than with `git checkout -- src apps`, which is
+# what it used to do — that reverted every uncommitted change under src/ and
+# apps/, not merely the ones planted here, and silently destroyed work in
+# progress for anyone who ran it mid-edit.
+TAMPERED=(
+    "src/ov_math/src/math.cpp"
+    "apps/ov_dedicated/src/main.cpp"
+    "src/ov_math/CMakeLists.txt"
+)
+
+BACKUP="$(mktemp -d)"
+for file in "${TAMPERED[@]}"; do
+    mkdir -p "$BACKUP/$(dirname "$file")"
+    cp "$ROOT/$file" "$BACKUP/$file"
+done
+
 # Restores the tree even if a check aborts unexpectedly.
 cleanup() {
-    git checkout -- src apps 2>/dev/null || true
+    for file in "${TAMPERED[@]}"; do
+        cp "$BACKUP/$file" "$ROOT/$file"
+    done
     rm -f "$ROOT/tests/fixtures/.enforcement_probe.png"
 }
-trap cleanup EXIT
+
+finish() {
+    cleanup
+    rm -rf "$BACKUP"
+}
+trap finish EXIT
 
 expect_rejected() {
     local description="$1"
