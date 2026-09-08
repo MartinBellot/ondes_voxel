@@ -3275,3 +3275,23 @@ l'ensemble la distribution est centrée sur −2 blocs.
 Autrement dit : ce n'est pas un terme absent qui vaudrait des unités, c'est un
 biais de l'ordre de 0,02 à 0,03 en densité. Écrit ici sans conclusion, parce
 qu'aucune des trois pistes testées ne l'explique.
+
+### Le monde de référence, et pourquoi il prenait quarante minutes
+
+Un `forceload` est **permanent**. Le serveur garde tous les chunks qu'il tient
+et les tick **tous**, à chaque tick, pour le reste de la session. La première
+version du script ajoutait vingt-huit zones sans jamais en retirer, si bien que
+la dernière était générée pendant que trois mille chunks étaient tickés : la
+génération ralentissait progressivement jusqu'à ressembler à un blocage.
+
+Chaque zone est maintenant sauvegardée puis **retirée** avant la suivante.
+Même travail, même monde : **6 min 06 s** au lieu de plus de quarante.
+
+Deux détails du même ordre, trouvés en route : le watchdog du serveur tue la
+partie quand un tick dépasse une minute — ce qui est exactement ce que fait une
+pré-génération, d'où `max-tick-time=-1` — et un serveur d'une mesure précédente
+tournait encore depuis trois heures et demie, à se disputer la machine.
+
+Avec 28 zones réparties jusqu'à ±110 000 blocs, la mesure porte maintenant sur
+**7 821 312 cellules de biome et 38 biomes** : 99,972 % d'accord, et les 2197
+écarts sont toujours **tous** des égalités exactes.

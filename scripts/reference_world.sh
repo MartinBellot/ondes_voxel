@@ -65,19 +65,27 @@ PATCHES="0,0 48000,0 -37000,15000 22000,-41000 -19000,-28000 61000,33000
          -17000,-105000 110000,-45000"
 
 (
-    sleep 25
+    sleep 20
     for patch in $PATCHES; do
         x="${patch%,*}"
         z="${patch#*,}"
-        # 160 blocks a side, not 64. The parity check is happy with a small
-        # patch; a screenshot is not — a camera in a five-chunk world sees the
-        # edge of it, and the biome looks like a floating island.
-        echo "forceload add $x $z $((x+160)) $((z+160))"
-        sleep 6
+        # One patch at a time, then *unloaded*.
+        #
+        # This is the whole difference between four minutes and forty. A
+        # force-load is permanent: the server keeps every chunk it holds and
+        # ticks all of them, every tick, for the rest of the run. Adding
+        # twenty-eight patches without removing any meant the last one was
+        # generated while three thousand chunks were being ticked, and the run
+        # slowed to a crawl that looked like a hang.
+        echo "forceload add $x $z $((x+128)) $((z+128))"
+        sleep 9
+        echo "save-all flush"
+        sleep 2
+        echo "forceload remove all"
+        sleep 1
     done
-    sleep 60
     echo "save-all flush"
-    sleep 25
+    sleep 8
     echo "stop"
 ) | (cd "$OUT" && java -Xmx2G -jar server.jar nogui) | tail -8
 
