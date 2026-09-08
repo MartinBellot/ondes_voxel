@@ -354,6 +354,114 @@ std::optional<i32> parse_confirm_teleport(std::span<const u8> payload) {
     return *id;
 }
 
+namespace {
+
+/// Unpack the 26/26/12 block position.
+///
+/// All three fields are signed, so each is shifted left to put its sign bit at
+/// the top and then arithmetically right — masking instead would make every
+/// negative coordinate a large positive one, and half the world is at negative
+/// coordinates.
+[[nodiscard]] WirePosition unpack_position(u64 packed) noexcept {
+    const auto value = static_cast<i64>(packed);
+    return WirePosition{
+        static_cast<i32>(value >> 38),
+        static_cast<i32>(value << 52 >> 52),
+        static_cast<i32>(value << 26 >> 38),
+    };
+}
+
+}  // namespace
+
+WirePosition offset_by_face(WirePosition position, i32 face) noexcept {
+    switch (face) {
+        case 0: return {position.x, position.y - 1, position.z};
+        case 1: return {position.x, position.y + 1, position.z};
+        case 2: return {position.x, position.y, position.z - 1};
+        case 3: return {position.x, position.y, position.z + 1};
+        case 4: return {position.x - 1, position.y, position.z};
+        case 5: return {position.x + 1, position.y, position.z};
+        default: return position;
+    }
+}
+
+std::optional<PlayerAction> parse_player_action(std::span<const u8> payload) {
+    io::ByteReader reader{payload};
+    const auto     status = read_varint(reader);
+    const auto     packed = reader.read_u64();
+    const auto     face   = reader.read_i8();
+    if (!status || !packed || !face) {
+        return std::nullopt;
+    }
+    const auto sequence = read_varint(reader);
+    if (!sequence) {
+        return std::nullopt;
+    }
+    return PlayerAction{*status, unpack_position(*packed), *face, *sequence};
+}
+
+std::optional<UseItemOn> parse_use_item_on(std::span<const u8> payload) {
+    io::ByteReader reader{payload};
+    const auto     hand   = read_varint(reader);
+    const auto     packed = reader.read_u64();
+    const auto     face   = read_varint(reader);
+    if (!hand || !packed || !face) {
+        return std::nullopt;
+    }
+    // Cursor position and the inside-block flag are read past rather than
+    // used: block placement here does not yet depend on where on the face the
+    // player clicked, but the sequence after them does.
+    if (!reader.read_f32() || !reader.read_f32() || !reader.read_f32() || !reader.read_u8()) {
+        return std::nullopt;
+    }
+    const auto sequence = read_varint(reader);
+    if (!sequence) {
+        return std::nullopt;
+    }
+    return UseItemOn{unpack_position(*packed), *face, *sequence};
+}
+
+std::optional<CreativeSlot> parse_set_creative_slot(std::span<const u8> payload) {
+    io::ByteReader reader{payload};
+    const auto     slot    = reader.read_i16();
+    const auto     present = reader.read_u8();
+    if (!slot || !present) {
+        return std::nullopt;
+    }
+    if (*present == 0) {
+        return CreativeSlot{*slot, std::nullopt};
+    }
+    const auto item_id = read_varint(reader);
+    if (!item_id) {
+        return std::nullopt;
+    }
+    // Count and the item's NBT follow. Neither is needed to know which block
+    // the player is holding, and the frame length already bounds the packet.
+    return CreativeSlot{*slot, *item_id};
+}
+
+std::optional<i16> parse_set_held_item(std::span<const u8> payload) {
+    io::ByteReader reader{payload};
+    const auto     slot = reader.read_i16();
+    if (!slot) {
+        return std::nullopt;
+    }
+    return *slot;
+}
+
+std::vector<u8> encode_block_update(WirePosition position, i32 state) {
+    io::ByteWriter writer;
+    write_position(writer, position.x, position.y, position.z);
+    write_varint(writer, state);
+    return writer.take();
+}
+
+std::vector<u8> encode_acknowledge_dig(i32 sequence) {
+    io::ByteWriter writer;
+    write_varint(writer, sequence);
+    return writer.take();
+}
+
 std::optional<i64> parse_keep_alive(std::span<const u8> payload) {
     io::ByteReader reader{payload};
     const auto     id = reader.read_i64();

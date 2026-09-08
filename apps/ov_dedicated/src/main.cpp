@@ -22,6 +22,7 @@
 #include "ov/protocol/status.hpp"
 #include "ov/protocol/varint.hpp"
 #include "ov/registry/block_states.hpp"
+#include "ov/registry/registries.hpp"
 #include "ov/world/chunk.hpp"
 
 #include <fmt/format.h>
@@ -201,9 +202,15 @@ struct Player {
     i64  last_keep_alive_sent_ms{0};
     i64  keep_alive_id{0};
     bool awaiting_keep_alive{false};
-    f64  x{0.5};
-    f64  y{static_cast<f64>(Superflat::kSurfaceY) + 1.0};
-    f64  z{0.5};
+
+    /// The creative hotbar, as item ids. Slots 36..44 of the inventory are the
+    /// hotbar; the client tells us what it puts there, and that is the only way
+    /// to know which block a placement means.
+    std::array<i32, 9> hotbar{};
+    i16                held_slot{0};
+    f64                x{0.5};
+    f64                y{static_cast<f64>(Superflat::kSurfaceY) + 1.0};
+    f64                z{0.5};
 };
 
 Options parse_args(int argc, char** argv) {
@@ -315,6 +322,11 @@ int main(int argc, char** argv) {
                     blocks->state_count(), codec_bytes->size());
     }
 
+    // Item ids, needed to turn "the player is holding this" into a block.
+    const auto registries =
+        registry::Registries::load(data_dir / "vanilla" / "1.20.1" / "registry.ovpack");
+    const auto item_registry = registries ? registries->find("minecraft:item") : std::nullopt;
+
     Superflat superflat = world_available ? Superflat::from(*blocks) : Superflat{};
     if (world_available) {
         const auto plains = biome_id_in_codec(*codec_bytes, "minecraft:plains");
@@ -337,9 +349,78 @@ int main(int argc, char** argv) {
         return (static_cast<i64>(cx) << 32) ^ static_cast<u32>(cz);
     };
 
+    /// The block state an item places, or nothing if the item is not a block.
+    ///
+    /// Items and blocks are separate registries with separate ids, and the
+    /// bridge between them is the name: `minecraft:stone` the item places
+    /// `minecraft:stone` the block. Most items that are not blocks simply have
+    /// no block of the same name, which is exactly the test.
+    const auto block_state_for_item = [&](i32 item_id) -> std::optional<registry::BlockStateId> {
+        if (!registries || !item_registry || !blocks) {
+            return std::nullopt;
+        }
+        const std::string_view name = registries->entry_of(*item_registry, item_id);
+        if (name.empty()) {
+            return std::nullopt;
+        }
+        const auto block = blocks->find_block(name);
+        if (!block) {
+            return std::nullopt;
+        }
+        return blocks->default_state(*block);
+    };
+
     std::unordered_map<const net::Connection*, Player> players;
     std::mutex                                         players_mutex;
     std::atomic<i32>                                   next_entity_id{1};
+
+    /// Confirm a change the client already predicted.
+    ///
+    /// Without this the client shows its guess, waits, and then rolls it back —
+    /// which looks exactly like the server ignoring the player.
+    const auto acknowledge = [](const net::ConnectionPtr& connection, i32 sequence) {
+        if (const auto framed = net::encode_packet(net::clientbound::kAcknowledgeDig,
+                                                   net::encode_acknowledge_dig(sequence))) {
+            connection->send(*framed);
+        }
+    };
+
+    /// Apply a block change to the world and tell everyone who can see it.
+    ///
+    /// Called from the network thread, which is why the chunk cache has a mutex
+    /// — the single-writer rule the project is built on arrives with the tick
+    /// scheduler, and until then this is honest locking rather than a race.
+    const auto set_block_and_broadcast = [&](net::WirePosition      position,
+                                             registry::BlockStateId state) {
+        const auto shape = world::WorldShape::overworld();
+        if (!shape.contains_y(position.y)) {
+            return;
+        }
+
+        const i32 chunk_x = position.x >> 4;
+        const i32 chunk_z = position.z >> 4;
+        {
+            const std::scoped_lock lock{chunk_mutex};
+            auto                   it = chunk_cache.find(chunk_key(chunk_x, chunk_z));
+            if (it == chunk_cache.end()) {
+                return;
+            }
+            it->second.set_block(static_cast<usize>(position.x & 15), position.y,
+                                 static_cast<usize>(position.z & 15), state);
+        }
+
+        const auto framed =
+            net::encode_packet(net::clientbound::kBlockUpdate,
+                               net::encode_block_update(position, static_cast<i32>(state.value())));
+        if (!framed) {
+            return;
+        }
+        for (auto& [key, other] : players) {
+            if (other.connection) {
+                other.connection->send(*framed);
+            }
+        }
+    };
 
     // Per-connection protocol state. A packet id means different things in
     // different states, so this cannot be global.
@@ -570,6 +651,69 @@ int main(int argc, char** argv) {
                             player.y = *movement->y;
                             player.z = *movement->z;
                         }
+                        return true;
+                    }
+
+                    case net::serverbound::kSetHeldItem: {
+                        const auto slot = net::parse_set_held_item(body);
+                        if (slot && *slot >= 0 && *slot < 9) {
+                            player.held_slot = *slot;
+                        }
+                        return true;
+                    }
+
+                    case net::serverbound::kSetCreativeSlot: {
+                        const auto creative = net::parse_set_creative_slot(body);
+                        if (!creative) {
+                            return false;
+                        }
+                        // Inventory slots 36..44 are the hotbar. Anything else
+                        // is a slot the server does not model yet.
+                        const int index = creative->slot - 36;
+                        if (index >= 0 && index < 9) {
+                            player.hotbar[static_cast<usize>(index)] =
+                                creative->item_id.value_or(0);
+                        }
+                        return true;
+                    }
+
+                    case net::serverbound::kPlayerAction: {
+                        const auto action = net::parse_player_action(body);
+                        if (!action) {
+                            return false;
+                        }
+                        // 0 is "started digging" — which in creative means the
+                        // block is already gone on the client — and 2 is
+                        // "finished" in survival. Handling only one of them
+                        // makes the other game mode do nothing.
+                        if (action->status != 0 && action->status != 2) {
+                            return true;
+                        }
+                        set_block_and_broadcast(action->position, superflat.air.air);
+                        acknowledge(connection, action->sequence);
+                        return true;
+                    }
+
+                    case net::serverbound::kUseItemOn: {
+                        const auto place = net::parse_use_item_on(body);
+                        if (!place) {
+                            return false;
+                        }
+                        acknowledge(connection, place->sequence);
+
+                        const i32  item       = player.hotbar[static_cast<usize>(player.held_slot)];
+                        const auto held_state = block_state_for_item(item);
+                        if (!held_state) {
+                            // An empty hand or a non-block item. The
+                            // acknowledgement above still matters: without it
+                            // the client waits, then rolls back its guess.
+                            return true;
+                        }
+
+                        // The clicked block is not where the new one goes: the
+                        // face says which side, and it lands one step along it.
+                        const auto target = net::offset_by_face(place->position, place->face);
+                        set_block_and_broadcast(target, *held_state);
                         return true;
                     }
 

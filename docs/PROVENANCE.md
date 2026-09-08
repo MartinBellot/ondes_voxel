@@ -721,3 +721,25 @@ pas. En envoyer un du mauvais type ne l'est pas.
 Le serveur ne comprend jamais ce blob : il le recopie. Et il y **relit** l'id de
 `minecraft:plains` plutôt que de le coder en dur, parce que le client n'apprend
 les IDs de biomes que de ce codec-là.
+
+### Casser et poser
+
+`Player Action` (0x1D) et `Use Item On` (0x31), avec `Block Update` (0x0A) et
+`Acknowledge Block Change` (0x06) en retour.
+
+Trois détails qui décident du résultat :
+
+- **Deux statuts de cassage comptent**, pas un. `0` est « commencé à creuser »,
+  ce qui en créatif signifie que le bloc a déjà disparu côté client ; `2` est
+  « fini de creuser » en survie. N'en traiter qu'un rend l'autre mode inopérant.
+- **La position cliquée n'est pas celle où le bloc va.** La face indique le côté,
+  et le nouveau bloc atterrit un pas plus loin. Poser à la position cliquée
+  remplace ce que le joueur visait.
+- **L'accusé de réception n'est pas optionnel.** Le client prédit le changement
+  et l'affiche ; sans `Acknowledge`, il attend puis annule sa prédiction — ce qui
+  ressemble exactement à un serveur qui ignore le joueur.
+
+Le pont entre l'item tenu et le bloc posé est le **nom** : l'item
+`minecraft:stone` pose le bloc `minecraft:stone`. Items et blocs sont deux
+registres aux IDs distincts, et la plupart des items non-blocs n'ont simplement
+pas de bloc homonyme — ce qui est exactement le test.

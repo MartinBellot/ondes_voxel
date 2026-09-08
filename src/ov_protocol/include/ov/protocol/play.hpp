@@ -39,6 +39,8 @@ inline constexpr i32 kSynchronizePosition = 0x3C;
 inline constexpr i32 kSetCenterChunk      = 0x4E;
 inline constexpr i32 kSetDefaultSpawn     = 0x50;
 inline constexpr i32 kDisconnect          = 0x1A;
+inline constexpr i32 kAcknowledgeDig      = 0x06;
+inline constexpr i32 kBlockUpdate         = 0x0A;
 }  // namespace clientbound
 
 /// Serverbound Play packet ids, protocol 763.
@@ -51,6 +53,10 @@ inline constexpr i32 kSetPlayerPosition    = 0x14;
 inline constexpr i32 kSetPlayerPositionRot = 0x15;
 inline constexpr i32 kSetPlayerRotation    = 0x16;
 inline constexpr i32 kSetPlayerOnGround    = 0x17;
+inline constexpr i32 kPlayerAction         = 0x1D;
+inline constexpr i32 kSetHeldItem          = 0x28;
+inline constexpr i32 kSetCreativeSlot      = 0x2B;
+inline constexpr i32 kUseItemOn            = 0x31;
 }  // namespace serverbound
 
 /// Everything the Login (play) packet needs that is not a fixed constant.
@@ -140,5 +146,61 @@ struct PlayerMovement {
 
 [[nodiscard]] std::optional<i32> parse_confirm_teleport(std::span<const u8> payload);
 [[nodiscard]] std::optional<i64> parse_keep_alive(std::span<const u8> payload);
+
+/// A block position as it travels: 26 bits x, 26 bits z, 12 bits y, all signed.
+struct WirePosition {
+    i32 x{0};
+    i32 y{0};
+    i32 z{0};
+};
+
+/// Breaking a block.
+///
+/// `status` 0 is "started digging", which in creative means the block is gone
+/// already — the client has removed it locally and is telling us. 2 is
+/// "finished digging" in survival. Both have to act, or creative mode does
+/// nothing and survival breaks nothing.
+struct PlayerAction {
+    i32          status{0};
+    WirePosition position;
+    i8           face{0};
+    i32          sequence{0};
+};
+
+[[nodiscard]] std::optional<PlayerAction> parse_player_action(std::span<const u8> payload);
+
+/// Placing a block against a face of an existing one.
+///
+/// The position is the block clicked, not where the new block goes: the face
+/// says which side, and the new block lands one step along it. Placing at the
+/// clicked position instead replaces whatever was aimed at.
+struct UseItemOn {
+    WirePosition position;
+    i32          face{0};
+    i32          sequence{0};
+};
+
+[[nodiscard]] std::optional<UseItemOn> parse_use_item_on(std::span<const u8> payload);
+
+/// The block one step along `face` from `position`. Faces are ordered
+/// -Y, +Y, -Z, +Z, -X, +X, which is the order the protocol uses everywhere.
+[[nodiscard]] WirePosition offset_by_face(WirePosition position, i32 face) noexcept;
+
+/// What the client put in a creative slot. An empty slot carries no item.
+struct CreativeSlot {
+    i16                slot{0};
+    std::optional<i32> item_id;
+};
+
+[[nodiscard]] std::optional<CreativeSlot> parse_set_creative_slot(std::span<const u8> payload);
+
+[[nodiscard]] std::optional<i16> parse_set_held_item(std::span<const u8> payload);
+
+/// Tell every client a block changed. `state` is a block **state** id.
+[[nodiscard]] std::vector<u8> encode_block_update(WirePosition position, i32 state);
+
+/// Confirm a predicted change. Without this the client rolls the block back
+/// after a moment, which looks like the server ignoring the player.
+[[nodiscard]] std::vector<u8> encode_acknowledge_dig(i32 sequence);
 
 }  // namespace ov::net

@@ -158,7 +158,8 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 ## M3 — Tranche verticale ⭐
 
 > **Atteint le 2026-09-08** : un client Minecraft 1.20.1 non modifié se connecte,
-> spawne dans un monde superflat éclairé et s'y déplace. Sans une ligne de Vulkan.
+> spawne dans un monde superflat éclairé, s'y déplace, casse et pose des blocs.
+> Sans une ligne de Vulkan.
 
 - [ ] Boucle de tick 20 Hz avec budget et rapport de surcharge
 - [ ] `ChunkMap`, système de tickets, niveaux de chargement
