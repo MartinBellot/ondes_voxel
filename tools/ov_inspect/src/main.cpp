@@ -26,10 +26,13 @@
 #include <array>
 #include <cmath>
 #include <filesystem>
+#include <iostream>
 #include <limits>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -784,6 +787,99 @@ int inspect_chunk_packing(const std::filesystem::path& path) {
     return identical + skipped == sections ? 0 : 1;
 }
 
+/// Report the block and its stored light at given positions.
+///
+/// Reads "x y z" lines from standard input and prints one line per position.
+/// It exists so that measuring the game's own behaviour — place a block on a
+/// real server, save, read back what it decided — can use the NBT reader that
+/// has been checked against 17879 chunks, rather than a throwaway parser
+/// written for the occasion. I wrote three of those before admitting they were
+/// the least reliable part of the experiment.
+int inspect_light(const std::filesystem::path& directory) {
+    std::map<std::pair<i32, i32>, std::optional<nbt::RegionFile>> regions;
+
+    i32 x = 0;
+    i32 y = 0;
+    i32 z = 0;
+    while (std::cin >> x >> y >> z) {
+        const i32  chunk_x    = x >> 4;
+        const i32  chunk_z    = z >> 4;
+        const auto region_key = std::pair{chunk_x >> 5, chunk_z >> 5};
+
+        if (!regions.contains(region_key)) {
+            const auto path =
+                directory / fmt::format("r.{}.{}.mca", region_key.first, region_key.second);
+            auto opened = nbt::RegionFile::open(path);
+            regions.emplace(region_key, opened ? std::optional{std::move(*opened)} : std::nullopt);
+        }
+        const auto& region = regions.at(region_key);
+        if (!region) {
+            fmt::print("{} {} {} - -\n", x, y, z);
+            continue;
+        }
+
+        const auto chunk =
+            region->read_chunk(static_cast<u32>(chunk_x & 31), static_cast<u32>(chunk_z & 31));
+        if (!chunk) {
+            fmt::print("{} {} {} - -\n", x, y, z);
+            continue;
+        }
+
+        const nbt::Tag* sections = chunk->root.find("sections");
+        if (sections == nullptr || sections->list() == nullptr) {
+            fmt::print("{} {} {} - -\n", x, y, z);
+            continue;
+        }
+
+        std::string_view name  = "-";
+        int              light = -1;
+        for (const nbt::Tag& section : *sections->list()) {
+            const nbt::Tag* section_y = section.find("Y");
+            if (section_y == nullptr || section_y->as_i64() != (y >> 4)) {
+                continue;
+            }
+            const usize index =
+                ((static_cast<usize>(y & 15) * 16) + static_cast<usize>(z & 15)) * 16 +
+                static_cast<usize>(x & 15);
+
+            if (const nbt::Tag* block_light = section.find("BlockLight")) {
+                if (const auto* bytes = block_light->get_if<nbt::Tag::ByteArray>();
+                    bytes != nullptr && bytes->size() == world::kLightByteCount) {
+                    const auto byte = static_cast<u8>((*bytes)[index >> 1]);
+                    light           = (index & 1) == 0 ? (byte & 0xF) : (byte >> 4);
+                }
+            } else {
+                light = 0;
+            }
+
+            if (const nbt::Tag* states = section.find("block_states")) {
+                const nbt::Tag* palette = states->find("palette");
+                if (palette != nullptr && palette->list() != nullptr && !palette->list()->empty()) {
+                    usize           slot = 0;
+                    const nbt::Tag* data = states->find("data");
+                    const auto*     longs =
+                        data == nullptr ? nullptr : data->get_if<nbt::Tag::LongArray>();
+                    if (longs != nullptr && !longs->empty()) {
+                        const u8   bits = world::bits_for_palette(palette->list()->size());
+                        const u32  per  = world::entries_per_long(bits);
+                        const auto word = static_cast<u64>((*longs)[index / per]);
+                        slot            = static_cast<usize>((word >> ((index % per) * bits)) &
+                                                             ((u64{1} << bits) - 1));
+                    }
+                    if (slot < palette->list()->size()) {
+                        if (const nbt::Tag* tag = (*palette->list())[slot].find("Name")) {
+                            name = tag->as_string();
+                        }
+                    }
+                }
+            }
+            break;
+        }
+        fmt::print("{} {} {} {} {}\n", x, y, z, name, light);
+    }
+    return 0;
+}
+
 void print_usage() {
     fmt::print(
         "ov-inspect — read Minecraft's binary formats\n"
@@ -792,6 +888,7 @@ void print_usage() {
         "  ov-inspect region <file.mca> [--verify]\n"
         "  ov-inspect zip    <file.jar|.zip> [--verify]\n"
         "  ov-inspect chunk  <file.mca>          verify section bit-packing\n"
+        "  ov-inspect light  <region-dir>        block and light at 'x y z' lines on stdin\n"
         "\n"
         "  --tree      print the tag tree\n"
         "  --verify    decode, re-encode, and compare the bytes\n"
@@ -814,7 +911,8 @@ int main(int argc, char** argv) {
     }
 
     const std::string_view command{argv[1]};
-    if (command != "nbt" && command != "region" && command != "zip" && command != "chunk") {
+    if (command != "nbt" && command != "region" && command != "zip" && command != "chunk" &&
+        command != "light") {
         fmt::print(stderr, "unknown command '{}'\n", command);
         print_usage();
         return 1;
@@ -846,6 +944,9 @@ int main(int argc, char** argv) {
     }
     if (command == "chunk") {
         return inspect_chunk_packing(argv[2]);
+    }
+    if (command == "light") {
+        return inspect_light(argv[2]);
     }
     return inspect_nbt(argv[2], tree, verify, max_depth);
 }

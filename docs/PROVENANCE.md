@@ -1068,3 +1068,51 @@ vérifier.
 Un client envoie une mise à jour de position **à chaque tick**, qu'il ait bougé ou
 non. Les relayer toutes représente l'essentiel du trafic d'un serveur peuplé.
 Mesuré : 20 paquets d'un joueur immobile produisent **0** retransmission.
+
+---
+
+## Mesurer l'émission lumineuse : ce qui marche, ce qui ne marche pas
+
+La table de flags par état reste le blocage nommé du projet. `emitLight` n'est
+pas disponible par état dans les sources écartées, et le jeu lui-même est le seul
+oracle exact. Une tentative de harnais a donc été montée.
+
+**La technique.** Le serveur vanilla lit ses commandes sur l'entrée standard, et
+`/setblock` place **n'importe quel état** sans contrainte de pose — contrairement
+à un client, qui doit respecter portée, support et mode de jeu. On remplit une
+zone de bedrock, on place les états à sonder espacés, on laisse la lumière se
+propager, on sauvegarde, puis on relit `BlockLight` à chaque cellule.
+
+**Ce qui est établi.** Plusieurs valeurs sortent exactement justes :
+
+| État | Mesuré | Attendu |
+|---|---|---|
+| `glowstone` | 15 | 15 |
+| `stone` | 0 | 0 |
+| `redstone_ore[lit=true]` | 9 | 9 |
+| `respawn_anchor[charges=0..4]` | 0, 3, 7, 11, 15 | idem |
+| `furnace[lit=true]` / `[lit=false]` | 13 / 0 | idem |
+| `candle[candles=2,3,4][lit=true]` | 6, 9, 12 | idem |
+
+**Ce qui ne l'est pas.** D'autres états restent contaminés : `candles=1` donne 8
+au lieu de 3, et les états éteints ne retombent pas à 0. L'isolation par bedrock
+devrait pourtant rendre toute propagation impossible, et élargir l'espacement de
+2 à 4 n'a pas suffi. La cause n'est **pas** établie — probablement la suppression
+de lumière, qui est asynchrone chez vanilla, ou une zone partiellement chargée.
+
+**Conséquence assumée** : aucune table n'est livrée. Publier une table dont une
+partie est fausse serait exactement l'erreur refusée plus tôt avec
+`minecraft-data` — une approximation coulée dans les fondations. Le harnais est
+gardé au stade d'expérience documentée jusqu'à ce que ses mesures soient
+reproductibles à 100 %.
+
+### `ov-inspect light`
+
+Ce qui *est* livré : la lecture, par le lecteur NBT vérifié du projet. La commande
+prend des lignes `x y z` sur l'entrée standard et rend le bloc et sa lumière
+stockée.
+
+J'ai écrit trois parseurs NBT jetables en Python avant d'admettre qu'ils étaient
+la partie la moins fiable de l'expérience — l'un d'eux a produit `glowstone = 0`
+et `stone = 3`, des valeurs assez plausibles pour être crues. Le lecteur du
+projet, lui, est vérifié octet à octet sur 17 879 chunks.

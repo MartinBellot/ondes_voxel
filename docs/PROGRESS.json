@@ -46,7 +46,7 @@
       "total": 17,
       "exit_criterion": "Un client Minecraft vanilla 1.20.1 non modifié se connecte, marche, casse et pose un bloc — sans une ligne de Vulkan.",
       "blocked": [
-        "MOTION_BLOCKING, OCEAN_FLOOR, moteur de lumiere et collisions : necessitent la table de flags par etat de bloc, absente des rapports officiels."
+        "MOTION_BLOCKING, OCEAN_FLOOR, collisions et mouvement autoritatif : necessitent la table de flags par etat. Harnais de mesure monte et partiellement concluant (voir PROVENANCE), mesures pas encore reproductibles a 100 % — aucune table livree."
       ]
     },
     "M4": {
@@ -116,7 +116,8 @@
     "persistence": "monde sauvegarde en Anvil et recharge : tour, trou et lumiere identiques apres redemarrage ; autosave 30 s, 4 chunks / 3 regions sans surcharge de tick",
     "cross_load": "notre sauvegarde chargee par le vrai serveur 1.20.1 sans erreur ; chunk reecrit par lui (PostProcessing, isLightOn, structures, 25 sections) relu par nous avec les bons blocs",
     "placement_orientation": "conventions de facing mesurees sur 18 blocs poses par le vrai serveur 1.20.1 ; 11/11 reproduites a l'identique",
-    "player_entities": "deux joueurs se voient : apparition dans les deux sens, teleport et rotation de tete a chaque mouvement, retrait a la deconnexion ; 20 paquets d'un joueur immobile -> 0 retransmission"
+    "player_entities": "deux joueurs se voient : apparition dans les deux sens, teleport et rotation de tete a chaque mouvement, retrait a la deconnexion ; 20 paquets d'un joueur immobile -> 0 retransmission",
+    "light_emission_harness": "technique validee : setblock via la console vanilla puis lecture de BlockLight ; exact pour glowstone, stone, redstone_ore, respawn_anchor, furnace ; contamine pour d'autres etats"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",
