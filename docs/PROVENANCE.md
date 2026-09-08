@@ -743,3 +743,28 @@ Le pont entre l'item tenu et le bloc posé est le **nom** : l'item
 `minecraft:stone` pose le bloc `minecraft:stone`. Items et blocs sont deux
 registres aux IDs distincts, et la plupart des items non-blocs n'ont simplement
 pas de bloc homonyme — ce qui est exactement le test.
+
+### La lumière se dérive du heightmap, pas d'une constante
+
+Bug réel, trouvé en jouant : creuser un trou, se déconnecter, revenir — le trou
+restait noir.
+
+La génération cuisait la lumière du ciel à partir d'une hauteur de surface
+**fixe**. Casser un bloc met à jour `WORLD_SURFACE`, mais pas le tableau de
+lumière déjà stocké. Pendant la session tout allait bien parce que **le client
+éclaire lui-même les blocs qu'il modifie** ; l'erreur ne se voit qu'au
+rechargement, quand le serveur réenvoie sa version.
+
+Deux conséquences de conception :
+
+- La lumière est calculée **depuis le heightmap**, par une fonction unique
+  qu'utilisent la génération *et* l'édition. Deux chemins qui calculent la
+  lumière séparément s'accordent jusqu'au jour où quelqu'un creuse.
+- La colonne est recalculée à chaque modification de bloc, parce que c'est
+  précisément là que `WORLD_SURFACE` bouge.
+
+Limites assumées : lumière **directe** seulement, sans propagation horizontale —
+un puits est correctement éclairé, le dessous d'un surplomb ne l'est pas. Et
+« non-air » tient lieu d'« opaque », ce qui est juste pour tout bloc d'un monde
+plat et faux pour le verre. Les deux disparaissent avec le moteur de lumière et
+la table de flags.

@@ -73,6 +73,51 @@ struct Options {
 /// connection or the ids are ambiguous.
 enum class ConnectionState { Handshaking, Status, Login, Play };
 
+/// Direct sky light for one column, derived from WORLD_SURFACE.
+///
+/// Everything at or above the first free space sees the sky at full strength;
+/// everything below it sees none. That is the whole of "direct" sky light: no
+/// horizontal propagation, so it lights the inside of a shaft correctly and
+/// does not light the sides of an overhang. A real light engine is M3's
+/// remaining work.
+///
+/// It reads the heightmap rather than a fixed surface height on purpose. Baking
+/// the light from a constant at generation time works exactly until a player
+/// digs: the heightmap follows the hole, the baked array does not, and the hole
+/// is still dark the next time the chunk is sent. That was a real bug, found by
+/// digging a hole and rejoining.
+///
+/// Non-air is used as a stand-in for opaque, which is right for every block a
+/// flat world contains and wrong for glass. It stops being an approximation
+/// when the block-state flag table exists.
+void relight_column(world::Chunk& chunk, usize x, usize z) {
+    const i32 first_free = chunk.heightmap(world::HeightmapType::WorldSurface).first_free(x, z);
+
+    for (usize i = 0; i < chunk.shape().section_count(); ++i) {
+        const i32            bottom  = chunk.shape().min_y + static_cast<i32>(i) * 16;
+        world::ChunkSection* section = chunk.section_for_y(bottom);
+        if (section == nullptr) {
+            continue;
+        }
+        for (usize local_y = 0; local_y < 16; ++local_y) {
+            const i32 y = bottom + static_cast<i32>(local_y);
+            section->sky_light().set(world::section_index(x, local_y, z),
+                                     y >= first_free ? world::kMaxLightLevel : 0);
+        }
+    }
+}
+
+/// Drop the storage of any section whose light came out uniform.
+void compact_light(world::Chunk& chunk) {
+    for (usize i = 0; i < chunk.shape().section_count(); ++i) {
+        const i32            bottom  = chunk.shape().min_y + static_cast<i32>(i) * 16;
+        world::ChunkSection* section = chunk.section_for_y(bottom);
+        if (section != nullptr) {
+            section->sky_light().compact();
+        }
+    }
+}
+
 /// The superflat preset, bottom to top: bedrock, two dirt, one grass.
 ///
 /// A generator rather than a stored world, so a fresh server needs no save
@@ -122,38 +167,15 @@ struct Superflat {
 
         chunk.fill_biome(biome);
 
-        // Sky light, without a light engine: every block above the surface sees
-        // the sky at full strength, the surface itself and everything under it
-        // sees none. Exact for a flat world with no overhangs.
-        //
-        // Per **block**, not per section. The surface sits at y = -61, inside
-        // the section spanning -64 to -49 — so a per-section rule leaves the
-        // one section the player actually stands in dark, and the ground looks
-        // black while the sky above it is fine.
-        for (usize i = 0; i < chunk.shape().section_count(); ++i) {
-            const i32            section_bottom = chunk.shape().min_y + static_cast<i32>(i) * 16;
-            world::ChunkSection* section        = chunk.section_for_y(section_bottom);
-            if (section == nullptr) {
-                continue;
+        // Light comes from the heightmap, through the same function block edits
+        // use. Two code paths that compute light differently agree right up
+        // until someone digs.
+        for (usize z = 0; z < 16; ++z) {
+            for (usize x = 0; x < 16; ++x) {
+                relight_column(chunk, x, z);
             }
-
-            world::LightArray sky{0};
-            for (usize local_y = 0; local_y < 16; ++local_y) {
-                if (section_bottom + static_cast<i32>(local_y) <= kSurfaceY) {
-                    continue;
-                }
-                for (usize z = 0; z < 16; ++z) {
-                    for (usize x = 0; x < 16; ++x) {
-                        sky.set(world::section_index(x, local_y, z), world::kMaxLightLevel);
-                    }
-                }
-            }
-            // Sections entirely above or entirely below collapse back to a
-            // uniform value and store nothing; only the one straddling the
-            // surface keeps its 2 KiB.
-            sky.compact();
-            section->sky_light() = sky;
         }
+        compact_light(chunk);
         return chunk;
     }
 };
@@ -405,8 +427,15 @@ int main(int argc, char** argv) {
             if (it == chunk_cache.end()) {
                 return;
             }
-            it->second.set_block(static_cast<usize>(position.x & 15), position.y,
-                                 static_cast<usize>(position.z & 15), state);
+            const auto local_x = static_cast<usize>(position.x & 15);
+            const auto local_z = static_cast<usize>(position.z & 15);
+            it->second.set_block(local_x, position.y, local_z, state);
+
+            // WORLD_SURFACE has just moved, so the column's sky light has too.
+            // Without this a hole stays lit as if it were still filled, and the
+            // error only shows after a reload — the client lights its own edits
+            // locally and never notices the server disagreeing.
+            relight_column(it->second, local_x, local_z);
         }
 
         const auto framed =
