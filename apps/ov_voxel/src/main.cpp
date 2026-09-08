@@ -1,31 +1,35 @@
 // ov_voxel — the playable client.
 //
-// Today it draws a hand-built scene out of real 1.20.1 block models and a real
-// stitched atlas, which is the first point at which the model pipeline, the
-// atlas, the mesher and the RHI are all checked at once by something that is
-// not a unit test.
+// It reads a real 1.20.1 save off the disk, resolves every block state it finds
+// through the registry into models, stitches the sprites those models name into
+// an atlas, meshes the sections, and draws them. The hand-built demo scene it
+// used to draw is gone: everything on screen now comes from a world the game
+// itself wrote, which is the only way the numbers mean anything.
 //
 // --frames and --screenshot exist so the result can be checked without a human
-// looking at it, which is the difference between "it built" and "it works".
+// looking at it, and --stats reports the frame time percentiles the milestone
+// is actually judged on.
 
 #define OV_LOG_CATEGORY "voxel"
 
-#include "scene.hpp"
+#include "world_source.hpp"
 
 #include "ov/base/log.hpp"
+#include "ov/base/time.hpp"
 #include "ov/client/window.hpp"
+#include "ov/registry/block_states.hpp"
 #include "ov/render/atlas.hpp"
-#include "ov/render/baked_model.hpp"
-#include "ov/render/block_state_model.hpp"
+#include "ov/render/block_models.hpp"
 #include "ov/render/camera.hpp"
-#include "ov/render/mesher.hpp"
-#include "ov/render/model.hpp"
+#include "ov/render/chunk_mesher.hpp"
+#include "ov/render/frustum.hpp"
 #include "ov/rhi/device.hpp"
 
 #include <fmt/format.h>
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -46,10 +50,21 @@ struct Options {
     u32         frames{0};
     std::string screenshot;
     std::string assets{"run/assets"};
-    bool        validation{true};
-    /// x,y,z,yaw,pitch. Exists so that a face can be put in front of the
-    /// camera and looked at, which is how the questions a unit test cannot
-    /// answer — is this texture mirrored? — actually get settled.
+    std::string world{"run/world"};
+    std::string registry{"data/vanilla/1.20.1/registry.ovpack"};
+    /// Chunk radius to load. 12 is the milestone's render distance.
+    i32  radius{6};
+    i32  centre_x{0};
+    i32  centre_z{0};
+    bool validation{true};
+    /// Diagnostics. When something is missing from the picture the first two
+    /// questions are always "was it culled?" and "was it facing away?", and a
+    /// flag answers each in one run instead of a rebuild.
+    bool cull{true};
+    bool backface{true};
+    /// x,y,z,yaw,pitch. Exists so a face can be put in front of the camera and
+    /// looked at, which is how the questions a unit test cannot answer — is
+    /// this texture mirrored? — actually get settled.
     std::string camera;
 };
 
@@ -71,8 +86,25 @@ struct Options {
             options.screenshot = value("--screenshot=");
         } else if (argument.starts_with("--assets=")) {
             options.assets = value("--assets=");
+        } else if (argument.starts_with("--world=")) {
+            options.world = value("--world=");
+        } else if (argument.starts_with("--registry=")) {
+            options.registry = value("--registry=");
+        } else if (argument.starts_with("--radius=")) {
+            options.radius = std::atoi(value("--radius=").c_str());
+        } else if (argument.starts_with("--at=")) {
+            const auto text  = value("--at=");
+            const auto comma = text.find(',');
+            options.centre_x = std::atoi(text.substr(0, comma).c_str());
+            if (comma != std::string::npos) {
+                options.centre_z = std::atoi(text.substr(comma + 1).c_str());
+            }
         } else if (argument.starts_with("--camera=")) {
             options.camera = value("--camera=");
+        } else if (argument == "--no-cull") {
+            options.cull = false;
+        } else if (argument == "--no-backface") {
+            options.backface = false;
         } else if (argument == "--no-validation") {
             options.validation = false;
         }
@@ -109,75 +141,35 @@ bool write_ppm(const std::filesystem::path& path, std::span<const u8> rgba, u32 
     return static_cast<bool>(file);
 }
 
-/// One block kind, resolved from the pack: its blockstate, its model, and the
-/// quads it bakes to.
-struct ResolvedKind {
-    render::BakedModel      baked;
-    render::BlockRenderInfo info;
-};
-
-[[nodiscard]] std::vector<ResolvedKind> resolve_palette(
-    const render::AssetSource& source, render::ModelLoader& loader,
-    const std::vector<demo::BlockKind>& palette) {
-    std::vector<ResolvedKind> resolved(palette.size());
-
-    for (usize i = 0; i < palette.size(); ++i) {
-        const auto& kind = palette[i];
-        resolved[i].info = render::BlockRenderInfo{kind.layer, kind.tint};
-        if (kind.name == "minecraft:air") {
-            continue;
-        }
-
-        const auto location = ResourceLocation::parse(kind.name);
-        if (!location) {
-            OV_LOG_WARN("{}: not a resource location", kind.name);
-            continue;
-        }
-        const auto bytes = source.read(render::blockstate_asset_path(*location));
-        if (!bytes) {
-            OV_LOG_WARN("{}: no blockstate file", kind.name);
-            continue;
-        }
-        const auto file = render::BlockStateFile::parse(*bytes);
-        if (!file) {
-            OV_LOG_WARN("{}: {}", kind.name, render::to_string(file.error()));
-            continue;
-        }
-
-        std::vector<std::pair<std::string_view, std::string_view>> properties;
-        properties.reserve(kind.properties.size());
-        for (const auto& entry : kind.properties) {
-            properties.emplace_back(entry.first, entry.second);
-        }
-
-        const auto groups = file->select(properties);
-        if (groups.empty() || groups.front().alternatives.empty()) {
-            OV_LOG_WARN("{}: no variant matched", kind.name);
-            continue;
-        }
-
-        // The first alternative. Choosing among weighted ones needs the block
-        // position hashed the way vanilla does it, which the mesher will own.
-        const auto& variant = groups.front().alternatives.front();
-        const auto  model   = loader.load(variant.model);
-        if (!model) {
-            OV_LOG_WARN("{}: {}", kind.name, render::to_string(model.error()));
-            continue;
-        }
-        resolved[i].baked = render::bake(**model, variant);
-    }
-    return resolved;
-}
-
 struct PushConstants {
     render::Mat4       view_projection;
     std::array<f32, 4> section_origin;
+};
+
+/// One meshed section, on the GPU.
+struct SectionDraw {
+    Vec3f               origin;
+    rhi::BufferHandle   vertices;
+    u32                 index_count{0};
+    render::RenderLayer layer{render::RenderLayer::Solid};
 };
 
 [[nodiscard]] std::span<const u8> as_bytes(const auto& container) {
     return std::span(
         reinterpret_cast<const u8*>(container.data()),
         container.size() * sizeof(typename std::decay_t<decltype(container)>::value_type));
+}
+
+/// The percentile the milestone is judged on. Not the mean: 60 FPS on average
+/// with spikes to 45 ms is unplayable and would pass a test of the mean.
+[[nodiscard]] f64 percentile(std::vector<f64> samples, f64 fraction) {
+    if (samples.empty()) {
+        return 0.0;
+    }
+    std::ranges::sort(samples);
+    const auto index = std::min(samples.size() - 1,
+                                static_cast<usize>(fraction * static_cast<f64>(samples.size())));
+    return samples[index];
 }
 
 }  // namespace
@@ -187,7 +179,17 @@ int main(int argc, char** argv) {
     const Options          options = parse_arguments(args);
     const auto             base    = executable_directory(argv[0]);
 
-    // ── Assets, models, atlas, mesh: all before any Vulkan ──────────────────
+    // ── Registry, world, models, atlas, mesh: all before any Vulkan ─────────
+    auto blocks = registry::BlockRegistry::load(options.registry);
+    if (!blocks) {
+        OV_LOG_ERROR(
+            "registry {}: {}. Generate it with tools/ov_datagen, or pass "
+            "--registry=<path>.",
+            options.registry, registry::to_string(blocks.error()));
+        return 1;
+    }
+    OV_LOG_INFO("registry: {} blocks, {} states", blocks->block_count(), blocks->state_count());
+
     const std::filesystem::path assets_root(options.assets);
     if (!std::filesystem::is_directory(assets_root / "assets")) {
         OV_LOG_ERROR(
@@ -196,41 +198,95 @@ int main(int argc, char** argv) {
             assets_root.string());
         return 1;
     }
-
     const render::DirectoryAssetSource source(assets_root);
-    render::ModelLoader                loader(source);
 
-    demo::Scene scene    = demo::build_demo_scene();
-    const auto  resolved = resolve_palette(source, loader, scene.palette());
+    const auto load_start = std::chrono::steady_clock::now();
+    auto       world = demo::load_world(options.world, *blocks, options.centre_x, options.centre_z,
+                                        options.radius);
+    if (!world) {
+        return 1;
+    }
+    const auto load_ms =
+        std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - load_start)
+            .count();
+    OV_LOG_INFO("world: {} chunks read, {} failed, {:.0f} ms{}", world->chunks_read,
+                world->chunks_failed, load_ms,
+                world->light_stored ? "" : " — WITHOUT stored light");
+
+    // Resolve every state the world uses before the atlas is stitched: the
+    // atlas needs the full set of sprites, and the render layer needs the
+    // atlas. Resolve, stitch, classify, mesh.
+    render::BlockModelCache models(source, *blocks);
+    for (const auto& [position, chunk] : world->chunks) {
+        (void)position;
+        const auto shape = chunk->shape();
+        for (i32 y = shape.min_y; y <= shape.max_y(); ++y) {
+            for (usize z = 0; z < 16; ++z) {
+                for (usize x = 0; x < 16; ++x) {
+                    (void)models.resolve(chunk->get_block(x, y, z));
+                }
+            }
+        }
+    }
+    OV_LOG_INFO("models: {} states resolved, {} with no geometry, {} sprites",
+                models.resolved_count(), models.missing_count(), models.sprites().size());
 
     render::AtlasBuilder builder(source);
-    for (const auto& kind : resolved) {
-        for (const auto& quad : kind.baked.quads) {
-            builder.add(quad.sprite);
-        }
+    for (const auto& sprite : models.sprites()) {
+        builder.add(sprite);
     }
     auto atlas = builder.build();
     if (!atlas) {
         OV_LOG_ERROR("atlas: {}", render::to_string(atlas.error()));
         return 1;
     }
+    models.classify_layers(*atlas);
     OV_LOG_INFO("atlas {}x{}, {} sprites, {} mip levels", atlas->width(), atlas->height(),
                 atlas->sprites().size(), atlas->mips().size());
 
-    render::MeshBuffers mesh;
-    for (i32 y = 0; y < demo::kSceneHeight; ++y) {
-        for (i32 z = 0; z < demo::kSceneSize; ++z) {
-            for (i32 x = 0; x < demo::kSceneSize; ++x) {
-                const u8 kind = scene.at(x, y, z);
-                if (kind == 0 || resolved[kind].baked.quads.empty()) {
-                    continue;
-                }
-                render::emit_block(resolved[kind].baked, Vec3i{x, y, z}, resolved[kind].info,
-                                   *atlas, scene, mesh);
+    // ── Mesh every section ──────────────────────────────────────────────────
+    struct SectionMesh {
+        Vec3f               origin;
+        render::MeshBuffers buffers;
+    };
+
+    const auto               mesh_start = std::chrono::steady_clock::now();
+    std::vector<SectionMesh> meshes;
+    usize                    total_quads = 0;
+    bool                     saw_light   = false;
+
+    for (const auto& [position, chunk] : world->chunks) {
+        const auto neighbours = world->neighbours(position.first, position.second);
+        const auto shape      = chunk->shape();
+
+        for (usize index = 0; index < shape.section_count(); ++index) {
+            const i32 origin_y = shape.min_y + static_cast<i32>(index) * 16;
+
+            const render::ChunkSectionView view(*blocks, neighbours, position.first * 16, origin_y,
+                                                position.second * 16);
+            SectionMesh                    mesh;
+            mesh.origin = Vec3f{static_cast<f32>(position.first * 16), static_cast<f32>(origin_y),
+                                static_cast<f32>(position.second * 16)};
+
+            const auto stats = render::mesh_section(view, models, *atlas, mesh.buffers);
+            saw_light        = saw_light || view.any_light_stored();
+            if (stats.quads == 0) {
+                continue;
             }
+            total_quads += stats.quads;
+            meshes.push_back(std::move(mesh));
         }
     }
-    OV_LOG_INFO("mesh: {} vertices, {} quads", mesh.total_vertices(), mesh.total_vertices() / 4);
+    const auto mesh_ms =
+        std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - mesh_start)
+            .count();
+    OV_LOG_INFO("mesh: {} sections with geometry, {} quads, {:.0f} ms{}", meshes.size(),
+                total_quads, mesh_ms, saw_light ? "" : " — no stored light was read");
+
+    if (meshes.empty()) {
+        OV_LOG_ERROR("nothing to draw: every section meshed to zero quads");
+        return 1;
+    }
 
     // ── Window and device ───────────────────────────────────────────────────
     auto window = client::Window::create(options.width, options.height, "Ondes VOXEL");
@@ -280,54 +336,59 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // One vertex buffer per layer, and one index buffer shared by all of them.
-    // The shared indices are the plan's first memory win: at six 32-bit indices
-    // a quad, every section that does not store its own saves 24 bytes a quad.
+    // One vertex buffer per section per layer, and ONE index buffer shared by
+    // all of them. At six 32-bit indices a quad, every section that does not
+    // store its own saves 24 bytes per quad — here, several megabytes.
     usize max_quads = 0;
-    for (const auto& layer : mesh.layers) {
-        max_quads = std::max(max_quads, layer.size() / 4);
+    for (const auto& mesh : meshes) {
+        for (const auto& layer : mesh.buffers.layers) {
+            max_quads = std::max(max_quads, layer.size() / 4);
+        }
     }
-    const auto indices = render::build_shared_quad_indices(static_cast<u32>(max_quads));
-
-    constexpr usize kLayerCount = static_cast<usize>(render::RenderLayer::Count);
-    std::array<rhi::BufferHandle, kLayerCount> vertex_buffers{};
-    std::array<u32, kLayerCount>               index_counts{};
-
-    for (usize i = 0; i < kLayerCount; ++i) {
-        const auto& vertices = mesh.layers[i];
-        if (vertices.empty()) {
-            continue;
-        }
-        const auto bytes  = as_bytes(vertices);
-        auto       buffer = device.create_buffer(
-            rhi::BufferDesc{bytes.size(), rhi::BufferUsage::Vertex, "terrain vertices"});
-        if (!buffer) {
-            return 1;
-        }
-        if (!device.upload_buffer(*buffer, bytes)) {
-            return 1;
-        }
-        vertex_buffers[i] = *buffer;
-        index_counts[i]   = static_cast<u32>(vertices.size() / 4 * 6);
-    }
-
+    const auto        indices = render::build_shared_quad_indices(static_cast<u32>(max_quads));
     rhi::BufferHandle index_buffer;
-    if (!indices.empty()) {
+    {
         const auto bytes  = as_bytes(indices);
         auto       buffer = device.create_buffer(
             rhi::BufferDesc{bytes.size(), rhi::BufferUsage::Index, "shared quad indices"});
-        if (!buffer) {
-            return 1;
-        }
-        if (!device.upload_buffer(*buffer, bytes)) {
+        if (!buffer || !device.upload_buffer(*buffer, bytes)) {
             return 1;
         }
         index_buffer = *buffer;
     }
 
-    // Three uint attributes rather than one uvec3, because R32G32B32_UINT is
-    // not universally supported for vertex input; reading three uints as a
-    // uvec3 in the shader costs nothing and works everywhere.
+    std::vector<SectionDraw> draws;
+    usize                    vertex_bytes = 0;
+    for (const auto& mesh : meshes) {
+        for (usize i = 0; i < static_cast<usize>(render::RenderLayer::Count); ++i) {
+            const auto& vertices = mesh.buffers.layers[i];
+            if (vertices.empty()) {
+                continue;
+            }
+            const auto bytes  = as_bytes(vertices);
+            auto       buffer = device.create_buffer(
+                rhi::BufferDesc{bytes.size(), rhi::BufferUsage::Vertex, "section"});
+            if (!buffer || !device.upload_buffer(*buffer, bytes)) {
+                return 1;
+            }
+            vertex_bytes += bytes.size();
+            draws.push_back(SectionDraw{mesh.origin, *buffer,
+                                        static_cast<u32>(vertices.size() / 4 * 6),
+                                        static_cast<render::RenderLayer>(i)});
+        }
+    }
+    // Draw solid first, then cutout, then translucent: the order the layers
+    // exist for.
+    std::ranges::stable_sort(draws, [](const SectionDraw& a, const SectionDraw& b) {
+        return static_cast<u8>(a.layer) < static_cast<u8>(b.layer);
+    });
+    OV_LOG_INFO("gpu: {} draws, {:.1f} MiB of vertices, {:.1f} MiB of shared indices", draws.size(),
+                static_cast<f64>(vertex_bytes) / (1024.0 * 1024.0),
+                static_cast<f64>(indices.size() * 4) / (1024.0 * 1024.0));
+
+    // Three uint attributes rather than one uvec3: R32G32B32_UINT is not
+    // universally supported for vertex input, and a uvec3 attribute occupies
+    // one location rather than three.
     rhi::VertexBinding binding;
     binding.stride = sizeof(render::TerrainVertex);
     binding.attributes.push_back(rhi::VertexAttribute{0, rhi::Format::R32Uint, 0});
@@ -351,15 +412,23 @@ int main(int argc, char** argv) {
         return device.create_graphics_pipeline(pipeline);
     };
 
-    auto opaque_pipeline = make_pipeline(rhi::BlendMode::None, true, rhi::CullMode::Back);
-    if (!opaque_pipeline) {
-        OV_LOG_ERROR("pipeline: {}", rhi::to_string(opaque_pipeline.error()));
+    auto solid_pipeline = make_pipeline(
+        rhi::BlendMode::None, true, options.backface ? rhi::CullMode::Back : rhi::CullMode::None);
+    if (!solid_pipeline) {
+        OV_LOG_ERROR("pipeline: {}", rhi::to_string(solid_pipeline.error()));
         return 1;
     }
-    // Cutout models are not closed solids — a leaf block's faces are all
-    // visible from both sides — so back-face culling would eat half of them.
+    // Cutout models are not closed solids — a leaf block's faces are visible
+    // from both sides — so back-face culling would eat half of them.
     auto cutout_pipeline = make_pipeline(rhi::BlendMode::None, true, rhi::CullMode::None);
     if (!cutout_pipeline) {
+        return 1;
+    }
+    // Translucent blends and does NOT write depth, so that what is behind a
+    // pane of water still draws. Sorting it back to front is the next step and
+    // is not done yet.
+    auto translucent_pipeline = make_pipeline(rhi::BlendMode::Alpha, false, rhi::CullMode::None);
+    if (!translucent_pipeline) {
         return 1;
     }
 
@@ -390,12 +459,11 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // Looking down at the platform from a corner, so that the step's inside
-    // corner, both trees and the glass are all in frame.
     render::Camera camera;
-    camera.position      = Vec3f{-7.0F, 14.0F, -7.0F};
+    camera.position      = world->suggested_camera(*blocks);
     camera.yaw_degrees   = -45.0F;
-    camera.pitch_degrees = 27.0F;
+    camera.pitch_degrees = 20.0F;
+    camera.far_plane     = static_cast<f32>(options.radius + 2) * 16.0F * 1.8F;
 
     if (!options.camera.empty()) {
         std::array<f32, 5> values{camera.position.x, camera.position.y, camera.position.z,
@@ -416,6 +484,8 @@ int main(int argc, char** argv) {
         camera.yaw_degrees   = values[3];
         camera.pitch_degrees = values[4];
     }
+    OV_LOG_INFO("camera at ({:.1f}, {:.1f}, {:.1f})", camera.position.x, camera.position.y,
+                camera.position.z);
 
     (*window)->set_cursor_captured(options.frames == 0);
 
@@ -431,12 +501,16 @@ int main(int argc, char** argv) {
         readback = *buffer;
     }
 
-    u32  rendered = 0;
-    bool running  = true;
-    bool captured = false;
+    std::vector<f64> cpu_frame_ms;
+    std::vector<f64> gpu_frame_ms;
+    u32              drawn_last_frame = 0;
+    u32              rendered         = 0;
+    bool             running          = true;
+    bool             captured         = false;
 
     while (running) {
-        const auto& input = (*window)->poll();
+        const auto  frame_start = std::chrono::steady_clock::now();
+        const auto& input       = (*window)->poll();
         if ((*window)->should_close()) {
             running = false;
         }
@@ -449,7 +523,7 @@ int main(int argc, char** argv) {
 
         camera.turn(static_cast<f32>(input.mouse_delta_x), static_cast<f32>(input.mouse_delta_y));
 
-        const f32   speed   = input.held(client::Key::Sprint) ? 0.6F : 0.15F;
+        const f32   speed   = input.held(client::Key::Sprint) ? 1.2F : 0.3F;
         const Vec3f forward = camera.forward();
         const Vec3f right   = camera.right();
         if (input.held(client::Key::Forward)) {
@@ -511,30 +585,51 @@ int main(int argc, char** argv) {
         cmd.set_viewport(0.0F, 0.0F, static_cast<f32>(width), static_cast<f32>(height));
         cmd.set_scissor(0, 0, width, height);
 
-        PushConstants push;
-        push.view_projection =
+        const auto view_projection =
             camera.view_projection(static_cast<f32>(width) / static_cast<f32>(height));
-        push.section_origin = {0.0F, 0.0F, 0.0F, 0.0F};
-
         const std::array<rhi::ImageHandle, 1>   images{*atlas_image};
         const std::array<rhi::SamplerHandle, 1> samplers{*sampler};
 
         cmd.bind_index_buffer(index_buffer);
 
-        for (usize i = 0; i < kLayerCount; ++i) {
-            if (index_counts[i] == 0) {
+        // Frustum culling on the CPU, before anything is bound. One plane test
+        // against a box removes most of the world at a stroke; the compute
+        // shader version comes after this is measured and found wanting.
+        const auto frustum   = render::Frustum::from_view_projection(view_projection);
+        u32        submitted = 0;
+
+        render::RenderLayer bound = render::RenderLayer::Count;
+        for (const auto& draw : draws) {
+            const Vec3f minimum = draw.origin;
+            const Vec3f maximum{draw.origin.x + 16.0F, draw.origin.y + 16.0F,
+                                draw.origin.z + 16.0F};
+            if (options.cull && !frustum.intersects(minimum, maximum)) {
                 continue;
             }
-            const bool cutout   = i == static_cast<usize>(render::RenderLayer::Cutout) ||
-                                  i == static_cast<usize>(render::RenderLayer::CutoutMipped);
-            const auto pipeline = cutout ? *cutout_pipeline : *opaque_pipeline;
+            ++submitted;
 
-            cmd.bind_pipeline(pipeline);
+            if (draw.layer != bound) {
+                bound               = draw.layer;
+                const auto pipeline = draw.layer == render::RenderLayer::Solid ? *solid_pipeline
+                                      : draw.layer == render::RenderLayer::Translucent
+                                          ? *translucent_pipeline
+                                          : *cutout_pipeline;
+                cmd.bind_pipeline(pipeline);
+                cmd.bind_textures(pipeline, images, samplers);
+            }
+            const auto pipeline = draw.layer == render::RenderLayer::Solid ? *solid_pipeline
+                                  : draw.layer == render::RenderLayer::Translucent
+                                      ? *translucent_pipeline
+                                      : *cutout_pipeline;
+
+            PushConstants push;
+            push.view_projection = view_projection;
+            push.section_origin  = {draw.origin.x, draw.origin.y, draw.origin.z, 0.0F};
             cmd.push_constants(pipeline, &push, sizeof(push));
-            cmd.bind_textures(pipeline, images, samplers);
-            cmd.bind_vertex_buffer(0, vertex_buffers[i]);
-            cmd.draw_indexed(index_counts[i]);
+            cmd.bind_vertex_buffer(0, draw.vertices);
+            cmd.draw_indexed(draw.index_count);
         }
+        drawn_last_frame = submitted;
 
         cmd.end_rendering();
 
@@ -558,6 +653,13 @@ int main(int argc, char** argv) {
             if (!ensure_depth()) {
                 return 1;
             }
+        }
+
+        cpu_frame_ms.push_back(
+            std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - frame_start)
+                .count());
+        if (device.last_frame_gpu_ms() > 0.0) {
+            gpu_frame_ms.push_back(device.last_frame_gpu_ms());
         }
 
         if (options.frames != 0 && rendered >= options.frames) {
@@ -592,6 +694,25 @@ int main(int argc, char** argv) {
         fmt::print("wrote {} ({}x{})\n", options.screenshot, width, height);
     }
 
-    fmt::print("{} frames, last GPU time {:.3f} ms\n", rendered, device.last_frame_gpu_ms());
+    // The milestone's target is a percentile, so that is what gets printed —
+    // and the first frames are dropped, because they carry the driver's
+    // one-off shader translation and would put a 100 ms outlier in every p99
+    // that has nothing to do with the renderer.
+    constexpr usize kWarmUpFrames = 10;
+    const auto      drop          = [](std::vector<f64> samples) {
+        if (samples.size() > kWarmUpFrames) {
+            samples.erase(samples.begin(), samples.begin() + static_cast<isize>(kWarmUpFrames));
+        }
+        return samples;
+    };
+    const auto cpu = drop(cpu_frame_ms);
+    const auto gpu = drop(gpu_frame_ms);
+
+    fmt::print("{} frames ({} after warm-up), {} of {} sections drawn last frame\n", rendered,
+               cpu.size(), drawn_last_frame, draws.size());
+    fmt::print("cpu  p50 {:.2f} ms   p99 {:.2f} ms   max {:.2f} ms\n", percentile(cpu, 0.50),
+               percentile(cpu, 0.99), percentile(cpu, 1.0));
+    fmt::print("gpu  p50 {:.2f} ms   p99 {:.2f} ms   max {:.2f} ms\n", percentile(gpu, 0.50),
+               percentile(gpu, 0.99), percentile(gpu, 1.0));
     return 0;
 }

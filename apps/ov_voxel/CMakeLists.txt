@@ -3,9 +3,12 @@
 ov_add_executable(ov_voxel
     SOURCES
         src/main.cpp
-        src/scene.cpp
+        src/world_source.cpp
     DEPS
         ov_client
+        ov_nbt
+        ov_registry
+        ov_world
         ov_render
         ov_rhi
         fmt::fmt

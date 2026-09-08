@@ -2417,4 +2417,145 @@ valeurs** que la passe par bloc avait laissées à celle de l'état par défaut.
 qu'on les voit : verre luisant 15, torche 14, tige d'ender 14, obsidienne
 pleureuse 10, table d'enchantement 7, torche de redstone 7, bloc de magma 3,
 alambic 1.
+---
 
+## Le monde réel à l'écran : registre → modèles → sections (`ov_render`)
+
+L'échafaudage a été retiré. La scène écrite à la main est remplacée par une
+lecture directe des fichiers de région : `run/world` est la sauvegarde 1.20.1 du
+joueur (`DataVersion` 3465), et tout ce qui s'affiche vient d'elle.
+
+Chaîne complète : `BlockStateId` → nom du bloc et propriétés reconstruites depuis
+l'id mixed-radix → `blockstates/<bloc>.json` → variantes ou multipart → modèles
+bakés → sprites → atlas → mailleur par section → quads.
+
+### L'occlusion demande la forme **et** l'opacité, et ça s'est vu
+
+`NeighbourhoodView::occludes` de la scène de démonstration répondait « le bloc
+est-il plein ? ». C'est faux pour tout ce qui n'est pas un cube : une dalle
+aurait caché le sol sous elle. Le pack porte maintenant les formes de collision
+par état avec un masque de faces pleines précalculé, vérifié — la règle de
+connexion des clôtures reconstruite à partir de lui reproduit 23358 faces sur
+23358 mesurées sur un vrai serveur.
+
+**Mais `face_is_sturdy` seul ne suffit pas non plus, et c'est un test raté qui
+l'a montré.** Le test affirmait que le verre n'est pas *sturdy* ; il l'est —
+le verre remplit son cube. Un mailleur qui s'arrêterait à la forme supprimerait
+donc tout ce qui se trouve derrière une fenêtre. La règle correcte demande les
+deux :
+
+```
+occlus = face_is_sturdy(état, face)  ET  blocks_sky_light(bloc)
+```
+
+Les deux colonnes sont des données mesurées, pas des heuristiques. Le test a été
+corrigé dans le sens inverse de ce qu'on attendait, ce qui est le seul cas où un
+test apprend quelque chose.
+
+### Les fluides n'ont pas de modèle, et c'était 30 % de l'image
+
+Premier rendu du vrai monde : 29,77 % des pixels étaient exactement la couleur
+d'effacement. Du ciel **à travers** le sol. La cause est dans les assets :
+
+```
+$ cat run/assets/assets/minecraft/models/block/water.json
+{ "textures": { "particle": "block/water_still" } }
+```
+
+`block/water.json` déclare une texture de particule et **aucune géométrie**.
+Vanilla dessine les fluides avec un moteur à part, qui lit le niveau des huit
+colonnes autour de chaque coin et incline la surface vers l'écoulement. Sans
+lui, l'océan et les rivières ne sont pas absents « par bug » : ils n'ont
+simplement jamais été demandés à personne.
+
+La géométrie est donc synthétisée ici : une boîte de 14/16 de haut pour une
+source (c'est pourquoi on se tient légèrement sous la ligne d'eau dans le jeu),
+pleine pour un fluide qui tombe (`level` ≥ 8). Ce qui **n'est pas** fait est
+écrit tel quel : hauteurs de coin interpolées et direction d'écoulement.
+
+Un corollaire non évident : deux cellules du même fluide partagent une face
+qu'on ne voit jamais, et le test d'occlusion ordinaire ne peut pas la supprimer
+— l'eau est transparente, donc il refuse *correctement* de cacher quoi que ce
+soit derrière elle. Sans une règle « même fluide », un océan dessine toutes ses
+faces internes. D'où `NeighbourhoodView::fluid_at`.
+
+### La couche de rendu est lue dans les pixels, pas dans une table
+
+Vanilla garde la couche de chaque bloc dans une table écrite à la main en Java.
+Ici elle est déduite de l'alpha des sprites du modèle : entièrement opaque →
+`solid`, alpha franc (0 ou 255) → `cutout`, alpha partiel → `translucent`.
+C'est data-driven et ça s'accorde avec vanilla sur ce qui compte.
+
+⚠️ **Ce que ça ne peut pas retrouver** : la distinction entre `cutout` et
+`cutout_mipped`. Vanilla met le verre et les barreaux dans `cutout` pour que le
+mipmapping ne mange pas leurs cadres d'un pixel, et les feuilles dans
+`cutout_mipped`. C'est une décision de rendu, pas une propriété de la texture.
+Tout ce qui a un alpha franc va pour l'instant dans `cutout_mipped`.
+
+Les fluides sont exclus de ce classement : `water_still` est une texture
+totalement opaque et serait classée `solid`, ce qui est exactement l'inverse.
+
+### La lumière vient du chunk
+
+`BlockLight` et `SkyLight` sont lus dans les sections, en YZX. Une section sans
+tableau de lumière est traitée comme du plein jour plutôt que comme du noir, et
+l'outil dit lequel des deux cas s'est produit : « une sauvegarde sans lumière »
+et « un mailleur cassé » donnent la même image noire, et il faut pouvoir les
+distinguer sans deviner.
+
+### Mesures sur le vrai monde
+
+`ov_voxel --radius=6 --at=0,0` sur `run/world`, Apple M2, MoltenVK :
+
+| | |
+|---|---|
+| chunks lus | 169, 0 échec |
+| états rencontrés | 216 sur 24135 — d'où la résolution **paresseuse** |
+| sprites | 98, atlas 512×512, 5 niveaux de mip |
+| sections avec géométrie | 2772 |
+| culling frustum | 1643 dessinées sur 2772, soit 41 % supprimées avant tout binding |
+
+Le culling frustum est la première grosse économie et elle est du bon côté du
+compromis : un test de plan contre une boîte, sur le CPU, avant qu'on lie quoi
+que ce soit. Le culling GPU par compute que le plan mentionne vient **après**
+que celui-ci ait été mesuré et jugé insuffisant, pas avant.
+
+⚠️ **Le p50 CPU de 16,7 ms n'est pas du travail, c'est l'attente du vsync.** Le
+mode de présentation est FIFO, donc la boucle bloque à 60 Hz ; le chiffre à
+regarder est le GPU. Mesurer le CPU utilement demandera un mode sans
+synchronisation verticale, et c'est noté comme non fait.
+
+### La cible de sortie du jalon, mesurée — et pas atteinte
+
+`ov_voxel --radius=12` en **RelWithDebInfo**, sans couches de validation, sur le
+vrai monde, 200 frames dont 190 comptées :
+
+| | |
+|---|---|
+| sections avec géométrie | 9674 |
+| quads | 5 314 101 |
+| sommets sur le GPU | 243,3 Mio |
+| dessinées après culling | 4312 sur 9674 (55 % supprimées) |
+| **CPU p50 / p99 / max** | 16,66 / **32,52** / 34,80 ms |
+| **GPU p50 / p99 / max** | 9,19 / **16,15** / 20,28 ms |
+
+**Le critère de sortie est p99 ≤ 20 ms à 12 chunks. Il n'est pas tenu** : 32,5 ms
+côté CPU. Le GPU passe de justesse.
+
+La mesure désigne le coupable sans ambiguïté, et c'est exactement celui que le
+plan avait nommé : **4312 draws individuels par frame**, chacun avec son bind de
+vertex buffer et son push constant, plus **9674 `VkBuffer` distincts**. C'est
+pour cela que le plan prévoit l'arène device-local de 384 Mo, le sous-allocateur
+en pages de 4 Ko et `drawIndexedIndirect` — un draw par couche au lieu de
+plusieurs milliers. Ce travail est maintenant **justifié par une mesure** plutôt
+que par une intuition, ce qui était la condition posée.
+
+Note au passage : 243 Mio de sommets pour un rayon de 12 tient sous les 384 Mo
+de l'arène prévue, donc le budget du plan était bon.
+
+### Le piège du `PositionMin`
+
+Le vertex packé couvre `[-8, 24)` bloc **relatif à l'origine de la section**, et
+c'est ce qui rend la position d'une section un push constant plutôt qu'une
+coordonnée absolue : une coordonnée monde y = 319 n'entre pas dans 16 bits à
+1/2048 de bloc. Le mailleur émet donc en local et la matrice ajoute l'origine.

@@ -46,6 +46,10 @@ struct FacePlane {
 
 NeighbourhoodView::~NeighbourhoodView() = default;
 
+u16 NeighbourhoodView::fluid_at(Vec3i) const {
+    return 0;
+}
+
 std::string_view to_string(RenderLayer layer) noexcept {
     switch (layer) {
         case RenderLayer::Solid: return "solid";
@@ -97,8 +101,16 @@ void emit_block(const BakedModel& model, Vec3i block_position, const BlockRender
         // The neighbour that hides this quad. Dropping these is the single
         // biggest reduction there is: the inside of a hill emits nothing.
         if (quad.cullface.has_value()) {
-            const Vec3i offset = direction_offset(*quad.cullface);
-            if (view.occludes(add(block_position, offset), opposite(*quad.cullface))) {
+            const Vec3i offset    = direction_offset(*quad.cullface);
+            const Vec3i neighbour = add(block_position, offset);
+            if (view.occludes(neighbour, opposite(*quad.cullface))) {
+                continue;
+            }
+            // Two boxes of the same fluid share a face that is never seen. The
+            // opacity test cannot drop it — water is transparent, so it
+            // correctly refuses to hide anything — and without this an ocean
+            // draws every internal face of every cell.
+            if (info.fluid != 0 && view.fluid_at(neighbour) == info.fluid) {
                 continue;
             }
         }

@@ -242,8 +242,11 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       calcul est dans PROVENANCE — 8 bits d'`uv` n'adressent pas un atlas)*
 - [ ] Arène device-local 384 Mo, free-list en pages de 4 Ko
 - [x] **Index buffer statique partagé** (supprime la mémoire d'index par section)
-- [ ] Culling frustum CPU → `drawIndexedIndirect`, 4 draws pour le terrain
-- [ ] Passe translucide triée, index buffer mutable dédié
+- [~] Culling frustum CPU → `drawIndexedIndirect`, 4 draws pour le terrain
+      *(le culling frustum est fait et supprime 55 % des sections ; les draws
+      indirects restent — la mesure à 12 chunks les justifie maintenant)*
+- [~] Passe translucide triée, index buffer mutable dédié *(la couche existe
+      et l'eau s'y dessine ; le tri par distance reste)*
 - [ ] Plafond d'upload par frame (les spikes, pas le FPS moyen, sont le risque)
 - [ ] Ciel, soleil, lune, étoiles, nuages, brouillard, météo
 

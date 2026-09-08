@@ -62,6 +62,16 @@ public:
 
     [[nodiscard]] virtual u8 sky_light(Vec3i position) const   = 0;
     [[nodiscard]] virtual u8 block_light(Vec3i position) const = 0;
+
+    /// Which fluid fills this position, or 0 for none.
+    ///
+    /// Fluids are the one thing vanilla does not draw from a model — water.json
+    /// declares a particle texture and no geometry at all — so the renderer
+    /// synthesises their boxes, and two touching boxes of the same fluid must
+    /// not draw the face between them or an ocean becomes a grid of cubes.
+    /// Opacity cannot answer it: water is transparent, so the ordinary
+    /// occlusion test correctly refuses to hide anything behind it.
+    [[nodiscard]] virtual u16 fluid_at(Vec3i position) const;
 };
 
 /// Vertices per render layer, ready to upload. Four vertices per quad, wound
@@ -87,6 +97,8 @@ struct BlockRenderInfo {
     RenderLayer layer{RenderLayer::Solid};
     /// Which biome colour multiplies the quads that declare a tint index.
     TintChannel tint{TintChannel::None};
+    /// Non-zero when this block is a fluid, identifying which one.
+    u16 fluid{0};
 };
 
 /// Emit one block's baked model at `block_position`, in section-local
