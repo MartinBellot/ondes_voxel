@@ -957,3 +957,35 @@ client scripté, pour un test plus direct. La pose n'a jamais abouti : le serveu
 valide quelque chose que mon client ne satisfait pas. C'est une limite de mon
 harnais, pas du code, et la preuve par les champs ci-dessus est plus forte de
 toute façon — mais elle est notée plutôt que passée sous silence.
+
+### La lumière traverse les frontières de chunk
+
+La version limitée à un chunk arrêtait la propagation au bord : une construction
+adossée à une frontière ne projetait aucune ombre chez le voisin, et la couture
+apparaissait comme une ligne droite de sol mal éclairé. La lumière ne respecte
+pas les frontières de chunk, le remplissage ne le peut pas non plus.
+
+Le remplissage travaille désormais sur le **voisinage 3×3**, en coordonnées
+monde — tout l'intérêt est qu'il ignore où sont les bords.
+
+Seuls les chunks **déjà chargés** participent. Aller chercher les voisins
+provoquerait une cascade : générer un chunk générerait ses voisins, puis les
+leurs. Une construction contre le bord de la zone chargée présente donc encore
+une couture — mais ce bord suit le joueur et reste hors de vue, alors qu'une
+frontière de chunk au milieu d'une base, non.
+
+La correction va **en mémoire, sans réémission**. Le client éclaire lui-même ses
+propres modifications, donc la couture reste invisible jusqu'au prochain
+chargement du chunk — c'est-à-dire précisément quand la valeur stockée est celle
+qui compte.
+
+#### Le test qui discrimine vraiment
+
+Un toit à cheval sur une frontière ne prouve rien : chaque chunk a ses propres
+sources de chaque côté. Il faut un cas où la lumière **ne peut venir que d'en
+face** — un toit couvrant toute la largeur d'un chunk près du bord.
+
+Mesuré : la case en x=16 (chunk 1) vaut **13**. Sa seule voisine éclairée est
+x=15, à 14, **dans le chunk 0**. Depuis le chunk 1 seul, la source la plus proche
+est à trois cases et donnerait 12. La valeur 13 ne peut donc venir que de l'autre
+côté de la frontière.

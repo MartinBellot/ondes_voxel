@@ -38,6 +38,7 @@
 #include <cmath>
 #include <csignal>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <string_view>
@@ -206,6 +207,166 @@ void relight_chunk(world::Chunk& chunk, const world::AirStates& air) {
         world::ChunkSection* section = chunk.section_for_y(shape.min_y + static_cast<i32>(i) * 16);
         if (section != nullptr) {
             section->sky_light().compact();
+        }
+    }
+}
+
+/// Sky light across a chunk and its eight neighbours.
+///
+/// The single-chunk version stops propagation at the border, so a build sitting
+/// against one casts no shadow into the chunk beside it and the seam shows as a
+/// straight line of wrongly-lit ground. Light does not respect chunk boundaries
+/// and neither can the fill.
+///
+/// Only chunks already loaded take part. Pulling neighbours in would cascade —
+/// generating one chunk would generate its neighbours, and theirs — so a build
+/// against the edge of the loaded area still seams there. That edge moves with
+/// the player and is out of sight; a chunk boundary in the middle of a base is
+/// not.
+///
+/// The correction goes to storage and is not resent. The client lights its own
+/// edits locally, so the seam is invisible until the chunk is loaded again —
+/// which is exactly when the stored value is the one that matters.
+void relight_neighbourhood(const std::function<world::Chunk*(i32, i32)>& lookup, i32 centre_x,
+                           i32 centre_z, const world::AirStates& air) {
+    const auto shape = world::WorldShape::overworld();
+
+    struct Loaded {
+        world::Chunk* chunk;
+        i32           origin_x;
+        i32           origin_z;
+    };
+
+    std::vector<Loaded> loaded;
+    for (i32 dz = -1; dz <= 1; ++dz) {
+        for (i32 dx = -1; dx <= 1; ++dx) {
+            if (world::Chunk* chunk = lookup(centre_x + dx, centre_z + dz)) {
+                loaded.push_back(Loaded{chunk, (centre_x + dx) * 16, (centre_z + dz) * 16});
+            }
+        }
+    }
+    if (loaded.empty()) {
+        return;
+    }
+
+    // World coordinates throughout: the whole point is that the fill does not
+    // know where the borders are.
+    const auto chunk_for = [&](i32 x, i32 z) -> world::Chunk* {
+        for (const Loaded& entry : loaded) {
+            if (x >= entry.origin_x && x < entry.origin_x + 16 && z >= entry.origin_z &&
+                z < entry.origin_z + 16) {
+                return entry.chunk;
+            }
+        }
+        return nullptr;
+    };
+
+    i32 top = shape.min_y;
+    for (const Loaded& entry : loaded) {
+        const auto& surface = entry.chunk->heightmap(world::HeightmapType::WorldSurface);
+        for (usize z = 0; z < 16; ++z) {
+            for (usize x = 0; x < 16; ++x) {
+                top = std::max(top, surface.first_free(x, z));
+            }
+        }
+    }
+    top = std::min(top + 1, shape.max_y());
+
+    const auto light_at = [&](i32 x, i32 y, i32 z) -> u8 {
+        world::Chunk* chunk = chunk_for(x, z);
+        if (chunk == nullptr) {
+            return 0;
+        }
+        const world::ChunkSection* section = chunk->section_for_y(y);
+        return section == nullptr ? 0
+                                  : section->sky_light().get(world::section_index(
+                                        static_cast<usize>(x & 15), static_cast<usize>(y & 15),
+                                        static_cast<usize>(z & 15)));
+    };
+    const auto set_light = [&](i32 x, i32 y, i32 z, u8 value) {
+        world::Chunk* chunk = chunk_for(x, z);
+        if (chunk == nullptr) {
+            return;
+        }
+        world::ChunkSection* section = chunk->section_for_y(y);
+        if (section != nullptr) {
+            section->sky_light().set(
+                world::section_index(static_cast<usize>(x & 15), static_cast<usize>(y & 15),
+                                     static_cast<usize>(z & 15)),
+                value);
+        }
+    };
+
+    struct Cell {
+        i32 x;
+        i32 y;
+        i32 z;
+    };
+
+    std::vector<Cell> frontier;
+
+    for (const Loaded& entry : loaded) {
+        const auto& surface = entry.chunk->heightmap(world::HeightmapType::WorldSurface);
+        for (usize lz = 0; lz < 16; ++lz) {
+            for (usize lx = 0; lx < 16; ++lx) {
+                const i32 first_free = surface.first_free(lx, lz);
+                const i32 x          = entry.origin_x + static_cast<i32>(lx);
+                const i32 z          = entry.origin_z + static_cast<i32>(lz);
+                for (i32 y = shape.min_y; y <= top; ++y) {
+                    const bool lit = y >= first_free;
+                    set_light(x, y, z, lit ? world::kMaxLightLevel : 0);
+                    if (lit) {
+                        frontier.push_back(Cell{x, y, z});
+                    }
+                }
+            }
+        }
+    }
+
+    for (usize head = 0; head < frontier.size(); ++head) {
+        const Cell cell    = frontier[head];
+        const u8   current = light_at(cell.x, cell.y, cell.z);
+        if (current <= 1) {
+            continue;
+        }
+        const u8 spread = static_cast<u8>(current - 1);
+
+        const std::array<Cell, 6> neighbours{{
+            {cell.x - 1, cell.y, cell.z},
+            {cell.x + 1, cell.y, cell.z},
+            {cell.x, cell.y, cell.z - 1},
+            {cell.x, cell.y, cell.z + 1},
+            {cell.x, cell.y - 1, cell.z},
+            {cell.x, cell.y + 1, cell.z},
+        }};
+
+        for (const Cell& next : neighbours) {
+            if (next.y < shape.min_y || next.y > top) {
+                continue;
+            }
+            world::Chunk* chunk = chunk_for(next.x, next.z);
+            if (chunk == nullptr) {
+                continue;  // outside the loaded neighbourhood
+            }
+            if (!air.is_air(chunk->get_block(static_cast<usize>(next.x & 15), next.y,
+                                             static_cast<usize>(next.z & 15)))) {
+                continue;
+            }
+            if (light_at(next.x, next.y, next.z) >= spread) {
+                continue;
+            }
+            set_light(next.x, next.y, next.z, spread);
+            frontier.push_back(next);
+        }
+    }
+
+    for (const Loaded& entry : loaded) {
+        for (usize i = 0; i < shape.section_count(); ++i) {
+            world::ChunkSection* section =
+                entry.chunk->section_for_y(shape.min_y + static_cast<i32>(i) * 16);
+            if (section != nullptr) {
+                section->sky_light().compact();
+            }
         }
     }
 }
@@ -753,7 +914,23 @@ int main(int argc, char** argv) {
             // Without this a hole stays lit as if it were still filled, and the
             // error only shows after a reload — the client lights its own edits
             // locally and never notices the server disagreeing.
-            relight_chunk(chunk, superflat.air);
+            // Across the neighbourhood, not just this chunk: light does not
+            // respect chunk borders, so a block placed against one changes cells
+            // on the other side of it.
+            relight_neighbourhood(
+                [&](i32 nx, i32 nz) -> world::Chunk* {
+                    const auto found = chunk_cache.find(chunk_key(nx, nz));
+                    return found == chunk_cache.end() ? nullptr : &found->second;
+                },
+                chunk_x, chunk_z, superflat.air);
+
+            for (i32 dz = -1; dz <= 1; ++dz) {
+                for (i32 dx = -1; dx <= 1; ++dx) {
+                    if (chunk_cache.contains(chunk_key(chunk_x + dx, chunk_z + dz))) {
+                        dirty_chunks.insert(chunk_key(chunk_x + dx, chunk_z + dz));
+                    }
+                }
+            }
         }
 
         const auto framed =
