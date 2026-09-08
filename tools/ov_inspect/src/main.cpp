@@ -14,6 +14,7 @@
 #include "ov/io/zip.hpp"
 #include "ov/nbt/binary.hpp"
 #include "ov/nbt/region.hpp"
+#include "ov/nbt/region_writer.hpp"
 #include "ov/nbt/tag.hpp"
 #include "ov/world/chunk.hpp"
 #include "ov/world/light_array.hpp"
@@ -208,6 +209,43 @@ int inspect_nbt(const std::filesystem::path& path, bool tree, bool verify, int m
     return 0;
 }
 
+/// Rebuild a region file from its own chunks and compare.
+///
+/// Reading a region proves we can parse one; this proves we can produce one.
+/// Every chunk of the rebuilt file has to decompress to the same bytes as the
+/// original, or a save is quietly lossy — and a lossy save is discovered by a
+/// player, weeks later, on a world they cannot get back.
+[[nodiscard]] int verify_region_rewrite(const std::filesystem::path& path,
+                                        const nbt::RegionFile&       original) {
+    auto writer = nbt::RegionWriter::open_or_empty(path);
+
+    const auto rebuilt = nbt::RegionFile::open(writer.build());
+    if (!rebuilt) {
+        fmt::print("  rewrite ........ \033[0;31mrebuilt file does not parse\033[0m\n");
+        return 1;
+    }
+
+    usize compared  = 0;
+    usize identical = 0;
+    for (u32 z = 0; z < nbt::kRegionSideChunks; ++z) {
+        for (u32 x = 0; x < nbt::kRegionSideChunks; ++x) {
+            if (!original.has_chunk(x, z)) {
+                continue;
+            }
+            ++compared;
+            const auto before = original.read_chunk_bytes(x, z);
+            const auto after  = rebuilt->read_chunk_bytes(x, z);
+            if (before && after && *before == *after) {
+                ++identical;
+            }
+        }
+    }
+
+    fmt::print("  rewrite ........ {}{}/{} chunks byte-identical\033[0m\n",
+               identical == compared ? "\033[0;32m" : "\033[0;31m", identical, compared);
+    return identical == compared ? 0 : 1;
+}
+
 int inspect_region(const std::filesystem::path& path, bool verify) {
     const auto region = nbt::RegionFile::open(path);
     if (!region) {
@@ -286,7 +324,11 @@ int inspect_region(const std::filesystem::path& path, bool verify) {
 
     fmt::print("  round-trip ..... {}{}/{} chunks byte-identical\033[0m ({} tags)\n",
                failed == 0 ? "\033[0;32m" : "\033[0;31m", identical, checked, total_tags);
-    return failed == 0 ? 0 : 1;
+
+    // Reading proves we can parse a region. This proves we can produce one,
+    // which is the half a save depends on.
+    const int rewrite = verify_region_rewrite(path, *region);
+    return failed == 0 && rewrite == 0 ? 0 : 1;
 }
 
 int inspect_zip(const std::filesystem::path& path, bool verify) {

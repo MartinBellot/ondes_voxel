@@ -835,3 +835,33 @@ travail `ov_sim`.
 Limite connue : le cache de chunks ne se vide jamais. Marcher longtemps le fait
 croître sans borne. Une éviction demande de savoir quels chunks sont encore
 référencés, c'est-à-dire le système de tickets.
+
+---
+
+## Écriture des fichiers région (`ov_nbt`)
+
+Lire une région prouve qu'on sait en analyser une ; **l'écrire** est la moitié
+dont dépend une sauvegarde, et celle dont les erreurs coûtent un monde.
+
+Deux règles que le format n'énonce pas :
+
+- **Le champ de longueur compte l'octet de compression.** N octets compressés
+  s'écrivent `N+1`. Être un court tronque le dernier octet de *chaque* chunk du
+  fichier, ce qui se lit comme un flux corrompu et non comme un flux court.
+- **Un chunk commence sur une frontière de secteur.** La table d'offsets adresse
+  des secteurs, pas des octets : il n'existe aucun moyen d'exprimer « commence
+  au milieu de l'un d'eux ». Le remplissage n'est donc pas facultatif.
+
+L'écriture est **entière puis renommée**. Réécrire un chunk sur place serait plus
+rapide et laisserait, en cas de crash au milieu, une région dont l'en-tête pointe
+des secteurs que le nouveau contenu a déplacés — chaque chunk du fichier se
+lirait alors comme du bruit.
+
+Les chunks que personne n'a touchés sont **reportés encore compressés** : les
+ré-encoder risquerait de les modifier, alors que tout l'intérêt est qu'ils ne le
+soient pas.
+
+### Vérification
+
+`ov-inspect region --verify` reconstruit le fichier depuis ses propres chunks et
+compare. Sur le monde réel : **17 879 / 17 879 chunks octet-identiques**.
