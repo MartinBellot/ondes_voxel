@@ -20,6 +20,7 @@ Layout, all little-endian, every section 8-byte aligned:
     tags        one record per tag, sorted by (registry, name) for searching
     members     one numeric id per tag member, already flattened and sorted
     blocks      one record per block, in registry order
+    flags       one byte per block: measured properties the reports do not carry
     properties  one record per property, grouped by block
     values      one string offset per property value
     state_index one block index per block state, for O(1) reverse lookup
@@ -47,7 +48,7 @@ MAGIC = b"OVPK"
 # Bumped by hand whenever the layout changes, so a stale cache is detected
 # rather than misread. A mismatched cache read as if it were current is far
 # worse than no cache at all.
-FORMAT_VERSION = 3
+FORMAT_VERSION = 4
 
 HEADER_SIZE = 128
 
@@ -76,7 +77,8 @@ def align8(data: bytearray) -> None:
         data.append(0)
 
 
-def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict) -> bytes:
+def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
+          opacity_doc: dict) -> bytes:
     blocks = blocks_doc["blocks"]
     state_count = blocks_doc["state_count"]
 
@@ -154,6 +156,15 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict) -> bytes:
         member_ids.extend(ids)
         tag_records.append((strings.intern(tag_name), index, member_first, len(ids)))
 
+    # ── Measured block flags ────────────────────────────────────────────────
+    #
+    # Nothing in Mojang's reports says whether a block stops light: in vanilla
+    # that is Java code. These come from measuring the game — see
+    # docs/PROVENANCE.md — and a block that was never measured is left opaque,
+    # which errs towards a dark room rather than a world with no shadows.
+    opacity = opacity_doc["opacity"]
+    flag_bytes = bytes(opacity.get(block["name"], 2) for block in blocks)
+
     string_blob = strings.blob()
 
     # ── Assemble ────────────────────────────────────────────────────────────
@@ -161,6 +172,10 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict) -> bytes:
 
     strings_offset = HEADER_SIZE
     body += string_blob
+    align8(body)
+
+    flags_offset = HEADER_SIZE + len(body)
+    body += flag_bytes
     align8(body)
 
     registries_offset = HEADER_SIZE + len(body)
@@ -210,7 +225,7 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict) -> bytes:
     align8(body)
 
     header = struct.pack(
-        "<4sIIIIIIIIIIIIIIIIIIII",
+        "<4sIIIIIIIIIIIIIIIIIIIII",
         MAGIC,
         FORMAT_VERSION,
         len(block_records),
@@ -231,6 +246,7 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict) -> bytes:
         len(member_ids),
         tags_offset,
         members_offset,
+        flags_offset,
         0,  # reserved
     )
     assert len(header) <= HEADER_SIZE
@@ -260,8 +276,10 @@ def main() -> int:
 
     with open(NORMALIZED / "tags.json") as f:
         tags_doc = json.load(f)
+    with open(NORMALIZED / "light_opacity.json") as f:
+        opacity_doc = json.load(f)
 
-    payload = build(blocks_doc, registries_doc, tags_doc)
+    payload = build(blocks_doc, registries_doc, tags_doc, opacity_doc)
     tag_records_count = [t for g in tags_doc["tags"].values() for t in g]
     member_count_total = sum(len(v) for g in tags_doc["tags"].values() for v in g.values())
     OUTPUT.write_bytes(payload)
@@ -271,11 +289,12 @@ def main() -> int:
     print(f"    states ......... {blocks_doc['state_count']}")
     print(f"    registries ..... {len(registries_doc['registries'])}")
     print(f"    tags ........... {len(tag_records_count)} ({member_count_total} members)")
+    print(f"    light opacity .. {opacity_doc['measured']} blocks measured")
     print(f"    size ........... {len(payload):,} bytes")
 
     # Byte-stability is the property the manifest depends on. Checking it here
     # costs nothing and catches a non-deterministic dict order immediately.
-    if build(blocks_doc, registries_doc, tags_doc) != payload:
+    if build(blocks_doc, registries_doc, tags_doc, opacity_doc) != payload:
         sys.exit("error: emitter is not deterministic")
     print("    deterministic .. yes")
     return 0

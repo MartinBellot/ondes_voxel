@@ -135,7 +135,8 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       *(5067 IDs, `scripts/check_registry_parity.py`)*
 - [x] `.ovpack` binaire, mmap-able, sans pointeur — 131 744 octets, déterministe
 - [x] `BlockRegistry` : lookup bloc, propriétés, état par défaut, bloc d'un état
-- [ ] `BlockState` en SoA plat : flags, émission, occultation, formes, couleurs
+- [x] Opacité à la lumière du ciel, **mesurée** sur les 1003 blocs 🔒
+- [ ] Reste des flags : émission, formes de collision, couleurs
 - [x] **Arithmétique mixed-radix des propriétés** — un multiply, un add 🔒
 - [x] Test : les **24 135 états** correspondent au rapport de Mojang ⭐
       *(`scripts/check_registry_parity.py`, relit le binaire depuis sa spec)*

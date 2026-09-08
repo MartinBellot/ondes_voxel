@@ -46,7 +46,7 @@
       "total": 17,
       "exit_criterion": "Un client Minecraft vanilla 1.20.1 non modifié se connecte, marche, casse et pose un bloc — sans une ligne de Vulkan.",
       "blocked": [
-        "MOTION_BLOCKING, OCEAN_FLOOR, collisions et mouvement autoritatif : necessitent la table de flags par etat. Harnais de mesure monte et partiellement concluant (voir PROVENANCE), mesures pas encore reproductibles a 100 % — aucune table livree."
+        "MOTION_BLOCKING, OCEAN_FLOOR, collisions et mouvement autoritatif : necessitent les formes de collision, pas encore mesurees. L'opacite a la lumiere l'est desormais (1003 blocs)."
       ]
     },
     "M4": {
@@ -118,7 +118,8 @@
     "placement_orientation": "conventions de facing mesurees sur 18 blocs poses par le vrai serveur 1.20.1 ; 11/11 reproduites a l'identique",
     "player_entities": "deux joueurs se voient : apparition dans les deux sens, teleport et rotation de tete a chaque mouvement, retrait a la deconnexion ; 20 paquets d'un joueur immobile -> 0 retransmission",
     "light_emission_harness": "technique validee : setblock via la console vanilla puis lecture de BlockLight ; exact pour glowstone, stone, redstone_ore, respawn_anchor, furnace ; contamine pour d'autres etats",
-    "block_entities": "panneaux de bout en bout : pose, ecriture, diffusion, sauvegarde Anvil, rechargement avec le bon type_id resolu depuis le registre"
+    "block_entities": "panneaux de bout en bout : pose, ecriture, diffusion, sauvegarde Anvil, rechargement avec le bon type_id resolu depuis le registre",
+    "light_opacity": "mesuree sur un vrai serveur 1.20.1 pour les 1003 blocs : 483 transparents, 443 opaques, 77 attenuants"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",

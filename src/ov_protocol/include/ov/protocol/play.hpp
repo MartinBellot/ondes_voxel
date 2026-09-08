@@ -17,6 +17,8 @@
 #pragma once
 
 #include "ov/base/types.hpp"
+#include "ov/io/byte_reader.hpp"
+#include "ov/io/byte_writer.hpp"
 #include "ov/nbt/tag.hpp"
 #include "ov/protocol/types.hpp"
 #include "ov/world/chunk.hpp"
@@ -53,6 +55,10 @@ inline constexpr i32 kEntityHeadRotation  = 0x42;
 inline constexpr i32 kEntityTeleport      = 0x68;
 inline constexpr i32 kBlockEntityData     = 0x08;
 inline constexpr i32 kOpenSignEditor      = 0x31;
+inline constexpr i32 kOpenScreen          = 0x30;
+inline constexpr i32 kContainerContent    = 0x12;
+inline constexpr i32 kContainerSlot       = 0x14;
+inline constexpr i32 kCloseContainer      = 0x11;
 }  // namespace clientbound
 
 /// Serverbound Play packet ids, protocol 763.
@@ -70,6 +76,8 @@ inline constexpr i32 kSetHeldItem          = 0x28;
 inline constexpr i32 kSetCreativeSlot      = 0x2B;
 inline constexpr i32 kUseItemOn            = 0x31;
 inline constexpr i32 kUpdateSign           = 0x2E;
+inline constexpr i32 kClickContainer       = 0x0B;
+inline constexpr i32 kCloseContainer       = 0x0C;
 }  // namespace serverbound
 
 /// A block position as it travels: 26 bits x, 26 bits z, 12 bits y, all signed.
@@ -168,6 +176,65 @@ struct SignUpdate {
 };
 
 [[nodiscard]] std::optional<SignUpdate> parse_update_sign(std::span<const u8> payload);
+
+// ── Containers ──────────────────────────────────────────────────────────────
+
+/// One stack in a slot.
+///
+/// An empty slot is `count == 0`, not a separate representation: the wire has a
+/// present flag and everything above it treats absence as an empty stack, so
+/// keeping two ways to say "nothing" only invites them to disagree.
+struct ItemStack {
+    i32 item_id{0};
+    i8  count{0};
+
+    /// The item's NBT, kept as raw bytes rather than parsed.
+    ///
+    /// The server does not read enchantments or names yet, and re-encoding a
+    /// tag it does not understand is how data gets lost. Passing the bytes
+    /// through unchanged cannot.
+    std::vector<u8> nbt;
+
+    [[nodiscard]] bool empty() const noexcept { return count <= 0; }
+};
+
+void                                   write_slot(io::ByteWriter& writer, const ItemStack& stack);
+[[nodiscard]] std::optional<ItemStack> read_slot(io::ByteReader& reader);
+
+/// Ask the client to open a container screen.
+///
+/// `type` is an index into minecraft:menu — another registry the client
+/// hard-codes. A generic 9x3 chest is not the same number as a 9x6 one, and
+/// getting it wrong opens a window of the wrong size over the right data.
+[[nodiscard]] std::vector<u8> encode_open_screen(i32 window_id, i32 type, std::string_view title);
+
+/// Every slot of an open window at once.
+[[nodiscard]] std::vector<u8> encode_container_content(u8 window_id, i32 state_id,
+                                                       std::span<const ItemStack> slots,
+                                                       const ItemStack&           carried);
+
+[[nodiscard]] std::vector<u8> encode_container_slot(i8 window_id, i32 state_id, i16 slot,
+                                                    const ItemStack& stack);
+
+[[nodiscard]] std::vector<u8> encode_close_container(u8 window_id);
+
+/// A click inside a window.
+///
+/// `mode` is the interesting field: 0 is an ordinary click, 1 a shift-click, 2
+/// a number key, 5 a drag, 6 a double-click. They are entirely different
+/// operations sharing one packet, and treating them alike duplicates items.
+struct ContainerClick {
+    u8        window_id{0};
+    i32       state_id{0};
+    i16       slot{0};
+    i8        button{0};
+    i32       mode{0};
+    ItemStack carried;
+};
+
+[[nodiscard]] std::optional<ContainerClick> parse_container_click(std::span<const u8> payload);
+
+[[nodiscard]] std::optional<u8> parse_close_container(std::span<const u8> payload);
 
 // ── Serverbound ─────────────────────────────────────────────────────────────
 

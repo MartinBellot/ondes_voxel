@@ -61,6 +61,13 @@ using namespace ov;
 
 std::atomic<bool> g_stop_requested{false};
 
+/// The registry the light engine consults for opacity.
+///
+/// Set once at start-up. Relighting is called from the generator, from block
+/// edits and from the neighbourhood pass, and threading the registry through
+/// every one of those would add a parameter that never varies.
+const registry::BlockRegistry* light_blocks = nullptr;
+
 extern "C" void handle_signal(int) noexcept {
     // Only async-signal-safe work here: flip a flag and let the tick loop exit
     // on its own so the world is saved rather than truncated.
@@ -101,9 +108,46 @@ enum class ConnectionState { Handshaking, Status, Login, Play };
 ///   * Propagation stops at the chunk's edge. A build straddling a border casts
 ///     no shadow into its neighbour, so a seam is visible there. Cross-chunk
 ///     light needs the neighbours loaded and a scheduler to order the work.
-///   * Non-air stands in for opaque, so glass would cast a shadow. That ends
-///     with the block-state flag table.
-void relight_chunk(world::Chunk& chunk, const world::AirStates& air) {
+///   * Opacity comes from the registry's measured table rather than from
+///     "anything that is not air". A sign or a torch no longer casts a shadow,
+///     which it did — and which only showed after a reload, because a client
+///     lights its own edits itself.
+/// The lowest y a column still sees full sunlight.
+///
+/// Not WORLD_SURFACE: that counts the highest **non-air** block, and a sign or
+/// a torch raises it while letting light straight through. Direct sunlight
+/// descends without losing a level until it meets something opaque, so this
+/// scans for that instead — which is why it needs the measured opacity and
+/// could not be written before.
+[[nodiscard]] i32 sky_floor(const world::Chunk& chunk, usize x, usize z, i32 top);
+
+/// Does sky light stop at this block?
+///
+/// Measured, not assumed. "Anything that is not air" was the previous rule and
+/// it made signs, torches and fences cast full shadows — visible only after a
+/// reload, since a client lights its own placements locally.
+///
+/// Attenuating blocks (water, leaves, ice) are treated as transparent for now:
+/// passing light through at full strength is wrong by a level or two, whereas
+/// stopping it is wrong by fifteen.
+[[nodiscard]] bool stops_sky_light(const registry::BlockRegistry* blocks,
+                                   registry::BlockStateId         state) {
+    if (blocks == nullptr) {
+        return false;
+    }
+    return blocks->blocks_sky_light(blocks->block_of(state));
+}
+
+i32 sky_floor(const world::Chunk& chunk, usize x, usize z, i32 top) {
+    for (i32 y = top; y >= chunk.shape().min_y; --y) {
+        if (stops_sky_light(light_blocks, chunk.get_block(x, y, z))) {
+            return y + 1;
+        }
+    }
+    return chunk.shape().min_y;
+}
+
+void relight_chunk(world::Chunk& chunk) {
     const auto  shape   = chunk.shape();
     const auto& surface = chunk.heightmap(world::HeightmapType::WorldSurface);
 
@@ -142,7 +186,7 @@ void relight_chunk(world::Chunk& chunk, const world::AirStates& air) {
 
     for (usize z = 0; z < 16; ++z) {
         for (usize x = 0; x < 16; ++x) {
-            const i32 first_free = surface.first_free(x, z);
+            const i32 first_free = sky_floor(chunk, x, z, top);
             for (usize i = 0; i < shape.section_count(); ++i) {
                 const i32            bottom  = shape.min_y + static_cast<i32>(i) * 16;
                 world::ChunkSection* section = chunk.section_for_y(bottom);
@@ -192,7 +236,7 @@ void relight_chunk(world::Chunk& chunk, const world::AirStates& air) {
             if (next.x >= 16 || next.z >= 16 || next.y < shape.min_y || next.y > top) {
                 continue;
             }
-            if (!air.is_air(chunk.get_block(next.x, next.y, next.z))) {
+            if (stops_sky_light(light_blocks, chunk.get_block(next.x, next.y, next.z))) {
                 continue;
             }
             if (light_at(next.x, next.y, next.z) >= spread) {
@@ -228,7 +272,7 @@ void relight_chunk(world::Chunk& chunk, const world::AirStates& air) {
 /// edits locally, so the seam is invisible until the chunk is loaded again —
 /// which is exactly when the stored value is the one that matters.
 void relight_neighbourhood(const std::function<world::Chunk*(i32, i32)>& lookup, i32 centre_x,
-                           i32 centre_z, const world::AirStates& air) {
+                           i32 centre_z) {
     const auto shape = world::WorldShape::overworld();
 
     struct Loaded {
@@ -306,10 +350,9 @@ void relight_neighbourhood(const std::function<world::Chunk*(i32, i32)>& lookup,
     std::vector<Cell> frontier;
 
     for (const Loaded& entry : loaded) {
-        const auto& surface = entry.chunk->heightmap(world::HeightmapType::WorldSurface);
         for (usize lz = 0; lz < 16; ++lz) {
             for (usize lx = 0; lx < 16; ++lx) {
-                const i32 first_free = surface.first_free(lx, lz);
+                const i32 first_free = sky_floor(*entry.chunk, lx, lz, top);
                 const i32 x          = entry.origin_x + static_cast<i32>(lx);
                 const i32 z          = entry.origin_z + static_cast<i32>(lz);
                 for (i32 y = shape.min_y; y <= top; ++y) {
@@ -348,8 +391,9 @@ void relight_neighbourhood(const std::function<world::Chunk*(i32, i32)>& lookup,
             if (chunk == nullptr) {
                 continue;  // outside the loaded neighbourhood
             }
-            if (!air.is_air(chunk->get_block(static_cast<usize>(next.x & 15), next.y,
-                                             static_cast<usize>(next.z & 15)))) {
+            if (stops_sky_light(light_blocks,
+                                chunk->get_block(static_cast<usize>(next.x & 15), next.y,
+                                                 static_cast<usize>(next.z & 15)))) {
                 continue;
             }
             if (light_at(next.x, next.y, next.z) >= spread) {
@@ -423,7 +467,7 @@ struct Superflat {
         // Light comes from the heightmap, through the same function block edits
         // use. Two code paths that compute light differently agree right up
         // until someone digs.
-        relight_chunk(chunk, air);
+        relight_chunk(chunk);
         return chunk;
     }
 };
@@ -786,6 +830,8 @@ int main(int argc, char** argv) {
         registry::BlockRegistry::load(data_dir / "vanilla" / "1.20.1" / "registry.ovpack");
     const auto codec_bytes = io::read_file(data_dir / "vanilla" / "1.20.1" / "registry_codec.nbt");
 
+    light_blocks = blocks ? &*blocks : nullptr;
+
     const bool world_available = blocks.has_value() && codec_bytes.has_value();
     if (!world_available) {
         OV_LOG_WARN("no registry pack or codec under {} — players can ping but not join",
@@ -1076,7 +1122,7 @@ int main(int argc, char** argv) {
                     const auto found = chunk_cache.find(chunk_key(nx, nz));
                     return found == chunk_cache.end() ? nullptr : &found->second;
                 },
-                chunk_x, chunk_z, superflat.air);
+                chunk_x, chunk_z);
 
             for (i32 dz = -1; dz <= 1; ++dz) {
                 for (i32 dx = -1; dx <= 1; ++dx) {

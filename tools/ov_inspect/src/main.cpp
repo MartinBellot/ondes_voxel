@@ -833,6 +833,7 @@ int inspect_light(const std::filesystem::path& directory) {
 
         std::string_view name  = "-";
         int              light = -1;
+        int              sky   = -1;
         for (const nbt::Tag& section : *sections->list()) {
             const nbt::Tag* section_y = section.find("Y");
             if (section_y == nullptr || section_y->as_i64() != (y >> 4)) {
@@ -842,15 +843,23 @@ int inspect_light(const std::filesystem::path& directory) {
                 ((static_cast<usize>(y & 15) * 16) + static_cast<usize>(z & 15)) * 16 +
                 static_cast<usize>(x & 15);
 
-            if (const nbt::Tag* block_light = section.find("BlockLight")) {
-                if (const auto* bytes = block_light->get_if<nbt::Tag::ByteArray>();
+            // Both arrays: block light is what a block emits, sky light is what
+            // reaches it, and the two answer different questions. An absent
+            // array means uniformly zero — a value, not a gap.
+            const auto nibble = [&](const char* key, int& out) {
+                const nbt::Tag* tag = section.find(key);
+                if (tag == nullptr) {
+                    out = 0;
+                    return;
+                }
+                if (const auto* bytes = tag->get_if<nbt::Tag::ByteArray>();
                     bytes != nullptr && bytes->size() == world::kLightByteCount) {
                     const auto byte = static_cast<u8>((*bytes)[index >> 1]);
-                    light           = (index & 1) == 0 ? (byte & 0xF) : (byte >> 4);
+                    out             = (index & 1) == 0 ? (byte & 0xF) : (byte >> 4);
                 }
-            } else {
-                light = 0;
-            }
+            };
+            nibble("BlockLight", light);
+            nibble("SkyLight", sky);
 
             if (const nbt::Tag* states = section.find("block_states")) {
                 const nbt::Tag* palette = states->find("palette");
@@ -875,7 +884,7 @@ int inspect_light(const std::filesystem::path& directory) {
             }
             break;
         }
-        fmt::print("{} {} {} {} {}\n", x, y, z, name, light);
+        fmt::print("{} {} {} {} {} {}\n", x, y, z, name, light, sky);
     }
     return 0;
 }
@@ -888,7 +897,7 @@ void print_usage() {
         "  ov-inspect region <file.mca> [--verify]\n"
         "  ov-inspect zip    <file.jar|.zip> [--verify]\n"
         "  ov-inspect chunk  <file.mca>          verify section bit-packing\n"
-        "  ov-inspect light  <region-dir>        block and light at 'x y z' lines on stdin\n"
+        "  ov-inspect light  <region-dir>        block, block light and sky light per 'x y z'\n"
         "\n"
         "  --tree      print the tag tree\n"
         "  --verify    decode, re-encode, and compare the bytes\n"

@@ -68,7 +68,13 @@ std::expected<BlockRegistry, RegistryError> BlockRegistry::from_bytes(std::vecto
     const auto* values = pack_at<u32>(data, header.values_offset, header.value_count);
     const auto* states = pack_at<u16>(data, header.states_offset, header.state_count);
 
-    if (blocks == nullptr || props == nullptr || values == nullptr || states == nullptr) {
+    // Measured block flags. Bounds-checked like every other section: a pack
+    // from an older emitter has no such section, and reading where it would be
+    // would hand back whatever follows.
+    const auto* flags = pack_at<u8>(data, header.flags_offset, header.block_count);
+
+    if (blocks == nullptr || props == nullptr || values == nullptr || states == nullptr ||
+        flags == nullptr) {
         return std::unexpected{RegistryError::Corrupt};
     }
     if (header.strings_offset + header.string_bytes > data.size()) {
@@ -77,6 +83,12 @@ std::expected<BlockRegistry, RegistryError> BlockRegistry::from_bytes(std::vecto
 
     BlockRegistry registry;
     registry.data_ = std::move(data);
+
+    // Rebound after the move: the pointers above address the buffer that was
+    // just moved from, and using one of them later reads freed memory.
+    registry.block_flags_ =
+        std::span{reinterpret_cast<const u8*>(registry.data_.data() + header.flags_offset),
+                  header.block_count};
 
     const auto* string_base =
         reinterpret_cast<const char*>(registry.data_.data() + header.strings_offset);
@@ -154,6 +166,19 @@ std::optional<BlockId> BlockRegistry::find_block(std::string_view name) const no
         return std::nullopt;
     }
     return BlockId{static_cast<u16>(std::distance(strings_.begin(), it))};
+}
+
+BlockRegistry::LightOpacity BlockRegistry::light_opacity(BlockId block) const noexcept {
+    if (block.value() >= block_flags_.size()) {
+        // Unknown block: opaque, which errs towards a dark room rather than a
+        // world with no shadows.
+        return LightOpacity::Opaque;
+    }
+    switch (block_flags_[block.value()]) {
+        case 0: return LightOpacity::Transparent;
+        case 1: return LightOpacity::Attenuating;
+        default: return LightOpacity::Opaque;
+    }
 }
 
 std::string_view BlockRegistry::block_name(BlockId block) const noexcept {

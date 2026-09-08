@@ -132,6 +132,31 @@ public:
         BlockId                                                        block,
         std::span<const std::pair<std::string_view, std::string_view>> properties) const noexcept;
 
+    /// How a block treats sky light passing through it.
+    ///
+    /// Not in Mojang's reports — in vanilla it is Java code — so this comes
+    /// from measuring the game itself: a bedrock plate pierced with one-block
+    /// shafts, the block under test at the top, the light read at the bottom.
+    /// See docs/PROVENANCE.md.
+    enum class LightOpacity : u8 {
+        /// Sky light passes unchanged: air, signs, torches, glass, fences.
+        Transparent,
+        /// Sky light passes weakened: water, leaves, ice.
+        Attenuating,
+        /// Sky light stops.
+        Opaque,
+    };
+
+    /// Measured per **block**, not per state. Whether any block's opacity
+    /// varies with its state has not been measured, so a stair and a slab
+    /// report the same value as their block.
+    [[nodiscard]] LightOpacity light_opacity(BlockId block) const noexcept;
+
+    /// Convenience: does this block stop sky light entirely?
+    [[nodiscard]] bool blocks_sky_light(BlockId block) const noexcept {
+        return light_opacity(block) == LightOpacity::Opaque;
+    }
+
     [[nodiscard]] bool is_valid(BlockStateId state) const noexcept {
         return state.value() < state_count();
     }
@@ -147,6 +172,7 @@ private:
     std::vector<std::string_view> strings_;
     std::vector<PropertyView>     properties_;
     std::vector<std::string_view> values_;
+    std::span<const u8>           block_flags_;
     const void*                   header_{nullptr};
 };
 

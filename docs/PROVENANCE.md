@@ -1161,3 +1161,49 @@ client de test ne validait pas ce champ ; il a fallu aller le lire pour le voir.
 Vérifié de bout en bout : poser, écrire (guillemet compris), sauvegarder, arrêter,
 redémarrer — le texte est sur disque, il repart dans le paquet de chunk, et le
 `type_id` vaut bien 7.
+
+---
+
+## Opacité à la lumière du ciel : la première colonne mesurée de la table de flags
+
+Signalé en jouant : poser un panneau, se déconnecter, revenir — une tache noire.
+Le moteur de lumière traitait **tout ce qui n'est pas de l'air comme opaque**,
+donc un panneau projetait une ombre pleine. Invisible pendant la session, puisque
+le client éclaire lui-même ses propres poses.
+
+### Le montage, et l'erreur silencieuse qui l'a d'abord ruiné
+
+Un plateau de bedrock percé de **puits d'un bloc de large**, le bloc testé posé
+au sommet de chaque puits, la lumière du ciel lue au fond. La lumière ne peut
+entrer que par le bloc testé.
+
+Premier essai : tous les blocs opaques donnaient **14**, pas 0. Cause :
+`/fill` plafonne à **32 768 blocs** et mon plateau en demandait 202 800 — la
+commande a été **rejetée sans que rien ne s'arrête**. Il n'y avait donc aucun
+plateau ; les blocs flottaient en plein ciel et le 14 était la lumière qui les
+contournait. Refait couche par couche (16 384 blocs chacune), le signal est net.
+
+### Le résultat, sur les 1003 blocs
+
+| Classe | Nombre | Exemples |
+|---|---|---|
+| **Transparente** — le ciel passe intact | 483 | air, panneau, torche, verre, barrière |
+| **Opaque** — le ciel s'arrête | 443 | pierre, dalle, escalier, glowstone |
+| **Atténuante** — le ciel faiblit | 77 | eau, feuillage, glace |
+
+Un bloc jamais mesuré est traité comme **opaque** : se tromper vers une pièce
+sombre vaut mieux que vers un monde sans ombres.
+
+### Une correction que cette mesure a rendue possible
+
+La lumière directe s'arrêtait au premier bloc **non-air**, c'est-à-dire à
+`WORLD_SURFACE`. Elle descend maintenant jusqu'au premier bloc **opaque** — ce
+qui est la vraie règle, et ce qui ne pouvait pas s'écrire sans connaître
+l'opacité. Un panneau, une torche ou une vitre reçoivent désormais 15 et non 14.
+
+### Ce qui reste
+
+C'est mesuré **par bloc**, pas par état : la variation selon l'état n'a pas été
+sondée. Les blocs atténuants sont traités comme transparents — se tromper d'un
+niveau ou deux vaut mieux que de quinze. Et les **formes de collision**, qui
+bloquent le mouvement autoritatif, restent non mesurées.
