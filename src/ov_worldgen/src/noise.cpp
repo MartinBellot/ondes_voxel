@@ -279,12 +279,21 @@ BlendedNoise BlendedNoise::create(math::XoroshiroRandomSource& random, f64 xz_sc
     noise.y_factor_               = y_factor;
     noise.smear_scale_multiplier_ = smear_scale_multiplier;
 
-    // The two limits are divided by 512 and the result by 128, and each stack
-    // of sixteen octaves is bounded by 2 with the usual halving weights.
+    // The bound, and it is worth being careful because it is not a decoration:
+    // the density graph uses min_value and max_value to decide whether a `min`
+    // or a `max` may skip its second argument entirely, so a bound that is too
+    // small makes those nodes return the wrong number rather than merely being
+    // slow.
+    //
+    // The octaves *grow*. Each is divided by its falloff, which halves, so
+    // octave i contributes up to 2 * 2^i — the sum over sixteen is 131070, not
+    // the 4 a halving series would give. Divided by 512 and then by 128 that is
+    // about two, which is the scale terrain density actually works at; the
+    // first version of this line produced six hundredths of a thousandth.
     f64 bound = 0.0;
     f64 weight = 1.0;
     for (usize i = 0; i < 16; ++i) {
-        bound += 2.0 / weight;
+        bound += 2.0 * weight;
         weight *= 2.0;
     }
     noise.max_value_ = bound / 512.0 / 128.0;

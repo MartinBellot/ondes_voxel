@@ -422,6 +422,13 @@ public:
         : input_(std::move(input)), noise_(std::move(noise)), two_d_(two_d) {}
 
     [[nodiscard]] f64 compute(const FunctionContext& at) const override {
+        // OV_NO_CAVE_NOISE answers, by measurement, whether the cave terms are
+        // what pulls the surface down. They enter final_density through a min,
+        // so a large value takes them out of the picture entirely.
+        static const bool disabled = std::getenv("OV_NO_CAVE_NOISE") != nullptr;
+        if (disabled) {
+            return 64.0;
+        }
         const f64 rarity = map(input_->compute(at));
         return rarity * std::abs(noise_->value(static_cast<f64>(at.x) / rarity,
                                                static_cast<f64>(at.y) / rarity,
