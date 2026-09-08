@@ -2945,3 +2945,33 @@ Et un second défaut que la correction a mis au jour : l'ancien code itérait un
 `unordered_set`, donc les chunks partaient **dans l'ordre de hachage**. Le monde
 s'assemblait par plaques autour du joueur au lieu de s'ouvrir depuis lui. La
 file est triée par distance.
+
+## Le serveur intégré : le solo est vraiment du multijoueur
+
+*2026-09-08.*
+
+Le serveur était une **application** : deux mille lignes dans un `main()`. C'était
+juste tant que la seule façon de le lancer était un terminal, et faux dès que le
+client en a voulu un — parce que « le solo est du multijoueur » veut dire que le
+client héberge un vrai serveur et lui parle par une vraie socket, pas qu'il
+attrape un objet monde au passage.
+
+L'ensemble a donc déménagé tel quel dans `src/ov_server`, et `main()` fait trois
+lignes. Le seul ajout est une façon de l'arrêter qui ne soit pas un signal : un
+serveur dédié sort sur SIGINT, un serveur intégré sort quand la fenêtre se
+ferme — et deux gestionnaires de signaux qui se disputent le même processus est
+un bug que personne n'aime chercher.
+
+`ov_voxel --singleplayer` lance donc `ov_server` sur un thread du même
+processus. Vérifié de bout en bout, en une commande : 289 chunks reçus, joueur
+debout, gravier cassé, bloc de diamant posé, **un seul joueur** dans la liste.
+
+Ce dernier point a demandé une correction. La première version attendait que le
+serveur écoute en ouvrant une connexion jetable pour tester — laquelle se
+connectait, se **loguait**, créait un joueur, et laissait un fantôme. La vraie
+connexion est simplement réessayée : cela ne coûte rien et ne crée personne.
+
+Ce qui reste du plan sur ce point : le transport est aujourd'hui une socket TCP
+sur la boucle locale, donc les octets sont bien sérialisés. Le `LoopbackTransport`
+prévu remplace la socket par une file SPSC portant **les mêmes octets**, et rien
+au-dessus du transport ne change quand il arrivera.

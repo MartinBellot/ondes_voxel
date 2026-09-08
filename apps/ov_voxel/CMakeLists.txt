@@ -9,6 +9,7 @@ ov_add_executable(ov_voxel
         ov_client
         ov_gameplay
         ov_netclient
+        ov_server
         ov_nbt
         ov_registry
         ov_world

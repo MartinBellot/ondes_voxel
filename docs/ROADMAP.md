@@ -192,7 +192,10 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       *(289 chunks reçus, maillage sous budget de 4 ms par frame, physique à
       20 Hz contre les formes de collision, position rapportée 20 fois par
       seconde, casse et pose par raycast)*
-- [ ] `LoopbackTransport` SPSC — **octets sérialisés même en solo** 🔒
+- [~] `LoopbackTransport` SPSC — **octets sérialisés même en solo** 🔒
+      *(le solo passe aujourd'hui par une socket TCP sur la boucle locale, donc
+      les octets sont bien sérialisés ; ce qui reste est de remplacer la socket
+      par une file SPSC, ce qui ne change rien au-dessus du transport)*
 - [x] **Un client vanilla 1.20.1 se connecte, marche, casse et pose un bloc** ⭐
 
 ---
@@ -281,7 +284,11 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 
 ### `ov_client` (L15) et `ov_audio` (L14)
 - [x] Fenêtre GLFW, entrées, bindings de touches
-- [ ] Serveur intégré sur son propre thread
+- [x] Serveur intégré sur son propre thread
+      *(le serveur a quitté `apps/` pour devenir `ov_server` ; `ov_voxel
+      --singleplayer` l'héberge sur un thread, il ouvre une vraie socket, et le
+      client s'y connecte comme à n'importe quelle autre. Une seule commande,
+      un seul processus, et les octets restent ceux du protocole)*
 - [ ] Prédiction de mouvement et réconciliation
 - [ ] Interpolation d'entités
 - [ ] Mixeur audio, sons 3D atténués, catégories de volume

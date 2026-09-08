@@ -31,13 +31,16 @@
 #include "ov/math/raycast.hpp"
 #include "ov/netclient/client.hpp"
 #include "ov/render/frustum.hpp"
+#include "ov/server/server.hpp"
 #include "ov/rhi/device.hpp"
 
 #include <fmt/format.h>
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
+#include <thread>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
@@ -107,6 +110,16 @@ struct Options {
     /// position reported twenty times a second.
     std::string connect;
     std::string username{"OndesVoxel"};
+    /// Host a server in this process and play on it.
+    ///
+    /// Not a shortcut past the protocol: the server runs on its own thread,
+    /// binds a real socket, and the client connects to it the way it connects
+    /// to any other. The bytes are the same ones a remote server would send,
+    /// which is the whole point of the project's second principle — the plan's
+    /// LoopbackTransport replaces the socket with an SPSC queue carrying those
+    /// same bytes, and nothing above the transport changes when it does.
+    bool singleplayer{false};
+    u16  singleplayer_port{25599};
     /// x,y,z,yaw,pitch. Exists so a face can be put in front of the camera and
     /// looked at, which is how the questions a unit test cannot answer — is
     /// this texture mirrored? — actually get settled.
@@ -174,6 +187,11 @@ struct Options {
             options.dig = true;
         } else if (argument.starts_with("--hold=")) {
             options.hold = value("--hold=");
+        } else if (argument == "--singleplayer") {
+            options.singleplayer = true;
+        } else if (argument.starts_with("--singleplayer-port=")) {
+            options.singleplayer_port =
+                static_cast<u16>(std::atoi(value("--singleplayer-port=").c_str()));
         }
     }
     return options;
@@ -283,6 +301,9 @@ int main(int argc, char** argv) {
     // server for it is the game — and the second is the one the project's
     // second principle is about, because the bytes on that socket are the same
     // whether the server is across the world or on the next thread.
+    if (options.singleplayer && options.connect.empty()) {
+        options.connect = "127.0.0.1:" + std::to_string(options.singleplayer_port);
+    }
     const bool online = !options.connect.empty();
 
     std::optional<demo::LoadedWorld> world;
@@ -542,6 +563,21 @@ int main(int argc, char** argv) {
     }
 
     // ── The server ──────────────────────────────────────────────────────────
+    std::atomic<bool> stop_server{false};
+    std::thread       server_thread;
+    if (options.singleplayer) {
+        const std::string port_argument = "--port=" + std::to_string(options.singleplayer_port);
+        server_thread = std::thread([&stop_server, port_argument]() {
+            // Argv-shaped because that is the server's own interface, and
+            // giving it a second one would leave two ways to configure the
+            // same thing.
+            std::array<const char*, 2> arguments{"ov_voxel", port_argument.c_str()};
+            std::array<char*, 2>       argv_copy{const_cast<char*>(arguments[0]),
+                                           const_cast<char*>(arguments[1])};
+            (void)ov::server::run(2, argv_copy.data(), &stop_server);
+        });
+    }
+
     std::unique_ptr<netclient::Client> client;
     std::unique_ptr<demo::Session>     session;
     netclient::ClientEvents            events;
@@ -564,10 +600,23 @@ int main(int argc, char** argv) {
         login.registry      = &*blocks;
         login.view_distance = static_cast<u8>(std::clamp(options.radius, 2, 32));
 
-        auto connected = netclient::Client::connect(login);
+        // Retried rather than probed. A hosted server is still binding its
+        // socket when this runs, and an earlier version answered that by
+        // opening a throwaway connection to test — which logged in, created a
+        // player, and left a ghost in the player list. Retrying the real
+        // connection costs nothing and creates nobody.
+        std::expected<std::unique_ptr<netclient::Client>, netclient::ClientError> connected =
+            std::unexpected(netclient::ClientError::CannotConnect);
+        const int attempts = options.singleplayer ? 200 : 1;
+        for (int attempt = 0; attempt < attempts; ++attempt) {
+            connected = netclient::Client::connect(login);
+            if (connected) {
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        }
         if (!connected) {
-            OV_LOG_ERROR("{}:{} — {}", host, port,
-                         netclient::to_string(connected.error()));
+            OV_LOG_ERROR("{}:{} — {}", host, port, netclient::to_string(connected.error()));
             return 1;
         }
         client  = std::move(*connected);
@@ -972,6 +1021,14 @@ int main(int argc, char** argv) {
     }
 
     device.wait_idle();
+
+    // The client goes first: a server torn down under a live connection logs a
+    // disconnection that did not happen.
+    client.reset();
+    if (server_thread.joinable()) {
+        stop_server = true;
+        server_thread.join();
+    }
 
     if (captured) {
         const u32   width  = device.swapchain_width();

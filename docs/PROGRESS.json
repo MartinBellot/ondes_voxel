@@ -58,7 +58,7 @@
     "M5": {
       "name": "Client Ondes VOXEL",
       "status": "in_progress",
-      "done": 18,
+      "done": 19,
       "total": 29,
       "exit_criterion": "Deux clients pour un même serveur ; p99 de frame time <= 20 ms à 12 chunks sur M2 ; golden images vertes sur lavapipe.",
       "blocked": []
@@ -148,7 +148,8 @@
     "day_cycle": "reproduit les reperes documentes au tick pres : minimum de nuit a 13670, remontee a 22331, seuil d'apparition des monstres a 13188, et les trois valeurs de midi (15 clair, 12 pluie, 10 orage). Le brouillard et le ciel derivent du meme facteur",
     "chunk_packet_roundtrip": "24 chunks reels encodes puis relus par parse_chunk_data : blocs, biomes, lumiere et heightmaps identiques cellule par cellule. C'est le seul paquet dont le lecteur et l'ecrivain peuvent diverger en silence — un octet mal compte decale tout ce qui suit",
     "own_client_online": "le client Ondes VOXEL se connecte au serveur Ondes VOXEL : login hors-ligne, 289 chunks recus a rayon 8, maillage incremental sous budget, physique a 20 Hz contre les formes de collision. Debout a (0.50, 44.00, 0.50) ; en marchant, 4.70 blocs parcourus et une marche descendue",
-    "chunk_send_budget": "l'envoi initial de 289 chunks tenait dans un seul tick et le serveur signalait 'can't keep up' a chaque connexion ; la file est desormais drainee a 8 chunks par tick et l'avertissement ne se produit plus (0 occurrence sur une connexion complete). Les chunks partent du plus proche au plus loin, la ou l'ancien code iterait un unordered_set et les envoyait dans l'ordre de hachage"
+    "chunk_send_budget": "l'envoi initial de 289 chunks tenait dans un seul tick et le serveur signalait 'can't keep up' a chaque connexion ; la file est desormais drainee a 8 chunks par tick et l'avertissement ne se produit plus (0 occurrence sur une connexion complete). Les chunks partent du plus proche au plus loin, la ou l'ancien code iterait un unordered_set et les envoyait dans l'ordre de hachage",
+    "singleplayer": "ov_voxel --singleplayer heberge ov_server sur un thread du meme processus, qui ouvre une vraie socket ; le client s'y connecte comme a n'importe quel serveur. Verifie de bout en bout : 289 chunks recus, joueur debout, gravier casse et bloc pose, un seul joueur dans la liste"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",

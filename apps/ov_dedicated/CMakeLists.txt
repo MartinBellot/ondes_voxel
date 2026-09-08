@@ -8,14 +8,10 @@ ov_add_executable(ov_dedicated
     SOURCES
         src/main.cpp
     DEPS
-        ov_protocol  # brings ov_io, ov_nbt, ov_world and ov_base transitively
-        ov_math
-        ov_registry
-        ov_world
-        ov_gameplay
+        ov_server  # everything it does; this binary is three lines
 )
 
 # Where the locally generated vanilla data lives. Passed in rather than searched
 # for at runtime: the server must fail loudly with a path in the message, not
 # quietly with an empty world.
-target_compile_definitions(ov_dedicated PRIVATE OV_DATA_DIR="${CMAKE_SOURCE_DIR}/data")
+# The data directory is baked into ov_server, which is where the paths are used.
