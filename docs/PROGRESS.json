@@ -34,7 +34,7 @@
     "M2": {
       "name": "Registres et données",
       "status": "in_progress",
-      "done": 21,
+      "done": 22,
       "total": 27,
       "exit_criterion": "Égalité stricte contre blocks.json sur les 24 135 états ; .ovpack chargé en < 10 ms ; vecteurs RNG conformes.",
       "blocked": [],
@@ -66,9 +66,9 @@
     },
     "M6": {
       "name": "Contenu complet",
-      "status": "not_started",
-      "done": 0,
-      "total": 68,
+      "status": "in_progress",
+      "done": 1,
+      "total": 70,
       "exit_criterion": "Une batterie world_test par sous-système ; parité statistique worldgen sur 1000 seeds ; matrice protocole à 100 %.",
       "blocked": []
     },
@@ -151,7 +151,10 @@
     "own_client_online": "le client Ondes VOXEL se connecte au serveur Ondes VOXEL : login hors-ligne, 289 chunks recus a rayon 8, maillage incremental sous budget, physique a 20 Hz contre les formes de collision. Debout a (0.50, 44.00, 0.50) ; en marchant, 4.70 blocs parcourus et une marche descendue",
     "chunk_send_budget": "l'envoi initial de 289 chunks tenait dans un seul tick et le serveur signalait 'can't keep up' a chaque connexion ; la file est desormais drainee a 8 chunks par tick et l'avertissement ne se produit plus (0 occurrence sur une connexion complete). Les chunks partent du plus proche au plus loin, la ou l'ancien code iterait un unordered_set et les envoyait dans l'ordre de hachage",
     "singleplayer": "ov_voxel --singleplayer heberge ov_server sur un thread du meme processus, qui ouvre une vraie socket ; le client s'y connecte comme a n'importe quel serveur. Verifie de bout en bout : 289 chunks recus, joueur debout, gravier casse et bloc pose, un seul joueur dans la liste",
-    "fluid_physics": "eau et lave : six vitesses publiees reproduites — nage 1.96 m/s (publie 1.97), nage sprintee 3.92 (3.918), enfoncement dans la lave 0.8 (0.8 exactement). La vitesse publiee est la distance parcourue par tick, pas la velocite stockee : lue apres la trainee elle est un cinquieme trop basse et ressemble a une constante fausse"
+    "fluid_physics": "eau et lave : six vitesses publiees reproduites — nage 1.96 m/s (publie 1.97), nage sprintee 3.92 (3.918), enfoncement dans la lave 0.8 (0.8 exactement). La vitesse publiee est la distance parcourue par tick, pas la velocite stockee : lue apres la trainee elle est un cinquieme trop basse et ressemble a une constante fausse",
+    "worldgen_noise": "ImprovedNoise / PerlinNoise / NormalNoise implementes ; une amplitude nulle saute une octave sans decaler les autres, ce qui est verifie. Le hachage de position reproduit le debordement 32 bits de x, qui deplacerait chaque minerai au-dela de ~686 blocs s'il etait fait en 64",
+    "worldgen_density": "23 types de fonctions de densite ; 14 des 15 entrees du routeur overworld se construisent depuis les JSON vanilla, dont les six fonctions climatiques. final_density manque : il atteint old_blended_noise. Un type non implemente est refuse et nomme, jamais traite comme zero",
+    "worldgen_oracle": "monde de reference genere par le vrai serveur 1.20.1 a la seed 1234567890 (scripts/reference_world.sh, 4 fichiers de region). C'est le seul oracle de la parite de terrain : aucune formule ne peut la prouver, seuls les blocs que le jeu ecrit"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",

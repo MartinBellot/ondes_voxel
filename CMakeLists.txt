@@ -84,6 +84,7 @@ add_subdirectory(src/ov_registry)
 add_subdirectory(src/ov_world)
 add_subdirectory(src/ov_protocol)
 add_subdirectory(src/ov_gameplay)
+add_subdirectory(src/ov_worldgen)
 add_subdirectory(src/ov_netclient)
 add_subdirectory(src/ov_server)
 

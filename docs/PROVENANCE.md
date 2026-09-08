@@ -3072,3 +3072,70 @@ Un premier essai à 24 blocs de portée **noyait un fond marin situé à dix-sep
 blocs**. C'est ce qui a rendu évident que deviner serré est pire que deviner
 large : une valeur inventée trop courte supprime de l'information, une trop
 longue en laisse.
+
+## La parité de seed : l'oracle d'abord
+
+*2026-09-08.*
+
+Le plan verrouillait « **pas** de parité de seed bit-exacte ». Cette décision est
+levée à la demande de l'utilisateur, et il faut dire ce qu'elle coûte : depuis
+la 1.18 le terrain n'est pas un générateur paramétré, c'est une **expression**,
+écrite en JSON et évaluée par position. `noise_settings` nomme un routeur d'une
+quinzaine d'expressions au-dessus de trente-cinq fonctions nommées. Une
+approximation écrite à la main serait fausse dès le premier datapack et ne
+pourrait jamais être exacte à la seed.
+
+### L'oracle avant le code
+
+`scripts/reference_world.sh` fait générer un monde par le **vrai serveur
+1.20.1** à une seed fixe. C'est le seul oracle possible : aucune formule ne
+prouve la parité du terrain, seuls les blocs que le jeu écrit sur le disque.
+Quatre fichiers de région à la seed 1234567890, gitignorés comme toute sortie
+vanilla.
+
+### Ce qui est fait
+
+**Le bruit.** `ImprovedNoise` → `PerlinNoise` → `NormalNoise`. Un piège vérifié
+par test : une amplitude nulle **saute** une octave sans décaler les autres,
+parce que chaque octave est ensemencée par le hash de `"octave_<n>"` et non en
+séquence. Un ensemencement séquentiel donnerait un monde différent dès qu'une
+octave est absente.
+
+**Le hachage de position**, dont dépend chaque minerai, chaque arbre et chaque
+grotte :
+
+```
+l = (x * 3129871) ^ (z * 116129781) ^ y      ← le premier terme déborde en 32 bits
+l = l*l*42317861 + l*11
+return l >> 16
+```
+
+La première ligne est la trappe : `x * 3129871` est une multiplication **entière
+32 bits** qui boucle avant d'être élargie, tandis que `z * 116129781` est une
+multiplication 64 bits qui ne boucle pas. Tout faire en 64 bits donne un nombre
+différent dès environ 686 blocs en x — assez loin pour qu'un petit monde de test
+ne le voie jamais.
+
+**L'interpréteur de fonctions de densité.** 23 types, lus depuis les JSON
+vanilla. **14 des 15 entrées du routeur overworld se construisent**, dont les
+six fonctions climatiques. Deux points valent d'être notés :
+
+- `flat_cache` **n'est pas une identité** : il quantifie x et z à des multiples
+  de quatre et évalue à y = 0. Le traiter comme transparent donne un champ lisse
+  là où le jeu en a un en marches, et déplace chaque frontière de biome.
+- Les **splines sont évaluées en `float`**, pas en `double`. C'est d'elles que
+  vient la forme à grande échelle du terrain, et les élargir serait un autre
+  monde.
+
+### Ce qui manque, nommé plutôt que tu
+
+`final_density` ne se construit pas : il atteint `old_blended_noise`, le bruit
+de terrain de la 1.17, dont l'ensemencement des octaves est séquentiel et non
+par nom. Un type non implémenté est **refusé et nommé** — jamais traité comme
+zéro, parce qu'un terme silencieusement absent donne un terrain plausible et
+faux.
+
+Reste aussi le `NoiseChunk` : le terrain est échantillonné sur une grille de
+cellules (4 blocs en horizontal, 8 en vertical pour l'overworld) puis interpolé
+entre. C'est ce qui rend `interpolated` inexact point par point — exact pour le
+climat, qui n'en utilise pas, et pas pour la densité finale.

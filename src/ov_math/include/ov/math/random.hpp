@@ -17,6 +17,8 @@
 
 #include "ov/base/types.hpp"
 
+#include <string_view>
+
 namespace ov::math {
 
 /// The multiplier, addend and mask of the linear congruential generator that
@@ -102,6 +104,8 @@ inline constexpr u64 kSilverRatio64 = 0x6A09E667F3BCC909ULL;
 /// produce visibly similar terrain.
 [[nodiscard]] u64 mix_stafford_13(u64 z) noexcept;
 
+class XoroshiroPositionalFactory;
+
 /// Xoroshiro128++, the generator the game moved to in 1.18.
 ///
 /// Worldgen runs on this one, so its stream is the terrain. The transition
@@ -146,6 +150,13 @@ public:
     /// Standard normal. Carries the same fdlibm caveat as the legacy source.
     [[nodiscard]] f64 next_gaussian() noexcept;
 
+    /// Fork a positional factory from this generator's own stream.
+    ///
+    /// Two draws, in this order. Every stage of worldgen forks one of these
+    /// rather than seeding from the world seed directly, and the order of the
+    /// forks is part of what the seed decides.
+    [[nodiscard]] XoroshiroPositionalFactory fork_positional() noexcept;
+
     [[nodiscard]] u64 state_lo() const noexcept { return lo_; }
 
     [[nodiscard]] u64 state_hi() const noexcept { return hi_; }
@@ -156,5 +167,60 @@ private:
     f64  next_gaussian_{0.0};
     bool have_next_gaussian_{false};
 };
+
+/// Hash a block position into a seed.
+///
+/// Every positional generator starts here, so a mistake in it moves every ore,
+/// every tree and every cave at once.
+///
+/// The trap is on the first line: `x * 3129871` is an **int** multiply in the
+/// original and wraps at 32 bits before it is widened, while `z * 116129781`
+/// is a long multiply and does not. Doing both in 64 bits gives a different
+/// number for any x past about 686 blocks — far enough out that a small test
+/// world would never notice.
+[[nodiscard]] i64 position_seed(i32 x, i32 y, i32 z) noexcept;
+
+/// Where a generator comes from when a value has to depend on a place.
+///
+/// Worldgen never seeds a generator from the world seed directly: it forks a
+/// factory for each stage — one for the ores, one for the caves, one for each
+/// noise — and asks that factory for a generator at a position or under a name.
+/// That is what makes two worlds with the same seed identical and two adjacent
+/// chunks independent.
+class XoroshiroPositionalFactory {
+public:
+    XoroshiroPositionalFactory(u64 lo, u64 hi) noexcept : lo_{lo}, hi_{hi} {}
+
+    [[nodiscard]] XoroshiroRandomSource at(i32 x, i32 y, i32 z) const noexcept;
+
+    /// Seeded from the MD5 of a name — `minecraft:ore_gold`, say. A name and
+    /// not an index, so that adding a feature does not renumber the rest and
+    /// change every world.
+    [[nodiscard]] XoroshiroRandomSource from_hash_of(std::string_view name) const noexcept;
+
+    [[nodiscard]] u64 seed_lo() const noexcept { return lo_; }
+    [[nodiscard]] u64 seed_hi() const noexcept { return hi_; }
+
+private:
+    u64 lo_{0};
+    u64 hi_{0};
+};
+
+/// The same, for the legacy generator. Superflat and the old customised
+/// presets still ask for it, and it is not interchangeable: it consumes
+/// different state and hashes names with Java's string hash rather than MD5.
+class LegacyPositionalFactory {
+public:
+    explicit LegacyPositionalFactory(u64 seed) noexcept : seed_{seed} {}
+
+    [[nodiscard]] LegacyRandomSource at(i32 x, i32 y, i32 z) const noexcept;
+    [[nodiscard]] LegacyRandomSource from_hash_of(std::string_view name) const noexcept;
+
+private:
+    u64 seed_{0};
+};
+
+/// Java's `String.hashCode`, which the legacy factory hashes names with.
+[[nodiscard]] i32 java_string_hash(std::string_view text) noexcept;
 
 }  // namespace ov::math

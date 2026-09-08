@@ -178,7 +178,11 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] `LegacyRandomSource` bit-exact — vérifié contre une vraie JVM 🔒
 - [ ] `log` fdlibm pour rendre `nextGaussian` bit-exact *(4 ulp d'écart mesuré)*
 - [x] `XoroshiroRandomSource` bit-exact — vérifié contre le JDK, seeding compris 🔒
-- [ ] `PositionalRandomFactory`, hachage de seeds, vecteurs de référence ⭐
+- [x] `PositionalRandomFactory`, hachage de seeds, vecteurs de référence ⭐
+      *(le hachage de position, le fork positionnel, l'ensemencement par MD5
+      d'un nom et le hash de chaîne de Java. Le piège est sur la première
+      ligne du hachage : `x * 3129871` déborde en 32 bits avant d'être
+      élargi, et le faire en 64 bits déplace chaque minerai passé ~686 blocs)*
 - [x] `ov-inspect` : dump NBT, région, chunk, registre, paquet
       *(plus `column`, `heightmaps`, `state`, `loot`, `connects` et `stairs`,
       ajoutés au fur et à mesure que chaque mesure en a eu besoin)*
@@ -342,9 +346,22 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 ## M6+ — Contenu complet
 
 ### Génération du monde
-- [ ] Bruit : Perlin, Simplex, octaves, `NormalNoise`
-- [ ] **Interpréteur de `density_function`** — jamais un générateur ad hoc 🔒
-- [ ] `noise_router`, `noise_settings`, splines
+- [x] Bruit : Perlin, octaves, `NormalNoise`
+      *(`ImprovedNoise` → `PerlinNoise` → `NormalNoise`. Une amplitude nulle
+      **saute** une octave sans décaler les autres, parce que chacune est
+      ensemencée par le hash de son nom et non en séquence)*
+- [~] **Interpréteur de `density_function`** — jamais un générateur ad hoc 🔒
+      *(23 types implémentés ; **14 des 15 entrées du routeur overworld se
+      construisent**. `final_density` manque — il atteint `old_blended_noise`,
+      le bruit de terrain de la 1.17. Un type non implémenté est **refusé et
+      nommé**, jamais traité comme zéro)*
+- [~] `noise_router`, `noise_settings`, splines
+      *(le routeur et les réglages sont lus depuis les JSON vanilla ; les
+      splines sont évaluées **en float**, comme le jeu, parce que c'est d'elles
+      que vient la forme à grande échelle du terrain)*
+- [ ] `old_blended_noise` — le bruit de terrain 1.17, dont dépend `final_density`
+- [ ] `NoiseChunk` : échantillonnage sur la grille de cellules et interpolation
+      *(c'est ce qui rend `interpolated` inexact point par point)*
 - [ ] **Multi-noise biome source** : temperature, humidity, continentalness,
       erosion, depth, weirdness
 - [ ] `surface_rules`

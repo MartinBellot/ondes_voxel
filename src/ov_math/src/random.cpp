@@ -1,5 +1,7 @@
 #include "ov/math/random.hpp"
 
+#include "ov/base/md5.hpp"
+
 #include <bit>
 #include <cmath>
 
@@ -180,6 +182,71 @@ f64 XoroshiroRandomSource::next_gaussian() noexcept {
     next_gaussian_       = v2 * multiplier;
     have_next_gaussian_  = true;
     return v1 * multiplier;
+}
+
+}  // namespace ov::math
+
+namespace ov::math {
+
+i64 position_seed(i32 x, i32 y, i32 z) noexcept {
+    // The first term wraps at 32 bits before it is widened; the second does
+    // not. Writing both in 64 bits is the mistake this line exists to avoid,
+    // and it only shows past about 686 blocks of x.
+    const i64 wrapped_x = static_cast<i64>(static_cast<i32>(
+        static_cast<u32>(x) * static_cast<u32>(3129871)));
+    i64 value = wrapped_x ^ (static_cast<i64>(z) * 116129781LL) ^ static_cast<i64>(y);
+    // Unsigned for the arithmetic, because signed overflow is undefined and
+    // this is deliberately allowed to wrap.
+    auto bits = static_cast<u64>(value);
+    bits      = bits * bits * 42317861ULL + bits * 11ULL;
+    value     = static_cast<i64>(bits);
+    return value >> 16;
+}
+
+XoroshiroPositionalFactory XoroshiroRandomSource::fork_positional() noexcept {
+    const auto lo = static_cast<u64>(next_long());
+    const auto hi = static_cast<u64>(next_long());
+    return XoroshiroPositionalFactory{lo, hi};
+}
+
+XoroshiroRandomSource XoroshiroPositionalFactory::at(i32 x, i32 y, i32 z) const noexcept {
+    const auto seed = static_cast<u64>(position_seed(x, y, z));
+    return XoroshiroRandomSource{seed ^ lo_, hi_};
+}
+
+XoroshiroRandomSource XoroshiroPositionalFactory::from_hash_of(
+    std::string_view name) const noexcept {
+    const auto digest = md5(name);
+    // Big-endian, both halves: this is Guava's Longs.fromBytes over the MD5,
+    // and reading it the other way round gives a different world rather than
+    // an error.
+    u64 first  = 0;
+    u64 second = 0;
+    for (usize i = 0; i < 8; ++i) {
+        first  = (first << 8) | digest[i];
+        second = (second << 8) | digest[i + 8];
+    }
+    return XoroshiroRandomSource{first ^ lo_, second ^ hi_};
+}
+
+i32 java_string_hash(std::string_view text) noexcept {
+    // Over UTF-16 code units in Java. For the ASCII names worldgen uses, the
+    // bytes and the code units are the same; anything else would need real
+    // decoding, and nothing here has one.
+    u32 hash = 0;
+    for (const char c : text) {
+        hash = hash * 31U + static_cast<u32>(static_cast<u8>(c));
+    }
+    return static_cast<i32>(hash);
+}
+
+LegacyRandomSource LegacyPositionalFactory::at(i32 x, i32 y, i32 z) const noexcept {
+    return LegacyRandomSource{static_cast<i64>(static_cast<u64>(position_seed(x, y, z)) ^ seed_)};
+}
+
+LegacyRandomSource LegacyPositionalFactory::from_hash_of(std::string_view name) const noexcept {
+    return LegacyRandomSource{
+        static_cast<i64>(static_cast<u64>(java_string_hash(name)) ^ seed_)};
 }
 
 }  // namespace ov::math

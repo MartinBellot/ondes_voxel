@@ -45,3 +45,4 @@ __pycache__/
 
 # Agent scratch space: settings and the isolated worktrees agents run in.
 .claude/
+run/reference-*/
