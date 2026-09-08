@@ -17,6 +17,7 @@
 #include "ov/registry/block_states.hpp"
 #include "ov/world/chunk.hpp"
 #include "ov/worldgen/biome_source.hpp"
+#include "ov/worldgen/carver.hpp"
 #include "ov/worldgen/density.hpp"
 
 #include <expected>
@@ -47,11 +48,18 @@ public:
     /// What fills a position that is not solid: water, lava or air.
     [[nodiscard]] registry::BlockStateId fluid_at(i32 y) const;
 
+    /// Attach the carvers. Optional, and off by default: a generator that is
+    /// only asked about the noise — a column dump, the biome comparison —
+    /// would otherwise pay 867 carver seedings for a question the carvers do
+    /// not answer. Borrowed, not owned; the stage must outlive the generator.
+    void set_carvers(const CarverStage* carvers) noexcept { carvers_ = carvers; }
+
 private:
     const NoiseRouter*             router_;
     const BiomeSource*             biomes_;
     const registry::BlockRegistry* blocks_;
     const DensityFunction*         density_{nullptr};
+    const CarverStage*             carvers_{nullptr};
 
     registry::BlockStateId stone_{};
     registry::BlockStateId water_{};
