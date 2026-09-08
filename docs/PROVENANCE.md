@@ -3252,3 +3252,26 @@ Trois hypothèses ont été écartées par mesure : ce ne sont pas les arbres (l
 exclure change 1,38 % en 1,03 %), ce n'est pas la végétation de surface (0,02 %
 de plus), et ce n'est pas le cache d'interpolation (le corriger ne change rien
 sur cette zone).
+
+### Le décalage de surface : ce qui a été écarté
+
+Le harnais a gagné trois modes de diagnostic, et chacun a fermé une piste :
+
+- **`--terrain`** sépare les deux erreurs et recense les blocs concernés. C'est
+  lui qui a montré que le surplus de pierre n'est que `air`, `water`,
+  `cave_air` et `lava` — donc les grottes et les aquifères, une étape absente
+  et non un bruit faux.
+- **`OV_NO_INTERPOLATION`** désactive la grille de cellules. Avec elle 97,74 %,
+  sans elle 97,19 % : l'interpolation **aide**, donc elle n'est pas la cause.
+- **`--column`** vide une colonne : chaque terme — `offset`, `factor`,
+  `jaggedness`, `depth`, la densité initiale et la finale — pour chaque hauteur,
+  à côté de ce que le jeu y a mis.
+
+Ce que la colonne montre : à (−37032, 14960) notre densité vaut **+0,004 à
+y = 69 et −0,012 à y = 70**, là où le jeu a du solide jusqu'à 70. Le pas de
+densité par bloc y est d'environ 0,016, donc il manque à peu près un pas. Sur
+l'ensemble la distribution est centrée sur −2 blocs.
+
+Autrement dit : ce n'est pas un terme absent qui vaudrait des unités, c'est un
+biais de l'ordre de 0,02 à 0,03 en densité. Écrit ici sans conclusion, parce
+qu'aucune des trois pistes testées ne l'explique.

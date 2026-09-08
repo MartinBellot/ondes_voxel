@@ -52,6 +52,8 @@ struct Options {
     bool locate{false};
     /// Compare blocks rather than biomes.
     bool terrain{false};
+    /// Dump one column: what the game has, and every term we compute.
+    std::string column;
     std::filesystem::path pack{"data/vanilla/1.20.1/registry.ovpack"};
 };
 
@@ -78,6 +80,8 @@ struct Options {
             options.locate = true;
         } else if (argument == "--terrain") {
             options.terrain = true;
+        } else if (argument.starts_with("--column=")) {
+            options.column = value("--column=");
         } else if (argument.starts_with("--pack=")) {
             options.pack = value("--pack=");
         }
@@ -224,6 +228,42 @@ int main(int argc, char** argv) {
     if (!biomes) {
         OV_LOG_ERROR("biome table: {}", worldgen::to_string(biomes.error()));
         return 1;
+    }
+
+    if (!options.column.empty()) {
+        const auto comma = options.column.find(',');
+        const i32  cx    = std::atoi(options.column.substr(0, comma).c_str());
+        const i32  cz    = std::atoi(options.column.substr(comma + 1).c_str());
+
+        auto pack = registry::BlockRegistry::load(options.pack);
+        if (!pack) {
+            OV_LOG_ERROR("registry {} missing", options.pack.string());
+            return 1;
+        }
+        const worldgen::ChunkGenerator generator{*router, *biomes, *pack};
+
+        // Every term the terrain is built from, so a wrong one can be seen
+        // rather than deduced.
+        const auto* term_offset  = router->function("minecraft:overworld/offset");
+        const auto* term_factor  = router->function("minecraft:overworld/factor");
+        const auto* term_jagged  = router->function("minecraft:overworld/jaggedness");
+        const auto* term_depth   = router->entry("depth");
+        const auto* term_initial = router->entry("initial_density_without_jaggedness");
+
+        fmt::print("column ({}, {})\n", cx, cz);
+        fmt::print("  offset {:+.6f}   factor {:+.6f}   jaggedness {:+.6f}\n",
+                   term_offset ? term_offset->compute({cx, 0, cz}) : 0.0,
+                   term_factor ? term_factor->compute({cx, 0, cz}) : 0.0,
+                   term_jagged ? term_jagged->compute({cx, 0, cz}) : 0.0);
+        fmt::print("  {:>5} {:>12} {:>12} {:>12}\n", "y", "depth", "initial", "final");
+        for (i32 y = 100; y >= 50; --y) {
+            fmt::print("  {:>5} {:>12.6f} {:>12.6f} {:>12.6f}   {}\n", y,
+                       term_depth ? term_depth->compute({cx, y, cz}) : 0.0,
+                       term_initial ? term_initial->compute({cx, y, cz}) : 0.0,
+                       generator.density_at(cx, y, cz),
+                       generator.is_solid(cx, y, cz) ? "solid" : "");
+        }
+        return 0;
     }
 
     std::map<std::string, std::array<i32, 4>>                   located;
@@ -520,7 +560,8 @@ int main(int argc, char** argv) {
                     }
 
                     const auto climate = biomes->sample(*router, quart_x, quart_y, quart_z);
-                    if (!options.sweep.empty()) {
+
+    if (!options.sweep.empty()) {
                         // Keep the reading and the game's answer; the sweep
                         // re-scores them without resampling the noise, which is
                         // what makes trying thirty distortions cheap.

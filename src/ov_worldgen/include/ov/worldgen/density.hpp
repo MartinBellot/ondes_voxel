@@ -94,6 +94,11 @@ public:
     /// "erosion", "depth", "ridges", "final_density", and the rest.
     [[nodiscard]] const DensityFunction* entry(std::string_view name) const;
 
+    /// A named function from the datapack — "minecraft:overworld/offset" and
+    /// the like. The router's entries are built out of these, so when a router
+    /// entry is wrong this is how the wrongness is bisected.
+    [[nodiscard]] const DensityFunction* function(std::string_view name) const;
+
     /// Router entries that could not be built, and why. Empty when the whole
     /// graph loaded.
     [[nodiscard]] std::vector<std::pair<std::string, DensityError>> unavailable() const;

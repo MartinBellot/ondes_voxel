@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <set>
 #include <unordered_map>
 
@@ -922,6 +923,13 @@ std::expected<DensityRef, DensityError> NoiseRouter::Impl::parse(Json node) {
     if (kind == "interpolated") {
         auto inner = argument("argument");
         if (!inner) return inner;
+        // OV_NO_INTERPOLATION exists to answer one question by measurement
+        // rather than by reasoning: is the cell-grid interpolation helping or
+        // hurting? Turning it off and comparing against the same reference
+        // world settles it in one run.
+        if (std::getenv("OV_NO_INTERPOLATION") != nullptr) {
+            return wrap(std::make_shared<const Passthrough>(*inner));
+        }
         return wrap(std::make_shared<const Interpolated>(*inner, this->cell_width,
                                                         this->cell_height, this->min_y));
     }
@@ -1070,6 +1078,11 @@ const DensityFunction* NoiseRouter::entry(std::string_view name) const {
 
 std::vector<std::pair<std::string, DensityError>> NoiseRouter::unavailable() const {
     return {impl_->unavailable.begin(), impl_->unavailable.end()};
+}
+
+const DensityFunction* NoiseRouter::function(std::string_view name) const {
+    const auto found = impl_->functions.find(std::string(name));
+    return found == impl_->functions.end() ? nullptr : found->second.get();
 }
 
 i32 NoiseRouter::sea_level() const noexcept {
