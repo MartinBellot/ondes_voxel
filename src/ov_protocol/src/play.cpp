@@ -7,6 +7,7 @@
 #include "ov/world/heightmap.hpp"
 
 #include <array>
+#include <cmath>
 
 namespace ov::net {
 namespace {
@@ -164,6 +165,83 @@ std::vector<u8> encode_unload_chunk(i32 chunk_x, i32 chunk_z) {
     io::ByteWriter writer;
     writer.write_i32(chunk_x);
     writer.write_i32(chunk_z);
+    return writer.take();
+}
+
+namespace {
+
+/// Angles travel as a single byte: 256 steps to a full turn.
+///
+/// The conversion has to wrap rather than clamp — a yaw of 350 degrees and one
+/// of -10 are the same direction, and clamping would pin a player looking
+/// slightly west to due south.
+[[nodiscard]] i8 angle_byte(f32 degrees) noexcept {
+    const auto steps = static_cast<i32>(std::lround(static_cast<f64>(degrees) * 256.0 / 360.0));
+    return static_cast<i8>(static_cast<u8>(steps & 0xFF));
+}
+
+}  // namespace
+
+std::vector<u8> encode_player_info_add(const Uuid& uuid, std::string_view name, i32 game_mode) {
+    io::ByteWriter writer;
+
+    // add_player | update_game_mode | update_listed. Sending add_player alone
+    // leaves the entry unlisted, and an unlisted player is not rendered.
+    writer.write_u8(0x01 | 0x04 | 0x08);
+    write_varint(writer, 1);
+
+    write_uuid(writer, uuid);
+    write_string(writer, name);
+    write_varint(writer, 0);  // no skin properties: offline mode has no session
+    write_varint(writer, game_mode);
+    writer.write_u8(1);  // listed
+    return writer.take();
+}
+
+std::vector<u8> encode_player_info_remove(const Uuid& uuid) {
+    io::ByteWriter writer;
+    write_varint(writer, 1);
+    write_uuid(writer, uuid);
+    return writer.take();
+}
+
+std::vector<u8> encode_spawn_player(i32 entity_id, const Uuid& uuid, f64 x, f64 y, f64 z, f32 yaw,
+                                    f32 pitch) {
+    io::ByteWriter writer;
+    write_varint(writer, entity_id);
+    write_uuid(writer, uuid);
+    writer.write_f64(x);
+    writer.write_f64(y);
+    writer.write_f64(z);
+    writer.write_i8(angle_byte(yaw));
+    writer.write_i8(angle_byte(pitch));
+    return writer.take();
+}
+
+std::vector<u8> encode_entity_teleport(i32 entity_id, f64 x, f64 y, f64 z, f32 yaw, f32 pitch,
+                                       bool on_ground) {
+    io::ByteWriter writer;
+    write_varint(writer, entity_id);
+    writer.write_f64(x);
+    writer.write_f64(y);
+    writer.write_f64(z);
+    writer.write_i8(angle_byte(yaw));
+    writer.write_i8(angle_byte(pitch));
+    writer.write_u8(on_ground ? 1 : 0);
+    return writer.take();
+}
+
+std::vector<u8> encode_entity_head_rotation(i32 entity_id, f32 yaw) {
+    io::ByteWriter writer;
+    write_varint(writer, entity_id);
+    writer.write_i8(angle_byte(yaw));
+    return writer.take();
+}
+
+std::vector<u8> encode_remove_entity(i32 entity_id) {
+    io::ByteWriter writer;
+    write_varint(writer, 1);
+    write_varint(writer, entity_id);
     return writer.take();
 }
 

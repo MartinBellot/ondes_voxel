@@ -1034,3 +1034,37 @@ Vérification : notre serveur reproduit **11/11** des orientations mesurées.
 mesurés, seulement un échantillon. Un bloc non couvert prend la convention
 majoritaire et peut donc être orienté à l'envers — visible, sans gravité, et
 corrigible dès que le harnais de parité couvre l'ensemble.
+
+---
+
+## Entités joueur
+
+Trois paquets suffisent à faire exister un joueur chez les autres, et l'ordre
+compte : **`Player Info Update` d'abord**. Le client construit l'entité à partir
+de cette liste ; un `Spawn Player` pour un UUID dont il n'a jamais entendu parler
+donne une entité sans nom, sans skin, ou pas d'entité du tout.
+
+Le drapeau `update_listed` n'est pas cosmétique non plus : une entrée non listée
+n'est pas rendue. Envoyer `add_player` seul ne suffit pas.
+
+Les angles voyagent sur **un octet, 256 pas par tour**. La conversion doit
+**boucler et non saturer** : un lacet de 350° et un de -10° désignent la même
+direction, et saturer épinglerait un joueur regardant légèrement à l'ouest
+plein sud.
+
+La **tête tourne indépendamment du corps**. Un client à qui l'on n'envoie que la
+rotation du corps affiche un joueur qui regarde éternellement droit devant.
+
+### Absolu plutôt que relatif
+
+Vanilla préfère les déplacements relatifs pour les petits pas — six octets contre
+vingt-huit. Nous envoyons des téléportations absolues : un flux relatif qui perd
+ou réordonne un paquet laisse l'entité **définitivement décalée**, et rien dans le
+protocole ne permet de s'en apercevoir. L'optimisation viendra avec de quoi la
+vérifier.
+
+### Ne retransmettre que ce qui change
+
+Un client envoie une mise à jour de position **à chaque tick**, qu'il ait bougé ou
+non. Les relayer toutes représente l'essentiel du trafic d'un serveur peuplé.
+Mesuré : 20 paquets d'un joueur immobile produisent **0** retransmission.

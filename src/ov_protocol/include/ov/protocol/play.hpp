@@ -42,6 +42,12 @@ inline constexpr i32 kDisconnect          = 0x1A;
 inline constexpr i32 kAcknowledgeDig      = 0x06;
 inline constexpr i32 kBlockUpdate         = 0x0A;
 inline constexpr i32 kUnloadChunk         = 0x1E;
+inline constexpr i32 kSpawnPlayer         = 0x03;
+inline constexpr i32 kRemoveEntities      = 0x3E;
+inline constexpr i32 kPlayerInfoRemove    = 0x39;
+inline constexpr i32 kPlayerInfoUpdate    = 0x3A;
+inline constexpr i32 kEntityHeadRotation  = 0x42;
+inline constexpr i32 kEntityTeleport      = 0x68;
 }  // namespace clientbound
 
 /// Serverbound Play packet ids, protocol 763.
@@ -213,6 +219,35 @@ struct CreativeSlot {
 [[nodiscard]] std::optional<CreativeSlot> parse_set_creative_slot(std::span<const u8> payload);
 
 [[nodiscard]] std::optional<i16> parse_set_held_item(std::span<const u8> payload);
+
+/// Add a player to the tab list.
+///
+/// Not cosmetic: the client builds its player *entity* from this list. A spawn
+/// packet for a uuid it has never been told about produces an entity with no
+/// name and no skin, or none at all — so this always goes first.
+[[nodiscard]] std::vector<u8> encode_player_info_add(const Uuid& uuid, std::string_view name,
+                                                     i32 game_mode);
+
+[[nodiscard]] std::vector<u8> encode_player_info_remove(const Uuid& uuid);
+
+/// Make another player appear in the world.
+[[nodiscard]] std::vector<u8> encode_spawn_player(i32 entity_id, const Uuid& uuid, f64 x, f64 y,
+                                                  f64 z, f32 yaw, f32 pitch);
+
+/// Move an entity to an absolute position.
+///
+/// Vanilla prefers relative moves for small steps, which cost six bytes instead
+/// of twenty-eight. Absolute is used here because it cannot drift: a relative
+/// stream that loses or reorders one packet leaves the entity permanently
+/// offset, and there is nothing in the protocol to notice.
+[[nodiscard]] std::vector<u8> encode_entity_teleport(i32 entity_id, f64 x, f64 y, f64 z, f32 yaw,
+                                                     f32 pitch, bool on_ground);
+
+/// The head turns independently of the body, and a client told only the body
+/// rotation renders a player permanently looking straight ahead.
+[[nodiscard]] std::vector<u8> encode_entity_head_rotation(i32 entity_id, f32 yaw);
+
+[[nodiscard]] std::vector<u8> encode_remove_entity(i32 entity_id);
 
 /// Tell every client a block changed. `state` is a block **state** id.
 [[nodiscard]] std::vector<u8> encode_block_update(WirePosition position, i32 state);

@@ -11,7 +11,7 @@
   },
   "last_updated": "2026-09-08",
   "current_milestone": "M3",
-  "current_task": "m4-block-entities",
+  "current_task": "m3-block-entities",
   "milestones": {
     "M0": {
       "name": "Fondations",
@@ -42,7 +42,7 @@
     "M3": {
       "name": "Tranche verticale",
       "status": "in_progress",
-      "done": 11,
+      "done": 12,
       "total": 17,
       "exit_criterion": "Un client Minecraft vanilla 1.20.1 non modifié se connecte, marche, casse et pose un bloc — sans une ligne de Vulkan.",
       "blocked": [
@@ -115,7 +115,8 @@
     "region_write": "17879/17879 chunks reecrits octet-identiques sur un monde reel",
     "persistence": "monde sauvegarde en Anvil et recharge : tour, trou et lumiere identiques apres redemarrage ; autosave 30 s, 4 chunks / 3 regions sans surcharge de tick",
     "cross_load": "notre sauvegarde chargee par le vrai serveur 1.20.1 sans erreur ; chunk reecrit par lui (PostProcessing, isLightOn, structures, 25 sections) relu par nous avec les bons blocs",
-    "placement_orientation": "conventions de facing mesurees sur 18 blocs poses par le vrai serveur 1.20.1 ; 11/11 reproduites a l'identique"
+    "placement_orientation": "conventions de facing mesurees sur 18 blocs poses par le vrai serveur 1.20.1 ; 11/11 reproduites a l'identique",
+    "player_entities": "deux joueurs se voient : apparition dans les deux sens, teleport et rotation de tete a chaque mouvement, retrait a la deconnexion ; 20 paquets d'un joueur immobile -> 0 retransmission"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",

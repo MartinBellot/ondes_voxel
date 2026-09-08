@@ -612,6 +612,19 @@ struct Player {
     /// The key this player is remembered under between sessions.
     std::string identity;
 
+    /// Name and uuid, kept so other players can be told who this is.
+    std::string name;
+    net::Uuid   uuid;
+
+    /// Where this player was last broadcast from, so a stationary player costs
+    /// nothing. Twenty position packets a second per idle player is most of the
+    /// traffic on a busy server.
+    f64  broadcast_x{0.0};
+    f64  broadcast_y{0.0};
+    f64  broadcast_z{0.0};
+    f32  broadcast_yaw{0.0F};
+    bool broadcast_valid{false};
+
     /// Chunks this client currently holds, so streaming sends each one once and
     /// unloads exactly what left range. Recomputing the difference from the
     /// player's position alone would be equivalent right up to the first time a
@@ -958,6 +971,21 @@ int main(int argc, char** argv) {
         }
     };
 
+    /// Send one packet to every player except `except`.
+    ///
+    /// Caller holds players_mutex.
+    const auto broadcast = [&](const net::Connection* except, i32 id, std::span<const u8> payload) {
+        const auto framed = net::encode_packet(id, payload);
+        if (!framed) {
+            return;
+        }
+        for (auto& [key, other] : players) {
+            if (key != except && other.connection) {
+                other.connection->send(*framed);
+            }
+        }
+    };
+
     /// Confirm a change the client already predicted.
     ///
     /// Without this the client shows its guess, waits, and then rolls it back —
@@ -1044,7 +1072,18 @@ int main(int argc, char** argv) {
     listener->on_disconnect([&](const net::ConnectionPtr& connection) {
         {
             const std::scoped_lock lock{players_mutex};
-            players.erase(connection.get());
+            if (const auto it = players.find(connection.get()); it != players.end()) {
+                const i32       entity_id = it->second.entity_id;
+                const net::Uuid uuid      = it->second.uuid;
+                players.erase(it);
+
+                // After the erase, so the leaving player is not sent their own
+                // removal on a socket that is already closing.
+                broadcast(nullptr, net::clientbound::kRemoveEntities,
+                          net::encode_remove_entity(entity_id));
+                broadcast(nullptr, net::clientbound::kPlayerInfoRemove,
+                          net::encode_player_info_remove(uuid));
+            }
         }
         const std::scoped_lock lock{states_mutex};
         states.erase(connection.get());
@@ -1202,8 +1241,31 @@ int main(int argc, char** argv) {
                 send_packet(net::clientbound::kGameEvent, net::encode_game_event(13, 0.0F));
 
                 player.connection = connection;
+                player.name       = login->name;
+                player.uuid       = uuid;
                 {
                     const std::scoped_lock lock{players_mutex};
+
+                    // Everyone already here learns about the newcomer, and the
+                    // newcomer learns about them. Both halves are needed: doing
+                    // only the first leaves the new player alone in a world
+                    // other people are walking around in.
+                    broadcast(nullptr, net::clientbound::kPlayerInfoUpdate,
+                              net::encode_player_info_add(player.uuid, player.name, 1));
+                    broadcast(
+                        nullptr, net::clientbound::kSpawnPlayer,
+                        net::encode_spawn_player(player.entity_id, player.uuid, player.x, player.y,
+                                                 player.z, player.yaw, player.pitch));
+
+                    for (const auto& [key, other] : players) {
+                        send_packet(net::clientbound::kPlayerInfoUpdate,
+                                    net::encode_player_info_add(other.uuid, other.name, 1));
+                        send_packet(
+                            net::clientbound::kSpawnPlayer,
+                            net::encode_spawn_player(other.entity_id, other.uuid, other.x, other.y,
+                                                     other.z, other.yaw, other.pitch));
+                    }
+
                     players[connection.get()] = player;
                 }
                 OV_LOG_INFO("{} joined at ({:.1f}, {:.1f}, {:.1f})", login->name, player.x,
@@ -1273,6 +1335,33 @@ int main(int argc, char** argv) {
                         // is cheap to call twenty times a second.
                         if (movement->x) {
                             stream_chunks(connection, player);
+                        }
+
+                        // Only when something actually changed. A client sends
+                        // an update every tick whether or not the player moved,
+                        // and forwarding all of them is most of the traffic on
+                        // a busy server.
+                        const bool moved = !player.confirmed || !player.broadcast_valid ||
+                                           std::abs(player.x - player.broadcast_x) > 0.01 ||
+                                           std::abs(player.y - player.broadcast_y) > 0.01 ||
+                                           std::abs(player.z - player.broadcast_z) > 0.01 ||
+                                           std::abs(player.yaw - player.broadcast_yaw) > 0.5F;
+                        if (moved) {
+                            player.broadcast_x     = player.x;
+                            player.broadcast_y     = player.y;
+                            player.broadcast_z     = player.z;
+                            player.broadcast_yaw   = player.yaw;
+                            player.broadcast_valid = true;
+
+                            broadcast(connection.get(), net::clientbound::kEntityTeleport,
+                                      net::encode_entity_teleport(
+                                          player.entity_id, player.x, player.y, player.z,
+                                          player.yaw, player.pitch, movement->on_ground));
+                            // The head turns independently of the body; without
+                            // this a player renders looking permanently ahead.
+                            broadcast(
+                                connection.get(), net::clientbound::kEntityHeadRotation,
+                                net::encode_entity_head_rotation(player.entity_id, player.yaw));
                         }
                         return true;
                     }

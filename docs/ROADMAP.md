@@ -177,6 +177,7 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] Streaming de chunks selon la distance de vue *(envoi et déchargement)*
 - [ ] Physique du joueur : AABB, marche, saut, sprint, accroupissement, nage
 - [ ] Gestion des joueurs, keep-alive, liste des joueurs
+- [x] Entités joueur : apparition, mouvement, rotation de tête, retrait
 - [ ] `ov_netclient` + `ClientLevel` (réplique séparée)
 - [ ] `LoopbackTransport` SPSC — **octets sérialisés même en solo** 🔒
 - [ ] **Un client vanilla 1.20.1 se connecte, marche, casse et pose un bloc** ⭐
