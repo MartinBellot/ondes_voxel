@@ -90,6 +90,24 @@ printf 'target_link_libraries(ov_math PUBLIC ov_base)\n' >> src/ov_math/CMakeLis
 expect_rejected "target_link_libraries bypassing ov_add_library" python3 scripts/check_layers.py
 
 echo
+echo "check_progress.py"
+# The drift this guards against is not hypothetical: PROGRESS.json and
+# ROADMAP.md both carried the counts by hand, and they diverged in CI while
+# every local run had passed. Planting the drift proves the guard still fires.
+cp "$ROOT/docs/PROGRESS.json" "$BACKUP/progress.json"
+python3 - "$ROOT/docs/PROGRESS.json" <<'PYEOF'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+first = next(iter(d["milestones"].values()))
+first["done"] = first["done"] + 1
+json.dump(d, open(p, "w"), indent=2, ensure_ascii=False)
+PYEOF
+expect_rejected "a milestone count that drifted" python3 scripts/check_progress.py
+cp "$BACKUP/progress.json" "$ROOT/docs/PROGRESS.json"
+expect_accepted "counts that agree" python3 scripts/check_progress.py
+
+echo
 echo "check_assets.py"
 expect_accepted "a clean tree passes" python3 scripts/check_assets.py
 

@@ -7,6 +7,13 @@ reality is worse than no summary, because it is trusted. This counts the actual
 checkboxes in ROADMAP.md and refuses any disagreement.
 
 Exit code 0 if consistent, 1 otherwise.
+
+`--fix` rewrites the counts in PROGRESS.json from the roadmap instead of
+reporting the difference. The counts exist twice — as checkboxes people tick and
+as numbers a session reads — and two hand-maintained copies of the same fact
+drift. This makes the roadmap the source and the JSON the derivative, which is
+the only arrangement that cannot go stale. Everything else in PROGRESS.json is
+still written by hand, because nothing else in it is a restatement.
 """
 
 from __future__ import annotations
@@ -47,7 +54,44 @@ def count_by_milestone() -> dict[str, tuple[int, int]]:
     return counts
 
 
+def fix(progress: dict, counts: dict[str, tuple[int, int]]) -> list[str]:
+    """Bring the counts in line with the roadmap. Returns what changed."""
+    changes: list[str] = []
+    for name, entry in progress.get("milestones", {}).items():
+        if name not in counts:
+            continue
+        done, total = counts[name]
+        if entry.get("done") != done or entry.get("total") != total:
+            changes.append(f"{name}: {entry.get('done')}/{entry.get('total')} -> {done}/{total}")
+            entry["done"] = done
+            entry["total"] = total
+
+        # A status that contradicts the boxes is corrected too: "done" with
+        # unchecked boxes, or "not_started" with checked ones, are the same
+        # drift in a different field.
+        if entry.get("status") == "done" and done != total:
+            entry["status"] = "in_progress"
+            changes.append(f"{name}: status done -> in_progress")
+        elif entry.get("status") == "not_started" and done > 0:
+            entry["status"] = "in_progress"
+            changes.append(f"{name}: status not_started -> in_progress")
+    return changes
+
+
 def main() -> int:
+    if "--fix" in sys.argv:
+        progress = json.loads(PROGRESS.read_text(encoding="utf-8"))
+        changes = fix(progress, count_by_milestone())
+        PROGRESS.write_text(
+            json.dumps(progress, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        if changes:
+            print("\033[0;32m▸\033[0m PROGRESS.json brought in line with ROADMAP.md")
+            for change in changes:
+                print(f"    {change}")
+        else:
+            print("PROGRESS.json already matches ROADMAP.md")
+        return 0
+
     if not ROADMAP.is_file():
         sys.exit(f"error: {ROADMAP} not found")
     if not PROGRESS.is_file():

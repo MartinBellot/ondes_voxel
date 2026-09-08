@@ -162,7 +162,7 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 > spawne dans un monde superflat éclairé, s'y déplace, casse et pose des blocs.
 > Sans une ligne de Vulkan.
 
-- [ ] Boucle de tick 20 Hz avec budget et rapport de surcharge
+- [x] Boucle de tick 20 Hz avec budget et rapport de surcharge
 - [ ] `ChunkMap`, système de tickets, niveaux de chargement
 - [ ] **Ordonnancement par régions exclusives** — features déborde sur les voisins 🔒
 - [ ] Sections copy-on-write en `shared_ptr<const>` 🔒
@@ -177,11 +177,11 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [ ] `MOTION_BLOCKING` et `OCEAN_FLOOR` *(bloqués : table de flags d'état)*
 - [x] Streaming de chunks selon la distance de vue *(envoi et déchargement)*
 - [ ] Physique du joueur : AABB, marche, saut, sprint, accroupissement, nage
-- [ ] Gestion des joueurs, keep-alive, liste des joueurs
+- [x] Gestion des joueurs, keep-alive, liste des joueurs
 - [x] Entités joueur : apparition, mouvement, rotation de tête, retrait
 - [ ] `ov_netclient` + `ClientLevel` (réplique séparée)
 - [ ] `LoopbackTransport` SPSC — **octets sérialisés même en solo** 🔒
-- [ ] **Un client vanilla 1.20.1 se connecte, marche, casse et pose un bloc** ⭐
+- [x] **Un client vanilla 1.20.1 se connecte, marche, casse et pose un bloc** ⭐
 
 ---
 
@@ -197,10 +197,11 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [ ] `DataVersion`, refus explicite des versions non supportées
 - [ ] Les ~20 archétypes de blocs dont dérivent ~80 % des 1003 types
 - [ ] Casse et pose : durées, outils corrects, Silk Touch, Fortune
-- [ ] Inventaire, conteneurs, shift-click, drag, hotbar
-- [ ] Mode créatif, sélection d'items
+- [x] Conteneurs : ouverture, clic gauche et droit, hotbar
+- [ ] Shift-clic, glissés, touches numériques, inventaire du joueur autoritatif
+- [x] Mode créatif, sélection d'items
 - [x] Sauvegarde périodique et à l'arrêt *(asynchrone via COW : à venir)*
-- [ ] **Round-trip croisé avec Minecraft vanilla, sans perte** ⭐
+- [x] **Round-trip croisé avec Minecraft vanilla, sans perte** ⭐
 
 ---
 

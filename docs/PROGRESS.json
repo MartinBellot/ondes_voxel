@@ -33,8 +33,8 @@
     "M2": {
       "name": "Registres et données",
       "status": "in_progress",
-      "done": 16,
-      "total": 26,
+      "done": 17,
+      "total": 27,
       "exit_criterion": "Égalité stricte contre blocks.json sur les 24 135 états ; .ovpack chargé en < 10 ms ; vecteurs RNG conformes.",
       "blocked": [],
       "notes": "Data generator officiel exécuté et normalisé. 1003 blocs / 24135 blockstates. Deux pièges du dataset identifiés et neutralisés (ordre des propriétés, mob_effect 1-based). PalettedContainer vérifié contre 165318 sections écrites par le jeu lui-même."
@@ -42,8 +42,8 @@
     "M3": {
       "name": "Tranche verticale",
       "status": "in_progress",
-      "done": 12,
-      "total": 17,
+      "done": 11,
+      "total": 20,
       "exit_criterion": "Un client Minecraft vanilla 1.20.1 non modifié se connecte, marche, casse et pose un bloc — sans une ligne de Vulkan.",
       "blocked": [
         "MOTION_BLOCKING, OCEAN_FLOOR, collisions et mouvement autoritatif : necessitent les formes de collision, pas encore mesurees. L'opacite a la lumiere l'est desormais (1003 blocs)."
@@ -52,8 +52,8 @@
     "M4": {
       "name": "Monde persistant",
       "status": "in_progress",
-      "done": 8,
-      "total": 10,
+      "done": 7,
+      "total": 11,
       "exit_criterion": "Round-trip croisé : notre sauvegarde s'ouvre dans Minecraft vanilla et réciproquement, sans perte.",
       "blocked": []
     },
