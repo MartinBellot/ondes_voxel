@@ -174,7 +174,7 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] Tableaux de lumière nullables à valeur uniforme (divise l'empreinte par 2)
 - [x] Heightmaps : stockage, packing 9 bits, sémantique vérifiée sur monde réel
 - [x] `WORLD_SURFACE` calculé et maintenu incrémentalement *(air suffit)*
-- [ ] `MOTION_BLOCKING` et `OCEAN_FLOOR` *(bloqués : table de flags d'état)*
+- [x] `MOTION_BLOCKING`, `MOTION_BLOCKING_NO_LEAVES` et `OCEAN_FLOOR` : prédicats mesurés sur 996 des 1003 blocs
 - [x] Streaming de chunks selon la distance de vue *(envoi et déchargement)*
 - [ ] Physique du joueur : AABB, marche, saut, sprint, accroupissement, nage
 - [x] Gestion des joueurs, keep-alive, liste des joueurs

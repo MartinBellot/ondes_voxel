@@ -85,7 +85,13 @@ struct BlockEntity {
 
 class Chunk {
 public:
-    Chunk(ChunkPos position, WorldShape shape, AirStates air);
+    /// `blocks` is what makes the four heightmaps maintainable: MOTION_BLOCKING
+    /// and OCEAN_FLOOR need to know whether a block stops movement, which is
+    /// measured data living in the registry. It has no default — a chunk built
+    /// without one keeps only WORLD_SURFACE current, and that has to be a
+    /// decision at the call site rather than an oversight.
+    Chunk(ChunkPos position, WorldShape shape, AirStates air,
+          const registry::BlockRegistry* blocks);
 
     [[nodiscard]] ChunkPos position() const noexcept { return position_; }
 
@@ -102,7 +108,7 @@ public:
     /// Read a block at chunk-local x and z, world y.
     [[nodiscard]] registry::BlockStateId get_block(usize x, i32 y, usize z) const noexcept;
 
-    /// Place a block, keeping WORLD_SURFACE current.
+    /// Place a block, keeping the heightmaps current.
     ///
     /// Raising is a comparison. Lowering — breaking the block that *was* the
     /// surface — needs a scan back down the column, which is why breaking is
@@ -125,11 +131,14 @@ public:
     [[nodiscard]] Heightmap&       heightmap(HeightmapType type) noexcept;
     [[nodiscard]] const Heightmap& heightmap(HeightmapType type) const noexcept;
 
-    /// Rebuild WORLD_SURFACE for every column by scanning down.
+    /// Rebuild every heightmap by scanning each column down.
     ///
-    /// What a freshly loaded or generated chunk needs once; maintaining it
-    /// incrementally afterwards is what `set_block` does.
-    void recompute_world_surface() noexcept;
+    /// What a freshly loaded or generated chunk needs once; maintaining them
+    /// incrementally afterwards is what `set_block` does. The stored maps are
+    /// never trusted: a file written by another implementation can carry any
+    /// numbers at all, and a wrong heightmap is invisible until rain falls
+    /// inside the ground.
+    void recompute_heightmaps() noexcept;
 
     /// Non-air blocks across the whole column.
     [[nodiscard]] usize non_air_count() const noexcept;
@@ -154,10 +163,27 @@ private:
     [[nodiscard]] usize section_index_for_y(i32 y) const noexcept;
     [[nodiscard]] i32   scan_surface_down(usize x, usize z, i32 from_y) const noexcept;
 
-    ChunkPos                  position_;
-    WorldShape                shape_;
-    AirStates                 air_;
-    std::vector<ChunkSection> sections_;
+    /// Does this state count towards the given heightmap?
+    ///
+    /// The four predicates, measured on a real 1.20.1 server rather than
+    /// guessed: WORLD_SURFACE takes anything that is not air, OCEAN_FLOOR
+    /// anything that stops movement, MOTION_BLOCKING that plus anything holding
+    /// a fluid, and MOTION_BLOCKING_NO_LEAVES the same minus the ten leaf
+    /// blocks.
+    [[nodiscard]] bool counts_for(HeightmapType type, registry::BlockStateId state) const noexcept;
+
+    /// Bring one heightmap in line with a block that just changed.
+    void update_heightmap(HeightmapType type, usize x, i32 y, usize z,
+                          registry::BlockStateId state) noexcept;
+
+    /// Scan down for the highest y at or below `from_y` counting for `type`.
+    [[nodiscard]] i32 scan_down(HeightmapType type, usize x, usize z, i32 from_y) const noexcept;
+
+    ChunkPos                       position_;
+    WorldShape                     shape_;
+    AirStates                      air_;
+    const registry::BlockRegistry* blocks_{nullptr};
+    std::vector<ChunkSection>      sections_;
 
     /// Indexed by HeightmapType for the four stored kinds.
     std::array<Heightmap, kStoredHeightmapCount> heightmaps_;

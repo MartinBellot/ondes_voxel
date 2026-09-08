@@ -2,6 +2,11 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
+#include <filesystem>
+#include <string_view>
+#include <vector>
+
 using namespace ov;
 using namespace ov::world;
 using registry::BlockStateId;
@@ -12,7 +17,8 @@ constexpr AirStates    kAir{BlockStateId{0}, BlockStateId{12817}, BlockStateId{1
 constexpr BlockStateId kStone{1};
 
 [[nodiscard]] Chunk make_chunk() {
-    return Chunk{ChunkPos{0, 0}, WorldShape::overworld(), kAir};
+    // No registry: this fixture only exercises WORLD_SURFACE and block storage.
+    return Chunk{ChunkPos{0, 0}, WorldShape::overworld(), kAir, nullptr};
 }
 
 }  // namespace
@@ -167,7 +173,7 @@ TEST_CASE("the incremental surface agrees with a full rebuild", "[world][chunk][
         }
     }
 
-    chunk.recompute_world_surface();
+    chunk.recompute_heightmaps();
     usize i = 0;
     for (usize z = 0; z < 16; ++z) {
         for (usize x = 0; x < 16; ++x) {
@@ -186,4 +192,135 @@ TEST_CASE("biomes are stored per section and read by world y", "[world][chunk]")
     REQUIRE(chunk.get_biome(3, 3, 3) == 42);   // same 4x4x4 cell
     REQUIRE(chunk.get_biome(4, 0, 0) == 0);    // next cell
     REQUIRE(chunk.get_biome(0, -64, 0) == 0);  // different section
+}
+
+// ── The four heightmaps ─────────────────────────────────────────────────────
+//
+// These need the registry: MOTION_BLOCKING and OCEAN_FLOOR are the measured
+// flags, and without them a chunk keeps only WORLD_SURFACE.
+
+namespace {
+
+[[nodiscard]] const registry::BlockRegistry* pack() {
+    static const auto loaded = registry::BlockRegistry::load(
+        std::filesystem::path{OV_SOURCE_DIR} / "data" / "vanilla" / "1.20.1" / "registry.ovpack");
+    return loaded ? &*loaded : nullptr;
+}
+
+[[nodiscard]] BlockStateId state_of(std::string_view name) {
+    const auto block = pack()->find_block(name);
+    REQUIRE(block.has_value());
+    return pack()->default_state(*block);
+}
+
+}  // namespace
+
+TEST_CASE("the four heightmaps follow their own predicates", "[world][chunk][heightmap]") {
+    if (pack() == nullptr) {
+        SKIP("no registry pack — run tools/ov_datagen/ovpack.py");
+    }
+    Chunk chunk{ChunkPos{0, 0}, WorldShape::overworld(), AirStates::from(*pack()), pack()};
+
+    const auto first_free = [&](HeightmapType type) {
+        return chunk.heightmap(type).first_free(0, 0);
+    };
+
+    chunk.set_block(0, -60, 0, state_of("minecraft:stone"));
+    REQUIRE(first_free(HeightmapType::WorldSurface) == -59);
+    REQUIRE(first_free(HeightmapType::MotionBlocking) == -59);
+    REQUIRE(first_free(HeightmapType::OceanFloor) == -59);
+
+    // A flower is not air, and stops nothing. Only WORLD_SURFACE rises — the
+    // measurement that says so covers 187 such blocks.
+    chunk.set_block(0, -59, 0, state_of("minecraft:poppy"));
+    REQUIRE(first_free(HeightmapType::WorldSurface) == -58);
+    REQUIRE(first_free(HeightmapType::MotionBlocking) == -59);
+    REQUIRE(first_free(HeightmapType::OceanFloor) == -59);
+
+    // Water is the case the two motion maps exist to separate: it stops no
+    // movement but it is a fluid, so MOTION_BLOCKING takes it and OCEAN_FLOOR
+    // does not. Getting this backwards puts the ocean's surface where its floor
+    // should be.
+    chunk.set_block(0, -58, 0, state_of("minecraft:water"));
+    REQUIRE(first_free(HeightmapType::WorldSurface) == -57);
+    REQUIRE(first_free(HeightmapType::MotionBlocking) == -57);
+    REQUIRE(first_free(HeightmapType::OceanFloor) == -59);
+
+    // Leaves stop movement, and MOTION_BLOCKING_NO_LEAVES is the one map that
+    // skips them: it stays on the water below rather than following the leaves
+    // up. OCEAN_FLOOR does follow them, because leaves stop movement — which is
+    // exactly the pair of answers the measurement separated.
+    chunk.set_block(0, -57, 0, state_of("minecraft:oak_leaves"));
+    REQUIRE(first_free(HeightmapType::MotionBlocking) == -56);
+    REQUIRE(first_free(HeightmapType::MotionBlockingNoLeaves) == -57);
+    REQUIRE(first_free(HeightmapType::OceanFloor) == -56);
+}
+
+TEST_CASE("breaking the top block lowers every map that counted it", "[world][chunk][heightmap]") {
+    if (pack() == nullptr) {
+        SKIP("no registry pack");
+    }
+    Chunk chunk{ChunkPos{0, 0}, WorldShape::overworld(), AirStates::from(*pack()), pack()};
+    const BlockStateId air   = AirStates::from(*pack()).air;
+    const BlockStateId stone = state_of("minecraft:stone");
+
+    chunk.set_block(0, -60, 0, stone);
+    chunk.set_block(0, -50, 0, stone);
+    REQUIRE(chunk.heightmap(HeightmapType::OceanFloor).first_free(0, 0) == -49);
+
+    // Removing the upper one has to scan back down, not simply decrement: the
+    // next block that counts is ten below, not one.
+    chunk.set_block(0, -50, 0, air);
+    REQUIRE(chunk.heightmap(HeightmapType::WorldSurface).first_free(0, 0) == -59);
+    REQUIRE(chunk.heightmap(HeightmapType::MotionBlocking).first_free(0, 0) == -59);
+    REQUIRE(chunk.heightmap(HeightmapType::OceanFloor).first_free(0, 0) == -59);
+
+    // And an empty column reads as the world's floor, not as zero.
+    chunk.set_block(0, -60, 0, air);
+    REQUIRE(chunk.heightmap(HeightmapType::OceanFloor).first_free(0, 0) == -64);
+}
+
+TEST_CASE("recomputing agrees with maintaining", "[world][chunk][heightmap]") {
+    if (pack() == nullptr) {
+        SKIP("no registry pack");
+    }
+    Chunk chunk{ChunkPos{0, 0}, WorldShape::overworld(), AirStates::from(*pack()), pack()};
+
+    const std::array names = std::to_array<std::string_view>(
+        {"minecraft:stone", "minecraft:water", "minecraft:oak_leaves", "minecraft:poppy",
+         "minecraft:glass", "minecraft:oak_slab", "minecraft:snow", "minecraft:cobweb"});
+
+    for (usize z = 0; z < 16; ++z) {
+        for (usize x = 0; x < 16; ++x) {
+            for (usize i = 0; i < names.size(); ++i) {
+                chunk.set_block(x, -60 + static_cast<i32>(i), z,
+                                state_of(names[(x + z + i) % names.size()]));
+            }
+        }
+    }
+
+    std::array<std::vector<i32>, 4> incremental;
+    constexpr std::array kTypes = {HeightmapType::WorldSurface, HeightmapType::MotionBlocking,
+                                   HeightmapType::MotionBlockingNoLeaves,
+                                   HeightmapType::OceanFloor};
+    for (usize i = 0; i < kTypes.size(); ++i) {
+        for (usize z = 0; z < 16; ++z) {
+            for (usize x = 0; x < 16; ++x) {
+                incremental[i].push_back(chunk.heightmap(kTypes[i]).first_free(x, z));
+            }
+        }
+    }
+
+    // The two paths are written separately — one raises and scans down on every
+    // edit, the other sweeps whole columns — so agreeing is a real check rather
+    // than a tautology.
+    chunk.recompute_heightmaps();
+    for (usize i = 0; i < kTypes.size(); ++i) {
+        usize index = 0;
+        for (usize z = 0; z < 16; ++z) {
+            for (usize x = 0; x < 16; ++x) {
+                REQUIRE(chunk.heightmap(kTypes[i]).first_free(x, z) == incremental[i][index++]);
+            }
+        }
+    }
 }

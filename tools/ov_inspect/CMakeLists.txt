@@ -6,4 +6,5 @@ ov_add_executable(ov_inspect
     DEPS
         ov_nbt
         ov_world
+        ov_registry
 )

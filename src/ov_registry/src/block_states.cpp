@@ -73,8 +73,12 @@ std::expected<BlockRegistry, RegistryError> BlockRegistry::from_bytes(std::vecto
     // would hand back whatever follows.
     const auto* flags = pack_at<u8>(data, header.flags_offset, header.block_count);
 
+    // One bit per state, so the length is in bytes, not states.
+    const u32   fluid_bytes = (header.state_count + 7) / 8;
+    const auto* fluids      = pack_at<u8>(data, header.fluid_offset, fluid_bytes);
+
     if (blocks == nullptr || props == nullptr || values == nullptr || states == nullptr ||
-        flags == nullptr) {
+        flags == nullptr || fluids == nullptr) {
         return std::unexpected{RegistryError::Corrupt};
     }
     if (header.strings_offset + header.string_bytes > data.size()) {
@@ -89,6 +93,8 @@ std::expected<BlockRegistry, RegistryError> BlockRegistry::from_bytes(std::vecto
     registry.block_flags_ =
         std::span{reinterpret_cast<const u8*>(registry.data_.data() + header.flags_offset),
                   header.block_count};
+    registry.fluid_bits_ = std::span{
+        reinterpret_cast<const u8*>(registry.data_.data() + header.fluid_offset), fluid_bytes};
 
     const auto* string_base =
         reinterpret_cast<const char*>(registry.data_.data() + header.strings_offset);
@@ -174,11 +180,57 @@ BlockRegistry::LightOpacity BlockRegistry::light_opacity(BlockId block) const no
         // world with no shadows.
         return LightOpacity::Opaque;
     }
-    switch (block_flags_[block.value()]) {
+    switch (block_flags_[block.value()] & 0b11) {
         case 0: return LightOpacity::Transparent;
         case 1: return LightOpacity::Attenuating;
         default: return LightOpacity::Opaque;
     }
+}
+
+namespace {
+
+/// Bits 2 to 5 of a block's flag byte, above the two the light opacity uses.
+constexpr u8 kMotionBit   = 0b000100;
+constexpr u8 kLeavesBit   = 0b001000;
+constexpr u8 kAirBit      = 0b010000;
+constexpr u8 kMeasuredBit = 0b100000;
+
+}  // namespace
+
+bool BlockRegistry::blocks_motion(BlockId block) const noexcept {
+    if (block.value() >= block_flags_.size()) {
+        return false;
+    }
+    return (block_flags_[block.value()] & kMotionBit) != 0;
+}
+
+bool BlockRegistry::is_leaves(BlockId block) const noexcept {
+    if (block.value() >= block_flags_.size()) {
+        return false;
+    }
+    return (block_flags_[block.value()] & kLeavesBit) != 0;
+}
+
+bool BlockRegistry::is_air(BlockId block) const noexcept {
+    if (block.value() >= block_flags_.size()) {
+        return false;
+    }
+    return (block_flags_[block.value()] & kAirBit) != 0;
+}
+
+bool BlockRegistry::motion_measured(BlockId block) const noexcept {
+    if (block.value() >= block_flags_.size()) {
+        return false;
+    }
+    return (block_flags_[block.value()] & kMeasuredBit) != 0;
+}
+
+bool BlockRegistry::holds_fluid(BlockStateId state) const noexcept {
+    const usize index = state.value() >> 3;
+    if (index >= fluid_bits_.size()) {
+        return false;
+    }
+    return (fluid_bits_[index] & (1U << (state.value() & 7))) != 0;
 }
 
 std::string_view BlockRegistry::block_name(BlockId block) const noexcept {

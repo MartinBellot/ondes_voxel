@@ -1304,3 +1304,112 @@ table — c'est la valeur de la grande majorité, donc la moins nuisible en cas 
 pack périmé. La table brute n'est pas commitée : elle est régénérée dans
 `data/vanilla/1.20.1/normalized/stack_sizes.json`, gitignoré comme le reste des
 données dérivées de Mojang.
+
+---
+
+## MOTION_BLOCKING et OCEAN_FLOOR : demander au jeu ce qu'il a lui-même écrit
+
+Trois des quatre heightmaps demandent la même chose sous des formes différentes :
+« ce bloc arrête-t-il le mouvement ? ». Rien dans les rapports officiels ne le
+dit — en vanilla c'est du code Java. Sans cette réponse, `MOTION_BLOCKING`,
+`MOTION_BLOCKING_NO_LEAVES` et `OCEAN_FLOOR` restaient vides, et c'est ce que
+`PROGRESS.json` désignait depuis M3 comme le blocage nommé.
+
+### D'abord, le sens des deux cartes
+
+Il était inversé dans nos propres commentaires. Réglé par la mesure, sur un vrai
+monde 1.20.1 : sur 10 411 colonnes où `MOTION_BLOCKING` et `OCEAN_FLOOR`
+diffèrent, le bloc désigné par la première est de l'eau dans les 40 cas
+examinés, et celui désigné par la seconde de la terre, du sable ou du gravier.
+`MOTION_BLOCKING` compte donc les fluides, `OCEAN_FLOOR` non — c'est ce qui en
+fait le *fond* d'un océan et pas sa surface.
+
+### L'oracle
+
+Le jeu écrit sa propre réponse dans chaque chunk qu'il sauvegarde. Il suffit
+donc de poser un bloc au sommet d'une colonne sur un vrai serveur 1.20.1, de
+laisser sauvegarder, et de relire quelle heightmap il a décidé de faire monter.
+La lecture passe par `ov-inspect column`, donc par le lecteur NBT vérifié sur
+17 879 chunks — pas par un parseur écrit pour l'occasion.
+
+`scripts/measure_motion.py` pose les 1003 blocs en quatre zones, parce qu'un
+bloc doit survivre à sa pose avant de pouvoir être lu :
+
+| Zone | Support | Ce qu'elle rattrape |
+|---|---|---|
+| A | à nu sur l'herbe | tout ce qui tient seul |
+| B | espacé de 16 blocs | ceux qui portent de l'eau, et l'étalent sinon sur sept blocs |
+| C | muré de pierre sur quatre côtés | torches murales, échelles, boutons, panneaux |
+| D | substrat choisi | cultures sur terre labourée, cactus sur sable, chorus sur end stone |
+
+Chaque colonne est relue **par son nom** : un bloc qui n'a pas tenu — une torche
+sans mur — est écarté au lieu d'être enregistré comme « n'arrête pas le
+mouvement ». Les zones A et C se recouvrent largement et **ne se contredisent
+nulle part**, ce qui est le contrôle croisé de la méthode elle-même.
+
+**Résultat : 996 blocs sur 1003.** 778 arrêtent le mouvement, 187 non, 10 sont
+des feuilles, 3 sont de l'air, 22 portent un fluide dans leur état par défaut.
+
+Les sept restants — `kelp_plant`, `weeping_vines`, `weeping_vines_plant`,
+`twisting_vines_plant`, `cave_vines`, `cave_vines_plant`, `big_dripleaf_stem` —
+sont des segments de plantes verticales : ils ont toujours quelque chose
+au-dessus d'eux, donc ils ne peuvent jamais *être* le sommet d'une colonne.
+L'oracle ne peut pas les voir, et une heightmap n'en a jamais besoin. Ils sont
+marqués non mesurés plutôt que supposés inoffensifs, et
+`BlockRegistry::motion_measured` permet de faire la différence.
+
+### Par bloc ou par état ?
+
+La question décide entre une table de 1003 entrées et une de 24 135. Dix paires
+d'états contrastés ont été posées côte à côte : neige à une couche et à huit,
+trappe ouverte et fermée, portillon, porte, dalle et double dalle, échafaudage,
+grand dripleaf incliné. **Les dix paires sont d'accord.** Le prédicat est donc
+par bloc.
+
+Et la neige n'arrête le mouvement à *aucune* épaisseur, pas même à huit couches
+où elle remplit le cube entier. Aucun raisonnement sur la forme de collision ne
+l'aurait prédit ; c'est exactement le genre de réponse qui justifie de mesurer.
+
+L'eau, elle, est bien par état : `scaffolding[waterlogged=true]` fait monter
+`MOTION_BLOCKING` et `scaffolding[waterlogged=false]` non, alors qu'aucun des
+deux n'arrête le mouvement. Les deux ont été posés. Six blocs sont mouillés sans
+avoir de propriété `waterlogged` à mettre — `water`, `lava`, `kelp`, `seagrass`,
+`tall_seagrass`, `bubble_column` — d'où un bit par bloc *et* la lecture de la
+propriété par état.
+
+### Les feuilles, par deux chemins indépendants
+
+`MOTION_BLOCKING_NO_LEAVES` a désigné exactement dix blocs. Ce sont exactement
+les dix membres du tag `minecraft:leaves`, résolus séparément depuis les
+fichiers JSON du datapack. Deux sources qui n'ont rien en commun donnent la même
+liste.
+
+### Vérification
+
+`ov-inspect heightmaps <region>` recalcule les quatre heightmaps depuis les
+blocs et les compare à celles que le jeu a écrites :
+
+| Monde | Colonnes × 4 cartes | Identiques |
+|---|---|---|
+| Monde 1.20.1 vanilla (2601 chunks) | 274 944 | **274 944** |
+| Monde moddé (2900 chunks) | 742 020 | **742 020** |
+
+Sur le monde moddé, 380 colonnes sont écartées : elles contiennent un des 31
+blocs de palette que cette version n'a pas (`create_hypertube:hypertube_entrance`,
+`simulated:throttle_lever`…). Elles sont comptées comme sautées et non comme
+justes — nous n'avons pas de réponse pour ces blocs, et faire comme s'ils ne
+comptaient pour rien serait une réponse.
+
+Enfin, l'aller-retour : un monde écrit par nous avec les quatre heightmaps se
+charge dans le vrai serveur 1.20.1 sans une erreur, et les valeurs qu'il
+réécrit sont identiques aux nôtres — `MOTION_BLOCKING_NO_LEAVES` comprise.
+
+### Stockage
+
+Un octet par bloc, celui qui portait déjà l'opacité à la lumière : bits 0-1
+l'opacité, bit 2 « arrête le mouvement », bit 3 « feuilles », bit 4 « air »,
+bit 5 « mesuré ». Plus un bit par **état** pour le fluide, soit 3 017 octets.
+Format de pack v6. La table brute est régénérée dans
+`data/vanilla/1.20.1/normalized/motion.json`, gitignoré comme le reste des
+données dérivées de Mojang.
+

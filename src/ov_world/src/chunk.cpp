@@ -1,5 +1,7 @@
 #include "ov/world/chunk.hpp"
 
+#include <array>
+
 namespace ov::world {
 namespace {
 
@@ -23,10 +25,12 @@ namespace {
 
 }  // namespace
 
-Chunk::Chunk(ChunkPos position, WorldShape shape, AirStates air)
+Chunk::Chunk(ChunkPos position, WorldShape shape, AirStates air,
+             const registry::BlockRegistry* blocks)
     : position_{position},
       shape_{shape},
       air_{air},
+      blocks_{blocks},
       heightmaps_{Heightmap{shape.min_y, shape.height}, Heightmap{shape.min_y, shape.height},
                   Heightmap{shape.min_y, shape.height}, Heightmap{shape.min_y, shape.height}} {
     sections_.reserve(shape.section_count());
@@ -90,26 +94,61 @@ void Chunk::set_block(usize x, i32 y, usize z, registry::BlockStateId state) {
     // new block adds one back if it needs one.
     remove_block_entity(x, y, z);
 
-    // WORLD_SURFACE is the only heightmap maintainable today: it needs nothing
-    // but air-ness. The other three need the block-state flag table, which the
-    // official reports do not carry, so they are left untouched rather than
-    // filled with a guess.
-    Heightmap& surface = heightmaps_[slot_for(HeightmapType::WorldSurface)];
+    update_heightmap(HeightmapType::WorldSurface, x, y, z, state);
+    if (blocks_ != nullptr) {
+        update_heightmap(HeightmapType::MotionBlocking, x, y, z, state);
+        update_heightmap(HeightmapType::MotionBlockingNoLeaves, x, y, z, state);
+        update_heightmap(HeightmapType::OceanFloor, x, y, z, state);
+    }
+}
 
-    if (!air_.is_air(state)) {
-        surface.raise_to(x, z, y);
+bool Chunk::counts_for(HeightmapType type, registry::BlockStateId state) const noexcept {
+    if (type == HeightmapType::WorldSurface) {
+        return !air_.is_air(state);
+    }
+    if (blocks_ == nullptr) {
+        return false;
+    }
+    const registry::BlockId block = blocks_->block_of(state);
+    const bool              solid = blocks_->blocks_motion(block);
+
+    switch (type) {
+        case HeightmapType::OceanFloor: return solid;
+        case HeightmapType::MotionBlocking: return solid || blocks_->holds_fluid(state);
+        case HeightmapType::MotionBlockingNoLeaves:
+            return (solid || blocks_->holds_fluid(state)) && !blocks_->is_leaves(block);
+        default: return false;
+    }
+}
+
+i32 Chunk::scan_down(HeightmapType type, usize x, usize z, i32 from_y) const noexcept {
+    for (i32 y = from_y; y >= shape_.min_y; --y) {
+        if (counts_for(type, get_block(x, y, z))) {
+            return y;
+        }
+    }
+    return shape_.min_y - 1;  // nothing in the column counts
+}
+
+void Chunk::update_heightmap(HeightmapType type, usize x, i32 y, usize z,
+                             registry::BlockStateId state) noexcept {
+    Heightmap& map = heightmaps_[slot_for(type)];
+
+    if (counts_for(type, state)) {
+        map.raise_to(x, z, y);
         return;
     }
 
-    // The block became air. If it was not the surface, nothing moves.
-    if (surface.first_free(x, z) != y + 1) {
+    // The block stopped counting. If it was not the top, nothing moves — which
+    // is the common case, and the reason breaking is the expensive direction.
+    if (map.first_free(x, z) != y + 1) {
         return;
     }
-    const i32 found = scan_surface_down(x, z, y - 1);
+    const i32 found = scan_down(type, x, z, y - 1);
     if (found < shape_.min_y) {
-        surface.clear_column(x, z);
+        map.clear_column(x, z);
     } else {
-        surface.set_surface(x, z, found);
+        map.set_surface(x, z, found);
     }
 }
 
@@ -143,16 +182,24 @@ const Heightmap& Chunk::heightmap(HeightmapType type) const noexcept {
     return heightmaps_[slot_for(type)];
 }
 
-void Chunk::recompute_world_surface() noexcept {
-    Heightmap& surface = heightmaps_[slot_for(HeightmapType::WorldSurface)];
+void Chunk::recompute_heightmaps() noexcept {
+    constexpr std::array kTypes = {HeightmapType::WorldSurface, HeightmapType::MotionBlocking,
+                                   HeightmapType::MotionBlockingNoLeaves,
+                                   HeightmapType::OceanFloor};
 
-    for (usize z = 0; z < kSectionSize; ++z) {
-        for (usize x = 0; x < kSectionSize; ++x) {
-            const i32 found = scan_surface_down(x, z, shape_.max_y());
-            if (found < shape_.min_y) {
-                surface.clear_column(x, z);
-            } else {
-                surface.set_surface(x, z, found);
+    for (const HeightmapType type : kTypes) {
+        if (type != HeightmapType::WorldSurface && blocks_ == nullptr) {
+            continue;
+        }
+        Heightmap& map = heightmaps_[slot_for(type)];
+        for (usize z = 0; z < kSectionSize; ++z) {
+            for (usize x = 0; x < kSectionSize; ++x) {
+                const i32 found = scan_down(type, x, z, shape_.max_y());
+                if (found < shape_.min_y) {
+                    map.clear_column(x, z);
+                } else {
+                    map.set_surface(x, z, found);
+                }
             }
         }
     }

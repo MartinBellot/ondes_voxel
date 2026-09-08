@@ -11,7 +11,7 @@
   },
   "last_updated": "2026-09-08",
   "current_milestone": "M3",
-  "current_task": "m4-shift-click-and-survival",
+  "current_task": "m4-survival-break-and-place",
   "milestones": {
     "M0": {
       "name": "Fondations",
@@ -42,11 +42,11 @@
     "M3": {
       "name": "Tranche verticale",
       "status": "in_progress",
-      "done": 11,
+      "done": 12,
       "total": 20,
       "exit_criterion": "Un client Minecraft vanilla 1.20.1 non modifié se connecte, marche, casse et pose un bloc — sans une ligne de Vulkan.",
       "blocked": [
-        "MOTION_BLOCKING, OCEAN_FLOOR, collisions et mouvement autoritatif : necessitent les formes de collision, pas encore mesurees. L'opacite a la lumiere l'est desormais (1003 blocs)."
+        "Collisions et mouvement autoritatif : necessitent les formes de collision, pas encore mesurees. MOTION_BLOCKING et OCEAN_FLOOR ne les attendaient pas : le predicat est un booleen par bloc, mesure."
       ]
     },
     "M4": {
@@ -121,7 +121,10 @@
     "block_entities": "panneaux de bout en bout : pose, ecriture, diffusion, sauvegarde Anvil, rechargement avec le bon type_id resolu depuis le registre",
     "light_opacity": "mesuree sur un vrai serveur 1.20.1 pour les 1003 blocs : 483 transparents, 443 opaques, 77 attenuants",
     "real_1201_world": "monde vanilla 1.20.1 genere par le jeu : 2601 chunks octet-identiques en lecture et en reecriture ; servi par notre serveur avec 180/180 positions identiques au fichier sur 13 types de blocs",
-    "chests": "ouverture, clic gauche et droit, fermeture, sauvegarde Anvil et rechargement : 64 diamants deposes survivent a un redemarrage du serveur"
+    "chests": "ouverture, clic gauche et droit, fermeture, sauvegarde Anvil et rechargement : 64 diamants deposes survivent a un redemarrage du serveur",
+    "motion_flags": "996/1003 blocs mesures sur un vrai serveur 1.20.1 : 778 arretent le mouvement, 187 non, 10 feuilles, 3 airs, 22 mouilles par defaut ; les 7 restants sont des segments de plantes verticales qui ne peuvent jamais etre le sommet d'une colonne",
+    "heightmaps": "les quatre heightmaps recalculees depuis les blocs et identiques a celles du jeu : 274944/274944 colonnes-cartes sur un monde 1.20.1 vanilla, 742020/742020 sur un monde modde (380 colonnes sautees car elles contiennent un bloc modde)",
+    "motion_state_dependence": "10 paires d'etats contrastes (neige 1 et 8 couches, trappe, portillon, porte, dalle double, echafaudage, dripleaf) : 10 accords, donc le predicat est par bloc. L'eau, elle, est par etat : waterlogged true/false mesures separement"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",

@@ -49,7 +49,7 @@ MAGIC = b"OVPK"
 # Bumped by hand whenever the layout changes, so a stale cache is detected
 # rather than misread. A mismatched cache read as if it were current is far
 # worse than no cache at all.
-FORMAT_VERSION = 5
+FORMAT_VERSION = 6
 
 HEADER_SIZE = 128
 
@@ -79,7 +79,7 @@ def align8(data: bytearray) -> None:
 
 
 def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
-          opacity_doc: dict, stacks_doc: dict) -> bytes:
+          opacity_doc: dict, stacks_doc: dict, motion_doc: dict) -> bytes:
     blocks = blocks_doc["blocks"]
     state_count = blocks_doc["state_count"]
 
@@ -164,7 +164,46 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
     # docs/PROVENANCE.md — and a block that was never measured is left opaque,
     # which errs towards a dark room rather than a world with no shadows.
     opacity = opacity_doc["opacity"]
-    flag_bytes = bytes(opacity.get(block["name"], 2) for block in blocks)
+    motion = motion_doc["blocks"]
+
+    def flags_for(block: dict) -> int:
+        name = block["name"]
+        m = motion.get(name)
+        # Bits 0-1 light opacity, then one bit each for the three questions the
+        # heightmaps ask. Bit 5 says the block was measured at all: a block that
+        # was not must not be silently read as "does not block movement", which
+        # is what a zero would mean.
+        value = opacity.get(name, 2) & 0b11
+        if m is None:
+            return value
+        return (value
+                | (0b000100 if m["motion"] else 0)
+                | (0b001000 if m["leaves"] else 0)
+                | (0b010000 if m["air"] else 0)
+                | 0b100000)
+
+    flag_bytes = bytes(flags_for(block) for block in blocks)
+
+    # Whether a *state* holds a fluid. Per state, not per block, because
+    # `waterlogged` is a property: scaffolding[waterlogged=true] raises
+    # MOTION_BLOCKING and scaffolding[waterlogged=false] does not — measured,
+    # both of them. Six blocks are wet with no such property to set.
+    fluid_bits = bytearray((state_count + 7) // 8)
+    for block in blocks:
+        name = block["name"]
+        intrinsic = motion.get(name, {}).get("fluid", False)
+        values = None
+        for prop in block.get("properties", []):
+            if prop["name"] == "waterlogged":
+                values, stride = prop["values"], prop["stride"]
+                break
+        for offset in range(block["state_count"]):
+            wet = intrinsic
+            if values is not None:
+                wet = wet or values[(offset // stride) % len(values)] == "true"
+            if wet:
+                state = block["base_state"] + offset
+                fluid_bits[state >> 3] |= 1 << (state & 7)
 
     # Maximum stack size per item, in the item registry's own order so the
     # numeric id indexes it directly. Nothing in the reports carries this
@@ -189,6 +228,10 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
 
     stacks_offset = HEADER_SIZE + len(body)
     body += stack_bytes
+    align8(body)
+
+    fluid_offset = HEADER_SIZE + len(body)
+    body += bytes(fluid_bits)
     align8(body)
 
     registries_offset = HEADER_SIZE + len(body)
@@ -238,7 +281,7 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
     align8(body)
 
     header = struct.pack(
-        "<4sIIIIIIIIIIIIIIIIIIIIIII",
+        "<4sIIIIIIIIIIIIIIIIIIIIIIII",
         MAGIC,
         FORMAT_VERSION,
         len(block_records),
@@ -262,6 +305,7 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
         flags_offset,
         stacks_offset,
         len(item_entries),
+        fluid_offset,
         0,  # reserved
     )
     assert len(header) <= HEADER_SIZE
@@ -295,8 +339,11 @@ def main() -> int:
         opacity_doc = json.load(f)
     with open(NORMALIZED / "stack_sizes.json") as f:
         stacks_doc = json.load(f)
+    with open(NORMALIZED / "motion.json") as f:
+        motion_doc = json.load(f)
 
-    payload = build(blocks_doc, registries_doc, tags_doc, opacity_doc, stacks_doc)
+    payload = build(blocks_doc, registries_doc, tags_doc, opacity_doc, stacks_doc,
+                    motion_doc)
     tag_records_count = [t for g in tags_doc["tags"].values() for t in g]
     member_count_total = sum(len(v) for g in tags_doc["tags"].values() for v in g.values())
     OUTPUT.write_bytes(payload)
@@ -308,11 +355,13 @@ def main() -> int:
     print(f"    tags ........... {len(tag_records_count)} ({member_count_total} members)")
     print(f"    light opacity .. {opacity_doc['measured']} blocks measured")
     print(f"    stack sizes .... {stacks_doc['measured']} items measured")
+    print(f"    motion flags ... {motion_doc['measured']} blocks measured")
     print(f"    size ........... {len(payload):,} bytes")
 
     # Byte-stability is the property the manifest depends on. Checking it here
     # costs nothing and catches a non-deterministic dict order immediately.
-    if build(blocks_doc, registries_doc, tags_doc, opacity_doc, stacks_doc) != payload:
+    if build(blocks_doc, registries_doc, tags_doc, opacity_doc, stacks_doc,
+             motion_doc) != payload:
         sys.exit("error: emitter is not deterministic")
     print("    deterministic .. yes")
     return 0

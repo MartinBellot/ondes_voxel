@@ -46,11 +46,16 @@ inline constexpr usize kColumnCount = 256;
 enum class HeightmapType : u8 {
     /// Highest non-air block. Sent to the client.
     WorldSurface,
-    /// Highest block that stops movement. Sent to the client.
+    /// Highest block that stops movement **or holds a fluid**. Sent to the
+    /// client. Measured on a real world: where this differs from OCEAN_FLOOR,
+    /// the block it points at was water in 40 cases out of 40.
     MotionBlocking,
     /// The same, ignoring leaves.
     MotionBlockingNoLeaves,
-    /// Highest block that is solid or a fluid.
+    /// Highest block that stops movement — fluids excluded, which is what
+    /// makes it the *floor* of an ocean rather than its surface. The same
+    /// measurement found dirt, sand and gravel here where MOTION_BLOCKING
+    /// found water.
     OceanFloor,
     /// WorldSurface as it stood during generation.
     WorldSurfaceWG,

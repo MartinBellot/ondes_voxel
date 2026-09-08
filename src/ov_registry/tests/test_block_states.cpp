@@ -4,8 +4,10 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <filesystem>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace ov;
@@ -304,4 +306,99 @@ TEST_CASE("every block name Mojang produced is a valid resource location",
         REQUIRE(location->full() == name);
         REQUIRE(location->is_vanilla());
     }
+}
+
+TEST_CASE("the measured motion flags", "[registry][blocks][heightmap]") {
+    if (loaded_registry() == nullptr) {
+        SKIP("no registry pack");
+    }
+    const auto* r = loaded_registry();
+
+    const auto block_of = [&](std::string_view name) {
+        const auto id = r->find_block(name);
+        REQUIRE(id.has_value());
+        return *id;
+    };
+
+    // Stops movement.
+    for (const std::string_view name :
+         {"minecraft:stone", "minecraft:oak_slab", "minecraft:oak_leaves", "minecraft:glass",
+          "minecraft:chest", "minecraft:oak_door"}) {
+        REQUIRE(r->blocks_motion(block_of(name)));
+    }
+
+    // Does not — and snow is the one nobody guesses right: it stops nothing at
+    // any depth, measured at one layer and at eight.
+    for (const std::string_view name :
+         {"minecraft:snow", "minecraft:cobweb", "minecraft:poppy", "minecraft:torch",
+          "minecraft:water", "minecraft:lava", "minecraft:scaffolding", "minecraft:powder_snow",
+          "minecraft:rail", "minecraft:sugar_cane"}) {
+        REQUIRE_FALSE(r->blocks_motion(block_of(name)));
+    }
+
+    REQUIRE(r->is_air(block_of("minecraft:air")));
+    REQUIRE(r->is_air(block_of("minecraft:cave_air")));
+    REQUIRE(r->is_air(block_of("minecraft:void_air")));
+    REQUIRE_FALSE(r->is_air(block_of("minecraft:stone")));
+
+    // Exactly the ten members of the leaves tag, and no more: azalea counts,
+    // an azalea bush does not.
+    usize leaves = 0;
+    for (u16 id = 0; id < r->block_count(); ++id) {
+        leaves += r->is_leaves(BlockId{id}) ? 1 : 0;
+    }
+    REQUIRE(leaves == 10);
+    REQUIRE(r->is_leaves(block_of("minecraft:flowering_azalea_leaves")));
+    REQUIRE_FALSE(r->is_leaves(block_of("minecraft:azalea")));
+
+    // Seven blocks were never measured — the body segments of vertical plants,
+    // which always have something above them and so can never be a column's
+    // top. They must read as unmeasured rather than as "stops nothing".
+    usize unmeasured = 0;
+    for (u16 id = 0; id < r->block_count(); ++id) {
+        unmeasured += r->motion_measured(BlockId{id}) ? 0 : 1;
+    }
+    REQUIRE(unmeasured == 7);
+    REQUIRE_FALSE(r->motion_measured(block_of("minecraft:kelp_plant")));
+    REQUIRE(r->motion_measured(block_of("minecraft:kelp")));
+}
+
+TEST_CASE("holding a fluid is a property of the state", "[registry][blocks][heightmap]") {
+    if (loaded_registry() == nullptr) {
+        SKIP("no registry pack");
+    }
+    const auto* r = loaded_registry();
+
+    const auto state = [&](std::string_view name, std::string_view value) {
+        const auto block = r->find_block(name);
+        REQUIRE(block.has_value());
+        const std::array<std::pair<std::string_view, std::string_view>, 1> props{
+            {{"waterlogged", value}}};
+        const auto id = r->state_for(*block, props);
+        REQUIRE(id.has_value());
+        return *id;
+    };
+
+    // The measurement that settled it: scaffolding[waterlogged=true] raises
+    // MOTION_BLOCKING on a real server and scaffolding[waterlogged=false] does
+    // not, though neither stops movement.
+    REQUIRE(r->holds_fluid(state("minecraft:scaffolding", "true")));
+    REQUIRE_FALSE(r->holds_fluid(state("minecraft:scaffolding", "false")));
+    REQUIRE(r->holds_fluid(state("minecraft:oak_fence", "true")));
+    REQUIRE_FALSE(r->holds_fluid(state("minecraft:oak_fence", "false")));
+
+    // Six blocks are wet with no such property to set, so the bit has to come
+    // from the block rather than from the state's properties.
+    for (const std::string_view name :
+         {"minecraft:water", "minecraft:lava", "minecraft:kelp", "minecraft:seagrass",
+          "minecraft:tall_seagrass", "minecraft:bubble_column"}) {
+        const auto block = r->find_block(name);
+        REQUIRE(block.has_value());
+        for (u16 offset = 0; offset < r->state_count(*block); ++offset) {
+            REQUIRE(r->holds_fluid(
+                BlockStateId{static_cast<u16>(r->first_state(*block).value() + offset)}));
+        }
+    }
+
+    REQUIRE_FALSE(r->holds_fluid(r->default_state(*r->find_block("minecraft:stone"))));
 }

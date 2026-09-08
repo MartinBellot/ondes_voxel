@@ -211,9 +211,14 @@ nbt::Document to_nbt(const Chunk& chunk, const ChunkCodecContext& context) {
     }
     root.push_back(nbt::CompoundEntry{"sections", std::move(sections)});
 
+    // The four vanilla writes. MOTION_BLOCKING_NO_LEAVES is the server's own —
+    // the client never sees it — but a save missing one of the four is a save
+    // the game has to rebuild, and rebuilding is what it does silently and
+    // slowly on every load.
     nbt::Tag heightmaps = nbt::Tag::make_compound();
     for (const HeightmapType type :
-         {HeightmapType::MotionBlocking, HeightmapType::WorldSurface, HeightmapType::OceanFloor}) {
+         {HeightmapType::MotionBlocking, HeightmapType::MotionBlockingNoLeaves,
+          HeightmapType::OceanFloor, HeightmapType::WorldSurface}) {
         heightmaps.compound()->push_back(nbt::CompoundEntry{
             std::string{to_string(type)}, long_array_of(chunk.heightmap(type).data())});
     }
@@ -261,7 +266,7 @@ std::optional<Chunk> from_nbt(const nbt::Document& document, const ChunkCodecCon
 
     const auto shape = WorldShape::overworld();
     Chunk      chunk{ChunkPos{static_cast<i32>(x_pos->as_i64()), static_cast<i32>(z_pos->as_i64())},
-                     shape, context.air};
+                     shape, context.air, context.blocks};
 
     std::unordered_map<std::string_view, u16> biome_ids;
     for (u16 id = 0; id < context.biome_names.size(); ++id) {
@@ -372,7 +377,7 @@ std::optional<Chunk> from_nbt(const nbt::Document& document, const ChunkCodecCon
     // Heightmaps are recomputed rather than trusted. They are derived data, a
     // stored one can be stale — measured on a real world, one column in 4.5
     // million was — and recomputing costs a scan the load already pays for.
-    chunk.recompute_world_surface();
+    chunk.recompute_heightmaps();
 
     return chunk;
 }

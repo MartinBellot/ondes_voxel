@@ -157,6 +157,52 @@ public:
         return light_opacity(block) == LightOpacity::Opaque;
     }
 
+    // ── What the heightmaps ask ─────────────────────────────────────────────
+    //
+    // MOTION_BLOCKING and OCEAN_FLOOR are not derivable from anything in
+    // Mojang's reports either. These come from the same kind of measurement:
+    // put each block on top of a column on a real 1.20.1 server, save, and read
+    // back which of its own heightmaps the game decided that column's top
+    // belongs to. 996 of the 1003 blocks answered.
+    //
+    // The seven that did not are the body segments of vertical plants — kelp,
+    // weeping and cave vines, a dripleaf stem — which always have something
+    // above them and so can never *be* a column's top. The oracle cannot see
+    // them, and a heightmap never needs to.
+
+    /// Does this block stop movement? OCEAN_FLOOR is the highest one that does.
+    ///
+    /// Per **block**, and that is not a simplification: ten pairs of
+    /// contrasting states were measured — snow at one layer and at eight, a
+    /// trapdoor open and shut, a slab and a double slab — and every pair
+    /// agreed. Snow does not stop movement at any depth, which no reasoning
+    /// from its collision shape would have predicted.
+    [[nodiscard]] bool blocks_motion(BlockId block) const noexcept;
+
+    /// Is this one of the ten blocks MOTION_BLOCKING_NO_LEAVES skips?
+    ///
+    /// The measurement found exactly the ten members of the `minecraft:leaves`
+    /// tag, arrived at independently.
+    [[nodiscard]] bool is_leaves(BlockId block) const noexcept;
+
+    /// Is this block air? WORLD_SURFACE is the highest block that is not.
+    ///
+    /// True for all three of air, cave_air and void_air — measured, since
+    /// nothing said the last two counted.
+    [[nodiscard]] bool is_air(BlockId block) const noexcept;
+
+    /// Whether the block was measured at all. False leaves the three answers
+    /// above meaningless rather than merely false.
+    [[nodiscard]] bool motion_measured(BlockId block) const noexcept;
+
+    /// Does this **state** hold a fluid? MOTION_BLOCKING is the highest block
+    /// that either stops movement or does.
+    ///
+    /// Per state, unlike the rest: `waterlogged` is a property, and
+    /// scaffolding[waterlogged=true] raises MOTION_BLOCKING where
+    /// scaffolding[waterlogged=false] does not. Both were measured.
+    [[nodiscard]] bool holds_fluid(BlockStateId state) const noexcept;
+
     [[nodiscard]] bool is_valid(BlockStateId state) const noexcept {
         return state.value() < state_count();
     }
@@ -173,6 +219,7 @@ private:
     std::vector<PropertyView>     properties_;
     std::vector<std::string_view> values_;
     std::span<const u8>           block_flags_;
+    std::span<const u8>           fluid_bits_;
     const void*                   header_{nullptr};
 };
 

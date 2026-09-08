@@ -428,6 +428,10 @@ struct Superflat {
     world::AirStates       air{};
     u16                    biome{0};
 
+    /// Needed by every chunk this makes: without it MOTION_BLOCKING and
+    /// OCEAN_FLOOR would stay empty and the client would put rain in the ground.
+    const registry::BlockRegistry* blocks{nullptr};
+
     /// The y of the topmost solid block. A player stands one above it.
     static constexpr i32 kSurfaceY = -61;
 
@@ -442,11 +446,12 @@ struct Superflat {
             state_of("minecraft:grass_block"),
             world::AirStates::from(blocks),
             0,
+            &blocks,
         };
     }
 
     [[nodiscard]] world::Chunk generate(ChunkPos position) const {
-        world::Chunk chunk{position, world::WorldShape::overworld(), air};
+        world::Chunk chunk{position, world::WorldShape::overworld(), air, blocks};
 
         for (usize z = 0; z < 16; ++z) {
             for (usize x = 0; x < 16; ++x) {
@@ -454,11 +459,6 @@ struct Superflat {
                 chunk.set_block(x, -63, z, dirt);
                 chunk.set_block(x, -62, z, dirt);
                 chunk.set_block(x, kSurfaceY, z, grass);
-
-                // Every block here stops movement, so the two heightmaps
-                // coincide. Saying so is exact for this terrain; it is not a
-                // general rule and does not become one.
-                chunk.heightmap(world::HeightmapType::MotionBlocking).set_surface(x, z, kSurfaceY);
             }
         }
 

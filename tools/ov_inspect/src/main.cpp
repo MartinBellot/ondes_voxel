@@ -16,7 +16,9 @@
 #include "ov/nbt/region.hpp"
 #include "ov/nbt/region_writer.hpp"
 #include "ov/nbt/tag.hpp"
+#include "ov/registry/block_states.hpp"
 #include "ov/world/chunk.hpp"
+#include "ov/world/heightmap.hpp"
 #include "ov/world/light_array.hpp"
 #include "ov/world/paletted_container.hpp"
 
@@ -496,7 +498,10 @@ int inspect_chunk_packing(const std::filesystem::path& path) {
                 constexpr registry::BlockStateId kSolidId{1};
                 world::Chunk replay{ChunkPos{static_cast<i32>(x), static_cast<i32>(z)},
                                     world::WorldShape::overworld(),
-                                    world::AirStates{kAirId, kAirId, kAirId}};
+                                    world::AirStates{kAirId, kAirId, kAirId},
+                                    // WORLD_SURFACE only: this replay compares
+                                    // against the stored WORLD_SURFACE alone.
+                                    nullptr};
 
                 // The heightmap's origin is the *dimension's* floor, not the
                 // lowest section the file happens to list. Measured: two chunks
@@ -889,6 +894,331 @@ int inspect_light(const std::filesystem::path& directory) {
     return 0;
 }
 
+/// Recompute the four heightmaps from the blocks and compare with what the game
+/// wrote.
+///
+/// This is the check that the measured motion flags are right. Vanilla stored
+/// its own answer in every chunk it ever saved; ours is derived from a table
+/// built by putting each block on a column and reading what the game decided.
+/// If the table is wrong anywhere, a real world will disagree here.
+///
+/// Only names and properties are needed, so the registry is used for its flags
+/// rather than for state ids: `waterlogged` comes straight out of the palette
+/// entry, which is what makes MOTION_BLOCKING separable from OCEAN_FLOOR.
+int inspect_heightmaps(const std::filesystem::path& directory,
+                       const std::filesystem::path& pack_path) {
+    auto pack = registry::BlockRegistry::load(pack_path);
+    if (!pack) {
+        fmt::print(stderr, "cannot read {}: {}\n", pack_path.string(),
+                   registry::to_string(pack.error()));
+        return 1;
+    }
+    const registry::BlockRegistry& blocks = *pack;
+
+    // What each palette entry contributes, resolved once per section rather
+    // than per block: a section has up to a few dozen entries and 4096 cells.
+    struct Contribution {
+        bool surface{false};
+        bool motion{false};
+        bool no_leaves{false};
+        bool floor{false};
+        /// A block this version does not have — a modded one. Its column is
+        /// skipped rather than counted wrong: we have no answer for it, and
+        /// pretending it contributes nothing would be an answer.
+        bool unknown{false};
+    };
+
+    constexpr i32        kMinY   = -64;
+    constexpr u32        kHeight = 384;
+    constexpr i32        kMaxY   = kMinY + static_cast<i32>(kHeight) - 1;
+    constexpr std::array kNames  = std::to_array<std::string_view>(
+        {"WORLD_SURFACE", "MOTION_BLOCKING", "MOTION_BLOCKING_NO_LEAVES", "OCEAN_FLOOR"});
+
+    usize                      chunks         = 0;
+    usize                      unknown_blocks = 0;
+    usize                      skipped        = 0;
+    std::array<usize, 4>       compared{};
+    std::array<usize, 4>       matched{};
+    std::array<std::string, 4> first_mismatch{};
+
+    for (const auto& entry : std::filesystem::directory_iterator{directory}) {
+        if (entry.path().extension() != ".mca") {
+            continue;
+        }
+        auto region = nbt::RegionFile::open(entry.path());
+        if (!region) {
+            continue;
+        }
+        for (u32 local_z = 0; local_z < 32; ++local_z) {
+            for (u32 local_x = 0; local_x < 32; ++local_x) {
+                const auto chunk = region->read_chunk(local_x, local_z);
+                if (!chunk) {
+                    continue;
+                }
+                const nbt::Tag* sections = chunk->root.find("sections");
+                const nbt::Tag* maps     = chunk->root.find("Heightmaps");
+                if (sections == nullptr || sections->list() == nullptr || maps == nullptr) {
+                    continue;
+                }
+                ++chunks;
+
+                // Highest y in each column that counts, per heightmap.
+                std::array<std::array<i32, world::kColumnCount>, 4> top{};
+                for (auto& map : top) {
+                    map.fill(kMinY - 1);
+                }
+                std::array<bool, world::kColumnCount> tainted{};
+
+                for (const nbt::Tag& section : *sections->list()) {
+                    const nbt::Tag* section_y = section.find("Y");
+                    const nbt::Tag* states    = section.find("block_states");
+                    if (section_y == nullptr || states == nullptr) {
+                        continue;
+                    }
+                    const nbt::Tag* palette = states->find("palette");
+                    if (palette == nullptr || palette->list() == nullptr ||
+                        palette->list()->empty()) {
+                        continue;
+                    }
+                    const i32 base_y = static_cast<i32>(section_y->as_i64()) * 16;
+                    if (base_y < kMinY || base_y > kMaxY) {
+                        continue;  // the extra section vanilla writes for lighting
+                    }
+
+                    std::vector<Contribution> contributions;
+                    contributions.reserve(palette->list()->size());
+                    for (const nbt::Tag& item : *palette->list()) {
+                        const nbt::Tag* name_tag = item.find("Name");
+                        Contribution    c;
+                        if (name_tag != nullptr) {
+                            const std::string_view name = name_tag->as_string();
+                            const auto             id   = blocks.find_block(name);
+                            if (!id) {
+                                ++unknown_blocks;
+                                c.unknown = true;
+                            } else {
+                                bool waterlogged = false;
+                                if (const nbt::Tag* props = item.find("Properties")) {
+                                    if (const nbt::Tag* w = props->find("waterlogged")) {
+                                        waterlogged = w->as_string() == "true";
+                                    }
+                                }
+                                const bool solid = blocks.blocks_motion(*id);
+                                const bool fluid =
+                                    waterlogged || blocks.holds_fluid(blocks.default_state(*id));
+                                c.surface   = !blocks.is_air(*id);
+                                c.floor     = solid;
+                                c.motion    = solid || fluid;
+                                c.no_leaves = c.motion && !blocks.is_leaves(*id);
+                            }
+                        }
+                        contributions.push_back(c);
+                    }
+
+                    const nbt::Tag* data = states->find("data");
+                    const auto*     longs =
+                        data == nullptr ? nullptr : data->get_if<nbt::Tag::LongArray>();
+                    const u8  bits = world::bits_for_palette(palette->list()->size());
+                    const u32 per  = world::entries_per_long(bits);
+
+                    for (usize index = 0; index < 4096; ++index) {
+                        usize slot = 0;
+                        if (longs != nullptr && !longs->empty()) {
+                            const auto word = static_cast<u64>((*longs)[index / per]);
+                            slot            = static_cast<usize>((word >> ((index % per) * bits)) &
+                                                                 ((u64{1} << bits) - 1));
+                        }
+                        if (slot >= contributions.size()) {
+                            continue;
+                        }
+                        const Contribution& c         = contributions[slot];
+                        const usize         column_of = index % 256;
+                        if (c.unknown) {
+                            tainted[column_of] = true;
+                            continue;
+                        }
+                        if (!c.surface) {
+                            continue;  // air contributes to nothing
+                        }
+                        const i32                 y      = base_y + static_cast<i32>(index / 256);
+                        const usize               column = index % 256;
+                        const std::array<bool, 4> counts{c.surface, c.motion, c.no_leaves, c.floor};
+                        for (usize which = 0; which < 4; ++which) {
+                            if (counts[which] && y > top[which][column]) {
+                                top[which][column] = y;
+                            }
+                        }
+                    }
+                }
+
+                for (usize which = 0; which < 4; ++which) {
+                    const nbt::Tag* tag = maps->find(kNames[which]);
+                    const auto*     longs =
+                        tag == nullptr ? nullptr : tag->get_if<nbt::Tag::LongArray>();
+                    if (longs == nullptr) {
+                        continue;
+                    }
+                    world::Heightmap stored{kMinY, kHeight};
+                    std::vector<u64> words(longs->begin(), longs->end());
+                    if (!stored.load(words)) {
+                        continue;
+                    }
+                    for (usize column = 0; column < world::kColumnCount; ++column) {
+                        if (tainted[column]) {
+                            ++skipped;
+                            continue;
+                        }
+                        const i32 ours   = top[which][column] + 1;
+                        const i32 theirs = stored.first_free(column % 16, column / 16);
+                        ++compared[which];
+                        if (ours == theirs) {
+                            ++matched[which];
+                        } else if (first_mismatch[which].empty()) {
+                            first_mismatch[which] = fmt::format(
+                                "chunk {},{} column {},{}: ours {} theirs {}",
+                                chunk->root.find("xPos") ? chunk->root.find("xPos")->as_i64() : 0,
+                                chunk->root.find("zPos") ? chunk->root.find("zPos")->as_i64() : 0,
+                                column % 16, column / 16, ours, theirs);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fmt::print("  chunks ......... {}\n", chunks);
+    if (unknown_blocks > 0) {
+        fmt::print(
+            "  unknown blocks . {} palette entries this version does not have\n"
+            "  skipped ........ {} column comparisons touching one\n",
+            unknown_blocks, skipped);
+    }
+    bool all_ok = true;
+    for (usize which = 0; which < 4; ++which) {
+        if (compared[which] == 0) {
+            continue;
+        }
+        const bool ok = matched[which] == compared[which];
+        all_ok        = all_ok && ok;
+        fmt::print("  {}{:<26}{} {}/{}\n", ok ? "\033[0;32m" : "\033[0;31m", kNames[which],
+                   "\033[0m", matched[which], compared[which]);
+        if (!ok) {
+            fmt::print("      first: {}\n", first_mismatch[which]);
+        }
+    }
+    return all_ok ? 0 : 1;
+}
+
+/// Report a column's four stored heightmaps, and the block at a given y.
+///
+/// Reads "x y z" lines and prints one line each. This is the measuring end of
+/// the MOTION_BLOCKING question: place a block on a real 1.20.1 server, let it
+/// save, and read back which heightmaps the game itself decided the block
+/// belongs to. The block's name is printed alongside because a block that
+/// refused to stay — a torch with nothing to hang on — must be discarded rather
+/// than recorded as "does not block motion".
+int inspect_columns(const std::filesystem::path& directory) {
+    std::map<std::pair<i32, i32>, std::optional<nbt::RegionFile>> regions;
+
+    // The overworld's shape. The heightmap origin is the dimension's floor, not
+    // the lowest section the file lists — a distinction that costs sixteen
+    // blocks in the chunks where vanilla writes an extra section for lighting.
+    constexpr i32 kMinY   = -64;
+    constexpr u32 kHeight = 384;
+
+    constexpr std::array kNames = std::to_array<std::string_view>(
+        {"WORLD_SURFACE", "MOTION_BLOCKING", "MOTION_BLOCKING_NO_LEAVES", "OCEAN_FLOOR"});
+
+    i32 x = 0;
+    i32 y = 0;
+    i32 z = 0;
+    while (std::cin >> x >> y >> z) {
+        const i32  chunk_x    = x >> 4;
+        const i32  chunk_z    = z >> 4;
+        const auto region_key = std::pair{chunk_x >> 5, chunk_z >> 5};
+
+        if (!regions.contains(region_key)) {
+            const auto path =
+                directory / fmt::format("r.{}.{}.mca", region_key.first, region_key.second);
+            auto opened = nbt::RegionFile::open(path);
+            regions.emplace(region_key, opened ? std::optional{std::move(*opened)} : std::nullopt);
+        }
+        const auto& region = regions.at(region_key);
+        if (!region) {
+            fmt::print("{} {} {} - - - - -\n", x, y, z);
+            continue;
+        }
+        const auto chunk =
+            region->read_chunk(static_cast<u32>(chunk_x & 31), static_cast<u32>(chunk_z & 31));
+        if (!chunk) {
+            fmt::print("{} {} {} - - - - -\n", x, y, z);
+            continue;
+        }
+
+        std::string_view name = "-";
+        if (const nbt::Tag* sections = chunk->root.find("sections");
+            sections != nullptr && sections->list() != nullptr) {
+            for (const nbt::Tag& section : *sections->list()) {
+                const nbt::Tag* section_y = section.find("Y");
+                if (section_y == nullptr || section_y->as_i64() != (y >> 4)) {
+                    continue;
+                }
+                const nbt::Tag* states = section.find("block_states");
+                if (states == nullptr) {
+                    break;
+                }
+                const nbt::Tag* palette = states->find("palette");
+                if (palette == nullptr || palette->list() == nullptr || palette->list()->empty()) {
+                    break;
+                }
+                const usize index =
+                    ((static_cast<usize>(y & 15) * 16) + static_cast<usize>(z & 15)) * 16 +
+                    static_cast<usize>(x & 15);
+                usize           slot = 0;
+                const nbt::Tag* data = states->find("data");
+                const auto* longs = data == nullptr ? nullptr : data->get_if<nbt::Tag::LongArray>();
+                if (longs != nullptr && !longs->empty()) {
+                    const u8   bits = world::bits_for_palette(palette->list()->size());
+                    const u32  per  = world::entries_per_long(bits);
+                    const auto word = static_cast<u64>((*longs)[index / per]);
+                    slot            = static_cast<usize>((word >> ((index % per) * bits)) &
+                                                         ((u64{1} << bits) - 1));
+                }
+                if (slot < palette->list()->size()) {
+                    if (const nbt::Tag* tag = (*palette->list())[slot].find("Name")) {
+                        name = tag->as_string();
+                    }
+                }
+                break;
+            }
+        }
+
+        fmt::print("{} {} {} {}", x, y, z, name);
+
+        const nbt::Tag* maps = chunk->root.find("Heightmaps");
+        for (const std::string_view key : kNames) {
+            const nbt::Tag* tag   = maps == nullptr ? nullptr : maps->find(key);
+            const auto*     longs = tag == nullptr ? nullptr : tag->get_if<nbt::Tag::LongArray>();
+            if (longs == nullptr) {
+                // Absent is not zero here: vanilla omits a heightmap it has not
+                // computed, and reporting 0 would read as "the column is empty".
+                fmt::print(" -");
+                continue;
+            }
+            world::Heightmap map{kMinY, kHeight};
+            std::vector<u64> words(longs->begin(), longs->end());
+            if (!map.load(words)) {
+                fmt::print(" ?");
+                continue;
+            }
+            fmt::print(" {}",
+                       map.first_free(static_cast<usize>(x & 15), static_cast<usize>(z & 15)));
+        }
+        fmt::print("\n");
+    }
+    return 0;
+}
+
 void print_usage() {
     fmt::print(
         "ov-inspect — read Minecraft's binary formats\n"
@@ -898,6 +1228,8 @@ void print_usage() {
         "  ov-inspect zip    <file.jar|.zip> [--verify]\n"
         "  ov-inspect chunk  <file.mca>          verify section bit-packing\n"
         "  ov-inspect light  <region-dir>        block, block light and sky light per 'x y z'\n"
+        "  ov-inspect column <region-dir>        block and the four heightmaps per 'x y z'\n"
+        "  ov-inspect heightmaps <region-dir> [--pack=P]  recompute them and compare\n"
         "\n"
         "  --tree      print the tag tree\n"
         "  --verify    decode, re-encode, and compare the bytes\n"
@@ -921,15 +1253,16 @@ int main(int argc, char** argv) {
 
     const std::string_view command{argv[1]};
     if (command != "nbt" && command != "region" && command != "zip" && command != "chunk" &&
-        command != "light") {
+        command != "light" && command != "column" && command != "heightmaps") {
         fmt::print(stderr, "unknown command '{}'\n", command);
         print_usage();
         return 1;
     }
 
-    bool tree      = false;
-    bool verify    = false;
-    int  max_depth = 4;
+    bool        tree      = false;
+    bool        verify    = false;
+    int         max_depth = 4;
+    std::string pack      = "data/vanilla/1.20.1/registry.ovpack";
 
     for (int i = 3; i < argc; ++i) {
         const std::string_view arg{argv[i]};
@@ -937,6 +1270,8 @@ int main(int argc, char** argv) {
             tree = true;
         } else if (arg == "--verify") {
             verify = true;
+        } else if (arg.starts_with("--pack=")) {
+            pack = std::string{arg.substr(7)};
         } else if (arg.starts_with("--depth=")) {
             max_depth = std::atoi(std::string{arg.substr(8)}.c_str());
         } else {
@@ -956,6 +1291,12 @@ int main(int argc, char** argv) {
     }
     if (command == "light") {
         return inspect_light(argv[2]);
+    }
+    if (command == "column") {
+        return inspect_columns(argv[2]);
+    }
+    if (command == "heightmaps") {
+        return inspect_heightmaps(argv[2], pack);
     }
     return inspect_nbt(argv[2], tree, verify, max_depth);
 }
