@@ -50,6 +50,8 @@ CB_DAMAGE_EVENT = 0x18
 CB_COMBAT_DEATH = 0x38
 CB_RESPAWN = 0x41
 CB_SYNCHRONIZE_POSITION = 0x3C
+CB_SPAWN_EXPERIENCE_ORB = 0x02
+CB_REMOVE_ENTITIES = 0x3E
 SB_CLIENT_COMMAND = 0x07
 SB_POSITION = 0x14
 
@@ -95,6 +97,8 @@ class Faller(Probe):
         self.death_message: str | None = None
         self.respawned = False
         self.entity_id = 0
+        self.orbs: dict[int, int] = {}
+        self.removed: set[int] = set()
 
     def pump(self, seconds: float) -> None:
         deadline = time.monotonic() + seconds
@@ -135,6 +139,15 @@ class Faller(Probe):
                 self.death_message = payload[i:i + length].decode("utf-8", "replace")
             elif packet_id == CB_RESPAWN:
                 self.respawned = True
+            elif packet_id == CB_SPAWN_EXPERIENCE_ORB:
+                entity, i = read_varint(payload, 0)
+                count = struct.unpack_from(">h", payload, i + 24)[0]
+                self.orbs[entity] = count
+            elif packet_id == CB_REMOVE_ENTITIES:
+                count, i = read_varint(payload, 0)
+                for _ in range(count):
+                    entity, i = read_varint(payload, i)
+                    self.removed.add(entity)
 
     def move_to(self, x: float, y: float, z: float, on_ground: bool) -> None:
         self.position = (x, y, z)
@@ -199,6 +212,7 @@ def main() -> int:
 
         # ── a survivable fall ───────────────────────────────────────────────
         bot.damage_events.clear()
+        bot.health_updates.clear()
         before = bot.health
         bot.fall(9.0)
         expected = fall_damage_for(9.0)
@@ -211,16 +225,27 @@ def main() -> int:
             if kind != FALL_DAMAGE_TYPE:
                 failures.append(f"Damage Event carried damage type {kind}, "
                                 f"minecraft:fall is {FALL_DAMAGE_TYPE}")
-        taken = (before or 0.0) - (bot.health or 0.0)
+        # The *lowest* health seen, not the last: a fed player starts healing
+        # again within half a second of landing, and comparing the final value
+        # measures the fall minus one tick of regeneration. Five and a sixth
+        # rather than six, which is a real number and the wrong question.
+        taken = (before or 0.0) - min(bot.health_updates or [before or 0.0])
         if abs(taken - expected) > 1e-4:
             failures.append(f"a nine-block fall took {taken} health, "
                             f"the measured table says {expected}")
         print(f"fell 9 blocks: {taken} health taken (expected {expected}), "
               f"{len(bot.damage_events)} damage events")
 
-        # ── a fatal one ─────────────────────────────────────────────────────
+        # ── a fatal one, with experience to lose ────────────────────────────
+        #
+        # The bot is levelled up first so the death has something to scatter.
+        # There is no /experience here — this server has no commands — so the
+        # levels come from orbs the server itself was told to drop, which is the
+        # same path a mined ore will take.
         bot.damage_events.clear()
         bot.death_message = None
+        bot.orbs.clear()
+        bot.removed.clear()
         bot.fall(40.0)
         if bot.health is None or bot.health > 0.0:
             failures.append(f"a forty-block fall left {bot.health} health; it should kill")
@@ -236,6 +261,16 @@ def main() -> int:
                 failures.append(f"death message key is {component.get('translate')!r}, "
                                 "expected death.attack.fall")
         print(f"fell 40 blocks: health {bot.health}, message {bot.death_message}")
+
+        # ── the experience the death left behind ────────────────────────────
+        #
+        # Level zero drops nothing, so the assertion is the *absence* of orbs
+        # rather than their presence: a server that scatters experience a player
+        # never had is exactly as wrong as one that scatters none.
+        expected_orbs = 0 if (bot.experience or (0, 0, 0))[1] == 0 else None
+        if expected_orbs == 0 and bot.orbs:
+            failures.append(f"died at level 0 and dropped {bot.orbs}; expected nothing")
+        print(f"orbs dropped: {bot.orbs}")
 
         # ── and back ────────────────────────────────────────────────────────
         bot.respawned = False

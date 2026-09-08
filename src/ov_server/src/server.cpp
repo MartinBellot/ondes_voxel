@@ -936,6 +936,24 @@ struct ItemEntity {
     i32 pickup_delay{10};
 };
 
+/// One experience orb lying in the world.
+///
+/// Its own type rather than an ItemEntity with a special item: an orb carries a
+/// *value* and no stack, it is attracted to a player instead of waiting to be
+/// walked into, and two of them can become one. None of that is true of a
+/// dropped stack.
+struct GroundOrb {
+    i32 entity_id{0};
+    f64 x{0.0};
+    f64 y{0.0};
+    f64 z{0.0};
+    i32 value{1};
+    /// The tick it appeared, for the five minutes vanilla gives it.
+    i64 born{0};
+    /// Ticks before anyone may pick it up.
+    i32 delay{0};
+};
+
 struct Player {
     /// Held so the tick thread can send keep-alives without going through the
     /// packet handler. Dropped in on_disconnect, which is what keeps this from
@@ -1254,6 +1272,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     // Les piles au sol. Sous le même verrou que les joueurs : elles n'existent
     // que pour être ramassées, et le ramassage lit les deux.
     std::vector<ItemEntity> ground_items;
+    /// Experience orbs on the ground. Beside the items for the same reason:
+    /// both are entities the tick owns and the network thread never touches.
+    std::vector<GroundOrb> ground_orbs;
 
     // Le tirage des butins. Une seule source, sur le thread de tick : deux
     // joueurs qui cassent le même bloc au même tick doivent obtenir deux
@@ -3322,17 +3343,116 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     // carries a value rather than a type, so Spawn Entity
                     // cannot express one.
                     for (usize orb = 0; orb < outcome.orb_count; ++orb) {
-                        const i32 orb_id = next_entity_id.fetch_add(1);
+                        GroundOrb dropped;
+                        dropped.entity_id = next_entity_id.fetch_add(1);
+                        dropped.x         = who.x;
+                        dropped.y         = who.y + 0.5;
+                        dropped.z         = who.z;
+                        dropped.value     = outcome.orbs[orb];
+                        dropped.born      = clock.tick_count();
+                        // Half a second before the player who died can walk back
+                        // into their own experience, the same grace a dropped
+                        // stack gets.
+                        dropped.delay = 10;
                         broadcast(nullptr, net::clientbound::kSpawnExperienceOrb,
                                   net::encode_spawn_experience_orb(
-                                      orb_id, who.x, who.y + 0.5, who.z,
-                                      static_cast<i16>(outcome.orbs[orb])));
+                                      dropped.entity_id, dropped.x, dropped.y, dropped.z,
+                                      static_cast<i16>(dropped.value)));
+                        ground_orbs.push_back(dropped);
                     }
                 }
                 if (!death_drops.empty()) {
+                    // publish_items moves each stack into ground_items itself.
                     publish_items(death_drops);
-                    for (ItemEntity& item : death_drops) {
-                        ground_items.push_back(std::move(item));
+                }
+
+                // The orbs on the ground: they merge, they chase, and they are
+                // collected. Without this an orb is a packet the client draws
+                // forever and nobody can ever pick up.
+                const gameplay::OrbConstants orb_rules{};
+                const i64                    now = clock.tick_count();
+                for (usize i = ground_orbs.size(); i-- > 0;) {
+                    GroundOrb& orb = ground_orbs[i];
+                    if (orb.delay > 0) {
+                        --orb.delay;
+                        continue;
+                    }
+
+                    // Merge with a neighbour, oldest first so the survivor keeps
+                    // the earlier birthday and the pile still expires.
+                    bool merged = false;
+                    for (usize j = 0; j < i; ++j) {
+                        GroundOrb& other = ground_orbs[j];
+                        const f64  dx    = other.x - orb.x;
+                        const f64  dy    = other.y - orb.y;
+                        const f64  dz    = other.z - orb.z;
+                        const gameplay::OrbState a{orb.value,
+                                                   static_cast<i32>(now - orb.born), orb.delay};
+                        const gameplay::OrbState b{other.value,
+                                                   static_cast<i32>(now - other.born),
+                                                   other.delay};
+                        if (gameplay::orbs_can_merge(a, b, dx * dx + dy * dy + dz * dz)) {
+                            other.value += orb.value;
+                            other.born = std::min(other.born, orb.born);
+                            broadcast(nullptr, net::clientbound::kRemoveEntities,
+                                      net::encode_remove_entity(orb.entity_id));
+                            ground_orbs.erase(ground_orbs.begin() + static_cast<isize>(i));
+                            merged = true;
+                            break;
+                        }
+                    }
+                    if (merged) {
+                        continue;
+                    }
+
+                    Player* taker  = nullptr;
+                    f64     nearest = orb_rules.follow_range * orb_rules.follow_range;
+                    for (auto& [orb_key, candidate] : players) {
+                        if (!candidate.confirmed || candidate.survival.awaiting_respawn) {
+                            continue;
+                        }
+                        const f64 dx = candidate.x - orb.x;
+                        const f64 dy = candidate.y + 0.9 - orb.y;
+                        const f64 dz = candidate.z - orb.z;
+                        const f64 d2 = dx * dx + dy * dy + dz * dz;
+                        if (d2 < nearest) {
+                            nearest = d2;
+                            taker   = &candidate;
+                        }
+                    }
+
+                    if (taker != nullptr) {
+                        const f64 dx = taker->x - orb.x;
+                        const f64 dy = taker->y + 0.9 - orb.y;
+                        const f64 dz = taker->z - orb.z;
+                        if (nearest <= orb_rules.pickup_range * orb_rules.pickup_range) {
+                            taker->survival.award_experience(orb.value);
+                            broadcast(nullptr, net::clientbound::kTakeItem,
+                                      net::encode_take_item(orb.entity_id, taker->entity_id, 1));
+                            broadcast(nullptr, net::clientbound::kRemoveEntities,
+                                      net::encode_remove_entity(orb.entity_id));
+                            ground_orbs.erase(ground_orbs.begin() + static_cast<isize>(i));
+                            continue;
+                        }
+                        // Otherwise it moves toward them, harder the closer it
+                        // already is — which is what makes a pile of orbs
+                        // converge rather than drift in at one speed.
+                        const f64 distance = std::sqrt(nearest);
+                        const f64 pull =
+                            orb_rules.follow_speed * (1.0 - distance / orb_rules.follow_range);
+                        orb.x += dx / distance * pull;
+                        orb.y += dy / distance * pull;
+                        orb.z += dz / distance * pull;
+                        broadcast(nullptr, net::clientbound::kEntityTeleport,
+                                  net::encode_entity_teleport(orb.entity_id, orb.x, orb.y, orb.z,
+                                                              0.0F, 0.0F, false));
+                        continue;
+                    }
+
+                    if (now - orb.born >= orb_rules.lifetime_ticks) {
+                        broadcast(nullptr, net::clientbound::kRemoveEntities,
+                                  net::encode_remove_entity(orb.entity_id));
+                        ground_orbs.erase(ground_orbs.begin() + static_cast<isize>(i));
                     }
                 }
             }
