@@ -991,9 +991,20 @@ struct Player {
     /// player's position alone would be equivalent right up to the first time a
     /// send fails or the view distance changes.
     std::unordered_set<i64> loaded_chunks;
-    i32                     centre_x{0};
-    i32                     centre_z{0};
-    bool                    streaming{false};
+    /// Chunks decided on but not yet sent, nearest first.
+    ///
+    /// Sending the whole square in one tick overran it: 289 chunks encoded and
+    /// written while the tick clock keeps running, and the server reported
+    /// "can't keep up" on every join. So the set is chosen when the player
+    /// crosses a chunk boundary and drained under a budget afterwards.
+    ///
+    /// Nearest first matters as much as the budget. The old code iterated an
+    /// unordered_set, so chunks arrived in hash order and the world assembled
+    /// itself in patches around the player rather than outwards from it.
+    std::vector<i64> pending_chunks;
+    i32              centre_x{0};
+    i32              centre_z{0};
+    bool             streaming{false};
 };
 
 /// Where a player was when they last left.
@@ -1419,19 +1430,24 @@ int main(int argc, char** argv) {
             }
         }
 
+        player.pending_chunks.clear();
         for (const i64 key : wanted) {
-            if (player.loaded_chunks.contains(key)) {
-                continue;
+            if (!player.loaded_chunks.contains(key)) {
+                player.pending_chunks.push_back(key);
             }
-            const auto cx = static_cast<i32>(key >> 32);
-            const auto cz = static_cast<i32>(static_cast<u32>(key & 0xFFFFFFFF));
-            {
-                const std::scoped_lock lock{chunk_mutex};
-                send(net::clientbound::kChunkDataAndLight,
-                     net::encode_chunk_data(chunk_at(cx, cz)));
-            }
-            player.loaded_chunks.insert(key);
         }
+        // Furthest first, because the drain takes from the back: what the
+        // player is standing on arrives before what is at the horizon.
+        std::ranges::sort(player.pending_chunks, [&](i64 a, i64 b) {
+            const auto distance = [&](i64 key) {
+                const auto cx = static_cast<i32>(key >> 32);
+                const auto cz = static_cast<i32>(static_cast<u32>(key & 0xFFFFFFFF));
+                const i64  dx = cx - centre_x;
+                const i64  dz = cz - centre_z;
+                return dx * dx + dz * dz;
+            };
+            return distance(a) > distance(b);
+        });
 
         for (auto it = player.loaded_chunks.begin(); it != player.loaded_chunks.end();) {
             if (wanted.contains(*it)) {
@@ -2984,6 +3000,39 @@ int main(int argc, char** argv) {
             // the map without the lock would be a race of its own.
             std::unique_lock lock{players_mutex, std::try_to_lock};
             if (lock.owns_lock()) {
+                // The chunk queue, drained under a budget.
+                //
+                // Sending the whole square at once overran the tick and the
+                // server said so on every join. Eight a tick is 160 a second,
+                // so a view distance of 8 fills in under two seconds while the
+                // tick clock stays inside its 50 ms.
+                constexpr usize kChunksPerTick = 8;
+                for (auto& [key, player] : players) {
+                    if (player.pending_chunks.empty() || !player.connection) {
+                        continue;
+                    }
+                    for (usize sent = 0; sent < kChunksPerTick && !player.pending_chunks.empty();
+                         ++sent) {
+                        const i64 chunk = player.pending_chunks.back();
+                        player.pending_chunks.pop_back();
+                        if (player.loaded_chunks.contains(chunk)) {
+                            continue;
+                        }
+                        const auto cx = static_cast<i32>(chunk >> 32);
+                        const auto cz = static_cast<i32>(static_cast<u32>(chunk & 0xFFFFFFFF));
+                        std::vector<u8> payload;
+                        {
+                            const std::scoped_lock chunks{chunk_mutex};
+                            payload = net::encode_chunk_data(chunk_at(cx, cz));
+                        }
+                        if (const auto framed =
+                                net::encode_packet(net::clientbound::kChunkDataAndLight, payload)) {
+                            player.connection->send(*framed);
+                        }
+                        player.loaded_chunks.insert(chunk);
+                    }
+                }
+
                 for (auto& [key, player] : players) {
                     if (now_ms - player.last_keep_alive_sent_ms < 10000) {
                         continue;

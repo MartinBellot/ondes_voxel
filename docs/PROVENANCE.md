@@ -2927,3 +2927,21 @@ instructives :
 
 C'est le même piège deux fois : côté client, « le paquet est parti » ne dit rien
 du tout. Seul l'état du monde le dit.
+
+### Le budget d'envoi de chunks
+
+Le serveur signalait `can't keep up` à **chaque** connexion. La cause n'était
+pas mystérieuse une fois regardée : les 289 chunks d'un rayon de 8 étaient
+encodés et écrits **dans un seul tick**, pendant que l'horloge du tick continue
+de tourner.
+
+La file est maintenant choisie quand le joueur franchit une frontière de chunk
+et drainée à **8 chunks par tick** — 160 par seconde, donc un rayon de 8 se
+remplit en moins de deux secondes sans que le tick sorte de ses 50 ms.
+Vérification : 0 occurrence de l'avertissement sur une connexion complète, les
+289 chunks arrivant tout de même.
+
+Et un second défaut que la correction a mis au jour : l'ancien code itérait un
+`unordered_set`, donc les chunks partaient **dans l'ordre de hachage**. Le monde
+s'assemblait par plaques autour du joueur au lieu de s'ouvrir depuis lui. La
+file est triée par distance.
