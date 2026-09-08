@@ -14,6 +14,7 @@
 #include "ov/nbt/binary.hpp"
 #include "ov/nbt/region.hpp"
 #include "ov/worldgen/biome_source.hpp"
+#include "ov/worldgen/carver.hpp"
 #include "ov/registry/block_states.hpp"
 #include "ov/worldgen/chunk_generator.hpp"
 #include "ov/worldgen/density.hpp"
@@ -52,6 +53,10 @@ struct Options {
     bool locate{false};
     /// Compare blocks rather than biomes.
     bool terrain{false};
+    /// Run the carvers before comparing, and subtract what they cut. Off by
+    /// default so that the same binary gives the before and the after figure
+    /// without rebuilding — the only honest way to say what a stage is worth.
+    bool carvers{false};
     /// Dump one column: what the game has, and every term we compute.
     std::string column;
     std::filesystem::path pack{"data/vanilla/1.20.1/registry.ovpack"};
@@ -80,6 +85,8 @@ struct Options {
             options.locate = true;
         } else if (argument == "--terrain") {
             options.terrain = true;
+        } else if (argument == "--carvers") {
+            options.carvers = true;
         } else if (argument.starts_with("--column=")) {
             options.column = value("--column=");
         } else if (argument.starts_with("--pack=")) {
@@ -281,6 +288,15 @@ int main(int argc, char** argv) {
         pack.emplace(std::move(*loaded));
         generator.emplace(*router, *biomes, *pack);
     }
+    // ── carvers ─────────────────────────────────────────────────────────────
+    // The mask is a pure function of the seed and the chunk, so it is computed
+    // here rather than through the generator: nothing else about the chunk has
+    // to exist first, and the comparison stays a comparison of the noise plus
+    // exactly one more stage.
+    const worldgen::CarvingContext carving_context{router->min_y(), router->height()};
+    const worldgen::CarverStage    carver_stage{options.seed, carving_context};
+    worldgen::CarvingMask carved{carving_context.min_y, carving_context.height};
+    // ── end carvers ─────────────────────────────────────────────────────────
     /// Solid where the game is solid, and the two ways of being wrong. They
     /// mean different things: stone where the game has air is a cave nobody
     /// carved, and air where the game has stone would be the noise itself
@@ -397,6 +413,9 @@ int main(int argc, char** argv) {
             const auto chunk_z = static_cast<i32>(z_pos->as_i64());
 
             if (options.terrain) {
+                if (options.carvers) {
+                    carver_stage.carve_into(chunk_x, chunk_z, carved);
+                }
                 // Only the columns, not every block: a chunk is 98304 blocks
                 // and the density graph is not cheap. Every fourth column in
                 // each direction is 1024 blocks a chunk, which settles the
@@ -453,7 +472,8 @@ int main(int argc, char** argv) {
                             }
                             const bool their_solid = is_solid_name(*named);
                             const bool our_solid =
-                                generator->is_solid(world_x, height, world_z);
+                                generator->is_solid(world_x, height, world_z) &&
+                                !(options.carvers && carved.get(sample_x, height, sample_z));
                             ++blocks_seen;
                             if (their_solid == our_solid) {
                                 ++blocks_agreed;
