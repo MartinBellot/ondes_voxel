@@ -302,3 +302,49 @@ Le plan rangeait ce type dans `ov_registry` (couche 5). Il vit dans `ov_base`
 (couche 0) : le chargeur de datapack appartient à `ov_data` (couche 4), donc
 **sous** `ov_registry`, et manipule ces identifiants en permanence. Le graphe ne
 remonte jamais ; le type n'ayant aucune dépendance, le descendre ne coûte rien.
+
+---
+
+## `LegacyRandomSource` (`ov_math`)
+
+Source : la **javadoc du JDK** pour `java.util.Random`, qui spécifie l'algorithme
+et ses constantes mot pour mot. C'est ce qui rend ce générateur vérifiable
+contre n'importe quelle JVM, sur n'importe quelle machine.
+
+`scripts/gen_random_vectors.java` produit les vecteurs de référence depuis une
+vraie JVM et les imprime **en C++**, pour qu'aucune transcription humaine ne
+s'intercale entre l'oracle et le test. Les flottants passent en bits bruts :
+« assez proche » est exactement le mode de défaillance qu'on cherche à exclure.
+
+| Tirage | Résultat contre une vraie JVM |
+|---|---|
+| `nextInt`, `nextLong`, `nextBoolean` | **bit-identiques** |
+| `nextInt(bound)` — puissance de deux et non | **bit-identiques** |
+| `nextFloat`, `nextDouble` | **bit-identiques** |
+| `nextGaussian` | **44/56 bit-identiques, 4 ulp au pire** |
+
+### L'écart, mesuré et assumé
+
+`nextGaussian` appelle `log`. Java impose `StrictMath.log`, c'est-à-dire les
+sémantiques **fdlibm** ; la libm de la plateforme est libre de diverger sur les
+derniers bits, et celle de macOS diverge.
+
+L'écart est borné dans un test qui **épingle la mesure au lieu d'affirmer un
+succès**, précisément pour que personne n'en déduise plus tard la garantie plus
+forte. Ce qui est concerné : la dispersion de vitesse des objets lâchés et
+assimilés, où 4 ulp sont invisibles. Ce qui ne l'est **pas** : terrain, butin et
+block ticks, qui ne reposent que sur des tirages bit-exacts.
+
+Combler l'écart demande une implémentation de `log` fdlibm — inscrite à la
+roadmap. Tant qu'elle n'est pas là, l'affirmation honnête est celle du tableau.
+
+### Trois détails que la spécification impose
+
+- Le **XOR de brouillage** au seed (`^ 0x5DEECE66D`) n'est pas une optimisation :
+  sans lui, `Random(0)` et `Random(1)` produisent des flux visiblement liés.
+- `nextInt(bound)` a **deux chemins**. Une borne puissance de deux prend les bits
+  **hauts** d'un tirage 31 bits ; les autres rejettent la queue inégale. Un
+  simple modulo biaise vers le bas — assez peu pour ressembler à du bruit, assez
+  pour décaler chaque veine de minerai du monde.
+- `nextDouble` tire **26 bits puis 27**, dans cet ordre. Tirer 32 et 32 consomme
+  autant d'état et donne un résultat faux.
