@@ -26,7 +26,10 @@ ov_add_library(ov_render
         src/asset_source.cpp
         src/atlas.cpp
         src/bake.cpp
+        src/block_models.cpp
         src/camera.cpp
+        src/chunk_mesher.cpp
+        src/frustum.cpp
         src/block_state_model.cpp
         src/json.cpp
         src/mesher.cpp
@@ -36,6 +39,8 @@ ov_add_library(ov_render
     DEPS
         ov_io
         ov_math
+        ov_registry
+        ov_world
     PRIVATE_DEPS
         simdjson::simdjson
         ${OV_SPNG_TARGET}
@@ -50,6 +55,8 @@ ov_add_test(test_ov_render
         tests/test_bake.cpp
         tests/test_block_state_model.cpp
         tests/test_camera.cpp
+        tests/test_chunk_mesher.cpp
+        tests/test_frustum.cpp
         tests/test_mesher.cpp
         tests/test_json.cpp
         tests/test_model.cpp
