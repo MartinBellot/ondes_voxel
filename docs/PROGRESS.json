@@ -42,12 +42,10 @@
     "M3": {
       "name": "Tranche verticale",
       "status": "in_progress",
-      "done": 15,
-      "total": 23,
+      "done": 17,
+      "total": 24,
       "exit_criterion": "Un client Minecraft vanilla 1.20.1 non modifié se connecte, marche, casse et pose un bloc — sans une ligne de Vulkan.",
-      "blocked": [
-        "Mouvement autoritatif : les formes de collision sont desormais dans le pack (4327 formes, par etat), donc le blocage est leve ; reste a ecrire la physique."
-      ]
+      "blocked": []
     },
     "M4": {
       "name": "Monde persistant",
@@ -147,7 +145,9 @@
     "terrain_arena": "512 Mio device-local, pages de 3072 octets (256 sommets) ; 340 Mio et un seul bloc libre a 12 chunks, 9674 sections. Le plan disait 384 Mio et c'etait juste pour un sommet de 12 octets (259 Mio mesures) ; le sommet est passe a 16 pour porter la couleur de biome",
     "biome_colours": "15 couleurs d'herbe publiees reproduites exactement depuis le climat et le colormap du pack, overrides (badlands, cherry grove) et modificateurs (dark forest, swamp) compris ; le climat est stocke en f64 parce que l'index tronque et que birch_forest tombe a un millionieme de la frontiere entre deux colonnes — 12/12 en double, 11/12 en float",
     "light_curve": "les 16 luminosites rendues de l'overworld reproduites a 1e-7 depuis f/(4-3f), f = L/15 ; l'ordre d'evaluation est conserve parce qu'il laisse sa signature en binary32 (0.50000006 au niveau 12, 0.77777773 au 14) la ou la forme fermee L/(60-3L) donne des valeurs exactes. Un niveau 7 rend 18 % et non les 47 % d'une droite",
-    "day_cycle": "reproduit les reperes documentes au tick pres : minimum de nuit a 13670, remontee a 22331, seuil d'apparition des monstres a 13188, et les trois valeurs de midi (15 clair, 12 pluie, 10 orage). Le brouillard et le ciel derivent du meme facteur"
+    "day_cycle": "reproduit les reperes documentes au tick pres : minimum de nuit a 13670, remontee a 22331, seuil d'apparition des monstres a 13188, et les trois valeurs de midi (15 clair, 12 pluie, 10 orage). Le brouillard et le ciel derivent du meme facteur",
+    "chunk_packet_roundtrip": "24 chunks reels encodes puis relus par parse_chunk_data : blocs, biomes, lumiere et heightmaps identiques cellule par cellule. C'est le seul paquet dont le lecteur et l'ecrivain peuvent diverger en silence — un octet mal compte decale tout ce qui suit",
+    "own_client_online": "le client Ondes VOXEL se connecte au serveur Ondes VOXEL : login hors-ligne, 289 chunks recus a rayon 8, maillage incremental sous budget, physique a 20 Hz contre les formes de collision. Debout a (0.50, 44.00, 0.50) ; en marchant, 4.70 blocs parcourus et une marche descendue"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",

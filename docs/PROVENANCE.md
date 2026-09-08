@@ -2831,3 +2831,73 @@ binding 1 au 2** — et le shader le déclarait toujours au 1. Un `--no-fog`, aj
 comme diagnostic au même titre que `--no-cull`, a tranché la question en une
 exécution : sans brouillard, l'écran restait uni, donc le brouillard était
 innocent.
+
+## Le client se connecte à son propre serveur
+
+*2026-09-08.*
+
+Jusqu'ici, `ov_voxel` était un **visualiseur** : il lisait un carré de chunks
+sur le disque, maillait tout avant d'ouvrir la fenêtre, et laissait voler une
+caméra sans collision. Le serveur, lui, savait déjà parler à un vrai client
+1.20.1. Ce qui manquait entre les deux était le module que le graphe de couches
+nomme depuis le début : `ov_netclient`, **un client sans rendu**.
+
+C'est le deuxième principe rendu vrai plutôt qu'affiché : les octets qui
+passent sur la socket sont les mêmes que le serveur soit à l'autre bout du
+monde ou sur le fil d'à côté.
+
+### Le paquet qui peut diverger en silence
+
+Tous les autres paquets sont une poignée de champs fixes. Celui-ci est un blob
+préfixé de sa longueur, contenant des conteneurs palettés **dont la largeur
+décide elle-même du format**, puis des block entities, puis quatre bitsets, puis
+deux séries de tableaux de lumière de longueur variable. Un seul octet mal
+compté décale tout ce qui suit, et le symptôme est un monde qui a *presque*
+l'air juste.
+
+D'où la vérification : `parse_chunk_data` est le miroir exact de
+`encode_chunk_data`, et le test prend **24 chunks réels sur le disque**, les
+encode comme le serveur le ferait, les relit comme le client le fait, et compare
+**cellule par cellule** — blocs, biomes, lumière du ciel, lumière de bloc, et
+les heightmaps que le lecteur recalcule au lieu de les croire.
+
+Au passage : deux implémentations de l'empaquetage d'une position de bloc
+existaient, une privée et une nouvelle. Elles ont été fusionnées et testées —
+x sur 26 bits, z sur 26, **y sur les 12 bits de poids faible**, tous signés. La
+moitié du monde est à des coordonnées négatives et l'extension de signe ne se
+voit que là.
+
+### Le bug qui valait le détour
+
+Au premier essai le monde arrivait mais l'écran ne montrait que des fragments de
+pierre et du ciel. Le joueur **tombait à travers le monde** : il apparaît à
+y = 63, la physique démarre, et les chunks sous lui ne sont pas encore là — donc
+`block_at` répond « air » et il chute à vitesse terminale. Six secondes plus
+tard il est mille blocs sous la carte et regarde le décor par en dessous.
+
+C'est exactement ce à quoi sert l'écran « chargement du terrain » de vanilla.
+Rien n'est simulé tant que le chunk sous le joueur n'est pas arrivé.
+
+### Ce que ça donne
+
+| | |
+|---|---|
+| chunks reçus (rayon 8) | 289 = 17 × 17 |
+| sections résidentes | 2182 |
+| joueur immobile | (0.50, **44.00**, 0.50), debout |
+| après 400 frames en avançant | (0.50, 43.00, **4.70**), debout |
+
+Le second chiffre est le test : il a avancé de 4,70 blocs **et descendu d'une
+marche**, donc la physique, les formes de collision et le glissement axe par axe
+fonctionnent contre un monde qui arrive par le réseau.
+
+### Ce qui reste
+
+- **Pas de nage.** Le point d'apparition de ce monde est sous l'eau, et le
+  joueur y coule comme dans l'air : la traînée de l'eau n'est pas implémentée.
+- **Le serveur intégré n'existe pas.** Le client se connecte à un serveur
+  externe ; le solo passera par un `LoopbackTransport` qui transporte les mêmes
+  octets.
+- **Le serveur a signalé `can't keep up`** pendant l'envoi initial des 289
+  chunks. Relevé plutôt que corrigé : c'est l'envoi de chunks qui n'a pas de
+  budget, le pendant serveur du budget de maillage côté client.

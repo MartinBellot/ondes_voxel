@@ -39,9 +39,9 @@ void write_chat_component(io::ByteWriter& writer, std::string_view text) {
 /// signed, so the shifts have to be done on unsigned values to avoid relying on
 /// implementation-defined behaviour.
 void write_position(io::ByteWriter& writer, i32 x, i32 y, i32 z) {
-    const u64 packed = ((static_cast<u64>(x) & 0x3FFFFFF) << 38) |
-                       ((static_cast<u64>(z) & 0x3FFFFFF) << 12) | (static_cast<u64>(y) & 0xFFF);
-    writer.write_u64(packed);
+    // Delegates rather than repeating the shifts. Two implementations of one
+    // packing is how a reader and a writer end up disagreeing by a bit.
+    write_position(writer, WirePosition{x, y, z});
 }
 
 /// One paletted container, in the wire's shape.
@@ -424,6 +424,256 @@ std::vector<u8> encode_play_disconnect(std::string_view reason) {
     io::ByteWriter writer;
     write_chat_component(writer, reason);
     return writer.take();
+}
+
+namespace {
+
+/// Read one paletted container back, the exact mirror of the writer above.
+///
+/// The width decides the form, and nothing else does: a container whose width
+/// has been padded into another form's range is read as that other form. That
+/// is a property of the format, not a quirk of this reader.
+[[nodiscard]] bool read_paletted_container(io::ByteReader& reader, u8 max_indirect_bits,
+                                           u8& bits, std::vector<u16>& palette,
+                                           std::vector<u64>& data) {
+    const auto width = reader.read_u8();
+    if (!width) {
+        return false;
+    }
+    bits = *width;
+    palette.clear();
+    data.clear();
+
+    if (bits == 0) {
+        const auto value = read_varint(reader);
+        if (!value) {
+            return false;
+        }
+        palette.push_back(static_cast<u16>(*value));
+    } else if (bits <= max_indirect_bits) {
+        const auto count = read_varint(reader);
+        if (!count || *count < 0) {
+            return false;
+        }
+        // Bounded before it becomes an allocation: the count comes off a
+        // socket, and a palette cannot legitimately exceed what its width
+        // addresses.
+        if (*count > (1 << max_indirect_bits)) {
+            return false;
+        }
+        palette.reserve(static_cast<usize>(*count));
+        for (i32 i = 0; i < *count; ++i) {
+            const auto entry = read_varint(reader);
+            if (!entry || *entry < 0) {
+                return false;
+            }
+            palette.push_back(static_cast<u16>(*entry));
+        }
+    }
+
+    const auto words = read_varint(reader);
+    if (!words || *words < 0) {
+        return false;
+    }
+    // 4096 cells at one bit each is 64 longs; a biome container is smaller
+    // still. Anything larger is a malformed length, not a big chunk.
+    if (*words > 4096) {
+        return false;
+    }
+    data.reserve(static_cast<usize>(*words));
+    for (i32 i = 0; i < *words; ++i) {
+        const auto word = reader.read_u64();
+        if (!word) {
+            return false;
+        }
+        data.push_back(*word);
+    }
+    return true;
+}
+
+/// A BitSet on the wire: a length-prefixed array of longs. Only the first is
+/// ever needed here — a world is at most 64 light sections tall — but the
+/// length still has to be consumed or everything after it shifts.
+[[nodiscard]] bool read_bitset(io::ByteReader& reader, u64& first) {
+    const auto count = read_varint(reader);
+    if (!count || *count < 0 || *count > 64) {
+        return false;
+    }
+    first = 0;
+    for (i32 i = 0; i < *count; ++i) {
+        const auto word = reader.read_u64();
+        if (!word) {
+            return false;
+        }
+        if (i == 0) {
+            first = *word;
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
+i64 pack_position(WirePosition position) noexcept {
+    return static_cast<i64>(((static_cast<u64>(position.x) & 0x3FFFFFF) << 38) |
+                            ((static_cast<u64>(position.z) & 0x3FFFFFF) << 12) |
+                            (static_cast<u64>(position.y) & 0xFFF));
+}
+
+WirePosition unpack_position(i64 packed) noexcept {
+    const auto value = static_cast<u64>(packed);
+    // Each field is signed and narrower than the type it lands in, so each is
+    // shifted up to the top and back down arithmetically to carry the sign.
+    WirePosition position;
+    position.x = static_cast<i32>(static_cast<i64>(value << 0) >> 38);
+    position.y = static_cast<i32>(static_cast<i64>(value << 52) >> 52);
+    position.z = static_cast<i32>(static_cast<i64>(value << 26) >> 38);
+    return position;
+}
+
+void write_position(io::ByteWriter& writer, WirePosition position) {
+    writer.write_i64(pack_position(position));
+}
+
+std::optional<world::Chunk> parse_chunk_data(std::span<const u8> payload,
+                                             const world::WorldShape& shape, world::AirStates air,
+                                             const registry::BlockRegistry* blocks) {
+    io::ByteReader reader(payload);
+
+    const auto x = reader.read_i32();
+    const auto z = reader.read_i32();
+    if (!x || !z) {
+        return std::nullopt;
+    }
+
+    // The heightmaps are read and dropped. They are derived from the blocks
+    // that follow in the same packet, and this chunk recomputes them from
+    // those — which is the stronger of the two, and already checked against
+    // 4577024 real columns. Reading it is still necessary: the NBT has to be
+    // consumed or every field after it is misaligned.
+    if (!nbt::read(reader)) {
+        return std::nullopt;
+    }
+
+    world::Chunk chunk{ChunkPos{*x, *z}, shape, air, blocks};
+
+    const auto section_bytes = read_varint(reader);
+    if (!section_bytes || *section_bytes < 0 ||
+        static_cast<usize>(*section_bytes) > reader.remaining()) {
+        return std::nullopt;
+    }
+    const usize sections_end = reader.position() + static_cast<usize>(*section_bytes);
+
+    std::vector<u16> palette;
+    std::vector<u64> data;
+    for (usize index = 0; index < shape.section_count(); ++index) {
+        world::ChunkSection* section =
+            chunk.section_for_y(shape.min_y + static_cast<i32>(index) * 16);
+        if (section == nullptr) {
+            return std::nullopt;
+        }
+        // The block count travels but is not trusted: load_blocks recounts,
+        // and a peer that lies about it would otherwise leave every section's
+        // emptiness test wrong.
+        if (!reader.read_i16()) {
+            return std::nullopt;
+        }
+
+        u8 bits = 0;
+        if (!read_paletted_container(reader, 8, bits, palette, data) ||
+            !section->load_blocks(bits, palette, data)) {
+            return std::nullopt;
+        }
+        if (!read_paletted_container(reader, 3, bits, palette, data) ||
+            !section->load_biomes(bits, palette, data)) {
+            return std::nullopt;
+        }
+    }
+    if (reader.position() != sections_end) {
+        // The declared length and what was actually read disagree. Refusing
+        // here is the whole value of the length prefix: continuing would read
+        // the block entities out of the middle of a palette.
+        return std::nullopt;
+    }
+
+    const auto entity_count = read_varint(reader);
+    if (!entity_count || *entity_count < 0) {
+        return std::nullopt;
+    }
+    for (i32 i = 0; i < *entity_count; ++i) {
+        const auto packed = reader.read_u8();
+        const auto y      = reader.read_i16();
+        const auto type   = read_varint(reader);
+        if (!packed || !y || !type) {
+            return std::nullopt;
+        }
+        auto document = nbt::read(reader);
+        if (!document) {
+            return std::nullopt;
+        }
+        world::BlockEntity entity;
+        entity.x       = static_cast<u8>(*packed >> 4);
+        entity.z       = static_cast<u8>(*packed & 15);
+        entity.y       = *y;
+        entity.type_id = *type;
+        entity.data    = std::move(document->root);
+        chunk.set_block_entity(std::move(entity));
+    }
+
+    u64 sky_mask   = 0;
+    u64 block_mask = 0;
+    u64 ignored    = 0;
+    if (!read_bitset(reader, sky_mask) || !read_bitset(reader, block_mask) ||
+        !read_bitset(reader, ignored) || !read_bitset(reader, ignored)) {
+        return std::nullopt;
+    }
+
+    // The masks cover section_count + 2 entries: one below the world and one
+    // above. Those two have no storage here, so bit 0 and the top bit are read
+    // past and discarded rather than mapped to a section that does not exist.
+    const usize light_sections = shape.section_count() + 2;
+    for (const bool sky : {true, false}) {
+        const auto count = read_varint(reader);
+        if (!count || *count < 0) {
+            return std::nullopt;
+        }
+        i32 seen = 0;
+        for (usize i = 0; i < light_sections && seen < *count; ++i) {
+            const u64 mask = sky ? sky_mask : block_mask;
+            if ((mask >> i & 1U) == 0) {
+                continue;
+            }
+            ++seen;
+            const auto length = read_varint(reader);
+            if (!length || *length != 2048 ||
+                static_cast<usize>(*length) > reader.remaining()) {
+                return std::nullopt;
+            }
+            const auto bytes = payload.subspan(reader.position(), 2048);
+            if (!reader.skip(2048)) {
+                return std::nullopt;
+            }
+            if (i == 0 || i > shape.section_count()) {
+                continue;
+            }
+            world::ChunkSection* section =
+                chunk.section_for_y(shape.min_y + static_cast<i32>(i - 1) * 16);
+            if (section == nullptr) {
+                return std::nullopt;
+            }
+            auto& array = sky ? section->sky_light() : section->block_light();
+            if (!array.load(bytes)) {
+                return std::nullopt;
+            }
+            array.compact();
+        }
+        if (seen != *count) {
+            return std::nullopt;
+        }
+    }
+
+    chunk.recompute_heightmaps();
+    return chunk;
 }
 
 std::vector<u8> encode_chunk_data(const world::Chunk& chunk) {

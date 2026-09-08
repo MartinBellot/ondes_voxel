@@ -3,9 +3,12 @@
 ov_add_executable(ov_voxel
     SOURCES
         src/main.cpp
+        src/session.cpp
         src/world_source.cpp
     DEPS
         ov_client
+        ov_gameplay
+        ov_netclient
         ov_nbt
         ov_registry
         ov_world

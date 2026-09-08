@@ -182,7 +182,16 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [ ] Nage, échelles, glace et slime : glissance par bloc
 - [x] Gestion des joueurs, keep-alive, liste des joueurs
 - [x] Entités joueur : apparition, mouvement, rotation de tête, retrait
-- [ ] `ov_netclient` + `ClientLevel` (réplique séparée)
+- [x] `ov_netclient` + `ClientLevel` (réplique séparée)
+      *(module client **sans rendu** : poignée de main, login hors-ligne,
+      compression, chunks, mises à jour de blocs, téléportations, keep-alive.
+      Le paquet de chunk est **relu** par `parse_chunk_data`, miroir exact de
+      l'encodeur et testé comme tel : 24 chunks réels encodés puis relus,
+      blocs, biomes, lumière et heightmaps identiques)*
+- [x] Le client Ondes VOXEL se connecte au serveur Ondes VOXEL et on y marche
+      *(289 chunks reçus, maillage sous budget de 4 ms par frame, physique à
+      20 Hz contre les formes de collision, position rapportée 20 fois par
+      seconde, casse et pose par raycast)*
 - [ ] `LoopbackTransport` SPSC — **octets sérialisés même en solo** 🔒
 - [x] **Un client vanilla 1.20.1 se connecte, marche, casse et pose un bloc** ⭐
 

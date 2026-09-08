@@ -1,0 +1,123 @@
+// A live world, streamed from a server, meshed as it arrives.
+//
+// This is what turns the viewer into a client. The disk loader read a fixed
+// square of chunks once and meshed all of it before the window opened; a
+// server sends chunks over time, changes blocks under you, and expects to be
+// told where you are twenty times a second.
+//
+// Three rules shape it:
+//
+//   * The level is written by this thread and no other. The network thread
+//     hands over finished chunks through a queue and never touches what is
+//     already here.
+//   * Meshing is budgeted per frame. A hundred chunks arriving at once must
+//     not produce a hundred-millisecond stall — the frame time percentile is
+//     the whole point, and a spike passes a test of the mean.
+//   * A block change remeshes the section it lands in *and the neighbours it
+//     touches*, because a face is drawn or hidden according to what is on the
+//     other side of it.
+#pragma once
+
+#include "ov/base/types.hpp"
+#include "ov/client/terrain_renderer.hpp"
+#include "ov/gameplay/collision.hpp"
+#include "ov/netclient/client.hpp"
+#include "ov/registry/block_states.hpp"
+#include "ov/render/atlas.hpp"
+#include "ov/render/biome_colours.hpp"
+#include "ov/render/block_models.hpp"
+#include "ov/render/chunk_mesher.hpp"
+#include "ov/world/chunk.hpp"
+
+#include <map>
+#include <memory>
+#include <optional>
+#include <unordered_map>
+#include <vector>
+
+namespace ov::demo {
+
+/// One section's slot in the renderer, per layer.
+struct SectionSlots {
+    std::array<u32, static_cast<usize>(render::RenderLayer::Count)> slots{};
+    bool live{false};
+};
+
+class Session {
+public:
+    Session(const registry::BlockRegistry& blocks, render::BlockModelCache& models,
+            const render::TextureAtlas& atlas, const render::BiomeTints& tints,
+            client::TerrainRenderer& terrain);
+
+    /// Take what the network produced and fold it into the level.
+    ///
+    /// Meshing is not done here: a chunk is marked dirty and the work is done
+    /// under a budget, so that a burst of arrivals costs several frames rather
+    /// than one long one.
+    void apply(netclient::ClientEvents& events);
+
+    /// Mesh up to `budget_ms` worth of what is waiting. Returns how many
+    /// sections were rebuilt.
+    usize mesh_pending(f64 budget_ms);
+
+    [[nodiscard]] const world::Chunk* chunk_at(i32 chunk_x, i32 chunk_z) const;
+
+    /// The block state at a world position, or air outside what has arrived.
+    [[nodiscard]] registry::BlockStateId block_at(i32 x, i32 y, i32 z) const;
+
+    /// A collision view over the level, for the player's physics.
+    [[nodiscard]] gameplay::CollisionWorld collision() const;
+
+    [[nodiscard]] usize chunk_count() const noexcept { return chunks_.size(); }
+    [[nodiscard]] usize pending_sections() const noexcept { return dirty_.size(); }
+    /// Sections that have geometry and are resident on the GPU.
+    [[nodiscard]] usize resident_sections() const noexcept { return resident_; }
+
+    /// The biome under a position, for the fog and the sky.
+    [[nodiscard]] u32 biome_at(i32 x, i32 y, i32 z) const;
+
+private:
+    /// A section, addressed the way everything here addresses one.
+    struct SectionKey {
+        i32 chunk_x{0};
+        i32 chunk_z{0};
+        i32 section{0};
+
+        friend constexpr bool operator==(const SectionKey&, const SectionKey&) noexcept = default;
+        friend constexpr bool operator<(const SectionKey& a, const SectionKey& b) noexcept {
+            if (a.chunk_x != b.chunk_x) {
+                return a.chunk_x < b.chunk_x;
+            }
+            if (a.chunk_z != b.chunk_z) {
+                return a.chunk_z < b.chunk_z;
+            }
+            return a.section < b.section;
+        }
+    };
+
+    void mark_dirty(i32 chunk_x, i32 chunk_z, i32 section);
+    void mark_column_dirty(i32 chunk_x, i32 chunk_z);
+    void mesh_one(const SectionKey& key);
+    void release(const SectionKey& key);
+
+    [[nodiscard]] render::ChunkNeighbours neighbours_of(i32 chunk_x, i32 chunk_z) const;
+
+    const registry::BlockRegistry* blocks_;
+    render::BlockModelCache*       models_;
+    const render::TextureAtlas*    atlas_;
+    const render::BiomeTints*      tints_;
+    client::TerrainRenderer*       terrain_;
+
+    std::map<std::pair<i32, i32>, std::unique_ptr<world::Chunk>> chunks_;
+    std::map<SectionKey, SectionSlots>                           slots_;
+    /// Sections waiting to be meshed, in arrival order. A set rather than a
+    /// queue, so that a section changed twice before it is drawn is meshed
+    /// once.
+    std::vector<SectionKey> dirty_;
+
+    usize resident_{0};
+    /// Scratch, kept between calls so meshing allocates nothing per section.
+    render::MeshBuffers scratch_;
+};
+
+}  // namespace ov::demo

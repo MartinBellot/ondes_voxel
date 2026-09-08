@@ -47,6 +47,13 @@ struct InputState {
     /// Went down between the previous poll and this one.
     bool pressed[static_cast<usize>(Key::Count)]{};
 
+    /// Left and right mouse, held and newly pressed. Attack and use: the two
+    /// verbs the game is played with, so they are not keys.
+    bool attack_held{false};
+    bool use_held{false};
+    bool attack_pressed{false};
+    bool use_pressed{false};
+
     [[nodiscard]] bool held(Key key) const noexcept { return keys[static_cast<usize>(key)]; }
 
     [[nodiscard]] bool just_pressed(Key key) const noexcept {

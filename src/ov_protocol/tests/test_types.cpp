@@ -1,8 +1,11 @@
 #include "ov/protocol/types.hpp"
 
+#include "ov/protocol/play.hpp"
+
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <vector>
 
 using namespace ov;
@@ -153,4 +156,32 @@ TEST_CASE("an angle is 1/256 of a turn", "[protocol][types]") {
 TEST_CASE("errors have readable names", "[protocol][types]") {
     REQUIRE(to_string(TypeError::BadUtf8) == "string is not valid UTF-8");
     REQUIRE(to_string(TypeError::StringTooLong) == "string exceeds its limit");
+}
+
+TEST_CASE("a block position survives its 64-bit packing", "[protocol][position]") {
+    // Every field is signed and narrower than the type it lands in, so the sign
+    // has to be carried back out by hand. Half the world is at negative
+    // coordinates and the bug would only ever show there.
+    const std::array<net::WirePosition, 9> cases{
+        net::WirePosition{0, 0, 0},
+        net::WirePosition{1, 2, 3},
+        net::WirePosition{-1, -1, -1},
+        net::WirePosition{-30000000, -64, -30000000},
+        net::WirePosition{30000000, 319, 30000000},
+        net::WirePosition{-1, 320, 1},
+        net::WirePosition{1234, -2048, -777},
+        net::WirePosition{0, 2047, 0},
+        net::WirePosition{0, -2048, 0},
+    };
+    for (const auto& position : cases) {
+        CAPTURE(position.x, position.y, position.z);
+        CHECK(net::unpack_position(net::pack_position(position)) == position);
+    }
+
+    // And the layout itself: x in the top 26 bits, z next, y in the low 12.
+    // Swapping y and z packs a position that unpacks to somewhere plausible
+    // and wrong, which no round trip would catch on its own.
+    CHECK(net::pack_position(net::WirePosition{1, 0, 0}) == (i64{1} << 38));
+    CHECK(net::pack_position(net::WirePosition{0, 0, 1}) == (i64{1} << 12));
+    CHECK(net::pack_position(net::WirePosition{0, 1, 0}) == 1);
 }

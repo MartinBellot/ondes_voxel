@@ -56,6 +56,8 @@ struct Window::Impl {
     bool        captured{false};
     /// Key state from the previous poll, for the edge detection.
     std::array<bool, static_cast<usize>(Key::Count)> previous{};
+    bool                                             previous_attack{false};
+    bool                                             previous_use{false};
 };
 
 Window::Window() : impl_(std::make_unique<Impl>()) {}
@@ -121,6 +123,18 @@ const InputState& Window::poll() {
         input.pressed[index]   = down && !impl_->previous[index];
         impl_->previous[index] = down;
     }
+
+    // Polled rather than taken from a callback, like the keys: one place that
+    // reads the whole input state, and no edge that can arrive between frames
+    // and be lost.
+    const bool attack     = glfwGetMouseButton(impl_->window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+    const bool use        = glfwGetMouseButton(impl_->window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+    input.attack_held     = attack;
+    input.use_held        = use;
+    input.attack_pressed  = attack && !impl_->previous_attack;
+    input.use_pressed     = use && !impl_->previous_use;
+    impl_->previous_attack = attack;
+    impl_->previous_use    = use;
 
     f64 x = 0.0;
     f64 y = 0.0;

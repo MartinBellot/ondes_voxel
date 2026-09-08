@@ -93,7 +93,18 @@ struct WirePosition {
     i32 x{0};
     i32 y{0};
     i32 z{0};
+
+    friend constexpr bool operator==(const WirePosition&, const WirePosition&) noexcept = default;
 };
+
+/// The packed 64-bit form, and back.
+///
+/// Y being last and only twelve bits wide is a 1.14 change; the older layout
+/// put it in the middle. Reading it the old way puts a block somewhere
+/// plausible and wrong, which is worse than an error.
+[[nodiscard]] i64          pack_position(WirePosition position) noexcept;
+[[nodiscard]] WirePosition unpack_position(i64 packed) noexcept;
+void                       write_position(io::ByteWriter& writer, WirePosition position);
 
 /// Everything the Login (play) packet needs that is not a fixed constant.
 struct LoginPlay {
@@ -161,6 +172,21 @@ struct LoginPlay {
 /// per-section length, so a single miscounted byte shifts everything after it
 /// and the client disconnects with a decode error naming no field.
 [[nodiscard]] std::vector<u8> encode_chunk_data(const world::Chunk& chunk);
+
+/// Read one back, which is what a client does with it.
+///
+/// The exact mirror of the encoder, and tested as one: a real chunk off the
+/// disk, encoded and parsed back, has to come out with the same blocks, the
+/// same biomes and the same light. That round trip is the only cheap way to
+/// know the reader agrees with the writer field for field — a single
+/// miscounted byte shifts everything after it, and the symptom is a world that
+/// looks almost right.
+///
+/// Nullopt for anything malformed. The payload comes from a socket.
+[[nodiscard]] std::optional<world::Chunk> parse_chunk_data(std::span<const u8>      payload,
+                                                           const world::WorldShape& shape,
+                                                           world::AirStates         air,
+                                                           const registry::BlockRegistry* blocks);
 
 /// Tell a client one block entity changed.
 ///

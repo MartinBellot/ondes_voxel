@@ -12,6 +12,7 @@
 
 #define OV_LOG_CATEGORY "voxel"
 
+#include "session.hpp"
 #include "world_source.hpp"
 
 #include "ov/base/log.hpp"
@@ -25,6 +26,9 @@
 #include "ov/render/camera.hpp"
 #include "ov/render/environment.hpp"
 #include "ov/render/chunk_mesher.hpp"
+#include "ov/gameplay/physics.hpp"
+#include "ov/math/raycast.hpp"
+#include "ov/netclient/client.hpp"
 #include "ov/render/frustum.hpp"
 #include "ov/rhi/device.hpp"
 
@@ -37,6 +41,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <span>
 #include <string>
 #include <string_view>
@@ -70,6 +75,10 @@ struct Options {
     /// setting: under FIFO every frame reads back the refresh interval and the
     /// p99 the milestone is judged on measures the display, not the renderer.
     bool vsync{true};
+    /// Hold forward for the whole run. A diagnostic: it makes the movement
+    /// loop testable without a human at the keyboard, which is the only way a
+    /// physics regression gets caught by a script.
+    bool walk{false};
     /// Draw the terrain the old way, one call a section, for comparison.
     bool indirect{true};
     /// Time of day in ticks. 6000 is noon, 18000 midnight.
@@ -83,6 +92,11 @@ struct Options {
     bool fog{true};
     /// The brightness slider, 0 Moody to 1 Bright. 1.20.1 defaults to 0.5.
     f32 gamma{0.5F};
+    /// host:port. When set, the world comes from a server rather than from the
+    /// disk, and the camera becomes a player: gravity, collision, and a
+    /// position reported twenty times a second.
+    std::string connect;
+    std::string username{"OndesVoxel"};
     /// x,y,z,yaw,pitch. Exists so a face can be put in front of the camera and
     /// looked at, which is how the questions a unit test cannot answer — is
     /// this texture mirrored? — actually get settled.
@@ -140,6 +154,12 @@ struct Options {
             options.daylight_cycle = false;
         } else if (argument == "--no-fog") {
             options.fog = false;
+        } else if (argument.starts_with("--connect=")) {
+            options.connect = value("--connect=");
+        } else if (argument.starts_with("--username=")) {
+            options.username = value("--username=");
+        } else if (argument == "--walk") {
+            options.walk = true;
         }
     }
     return options;
@@ -212,7 +232,7 @@ bool write_ppm(const std::filesystem::path& path, std::span<const u8> rgba, u32 
 
 int main(int argc, char** argv) {
     const std::span<char*> args(argv, static_cast<usize>(argc));
-    const Options          options = parse_arguments(args);
+    Options                options = parse_arguments(args);
     const auto             base    = executable_directory(argv[0]);
 
     // ── Registry, world, models, atlas, mesh: all before any Vulkan ─────────
@@ -236,30 +256,49 @@ int main(int argc, char** argv) {
     }
     const render::DirectoryAssetSource source(assets_root);
 
-    const auto load_start = std::chrono::steady_clock::now();
-    auto       world = demo::load_world(options.world, *blocks, options.centre_x, options.centre_z,
-                                        options.radius);
-    if (!world) {
-        return 1;
+    // Two ways to get a world. Reading it off the disk is a viewer; asking a
+    // server for it is the game — and the second is the one the project's
+    // second principle is about, because the bytes on that socket are the same
+    // whether the server is across the world or on the next thread.
+    const bool online = !options.connect.empty();
+
+    std::optional<demo::LoadedWorld> world;
+    if (!online) {
+        const auto load_start = std::chrono::steady_clock::now();
+        world = demo::load_world(options.world, *blocks, options.centre_x, options.centre_z,
+                                 options.radius);
+        if (!world) {
+            return 1;
+        }
+        const auto load_ms =
+            std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - load_start)
+                .count();
+        OV_LOG_INFO("world: {} chunks read, {} failed, {:.0f} ms{}", world->chunks_read,
+                    world->chunks_failed, load_ms,
+                    world->light_stored ? "" : " — WITHOUT stored light");
     }
-    const auto load_ms =
-        std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - load_start)
-            .count();
-    OV_LOG_INFO("world: {} chunks read, {} failed, {:.0f} ms{}", world->chunks_read,
-                world->chunks_failed, load_ms,
-                world->light_stored ? "" : " — WITHOUT stored light");
 
     // Resolve every state the world uses before the atlas is stitched: the
     // atlas needs the full set of sprites, and the render layer needs the
     // atlas. Resolve, stitch, classify, mesh.
     render::BlockModelCache models(source, *blocks);
-    for (const auto& [position, chunk] : world->chunks) {
-        (void)position;
-        const auto shape = chunk->shape();
-        for (i32 y = shape.min_y; y <= shape.max_y(); ++y) {
-            for (usize z = 0; z < 16; ++z) {
-                for (usize x = 0; x < 16; ++x) {
-                    (void)models.resolve(chunk->get_block(x, y, z));
+    if (online) {
+        // Every state in the game, because the atlas has to be complete before
+        // the first chunk arrives and there is no way to know what will. This
+        // is what vanilla does too: the atlas is stitched at start-up, not
+        // grown as blocks are seen.
+        for (u32 id = 0; id < blocks->state_count(); ++id) {
+            (void)models.resolve(registry::BlockStateId{static_cast<u16>(id)});
+        }
+    } else {
+        for (const auto& [position, chunk] : world->chunks) {
+            (void)position;
+            const auto shape = chunk->shape();
+            for (i32 y = shape.min_y; y <= shape.max_y(); ++y) {
+                for (usize z = 0; z < 16; ++z) {
+                    for (usize x = 0; x < 16; ++x) {
+                        (void)models.resolve(chunk->get_block(x, y, z));
+                    }
                 }
             }
         }
@@ -302,12 +341,17 @@ int main(int argc, char** argv) {
         render::MeshBuffers buffers;
     };
 
+    // An empty map when online: nothing has arrived yet, and the streaming
+    // path meshes under a per-frame budget instead of all at once.
+    static const std::map<std::pair<i32, i32>, std::unique_ptr<world::Chunk>> kNoChunks;
+    const auto& offline_chunks = online ? kNoChunks : world->chunks;
+
     const auto               mesh_start = std::chrono::steady_clock::now();
     std::vector<SectionMesh> meshes;
     usize                    total_quads = 0;
     bool                     saw_light   = false;
 
-    for (const auto& [position, chunk] : world->chunks) {
+    for (const auto& [position, chunk] : offline_chunks) {
         const auto neighbours = world->neighbours(position.first, position.second);
         const auto shape      = chunk->shape();
 
@@ -335,7 +379,7 @@ int main(int argc, char** argv) {
     OV_LOG_INFO("mesh: {} sections with geometry, {} quads, {:.0f} ms{}", meshes.size(),
                 total_quads, mesh_ms, saw_light ? "" : " — no stored light was read");
 
-    if (meshes.empty()) {
+    if (meshes.empty() && !online) {
         OV_LOG_ERROR("nothing to draw: every section meshed to zero quads");
         return 1;
     }
@@ -401,14 +445,21 @@ int main(int argc, char** argv) {
             max_quads = std::max(max_quads, layer.size() / 4);
         }
     }
+    if (online) {
+        // Nothing has been meshed yet, so the bound is stated instead of
+        // measured. 32768 covers the worst a section can hold — 4096 blocks of
+        // six faces is 24576, and a cutout model can exceed one quad a face.
+        // The index buffer it fixes is 768 KiB, once, for the whole terrain.
+        max_quads = 32768;
+    }
 
     client::TerrainRendererDesc terrain_desc;
     terrain_desc.colour_format         = device.swapchain_format();
     terrain_desc.backface_culling      = options.backface;
     terrain_desc.force_per_section_draws = !options.indirect;
     terrain_desc.max_quads_per_section = static_cast<u32>(std::max<usize>(max_quads, 1));
-    terrain_desc.max_sections =
-        static_cast<u32>(std::max<usize>(meshes.size() * static_cast<usize>(render::RenderLayer::Count), 1024));
+    terrain_desc.max_sections = static_cast<u32>(std::max<usize>(
+        meshes.size() * static_cast<usize>(render::RenderLayer::Count), online ? 65536 : 1024));
 
     auto terrain = client::TerrainRenderer::create(device, terrain_desc);
     if (!terrain) {
@@ -467,8 +518,42 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // ── The server ──────────────────────────────────────────────────────────
+    std::unique_ptr<netclient::Client> client;
+    std::unique_ptr<demo::Session>     session;
+    netclient::ClientEvents            events;
+    gameplay::MotionState              player;
+    const gameplay::MotionConstants    motion;
+    bool                               spawned = false;
+
+    if (online) {
+        std::string host = options.connect;
+        u16         port = 25565;
+        if (const auto colon = host.rfind(':'); colon != std::string::npos) {
+            port = static_cast<u16>(std::atoi(host.substr(colon + 1).c_str()));
+            host = host.substr(0, colon);
+        }
+
+        netclient::ClientDesc login;
+        login.host          = host;
+        login.port          = port;
+        login.username      = options.username;
+        login.registry      = &*blocks;
+        login.view_distance = static_cast<u8>(std::clamp(options.radius, 2, 32));
+
+        auto connected = netclient::Client::connect(login);
+        if (!connected) {
+            OV_LOG_ERROR("{}:{} — {}", host, port,
+                         netclient::to_string(connected.error()));
+            return 1;
+        }
+        client  = std::move(*connected);
+        session = std::make_unique<demo::Session>(*blocks, models, *atlas, tints, **terrain);
+        OV_LOG_INFO("connected to {}:{} as {}", host, port, options.username);
+    }
+
     render::Camera camera;
-    camera.position      = world->suggested_camera(*blocks);
+    camera.position = online ? Vec3f{0.0F, 0.0F, 0.0F} : world->suggested_camera(*blocks);
     camera.yaw_degrees   = -45.0F;
     camera.pitch_degrees = 20.0F;
     camera.far_plane     = static_cast<f32>(options.radius + 2) * 16.0F * 1.8F;
@@ -519,7 +604,9 @@ int main(int argc, char** argv) {
         readback = *buffer;
     }
 
-    const auto       start_time = std::chrono::steady_clock::now();
+    auto       start_time       = std::chrono::steady_clock::now();
+    auto       last_tick        = start_time;
+    f64        tick_accumulator = 0.0;
     std::vector<f64> cpu_frame_ms;
     std::vector<f64> record_ms;
     std::vector<f64> gpu_frame_ms;
@@ -543,25 +630,143 @@ int main(int argc, char** argv) {
 
         camera.turn(static_cast<f32>(input.mouse_delta_x), static_cast<f32>(input.mouse_delta_y));
 
+        if (online) {
+            if (!client->connected()) {
+                const auto why = client->disconnect_reason();
+                OV_LOG_ERROR("disconnected: {}", why.empty() ? "the server went away" : why);
+                running = false;
+                continue;
+            }
+
+            client->poll(events);
+            if (events.teleport) {
+                // The server is authoritative about where the player is. A
+                // teleport is not a suggestion: it arrives at the spawn, and
+                // again whenever the server disagrees with what we reported.
+                player.position  = events.teleport->position;
+                player.velocity  = Vec3d{};
+                player.on_ground = false;
+                camera.yaw_degrees   = events.teleport->yaw;
+                camera.pitch_degrees = events.teleport->pitch;
+                spawned              = true;
+            }
+            if (events.time_of_day) {
+                // The world's clock comes from the server, so the sun is in the
+                // same place for everyone standing in it.
+                options.time         = *events.time_of_day;
+                start_time           = std::chrono::steady_clock::now();
+                options.daylight_cycle = true;
+            }
+            session->apply(events);
+
+            // A budget, not a queue drain. A hundred chunks arriving at once
+            // must cost several frames rather than one long one; the frame
+            // percentile is what the milestone is judged on and a spike passes
+            // a test of the mean.
+            (void)session->mesh_pending(4.0);
+
+            // Physics at the game's own twenty ticks a second, accumulated
+            // against real time. Anything else makes gravity depend on the
+            // frame rate.
+            constexpr f64 kTickSeconds = 1.0 / 20.0;
+            const auto    now          = std::chrono::steady_clock::now();
+            tick_accumulator +=
+                std::chrono::duration<f64>(now - last_tick).count();
+            last_tick = now;
+            // Bounded, so that a long stall does not run a hundred ticks at
+            // once and teleport the player through the floor.
+            tick_accumulator = std::min(tick_accumulator, 0.25);
+
+            // Nothing is simulated until the ground under the player has
+            // actually arrived. Without this the player spawns into a world
+            // that is still empty, falls through it at terminal velocity, and
+            // is a thousand blocks under the map by the time the chunks catch
+            // up — which is exactly what vanilla's "loading terrain" screen
+            // exists to prevent.
+            const bool ground_ready =
+                spawned && session->chunk_at(static_cast<i32>(std::floor(player.position.x)) >> 4,
+                                             static_cast<i32>(std::floor(player.position.z)) >> 4) !=
+                               nullptr;
+            if (spawned && !ground_ready) {
+                tick_accumulator = 0.0;
+            }
+
+            while (ground_ready && tick_accumulator >= kTickSeconds) {
+                tick_accumulator -= kTickSeconds;
+
+                gameplay::MoveInput move;
+                move.forward = (input.held(client::Key::Forward) || options.walk ? 1.0F : 0.0F) -
+                               (input.held(client::Key::Back) ? 1.0F : 0.0F);
+                move.strafe = (input.held(client::Key::Right) ? 1.0F : 0.0F) -
+                              (input.held(client::Key::Left) ? 1.0F : 0.0F);
+                move.yaw    = camera.yaw_degrees;
+                move.jump   = input.held(client::Key::Up);
+                move.sprint = input.held(client::Key::Sprint);
+                move.sneak  = input.held(client::Key::Down);
+
+                const auto world_view = session->collision();
+                player = gameplay::step(player, move, motion, world_view);
+
+                netclient::PlayerInput report;
+                report.position  = player.position;
+                report.yaw       = camera.yaw_degrees;
+                report.pitch     = camera.pitch_degrees;
+                report.on_ground = player.on_ground;
+                client->send_position(report);
+            }
+
+            // The eye, not the feet. 1.62 is vanilla's standing eye height and
+            // it is what decides whether a one-block sill is at eye level.
+            camera.position = Vec3f{static_cast<f32>(player.position.x),
+                                    static_cast<f32>(player.position.y + 1.62),
+                                    static_cast<f32>(player.position.z)};
+
+            // Breaking and placing. The ray starts at the eye and runs vanilla's
+            // survival reach; the face it entered through is the side a new
+            // block attaches to.
+            if (input.attack_pressed || input.use_pressed) {
+                const Vec3d eye{player.position.x, player.position.y + 1.62, player.position.z};
+                const Vec3f look = camera.forward();
+                const Vec3d forward{static_cast<f64>(look.x), static_cast<f64>(look.y),
+                                    static_cast<f64>(look.z)};
+                const auto  hit = raycast_voxels(eye, forward, 4.5, [&](BlockPos block) {
+                    return session->block_at(block.x, block.y, block.z) != registry::kAirState;
+                });
+                if (hit) {
+                    const i32 face = static_cast<i32>(hit->face);
+                    if (input.attack_pressed) {
+                        // Start and finish in the same tick: creative-style
+                        // instant breaking. The timed dig belongs with the
+                        // block-breaking progress the server already computes.
+                        client->send_dig(hit->block.x, hit->block.y, hit->block.z, 0, face);
+                        client->send_dig(hit->block.x, hit->block.y, hit->block.z, 2, face);
+                    } else {
+                        client->send_place(hit->block.x, hit->block.y, hit->block.z, face, 0.5F,
+                                           0.5F, 0.5F);
+                    }
+                }
+            }
+        }
+
         const f32   speed   = input.held(client::Key::Sprint) ? 1.2F : 0.3F;
         const Vec3f forward = camera.forward();
         const Vec3f right   = camera.right();
-        if (input.held(client::Key::Forward)) {
+        if (!online && input.held(client::Key::Forward)) {
             camera.position += forward * speed;
         }
-        if (input.held(client::Key::Back)) {
+        if (!online && input.held(client::Key::Back)) {
             camera.position -= forward * speed;
         }
-        if (input.held(client::Key::Right)) {
+        if (!online && input.held(client::Key::Right)) {
             camera.position += right * speed;
         }
-        if (input.held(client::Key::Left)) {
+        if (!online && input.held(client::Key::Left)) {
             camera.position -= right * speed;
         }
-        if (input.held(client::Key::Up)) {
+        if (!online && input.held(client::Key::Up)) {
             camera.position.y += speed;
         }
-        if (input.held(client::Key::Down)) {
+        if (!online && input.held(client::Key::Down)) {
             camera.position.y -= speed;
         }
 
@@ -578,7 +783,11 @@ int main(int argc, char** argv) {
         const f32 darken = render::sky_darken(time_of_day, 0.0F, 0.0F);
         lightmap.update(darken, render::kOverworldAmbientLight, options.gamma, 0.0F);
 
-        const auto  effects   = blocks->biome(camera_biome(*world, *blocks, camera.position));
+        const u32 biome = online ? session->biome_at(static_cast<i32>(std::floor(camera.position.x)),
+                                                     static_cast<i32>(std::floor(camera.position.y)),
+                                                     static_cast<i32>(std::floor(camera.position.z)))
+                                 : camera_biome(*world, *blocks, camera.position);
+        const auto effects = blocks->biome(biome);
         const u32   fog_rgb   = render::fog_colour(effects.fog_colour, darken);
         const u32   sky_rgb   = render::sky_colour(effects.sky_colour, darken);
 
@@ -741,5 +950,12 @@ int main(int argc, char** argv) {
                percentile(record, 0.99), percentile(record, 1.0));
     fmt::print("gpu  p50 {:.2f} ms   p99 {:.2f} ms   max {:.2f} ms\n", percentile(gpu, 0.50),
                percentile(gpu, 0.99), percentile(gpu, 1.0));
+
+    if (online) {
+        fmt::print("player at ({:.2f}, {:.2f}, {:.2f}), {}, {} chunks, {} sections resident\n",
+                   player.position.x, player.position.y, player.position.z,
+                   player.on_ground ? "standing" : "in the air", session->chunk_count(),
+                   session->resident_sections());
+    }
     return 0;
 }
