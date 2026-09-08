@@ -67,7 +67,7 @@
     "M6": {
       "name": "Contenu complet",
       "status": "in_progress",
-      "done": 2,
+      "done": 3,
       "total": 71,
       "exit_criterion": "Une batterie world_test par sous-système ; parité statistique worldgen sur 1000 seeds ; matrice protocole à 100 %.",
       "blocked": []
@@ -156,7 +156,10 @@
     "worldgen_density": "23 types de fonctions de densite ; 14 des 15 entrees du routeur overworld se construisent depuis les JSON vanilla, dont les six fonctions climatiques. final_density manque : il atteint old_blended_noise. Un type non implemente est refuse et nomme, jamais traite comme zero",
     "worldgen_oracle": "monde de reference genere par le vrai serveur 1.20.1 a la seed 1234567890 (scripts/reference_world.sh, 4 fichiers de region). C'est le seul oracle de la parite de terrain : aucune formule ne peut la prouver, seuls les blocs que le jeu ecrit",
     "biome_parity": "613857 / 614400 cellules de biome identiques au vrai serveur 1.20.1 a la seed 1234567890 (99.912 %), sur 400 chunks entierement generes. Les 543 ecarts sont TOUS des egalites exactes — deux boites a la meme distance — donc le calcul du climat est identique et seule la departition differe (R-tree + cache du resultat precedent chez vanilla)",
-    "worldgen_harness": "tools/ov_parity compare notre generation au monde de reference. Il a d'abord donne 67 % : il lisait des chunks arretes a un statut partiel, dont le tableau de biomes vaut plains par defaut — ce qui faisait dire 'le jeu a choisi plains' a chaque desaccord. Filtre sur Status == minecraft:full, le meme code donne 99.912 %"
+    "worldgen_harness": "tools/ov_parity compare notre generation au monde de reference. Il a d'abord donne 67 % : il lisait des chunks arretes a un statut partiel, dont le tableau de biomes vaut plains par defaut — ce qui faisait dire 'le jeu a choisi plains' a chaque desaccord. Filtre sur Status == minecraft:full, le meme code donne 99.912 %",
+    "entity_types": "120 des 124 types mesures sur un vrai serveur 1.20.1 : boite de collision par bissection d'un selecteur, hauteur des yeux par un marqueur pose a l'ancre du regard, 622 valeurs d'attribut par la commande attribute. La sonde est etalonnee contre minecraft:interaction, dont la largeur et la hauteur SONT le NBT : cinq tailles declarees, decalage -1.5e-08 et dispersion nulle. Les 4 restants (lightning_bolt, evoker_fangs, fishing_bobber, player) sont refuses par leur nom et jamais arrondis a zero",
+    "entity_storage": "EnTT en PRIVATE_DEP derriere un PIMPL ; le tick parcourt l'ordre d'insertion et non une vue, dont l'ordre est celui du stockage et change au swap-and-pop d'une destruction. Un handle vers une entite morte ne resout jamais vers celle qui a pris sa place, et un id reseau n'est jamais reutilise",
+    "measurement_trap_spawn_animals": "spawn-animals=false supprime les animaux a leur premier tick, invoques a la main et PersistenceRequired compris : le premier releve perdait 47 types pendant que la console disait 'Summoned new Cow'"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",

@@ -23,7 +23,7 @@ namespace ov::registry {
 /// were current is far worse than no cache: the ids would be plausible and
 /// wrong, and nothing would report an error until a vanilla client crashed on
 /// an entity type that does not exist.
-inline constexpr u32 kFormatVersion = 11;
+inline constexpr u32 kFormatVersion = 12;
 
 /// Grew past 128 when the loot tables arrived.
 inline constexpr u32 kHeaderSize = 256;
@@ -88,8 +88,50 @@ struct PackHeader {
     u32 biomes_offset;
     u32 biome_count;
 
+    /// Entity types: one record each, in registry order, plus the flat table
+    /// of attribute base values their records point into.
+    u32 entities_offset;
+    u32 entity_attrs_offset;
+    u32 entity_count;
+
     u32 reserved;
 };
+
+/// One entity type, measured on a running 1.20.1 server.
+///
+/// None of these three numbers appears in any Mojang report: hitboxes, eye
+/// heights and attribute base values are Java code. They come from
+/// scripts/measure_entities.py, which asks the game itself — see
+/// docs/PROVENANCE.md.
+struct EntityTypeRecord {
+    f32 width;
+    f32 height;
+    f32 eye_height;
+    u16 attribute_first;
+    u8  attribute_count;
+    /// Bit 0: the hitbox was measured. Bit 1: the eye height was.
+    ///
+    /// A separate bit rather than "width == 0 means unknown", because four
+    /// types genuinely could not be measured — the lightning bolt lives one
+    /// tick, the fishing bobber cannot exist without an angler — and a zero
+    /// box would make them things nothing can ever hit, silently.
+    u8 measured;
+};
+
+/// One attribute a type owns, and the base value it starts with.
+struct EntityAttributeRecord {
+    /// Index into minecraft:attribute, in Mojang's order.
+    u8 attribute;
+    u8 pad[7];
+    /// Base value. f64 because that is what the game prints and what the wire
+    /// carries: a movement speed of 0.23 is really 0.23000000417232513, the
+    /// double nearest to the float the game holds, and rounding it to f32 here
+    /// and back would not round-trip.
+    f64 base;
+};
+
+static_assert(sizeof(EntityTypeRecord) == 16, "layout must match the emitter");
+static_assert(sizeof(EntityAttributeRecord) == 16, "layout must match the emitter");
 
 /// One biome's effects, exactly the fields vanilla sends in Registry Data.
 ///

@@ -6,12 +6,13 @@
   "homepage": "https://github.com/MartinBellot/ondes_voxel",
   "license": "Apache-2.0",
   "$comment-deps": "Dependencies are added milestone by milestone, never up front. A first build on an 8 GB M2 compiles every port from source; see risk R5 in docs/ARCHITECTURE.md. The 'client' feature is the physical barrier that keeps rendering out of the headless server: the linux-server-only CI job configures WITHOUT it, on an image that has no Vulkan SDK.",
-  "$comment-current": "M0 needed formatting and DEFLATE; M1 adds asio for sockets; M5 adds simdjson for the JSON assets. asio is header-only and template-heavy, so it stays inside .cpp files behind PIMPL — see risk R5. simdjson is here rather than under the 'client' feature because JSON is not a client concern: worldgen density functions, surface rules and datapacks are JSON too, and the headless server reads them. It is template-heavy, so it stays inside .cpp files. mimalloc, xxhash, entt, enkits and openssl arrive at the milestone that first uses them.",
+  "$comment-current": "M0 needed formatting and DEFLATE; M1 adds asio for sockets; M5 adds simdjson for the JSON assets; M6 adds entt for entity storage. asio is header-only and template-heavy, so it stays inside .cpp files behind PIMPL — see risk R5. simdjson is here rather than under the 'client' feature because JSON is not a client concern: worldgen density functions, surface rules and datapacks are JSON too, and the headless server reads them. It is template-heavy, so it stays inside .cpp files. entt is the same story and then some: it is a PRIVATE_DEP of ov_entity and never appears in a public header, because a registry template in one would put its instantiation weight in every translation unit that spawns a zombie. mimalloc, xxhash, enkits and openssl arrive at the milestone that first uses them.",
   "dependencies": [
     "fmt",
     "libdeflate",
     "asio",
-    "simdjson"
+    "simdjson",
+    "entt"
   ],
   "features": {
     "tests": {

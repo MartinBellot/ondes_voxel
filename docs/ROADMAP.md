@@ -403,8 +403,15 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [ ] **End** : îles principales, îles extérieures, passerelles, portail de sortie
 
 ### Entités et IA
-- [ ] ECS EnTT : handles et stockage ; comportement polymorphe 🔒
-- [ ] Attributs, modificateurs, équipement
+- [x] ECS EnTT : handles et stockage ; comportement polymorphe 🔒
+      *(`ov_entity` L8. EnTT en `PRIVATE_DEP` derrière un PIMPL, aucun
+      en-tête public ne le nomme. Le tick parcourt l'ordre d'insertion et
+      pas une vue : l'ordre d'une vue est celui du stockage, et le
+      swap-and-pop d'une destruction le change — voir `docs/PROVENANCE.md`)*
+- [~] Attributs, modificateurs, équipement
+      *(les valeurs de base des 13 attributs relevées sur un vrai serveur
+      1.20.1 pour les 120 types mesurables — 622 valeurs — et une absence
+      reste une absence. Les modificateurs et l'équipement restent à faire)*
 - [ ] **33 effets de statut** : speed, slowness, haste, mining_fatigue, strength,
       instant_health, instant_damage, jump_boost, nausea, regeneration,
       resistance, fire_resistance, water_breathing, invisibility, blindness,

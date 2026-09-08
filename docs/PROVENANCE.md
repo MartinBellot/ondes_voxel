@@ -3190,3 +3190,144 @@ axes étaient déjà justes — et qu'aucune échelle ni aucun décalage sur la
 température ne remontait au-dessus de 88 %, donc que l'erreur n'était pas un
 facteur. Les deux conclusions étaient correctes : l'erreur n'était dans aucun
 axe.
+
+---
+
+## Entités : demander au jeu sa taille, ses yeux et ses attributs
+
+Trois nombres décident de tout ce qu'une entité peut faire, et **aucun des trois
+n'existe dans les rapports officiels** : la boîte de collision, la hauteur des
+yeux et la valeur de base de chaque attribut sont du code Java. Ce projet ne lit
+pas de code Java. Il a donc fallu les faire dire au jeu lui-même, avec des
+commandes — qui sont de la donnée documentée, pas de la source.
+
+`scripts/measure_entities.py` lance un vrai serveur 1.20.1 sur un port à lui,
+pose une entité de chaque type sur une grille espacée de 16 blocs, et pose trois
+questions.
+
+### La boîte : une bissection, et un étalon qui n'était pas supposé
+
+`execute positioned <p> if entity @e[…,dx=0,dy=0,dz=0]` réussit exactement quand
+le volume de sonde rencontre la boîte de l'entité. Bissecter cette frontière le
+long de +X et de +Y donne la demi-largeur et la hauteur.
+
+Le piège est que **la sémantique du volume `dx/dy/dz` n'est pas évidente** : la
+documentation le décrit tantôt comme un point, tantôt comme une boîte gonflée
+d'un bloc, et les deux lectures donnent des résultats plausibles. Plutôt que de
+trancher par la lecture, la sonde est **étalonnée** contre `minecraft:interaction`
+— la seule entité dont la largeur et la hauteur *sont* son NBT. Cinq tailles
+déclarées, mesurées exactement comme les mobs le seront ensuite :
+
+| déclaré | demi-largeur mesurée | sommet mesuré |
+|---|---|---|
+| 0,5 × 0,5 | 0,2500000 | 0,5000000 |
+| 1,0 × 2,0 | 0,5000000 | 2,0000000 |
+| 3,0 × 0,25 | 1,5000000 | 0,2500000 |
+| 2,0 × 1,0 | 1,0000000 | 1,0000000 |
+| 0,25 × 4,0 | 0,1250000 | 4,0000000 |
+
+Décalage moyen **−1,5 × 10⁻⁸**, dispersion **exactement nulle** sur les dix
+relevés. Le volume est donc un point, `width` est bien la largeur totale et non
+la demi-largeur, et la boîte monte des pieds vers le haut. Cinq tailles plutôt
+qu'une, parce qu'un décalage additif et un facteur d'échelle sont
+indiscernables sur un seul point.
+
+### Les yeux : un marqueur posé à l'ancre du regard
+
+`execute as <mob> at @s anchored eyes positioned ^ ^ ^ run summon
+minecraft:marker ~ ~ ~` pose un marqueur là où le jeu place les yeux ; la
+différence entre son `Pos` et celui du mob est la hauteur des yeux, à la
+dernière décimale que porte le double.
+
+**`as @s` n'est pas décoratif.** `anchored eyes` décale la position de l'entité
+qui *exécute*, pas de celle que `at` désigne. Lancée depuis la console avec le
+seul `at`, la commande n'a aucun `@s` à décaler : le marqueur tombe **aux pieds
+du mob**, la mesure rend 0,0 pour tout le monde, et rien ne signale l'erreur —
+c'est une mauvaise réponse qui a exactement l'allure d'une bonne.
+
+### Les attributs : les treize, demandés à chaque type
+
+`attribute <cible> <attribut> base get` imprime la valeur de base. La campagne
+demande **les treize** attributs du registre à chacun des types, si bien que la
+réponse porte aussi sur *quels* attributs un type possède. Un zombie n'a pas de
+`horse.jump_strength` et le serveur le dit ; une vache n'a pas d'`attack_damage`.
+Cette absence est stockée comme une absence : `attribute_base` rend `nullopt`, et
+jamais 0. « Ne frappe pas » et « frappe pour rien » sont deux choses différentes.
+
+622 valeurs sur 120 types.
+
+### Le piège qui a coûté 47 types
+
+Premier passage : **77 types sur 124**, et les 47 manquants étaient *exactement*
+les animaux — vache, poule, mouton, cheval, loup, poisson, villageois. La console
+répondait pourtant « Summoned new Cow » à chaque fois.
+
+La cause est `spawn-animals=false` dans `server.properties`, mis là par réflexe
+de banc de mesure. Ce réglage ne se contente pas de couper l'apparition
+naturelle : le serveur **supprime** les animaux à leur premier tick, y compris
+ceux invoqués à la main, y compris avec `PersistenceRequired:1b`. Le relevé
+perdait toute la classe `Animal` pendant que le journal affirmait le contraire.
+
+Le banc laisse donc les trois catégories d'apparition **actives**, et coupe
+l'apparition naturelle avec la règle `doMobSpawning`. Chaque entité mesurée porte
+un `Tags` unique, donc la faune du monde ne gêne pas.
+
+### Ce qui n'a pas pu être mesuré, et qui est nommé plutôt qu'arrondi
+
+**120 types sur 124.** Les quatre restants sont refusés par leur nom :
+
+| type | pourquoi |
+|---|---|
+| `minecraft:lightning_bolt` | vit un tick |
+| `minecraft:evoker_fangs` | vit une vingtaine de ticks, la bissection en demande des milliers |
+| `minecraft:fishing_bobber` | ne peut pas exister sans pêcheur |
+| `minecraft:player` | ne s'invoque pas |
+
+Trois hauteurs d'yeux manquent aussi (`marker`, `painting`, `eye_of_ender`), et
+un bit du pack le dit — plutôt qu'un zéro qui ressemblerait à une mesure.
+
+`EntityWorld::spawn` **refuse** un type sans boîte mesurée. Un mob à boîte nulle
+est un mob que rien ne peut jamais toucher, et c'est pire qu'un mob qui n'est pas
+apparu : seul le second le dit.
+
+### Ce que le pack stocke, et pourquoi en f64
+
+Les valeurs d'attribut sont stockées en **f64**. La vitesse d'un zombie n'est pas
+0,23 mais **0,23000000417232513** — le double le plus proche du float que le jeu
+tient. La faire passer par un f32 ne la ferait pas revenir, et le paquet Update
+Attributes porte justement un f64 sur le fil. Les dimensions, elles, sont en f32,
+comme le jeu les tient.
+
+Un détail qui se voit en test : la demi-largeur d'un zombie n'est pas 0,3 mais
+0,30000001192092896, parce que 0,6 est un f32. C'est ce nombre-là que la
+collision doit utiliser.
+
+### `ov_entity` : EnTT pour le stockage, et une vue qu'on ne crée pas
+
+Le module suit `docs/ARCHITECTURE.md` § 5 : EnTT pour les handles et le
+stockage, comportement polymorphe dans un `std::unique_ptr<IEntityLogic>`. EnTT
+est un **PRIVATE_DEP** et n'apparaît dans aucun en-tête public ; le registry vit
+derrière un PIMPL.
+
+Le plan avertit que `view()` et `group()` **mutent l'état interne** même en
+lecture et que le registry doit rester sur le thread de tick. Une deuxième raison
+s'y ajoute, et elle est plus contraignante : **l'ordre d'itération d'une vue est
+l'ordre du stockage, et le stockage est un swap-and-pop**. Détruire une entité y
+déplace la dernière à sa place ; deux exécutions de la même suite d'apparitions
+et de morts tiqueraient alors les mêmes entités dans des ordres différents, ce
+qui viole le déterminisme (CLAUDE.md § 2.5).
+
+Le tick parcourt donc une liste de handles en **ordre d'insertion**, et aucune
+vue n'est créée sur le chemin du tick — ce qui rend le piège de thread-safety
+inatteignable par la même occasion. Le test le vérifie : trois mobs, celui du
+milieu meurt, et le tick suivant visite toujours le premier avant le troisième.
+
+Deux autres propriétés sont tenues par des tests plutôt que par une intention :
+
+- un handle vers une entité morte **ne résout jamais** vers celle qui a pris sa
+  place — EnTT recycle les emplacements, et la génération portée dans le handle
+  est ce qui empêche des dégâts destinés à une vache morte d'atterrir sur le
+  cochon suivant ;
+- un id réseau n'est **jamais réutilisé** ;
+- une entité apparue *pendant* un tick n'est pas tiquée dans ce tick — sinon un
+  mob qui en engendre un par tick empêcherait le tick de finir.

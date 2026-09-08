@@ -26,6 +26,9 @@ Layout, all little-endian, every section 8-byte aligned:
     values      one string offset per property value
     state_index one block index per block state, for O(1) reverse lookup
     biomes      one record per biome, sorted by name; the client's colours
+    entities    one record per entity type, in registry order: hitbox, eye
+                height and the span of attributes it owns — all measured
+    entity_attrs  one (attribute index, base value) pair per owned attribute
 
 Determinism matters as much as compactness: the same input has to produce the
 same bytes, or the manifest that proves a regenerated dataset is unchanged
@@ -54,7 +57,7 @@ MAGIC = b"OVPK"
 # Bumped by hand whenever the layout changes, so a stale cache is detected
 # rather than misread. A mismatched cache read as if it were current is far
 # worse than no cache at all.
-FORMAT_VERSION = 11
+FORMAT_VERSION = 12
 
 _loot_report = ""
 
@@ -89,7 +92,8 @@ def align8(data: bytearray) -> None:
 def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
           opacity_doc: dict, stacks_doc: dict, motion_doc: dict,
           hardness_doc: dict, loot_dir, loot_map_doc: dict,
-          collision_doc: dict, emission_doc: dict, biome_list: list) -> bytes:
+          collision_doc: dict, emission_doc: dict, biome_list: list,
+          entities_doc: dict) -> bytes:
     blocks = blocks_doc["blocks"]
     state_count = blocks_doc["state_count"]
 
@@ -369,8 +373,53 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
         body += struct.pack("<H", block_index)
     align8(body)
 
+    # ── Entity types ────────────────────────────────────────────────────────
+    #
+    # Hitbox, eye height and attribute base values, none of which appear in any
+    # Mojang report: they are Java code, and they were measured on a running
+    # 1.20.1 server instead (scripts/measure_entities.py). A type that could not
+    # be measured gets `measured = 0` rather than a zero-sized box, because a
+    # mob with no hitbox is a mob that nothing can ever hit.
+    entity_entries = registries_doc["registries"]["minecraft:entity_type"]["entries"]
+    attribute_entries = registries_doc["registries"]["minecraft:attribute"]["entries"]
+    attribute_index = {name: i for i, name in enumerate(attribute_entries)}
+    hitboxes = entities_doc["hitbox"]
+    eyes = entities_doc["eye_height"]
+    attribute_values = entities_doc["attributes"]
+
+    entity_records = []
+    entity_attributes = []
+    for name in entity_entries:
+        box = hitboxes.get(name)
+        first = len(entity_attributes)
+        for attribute, value in sorted(attribute_values.get(name, {}).items()):
+            entity_attributes.append((attribute_index[attribute], value))
+        entity_records.append((
+            float(box["width"]) if box else 0.0,
+            float(box["height"]) if box else 0.0,
+            float(eyes[name]) if name in eyes else 0.0,
+            first,
+            len(entity_attributes) - first,
+            # Bit 0: the hitbox was measured. Bit 1: the eye height was.
+            (1 if box else 0) | (2 if name in eyes else 0),
+        ))
+
+    entities_offset = HEADER_SIZE + len(body)
+    for width, height, eye, first, count, measured in entity_records:
+        # f32 width, f32 height, f32 eye, u16 attr_first, u8 attr_count,
+        # u8 measured — 16 bytes, naturally aligned.
+        body += struct.pack("<fffHBB", width, height, eye, first, count, measured)
+    align8(body)
+
+    entity_attrs_offset = HEADER_SIZE + len(body)
+    for index, value in entity_attributes:
+        # u8 attribute index, 7 bytes of padding, f64 base value. The padding is
+        # explicit so the double stays naturally aligned on every target.
+        body += struct.pack("<B7xd", index, value)
+    align8(body)
+
     header = struct.pack(
-        "<4s" + "I" * 46,
+        "<4s" + "I" * 49,
         MAGIC,
         FORMAT_VERSION,
         len(block_records),
@@ -417,6 +466,9 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
         emission_offset,
         biomes_offset,
         len(biome_list),
+        entities_offset,
+        entity_attrs_offset,
+        len(entity_records),
         0,  # reserved
     )
     assert len(header) <= HEADER_SIZE
@@ -460,6 +512,12 @@ def main() -> int:
         collision_doc = json.load(f)
     with open(NORMALIZED / "light_emission.json") as f:
         emission_doc = json.load(f)
+    entities_path = NORMALIZED / "entities.json"
+    if not entities_path.is_file():
+        sys.exit(f"error: {entities_path} not found. "
+                 f"Run scripts/measure_entities.py first.")
+    with open(entities_path) as f:
+        entities_doc = json.load(f)
     loot_dir = (NORMALIZED.parent / "generated" / "data" / "minecraft" / "loot_tables" / "blocks")
     if not loot_dir.is_dir():
         sys.exit(f"error: {loot_dir} not found. Run tools/ov_datagen/datagen.py first.")
@@ -471,7 +529,7 @@ def main() -> int:
 
     payload = build(blocks_doc, registries_doc, tags_doc, opacity_doc, stacks_doc,
                     motion_doc, hardness_doc, loot_dir, loot_map_doc, collision_doc,
-                    emission_doc, biome_list)
+                    emission_doc, biome_list, entities_doc)
     tag_records_count = [t for g in tags_doc["tags"].values() for t in g]
     member_count_total = sum(len(v) for g in tags_doc["tags"].values() for v in g.values())
     OUTPUT.write_bytes(payload)
@@ -490,13 +548,16 @@ def main() -> int:
     print(f"    collision ...... {len(collision_doc['shapes'])} shapes, "
           f"{sum(len(s) for s in collision_doc['shapes'])} boxes")
     print(f"    light .......... {emission_doc['covered']} states measured")
+    print(f"    entities ....... {entities_doc['present']} of {entities_doc['types']} "
+          f"types measured, {sum(len(v) for v in entities_doc['attributes'].values())} "
+          f"attribute values")
     print(f"    size ........... {len(payload):,} bytes")
 
     # Byte-stability is the property the manifest depends on. Checking it here
     # costs nothing and catches a non-deterministic dict order immediately.
     if build(blocks_doc, registries_doc, tags_doc, opacity_doc, stacks_doc,
              motion_doc, hardness_doc, loot_dir, loot_map_doc, collision_doc,
-             emission_doc, biome_list) != payload:
+             emission_doc, biome_list, entities_doc) != payload:
         sys.exit("error: emitter is not deterministic")
     print("    deterministic .. yes")
     return 0
