@@ -37,6 +37,7 @@
 #include <expected>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -101,6 +102,15 @@ public:
     /// get.
     void click_slot(netclient::Client& client, i16 slot, i32 button, bool shift, i32 hotbar_key);
 
+    /// Spread what the cursor holds over a run of slots — mode 5, in its three
+    /// phases: start on slot −999, one packet per slot, end on slot −999.
+    ///
+    /// The server divides the stack evenly and keeps the remainder on the
+    /// cursor; sixty-four stone over three slots is 21, 21, 21 and one left in
+    /// hand. Used by the gesture in update() and by the scripted check, so what
+    /// the script proves is what a hand on the mouse gets.
+    void drag_over(netclient::Client& client, std::span<const i16> slots, bool right);
+
     /// The window id the server last opened, or 0 for the player's own.
     [[nodiscard]] u8 window_id() const noexcept;
 
@@ -159,6 +169,32 @@ private:
     /// Mouse position in GUI pixels, from the last update.
     f32 mouse_x_{0.0F};
     f32 mouse_y_{0.0F};
+
+    // ── The drag gesture ────────────────────────────────────────────────────
+    //
+    // A press with a full cursor does not act at once: vanilla waits to see
+    // whether the pointer moves to a second slot. It it does, the whole thing
+    // is a drag (mode 5); if it does not, the release is an ordinary click.
+    // Acting on the press instead would make every drag start by dropping the
+    // stack into the first slot.
+    //
+    // A press with an *empty* cursor is not deferred — it is a pickup and there
+    // is nothing to spread — which keeps the path this client was first proven
+    // on exactly as it was.
+    bool             press_pending_{false};
+    bool             press_right_{false};
+    i16              press_slot_{-1};
+    bool             dragging_{false};
+    std::vector<i16> drag_slots_;
+
+    /// Seconds since the interface was built, and when the last click landed.
+    ///
+    /// Only the double-click uses it. Wall time in a *renderer* is fine —
+    /// nothing here is simulated and nothing here has to be reproducible; the
+    /// determinism rule is about the tick, and this is a gesture.
+    f32 clock_{0.0F};
+    f32 last_click_time_{-1.0F};
+    i16 last_click_slot_{-1};
 
     f32 previous_health_{20.0F};
 };

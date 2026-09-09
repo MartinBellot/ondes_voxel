@@ -173,12 +173,42 @@ prudence : le serveur applique les six modes de façon autoritative et mesurée,
 et un client qui les prédirait aurait raison presque toujours — la fois où il a
 tort, un objet disparaît.
 
-Les six modes sont câblés dans `ContainerScreen::click` : 0 ramasser (bouton 0
-la pile, 1 la moitié), 1 clic-majuscule, 2 touche numérique (**l'index de la
-barre d'action voyage dans le champ `button`**, pas un bouton de souris), 3 clic
-molette, 4 jeter (slot −999 pour le curseur), 5 glissé, 6 double-clic. Les modes
-5 et 6 sont **envoyés** tels quels quand ils arrivent mais l'interface n'a pas
-encore de geste qui les produise — nommé plutôt que caché.
+Les sept modes ont chacun leur geste :
+
+| Mode | Geste | Note |
+|---|---|---|
+| 0 ramasser | clic gauche / droit | bouton 0 la pile, 1 la moitié |
+| 1 déplacer | majuscule + clic | |
+| 2 échanger | touche 1–9 sur un emplacement | **l'index de la barre d'action voyage dans `button`**, pas un bouton de souris |
+| 3 cloner | clic molette | envoyé quel que soit le mode de jeu : c'est le serveur qui décide |
+| 4 jeter | Q sur un emplacement, ou clic hors fenêtre | slot −999 pour jeter le curseur |
+| 5 glissé | appui, déplacement sur d'autres emplacements, relâchement | trois phases : 0/1/2 à gauche, 4/5/6 à droite |
+| 6 double-clic | deux clics gauches sur le même emplacement en 250 ms | rassemble les piles identiques |
+
+⚠️ **Un appui avec quelque chose en main n'agit pas tout de suite.** Vanilla
+attend de voir si le pointeur bouge vers un second emplacement : si oui c'est un
+glissé, sinon le relâchement est un clic ordinaire. Agir à l'appui ferait
+commencer chaque glissé en lâchant la pile dans le premier emplacement. Un appui
+avec la **main vide** n'est pas différé — c'est un ramassage, il n'y a rien à
+répartir — ce qui laisse intact le chemin sur lequel ce client a d'abord été
+prouvé.
+
+### Le glissé, mesuré
+
+Le serveur a été mesuré : soixante-quatre pierres réparties sur trois
+emplacements donnent 21/21/21 avec le reste sur le curseur, comme vanilla.
+Notre client demande exactement ça :
+
+```
+--hold=minecraft:stone --use-block=34,-60,180 --drag-slots=54,3,4,5
+→ window 1 "Chest" (63 slots, state 3):
+    slot  3  minecraft:stone x21
+    slot  4  minecraft:stone x21
+    slot  5  minecraft:stone x21
+```
+
+`drag_over()` est le même code pour le geste et pour le script, donc ce que le
+script prouve est ce qu'une main sur la souris obtient.
 
 ### L'aller-retour réel
 
@@ -302,8 +332,8 @@ la fenêtre est fermée.
   présenté comme un fait établi.
 - **Le chat, la liste des joueurs, le menu d'échappement, la barre de boss, les
   toasts, les effets de potion** : rien de tout ça n'existe.
-- **Les modes de clic 5 (glissé) et 6 (double-clic)** : câblés jusqu'au paquet,
-  aucun geste ne les produit encore.
+- **Le glissé droit et le glissé molette** : `drag_over()` les encode (boutons
+  4/5/6 et 8/9/10) mais seul le glissé gauche a un geste.
 - **Les composants de chat** : seul `{"text": …}` est rendu en texte. Un titre
   avec `translate` ou `extra` est laissé en JSON, visiblement faux plutôt que
   subtilement faux.

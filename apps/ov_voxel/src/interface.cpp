@@ -28,6 +28,10 @@ constexpr f32 kNameFlashSeconds = 2.0F;
 /// How long the hearts blink after damage. Vanilla's ten ticks.
 constexpr f32 kDamageFlashSeconds = 0.5F;
 
+/// Two clicks on one slot within this are one double-click. Vanilla's window is
+/// 250 ms; this is the same, in the unit the frame loop counts in.
+constexpr f32 kDoubleClickSeconds = 0.25F;
+
 /// The plain text of a chat component, as far as the interface needs it.
 ///
 /// Only `text`, and only at the top level. That is what the server sends for a
@@ -319,6 +323,25 @@ u8 Interface::window_id() const noexcept {
     return screen_ && !own_inventory_ ? screen_->window_id() : u8{0};
 }
 
+void Interface::drag_over(netclient::Client& client, std::span<const i16> slots, bool right) {
+    if (slots.empty()) {
+        return;
+    }
+    // The three phases, and the button values that name them: 0/1/2 for a left
+    // drag, 4/5/6 for a right one, 8/9/10 for the middle. Start and end carry
+    // slot −999 — they are not clicks on anything — and only the middle phase
+    // names slots.
+    const i8 base = right ? i8{4} : i8{0};
+    client.send_container_click(window_id(), state_id_, -999, base,
+                                client::click_mode::kQuickCraft, carried_);
+    for (const i16 slot : slots) {
+        client.send_container_click(window_id(), state_id_, slot, static_cast<i8>(base + 1),
+                                    client::click_mode::kQuickCraft, carried_);
+    }
+    client.send_container_click(window_id(), state_id_, -999, static_cast<i8>(base + 2),
+                                client::click_mode::kQuickCraft, carried_);
+}
+
 void Interface::click_slot(netclient::Client& client, i16 slot, i32 button, bool shift,
                            i32 hotbar_key) {
     const client::ClickIntent intent =
@@ -330,6 +353,7 @@ void Interface::click_slot(netclient::Client& client, i16 slot, i32 button, bool
 bool Interface::update(const client::InputState& input, netclient::Client& client,
                        client::Window& window, f64 delta_seconds) {
     const auto delta = static_cast<f32>(delta_seconds);
+    clock_ += delta;
     hud_.damage_flash    = std::max(0.0F, hud_.damage_flash - delta);
     hud_.name_flash_life = std::max(0.0F, hud_.name_flash_life - delta / kNameFlashSeconds);
 
@@ -384,16 +408,77 @@ bool Interface::update(const client::InputState& input, netclient::Client& clien
                                     carried_);
         return true;
     }
+    // ── The drag, in three phases ───────────────────────────────────────────
+    const bool button_held = input.attack_held || input.use_held;
+
+    if (dragging_) {
+        if (hovered != nullptr &&
+            std::ranges::find(drag_slots_, hovered->index) == drag_slots_.end()) {
+            drag_slots_.push_back(hovered->index);
+        }
+        if (!button_held) {
+            drag_over(client, drag_slots_, press_right_);
+            dragging_ = false;
+            drag_slots_.clear();
+            press_pending_ = false;
+        }
+        return true;
+    }
+
+    if (press_pending_) {
+        if (button_held) {
+            // The pointer left the slot it was pressed on: this is a drag, not
+            // a click.
+            if (hovered != nullptr && hovered->index != press_slot_) {
+                dragging_ = true;
+                drag_slots_.clear();
+                drag_slots_.push_back(press_slot_);
+                drag_slots_.push_back(hovered->index);
+            }
+            return true;
+        }
+        // Released without moving: an ordinary click after all.
+        click_slot(client, press_slot_, press_right_ ? 1 : 0, input.shift_held, -1);
+        press_pending_ = false;
+        return true;
+    }
+
     if (input.attack_pressed || input.use_pressed || input.middle_pressed) {
         const i32 button = input.middle_pressed ? 2 : (input.use_pressed ? 1 : 0);
-        if (hovered != nullptr) {
-            click_slot(client, hovered->index, button, input.shift_held, -1);
-        } else if (!carried_.empty()) {
-            // Outside every slot with a full cursor: vanilla throws it, as a
-            // click on slot −999.
-            client.send_container_click(window_id(), state_id_, -999, static_cast<i8>(button),
-                                        client::click_mode::kPickup, carried_);
+        if (hovered == nullptr) {
+            if (!carried_.empty()) {
+                // Outside every slot with a full cursor: vanilla throws it, as
+                // a click on slot −999.
+                client.send_container_click(window_id(), state_id_, -999,
+                                            static_cast<i8>(button),
+                                            client::click_mode::kPickup, carried_);
+            }
+            return true;
         }
+        // Two left clicks on the same slot in a quarter of a second, with
+        // something in hand: mode 6, which gathers every matching stack in the
+        // window onto the cursor. It has to be checked before the drag, or the
+        // second click of a double-click starts one.
+        if (button == 0 && !carried_.empty() && hovered->index == last_click_slot_ &&
+            clock_ - last_click_time_ < kDoubleClickSeconds) {
+            client.send_container_click(window_id(), state_id_, hovered->index, 0,
+                                        client::click_mode::kPickupAll, carried_);
+            last_click_slot_ = -1;
+            return true;
+        }
+        last_click_slot_ = hovered->index;
+        last_click_time_ = clock_;
+
+        // A press with something in hand waits to see whether the pointer
+        // moves; a press with an empty hand is a pickup and acts at once.
+        // Shift and the middle button are never drags.
+        if (!carried_.empty() && button != 2 && !input.shift_held) {
+            press_pending_ = true;
+            press_right_   = button == 1;
+            press_slot_    = hovered->index;
+            return true;
+        }
+        click_slot(client, hovered->index, button, input.shift_held, -1);
         return true;
     }
     return true;

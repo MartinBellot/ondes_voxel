@@ -147,6 +147,11 @@ struct Options {
     /// from,to: two clicks in the window that opens, a pickup and a place.
     /// The scripted half of the round trip the mandate asks for.
     std::string move_slots;
+    /// from,a,b,c…: pick the stack up from `from`, then spread it over the
+    /// rest with a left drag. Sixty-four stone over three slots is 21/21/21
+    /// with one left on the cursor, which is what the server was measured
+    /// doing and what this checks we ask it for.
+    std::string drag_slots;
     /// Print the open window's contents and the player's inventory at the end.
     bool dump_window{false};
     /// x,y,z[,yaw,pitch] to stand at once the server has spawned the player.
@@ -248,6 +253,8 @@ struct Options {
             options.stand_at = value("--stand-at=");
         } else if (argument.starts_with("--close-at=")) {
             options.close_at = static_cast<u32>(std::atoi(value("--close-at=").c_str()));
+        } else if (argument.starts_with("--drag-slots=")) {
+            options.drag_slots = value("--drag-slots=");
         } else if (argument == "--dump-window") {
             options.dump_window = true;
         } else if (argument.starts_with("--font-widths=")) {
@@ -885,6 +892,24 @@ int main(int argc, char** argv) {
             move_to = static_cast<i16>(std::atoi(options.move_slots.substr(comma + 1).c_str()));
         }
     }
+    std::vector<i16> drag_sequence;
+    if (!options.drag_slots.empty()) {
+        usize start = 0;
+        while (start <= options.drag_slots.size()) {
+            const auto end = options.drag_slots.find(',', start);
+            drag_sequence.push_back(static_cast<i16>(std::atoi(
+                options.drag_slots
+                    .substr(start, end == std::string::npos ? std::string::npos : end - start)
+                    .c_str())));
+            if (end == std::string::npos) {
+                break;
+            }
+            start = end + 1;
+        }
+    }
+    bool drag_pick_sent = false;
+    bool drag_sent      = false;
+
     bool move_pick_sent  = false;
     bool move_place_sent = false;
     bool inventory_opened = false;
@@ -1138,6 +1163,16 @@ int main(int argc, char** argv) {
             if (move_pick_sent && !move_place_sent && move_to >= 0 && rendered > 240) {
                 (*interface)->click_slot(*client, move_to, 0, false, -1);
                 move_place_sent = true;
+            }
+            if (drag_sequence.size() >= 2 && (*interface)->screen_open() && !drag_pick_sent &&
+                rendered > 200) {
+                (*interface)->click_slot(*client, drag_sequence.front(), 0, false, -1);
+                drag_pick_sent = true;
+            }
+            if (drag_pick_sent && !drag_sent && rendered > 240) {
+                (*interface)->drag_over(
+                    *client, std::span<const i16>(drag_sequence).subspan(1), false);
+                drag_sent = true;
             }
             if (options.dump_window && (*interface)->screen_open() && window_dump.empty() &&
                 rendered > 280) {
