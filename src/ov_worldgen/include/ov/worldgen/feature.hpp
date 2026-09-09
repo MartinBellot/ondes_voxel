@@ -106,6 +106,14 @@ public:
     /// cannot build is absent, and `unavailable()` says why.
     [[nodiscard]] const PlacedFeature* placed(std::string_view name) const;
 
+    /// A configured feature by name, e.g. "minecraft:fancy_oak", or nothing.
+    ///
+    /// Same contract as `placed`: a feature this interpreter could not build is
+    /// absent rather than inert. Public so that a probe world — one tree of a
+    /// named species per chunk — can run the species directly, without the
+    /// biome's feature list standing between the measurement and the placer.
+    [[nodiscard]] const Feature* configured(std::string_view name) const;
+
     [[nodiscard]] usize placed_count() const noexcept;
     [[nodiscard]] usize configured_count() const noexcept;
 
