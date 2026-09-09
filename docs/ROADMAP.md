@@ -511,12 +511,31 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       night_vision, hunger, weakness, poison, wither, health_boost, absorption,
       saturation, glowing, levitation, luck, unluck, slow_falling,
       conduit_power, dolphins_grace, bad_omen, hero_of_the_village, darkness
-- [ ] Pathfinding A* avec node evaluators (terrestre, aquatique, aérien)
-- [ ] Système de **goals** (mobs classiques)
+- [x] Pathfinding A* avec node evaluators (terrestre, aquatique, aérien)
+      *(**le même labyrinthe donné au vrai serveur et à nous donne la même
+      route** — ouvertures à −7, +7, −7, prises dans cet ordre une fois
+      chacune. Vitesse de poursuite à 0,7 %, rayon d'acquisition encadré
+      `]32, 40]`. Aquatique et aérien sont écrits, sans oracle et utilisés par
+      aucune des 8 espèces)*
+- [x] Système de **goals** (mobs classiques)
+      *(file par priorité, drapeaux de contrôle et **éviction**. Six bugs sont
+      sortis des mesures et aucun n'était visible autrement, dont un squelette
+      et une araignée qui se prenaient mutuellement pour cible et restaient
+      figés — trouvé en lançant le vrai serveur, pas par les tests)*
 - [ ] Système de **brains / activities / memories** (villageois, piglins,
       axolotls, grenouilles, warden)
-- [ ] Règles de spawn : lumière, biome, hauteur, plafond, densité, structure
-- [ ] Despawn, persistance, cap de mobs par catégorie
+- [~] Règles de spawn : lumière, biome, hauteur, plafond, densité, structure
+      *(**branché** : une boîte scellée et non éclairée rassemble 20 monstres en
+      trois minutes, les vaches n'apparaissent que dehors sur l'herbe éclairée.
+      Seuil de lumière identique au jeu — 26/35/27 apparitions à lumière 0 et
+      **zéro** de 1 à 10 — et cap monstres à 70 contre un plateau vanilla à
+      70,88. Le coût est nommé : 5 ticks sur 921 dépassent le budget, et c'est
+      le spawner qui fait son travail. La liste de mobs d'une seule biome est
+      appliquée partout, et le cap créatures n'est ni confirmé ni infirmé)*
+- [~] Despawn, persistance, cap de mobs par catégorie
+      *(les caps et la persistance sont là ; `decide_despawn` est écrit,
+      testé et **appelé par personne** — les mobs s'accumulent jusqu'au cap et
+      y restent)*
 - [ ] **Passifs (32)** : allay, axolotl, bat, camel, cat, chicken, cod, cow,
       donkey, fox, frog, glow_squid, horse, mooshroom, mule, ocelot, parrot,
       pig, pufferfish, rabbit, salmon, sheep, skeleton_horse, sniffer,
@@ -608,7 +627,9 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       faits, et rien n'est câblé dans le serveur)*
 - [~] **Fluides** : écoulement, sources, mélanges (pierre / cobble / obsidienne),
       poussée d'entités, waterlogging, colonnes de bulles, éponge
-      *(**3172/3172 positions** identiques au vrai serveur, dont 1444 sur
+      *(**branché au tick** : casser le bord d'un bassin fait un losange exact
+      dont le niveau est la distance de Manhattan, 121/121 positions.
+      **3172/3172 positions** identiques au vrai serveur, dont 1444 sur
       quatre labyrinthes à graine fixe jamais regardés pendant l'écriture des
       règles. La lave perd **2 niveaux par bloc** dans l'overworld et 1 dans le
       Nether ; le rayon de recherche du trou est exactement 5 ; l'eau qui coule
@@ -660,6 +681,15 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       boussole de récupération, bordure de monde, difficulté locale
 
 ### Interface et client
+- [~] Interface du client Ondes VOXEL : police, HUD, inventaire, conteneurs
+      *(**2414 glyphes**, avances validées glyphe par glyphe contre un oracle
+      indépendant — 0 désaccord ; HUD complet alimenté par les paquets que le
+      serveur envoyait déjà ; inventaire du joueur, coffres 9×1 à 9×6, établi
+      et les trois fours, avec un geste pour chacun des sept modes de clic ;
+      items en icône plate ou en modèle 3D. Coût : **+0,02 ms p50** et
+      +0,05 ms p99 d'enregistrement CPU, 0,3 % de la frame. Le serveur reste
+      autoritatif — une pile déposée survit à une reconnexion **et** à un
+      redémarrage du processus)*
 - [ ] Écrans : menu principal, création et sélection de monde, options
       (contrôles, vidéo, son, langue, accessibilité, packs), pause, mort,
       inventaire, établi, fours ×3, coffres ×4, entonnoir, distributeur,
