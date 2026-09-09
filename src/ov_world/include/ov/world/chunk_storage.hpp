@@ -19,6 +19,7 @@
 #include "ov/nbt/binary.hpp"
 #include "ov/registry/block_states.hpp"
 #include "ov/registry/registries.hpp"
+#include "ov/world/block_ticks.hpp"
 #include "ov/world/chunk.hpp"
 
 #include <optional>
@@ -44,6 +45,26 @@ struct ChunkCodecContext {
     const registry::Registries* registries{nullptr};
 
     AirStates air;
+
+    /// The scheduled ticks falling inside the chunk being written, and the tick
+    /// they are to be made relative to.
+    ///
+    /// Passed in rather than held on the chunk because the queues belong to the
+    /// **level**: vanilla addresses a tick by absolute position and only sorts
+    /// it into a chunk when that chunk is saved. A caller with no scheduler
+    /// leaves both spans empty and writes the two empty lists, which is what
+    /// this did unconditionally before there was anything to put in them.
+    ///
+    /// Filter with `ticks_to_nbt`, which takes the chunk's coordinates: handing
+    /// the whole level's queue here would write every pending tick in the world
+    /// into every region file.
+    std::span<const ScheduledTick> block_ticks{};
+    std::span<const ScheduledTick> fluid_ticks{};
+
+    /// What `t` is measured from. A tick is stored as a **delay relative to the
+    /// chunk's game time**, which is what lets a chunk sit unloaded and resume
+    /// where it left off.
+    i64 game_time{0};
 };
 
 /// The DataVersion a chunk file declares, if it declares one.

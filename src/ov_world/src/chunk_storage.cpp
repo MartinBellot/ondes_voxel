@@ -254,8 +254,17 @@ nbt::Document to_nbt(const Chunk& chunk, const ChunkCodecContext& context) {
         entities.list()->push_back(std::move(stored));
     }
     root.push_back(nbt::CompoundEntry{"block_entities", std::move(entities)});
-    root.push_back(nbt::CompoundEntry{"block_ticks", nbt::Tag::make_list(nbt::TagType::Compound)});
-    root.push_back(nbt::CompoundEntry{"fluid_ticks", nbt::Tag::make_list(nbt::TagType::Compound)});
+    // The two queues, filtered to this chunk and made relative to `game_time`.
+    // Empty spans still write empty lists rather than nothing: vanilla omits
+    // them, but a chunk this server wrote and then reloaded has to find the
+    // same shape it left, and an absent list and an empty one are already told
+    // apart on the read side.
+    root.push_back(nbt::CompoundEntry{
+        "block_ticks", ticks_to_nbt(context.block_ticks, chunk.position().x, chunk.position().z,
+                                    context.game_time)});
+    root.push_back(nbt::CompoundEntry{
+        "fluid_ticks", ticks_to_nbt(context.fluid_ticks, chunk.position().x, chunk.position().z,
+                                    context.game_time)});
 
     return document;
 }
