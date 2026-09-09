@@ -116,10 +116,15 @@ struct ClientEvents {
     /// Close Container, clientbound: the server is taking it away.
     std::optional<u8> close_window;
 
+    /// The game mode, from Login (play). Creative hides the hearts, the
+    /// haunches and the experience bar; a HUD that guesses shows a health bar
+    /// nothing is maintaining.
+    std::optional<u8> game_mode;
+
     [[nodiscard]] bool empty() const noexcept {
         return loaded.empty() && unloaded.empty() && changed.empty() && !teleport &&
                !time_of_day && !health && !experience && containers.empty() &&
-               container_slots.empty() && !open_screen && !close_window;
+               container_slots.empty() && !open_screen && !close_window && !game_mode;
     }
     void clear();
 };

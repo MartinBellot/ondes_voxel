@@ -68,6 +68,7 @@ ov_add_test(test_ov_render
         tests/test_chunk_mesher.cpp
         tests/test_frustum.cpp
         tests/test_mesher.cpp
+        tests/test_item_model.cpp
         tests/test_json.cpp
         tests/test_model.cpp
         tests/test_png.cpp

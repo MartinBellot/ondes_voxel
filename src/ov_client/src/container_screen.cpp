@@ -217,8 +217,12 @@ void ContainerScreen::draw(Gui& gui, const ItemRenderer& items, GuiTexture backg
 
     // The title, where vanilla puts it: eight pixels in, six down, in the dark
     // grey the backgrounds are drawn for, and with no shadow.
-    (void)gui.text(ox + 8.0F, oy + 6.0F, title_, 0xFF404040U, false);
+    //
+    // Not in the player's own inventory. Vanilla draws no title there — the
+    // word "Crafting" is painted into the texture — and adding one puts a
+    // second label over the panel where the player model goes.
     if (kind_ != ScreenKind::PlayerInventory) {
+        (void)gui.text(ox + 8.0F, oy + 6.0F, title_, 0xFF404040U, false);
         // "Inventory", over the player's own section. Vanilla labels it in
         // every container screen and not in the inventory screen itself.
         (void)gui.text(ox + 8.0F, oy + height_ - 94.0F, "Inventory", 0xFF404040U, false);

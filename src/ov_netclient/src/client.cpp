@@ -58,6 +58,7 @@ void ClientEvents::clear() {
     container_slots.clear();
     open_screen.reset();
     close_window.reset();
+    game_mode.reset();
 }
 
 struct Client::Impl {
@@ -277,6 +278,22 @@ void Client::Impl::handle_play(i32 packet_id, std::span<const u8> body) {
             break;
         }
 
+        case net::clientbound::kLoginPlay: {
+            // Only the first three fields, and only for the game mode: the
+            // registry codec that follows is the client's business and this
+            // client hard-codes what it needs. Entity id (Int), hardcore
+            // (Bool), then game mode (Unsigned Byte).
+            const auto entity_id = reader.read_i32();
+            const auto hardcore  = reader.read_u8();
+            const auto mode      = reader.read_u8();
+            if (!entity_id || !hardcore || !mode) {
+                return;
+            }
+            const std::lock_guard lock(mutex);
+            inbox.game_mode = *mode;
+            break;
+        }
+
         // ── What the interface reads ────────────────────────────────────
         //
         // Five packets the server has been sending since survival landed and
@@ -485,6 +502,8 @@ void Client::poll(ClientEvents& out) {
     out.experience  = impl_->inbox.experience;
     out.open_screen = std::move(impl_->inbox.open_screen);
     out.close_window = impl_->inbox.close_window;
+    out.game_mode    = impl_->inbox.game_mode;
+    impl_->inbox.game_mode.reset();
     impl_->inbox.health.reset();
     impl_->inbox.experience.reset();
     impl_->inbox.open_screen.reset();
