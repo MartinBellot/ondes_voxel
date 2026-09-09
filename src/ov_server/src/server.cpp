@@ -38,7 +38,9 @@
 #include "ov/registry/registries.hpp"
 #include "ov/world/chunk.hpp"
 #include "ov/world/chunk_storage.hpp"
+#include "ov/protocol/survival.hpp"
 #include "ov/world/level_dat.hpp"
+#include "survival_session.hpp"
 
 #include <fmt/format.h>
 
@@ -72,6 +74,10 @@
 namespace {
 
 using namespace ov;
+using ov::server::SurvivalIo;
+using ov::server::SurvivalOutcome;
+using ov::server::SurvivalPlayer;
+using ov::server::SurvivalSession;
 
 std::atomic<bool> g_stop_requested{false};
 
@@ -939,6 +945,24 @@ struct ItemEntity {
     i32 pickup_delay{10};
 };
 
+/// One experience orb lying in the world.
+///
+/// Its own type rather than an ItemEntity with a special item: an orb carries a
+/// *value* and no stack, it is attracted to a player instead of waiting to be
+/// walked into, and two of them can become one. None of that is true of a
+/// dropped stack.
+struct GroundOrb {
+    i32 entity_id{0};
+    f64 x{0.0};
+    f64 y{0.0};
+    f64 z{0.0};
+    i32 value{1};
+    /// The tick it appeared, for the five minutes vanilla gives it.
+    i64 born{0};
+    /// Ticks before anyone may pick it up.
+    i32 delay{0};
+};
+
 struct Player {
     /// Held so the tick thread can send keep-alives without going through the
     /// packet handler. Dropped in on_disconnect, which is what keeps this from
@@ -992,6 +1016,14 @@ struct Player {
     i32  dig_y{0};
     i32  dig_z{0};
     i64  dig_started_tick{0};
+
+    /// Health, hunger and experience, and the packets they owe this client.
+    /// Everything about it lives in survival_session.{hpp,cpp}.
+    SurvivalSession survival;
+    /// Set by the network thread when the client presses "respawn", acted on by
+    /// the tick. A flag rather than a call, because respawning moves the player
+    /// and only the tick thread may do that.
+    bool wants_respawn{false};
 
     /// The key this player is remembered under between sessions.
     std::string identity;
@@ -1252,6 +1284,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     // Les piles au sol. Sous le même verrou que les joueurs : elles n'existent
     // que pour être ramassées, et le ramassage lit les deux.
     std::vector<ItemEntity> ground_items;
+    /// Experience orbs on the ground. Beside the items for the same reason:
+    /// both are entities the tick owns and the network thread never touches.
+    std::vector<GroundOrb> ground_orbs;
 
     // Le tirage des butins. Une seule source, sur le thread de tick : deux
     // joueurs qui cassent le même bloc au même tick doivent obtenir deux
@@ -2266,6 +2301,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         // movement needs collision, which needs the block flag
                         // table; accepting the client's word until then is a
                         // stated gap rather than a silent one.
+                        const f64 before_x = player.x;
+                        const f64 before_z = player.z;
                         if (movement->x) {
                             player.x = *movement->x;
                             player.y = *movement->y;
@@ -2278,6 +2315,20 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         // Standing or not divides the breaking speed by five,
                         // so this is not decoration.
                         player.on_ground = movement->on_ground;
+
+                        // ── survival: the fall, and the sprint ─────────────
+                        //
+                        // Fed here rather than in the tick because a fall is
+                        // accumulated per movement packet: two updates in one
+                        // tick would otherwise count as one, and a nine-block
+                        // fall came out at five points instead of six.
+                        if (options.survival && movement->x) {
+                            const f64 dx = *movement->x - before_x;
+                            const f64 dz = *movement->z - before_z;
+                            player.survival.note_movement(player.y, player.on_ground,
+                                                          std::sqrt(dx * dx + dz * dz));
+                        }
+                        // ── end survival ───────────────────────────────────
 
                         if (motion_log != nullptr) {
                             // Tick, name, position, look, ground. One line per
@@ -2331,6 +2382,34 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         }
                         return true;
                     }
+
+                    // ── survival: the respawn button ───────────────────────
+                    //
+                    // The only packet the survival system needs from the
+                    // network thread. Everything else it does happens in the
+                    // tick, which is where the world can be read safely.
+                    case net::serverbound::kClientCommand: {
+                        const auto command = net::parse_client_command(body);
+                        if (command && *command == net::ClientCommand::PerformRespawn) {
+                            player.wants_respawn = true;
+                        }
+                        return true;
+                    }
+
+                    // Sprinting is the only movement that costs hunger, and it
+                    // cannot be told from a walk by watching positions.
+                    case net::serverbound::kPlayerCommand: {
+                        if (const auto command = net::parse_player_command(body)) {
+                            if (command->action == net::PlayerCommandAction::StartSprinting) {
+                                player.survival.sprinting = true;
+                            } else if (command->action ==
+                                       net::PlayerCommandAction::StopSprinting) {
+                                player.survival.sprinting = false;
+                            }
+                        }
+                        return true;
+                    }
+                    // ── end survival ───────────────────────────────────────
 
                     case net::serverbound::kSetHeldItem: {
                         const auto slot = net::parse_set_held_item(body);
@@ -3226,6 +3305,235 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 }
             }
         }
+
+        // ── survival: health, hunger, experience, death and respawn ────────
+        //
+        // One block, and it delegates: SurvivalSession owns the state and the
+        // packets, ov_gameplay owns the rules. What is here is the part that
+        // needs the server — the inventory to drop, the orbs to place, and the
+        // teleport that puts a respawned player back on the ground.
+        if (options.survival) {
+            std::unique_lock survival_lock{players_mutex, std::try_to_lock};
+            if (survival_lock.owns_lock()) {
+                std::vector<ItemEntity> death_drops;
+                for (auto& [survival_key, who] : players) {
+                    if (!who.confirmed || !who.connection) {
+                        continue;
+                    }
+                    const SurvivalIo io{
+                        .send      = [&](i32 id, std::span<const u8> payload) {
+                            if (const auto framed = net::encode_packet(id, payload)) {
+                                who.connection->send(*framed);
+                            }
+                        },
+                        .broadcast = [&](i32 id, std::span<const u8> payload) {
+                            broadcast(who.connection.get(), id, payload);
+                        }};
+                    // Are their eyes under water? Vanilla measures the block
+                    // at eye height, not at the feet: standing waist-deep is
+                    // not drowning, and using the feet would suffocate anyone
+                    // who waded in. 1.62 is the player's eye height.
+                    bool submerged = false;
+                    if (blocks) {
+                        const std::scoped_lock water_lock{chunk_mutex};
+                        const auto             eyes = net::WirePosition{
+                            static_cast<i32>(std::floor(who.x)),
+                            static_cast<i32>(std::floor(who.y + 1.62)),
+                            static_cast<i32>(std::floor(who.z))};
+                        const std::string_view name =
+                            blocks->block_name(blocks->block_of(block_at(eyes)));
+                        submerged = name == "minecraft:water";
+                    }
+                    const SurvivalPlayer view{.entity_id = who.entity_id,
+                                              .name      = who.name,
+                                              .x         = who.x,
+                                              .y         = who.y,
+                                              .z         = who.z,
+                                              .on_ground = who.on_ground,
+                                              // The survival block only runs
+                                              // with --survival, so this is
+                                              // always a survival player.
+                                              .game_mode = 0,
+                                              .submerged = submerged};
+                    SurvivalOutcome outcome = who.survival.tick(
+                        view, io, gameplay::Difficulty::Normal, true,
+                        static_cast<f64>(world::WorldShape::overworld().min_y));
+
+                    if (who.wants_respawn) {
+                        who.wants_respawn = false;
+                        who.survival.spawn = SurvivalSession::SpawnPoint{
+                            0.5, static_cast<f64>(Superflat::kSurfaceY) + 1.0, 0.5, false};
+                        if (who.survival.perform_respawn(view, io, outcome, 0)) {
+                            who.x = outcome.respawn_x;
+                            who.y = outcome.respawn_y;
+                            who.z = outcome.respawn_z;
+                            who.pending_teleport = who.entity_id * 1000 + 7;
+                            io.send(net::clientbound::kSynchronizePosition,
+                                    net::encode_synchronize_position(who.x, who.y, who.z, who.yaw,
+                                                                     who.pitch,
+                                                                     who.pending_teleport));
+                            // A Respawn packet makes the client throw its
+                            // world away, so the server has to forget what it
+                            // thinks the client holds. Without this the
+                            // difference-based streaming sends nothing at all
+                            // and the player comes back standing in the void.
+                            who.loaded_chunks.clear();
+                            who.pending_chunks.clear();
+                            who.streaming       = false;
+                            who.broadcast_valid = false;
+                            stream_chunks(who.connection, who);
+                            broadcast(who.connection.get(), net::clientbound::kEntityTeleport,
+                                      net::encode_entity_teleport(who.entity_id, who.x, who.y,
+                                                                  who.z, who.yaw, who.pitch,
+                                                                  true));
+                        }
+                    }
+
+                    if (!outcome.died) {
+                        continue;
+                    }
+                    OV_LOG_INFO("{} died at {:.1f} {:.1f} {:.1f}, dropping {} experience",
+                                who.name, who.x, who.y, who.z, outcome.dropped_experience);
+                    // The inventory goes on the floor, as vanilla does with
+                    // keepInventory off. Cleared first, so a client that
+                    // reconnects before the tick finishes cannot be handed the
+                    // same stacks twice.
+                    for (net::ItemStack& stack : who.inventory) {
+                        if (stack.item_id == 0 || stack.count <= 0) {
+                            continue;
+                        }
+                        ItemEntity item;
+                        item.entity_id = next_entity_id.fetch_add(1);
+                        item.uuid = net::Uuid{0x4f564954454d0000ULL | static_cast<u64>(item.entity_id),
+                                              static_cast<u64>(item.entity_id) *
+                                                  0x9E3779B97F4A7C15ULL};
+                        item.x     = who.x;
+                        item.y     = who.y + 1.0;
+                        item.z     = who.z;
+                        item.stack = stack;
+                        item.born  = clock.tick_count();
+                        death_drops.push_back(std::move(item));
+                        stack = net::ItemStack{};
+                    }
+                    // The orbs, at the same place. Their own packet: an orb
+                    // carries a value rather than a type, so Spawn Entity
+                    // cannot express one.
+                    for (usize orb = 0; orb < outcome.orb_count; ++orb) {
+                        GroundOrb dropped;
+                        dropped.entity_id = next_entity_id.fetch_add(1);
+                        dropped.x         = who.x;
+                        dropped.y         = who.y + 0.5;
+                        dropped.z         = who.z;
+                        dropped.value     = outcome.orbs[orb];
+                        dropped.born      = clock.tick_count();
+                        // Half a second before the player who died can walk back
+                        // into their own experience, the same grace a dropped
+                        // stack gets.
+                        dropped.delay = 10;
+                        broadcast(nullptr, net::clientbound::kSpawnExperienceOrb,
+                                  net::encode_spawn_experience_orb(
+                                      dropped.entity_id, dropped.x, dropped.y, dropped.z,
+                                      static_cast<i16>(dropped.value)));
+                        ground_orbs.push_back(dropped);
+                    }
+                }
+                if (!death_drops.empty()) {
+                    // publish_items moves each stack into ground_items itself.
+                    publish_items(death_drops);
+                }
+
+                // The orbs on the ground: they merge, they chase, and they are
+                // collected. Without this an orb is a packet the client draws
+                // forever and nobody can ever pick up.
+                const gameplay::OrbConstants orb_rules{};
+                const i64                    now = clock.tick_count();
+                for (usize i = ground_orbs.size(); i-- > 0;) {
+                    GroundOrb& orb = ground_orbs[i];
+                    if (orb.delay > 0) {
+                        --orb.delay;
+                        continue;
+                    }
+
+                    // Merge with a neighbour, oldest first so the survivor keeps
+                    // the earlier birthday and the pile still expires.
+                    bool merged = false;
+                    for (usize j = 0; j < i; ++j) {
+                        GroundOrb& other = ground_orbs[j];
+                        const f64  dx    = other.x - orb.x;
+                        const f64  dy    = other.y - orb.y;
+                        const f64  dz    = other.z - orb.z;
+                        const gameplay::OrbState a{orb.value,
+                                                   static_cast<i32>(now - orb.born), orb.delay};
+                        const gameplay::OrbState b{other.value,
+                                                   static_cast<i32>(now - other.born),
+                                                   other.delay};
+                        if (gameplay::orbs_can_merge(a, b, dx * dx + dy * dy + dz * dz)) {
+                            other.value += orb.value;
+                            other.born = std::min(other.born, orb.born);
+                            broadcast(nullptr, net::clientbound::kRemoveEntities,
+                                      net::encode_remove_entity(orb.entity_id));
+                            ground_orbs.erase(ground_orbs.begin() + static_cast<isize>(i));
+                            merged = true;
+                            break;
+                        }
+                    }
+                    if (merged) {
+                        continue;
+                    }
+
+                    Player* taker  = nullptr;
+                    f64     nearest = orb_rules.follow_range * orb_rules.follow_range;
+                    for (auto& [orb_key, candidate] : players) {
+                        if (!candidate.confirmed || candidate.survival.awaiting_respawn) {
+                            continue;
+                        }
+                        const f64 dx = candidate.x - orb.x;
+                        const f64 dy = candidate.y + 0.9 - orb.y;
+                        const f64 dz = candidate.z - orb.z;
+                        const f64 d2 = dx * dx + dy * dy + dz * dz;
+                        if (d2 < nearest) {
+                            nearest = d2;
+                            taker   = &candidate;
+                        }
+                    }
+
+                    if (taker != nullptr) {
+                        const f64 dx = taker->x - orb.x;
+                        const f64 dy = taker->y + 0.9 - orb.y;
+                        const f64 dz = taker->z - orb.z;
+                        if (nearest <= orb_rules.pickup_range * orb_rules.pickup_range) {
+                            taker->survival.award_experience(orb.value);
+                            broadcast(nullptr, net::clientbound::kTakeItem,
+                                      net::encode_take_item(orb.entity_id, taker->entity_id, 1));
+                            broadcast(nullptr, net::clientbound::kRemoveEntities,
+                                      net::encode_remove_entity(orb.entity_id));
+                            ground_orbs.erase(ground_orbs.begin() + static_cast<isize>(i));
+                            continue;
+                        }
+                        // Otherwise it moves toward them, harder the closer it
+                        // already is — which is what makes a pile of orbs
+                        // converge rather than drift in at one speed.
+                        const f64 distance = std::sqrt(nearest);
+                        const f64 pull =
+                            orb_rules.follow_speed * (1.0 - distance / orb_rules.follow_range);
+                        orb.x += dx / distance * pull;
+                        orb.y += dy / distance * pull;
+                        orb.z += dz / distance * pull;
+                        broadcast(nullptr, net::clientbound::kEntityTeleport,
+                                  net::encode_entity_teleport(orb.entity_id, orb.x, orb.y, orb.z,
+                                                              0.0F, 0.0F, false));
+                        continue;
+                    }
+
+                    if (now - orb.born >= orb_rules.lifetime_ticks) {
+                        broadcast(nullptr, net::clientbound::kRemoveEntities,
+                                  net::encode_remove_entity(orb.entity_id));
+                        ground_orbs.erase(ground_orbs.begin() + static_cast<isize>(i));
+                    }
+                }
+            }
+        }
+        // ── end survival ───────────────────────────────────────────────────
 
         if (options.survival) {
             std::unique_lock dig_lock{players_mutex, std::try_to_lock};
