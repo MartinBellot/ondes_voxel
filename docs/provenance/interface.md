@@ -265,7 +265,11 @@ MoltenVK.
 mesurable sur le GPU.** Sur un budget p99 de 17,77 ms avec vsync dont 0,41 ms
 d'enregistrement, c'est 12 % de la part CPU et 0,3 % de la frame.
 
-**Un écran ouvert coûte +0,50 ms p50 / +1,98 ms p99 de GPU.** Ce n'est pas
+Les p50 ont été reproduits à l'identique sur deux séries (0,03 / 0,03 et
+1,10 / 1,10) ; les p99 varient de 2,94 à 4,91 ms selon le ruissellement de
+chunks en cours, donc c'est le p50 qui porte la conclusion ici.
+
+**Un écran ouvert coûte +0,50 ms p50 / +2 à +4 ms p99 de GPU.** Ce n'est pas
 l'interface, c'est *un* quad : le fond assombri couvre les 3,7 mégapixels de la
 fenêtre en alpha. Le reste — le fond du conteneur, les 46 emplacements, le
 texte — tient dans les 0,04 ms de CPU supplémentaires.
