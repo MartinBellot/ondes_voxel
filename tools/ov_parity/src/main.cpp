@@ -24,10 +24,14 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cmath>
 #include <limits>
 #include <filesystem>
+#include <fstream>
 #include <map>
+#include <optional>
 #include <string>
+#include <vector>
 
 using namespace ov;
 
@@ -66,6 +70,26 @@ struct Options {
     /// and a term biased by a few hundredths is exactly what a surface one
     /// block low looks like.
     bool stats{false};
+    /// Compare the *shape* of the surface, not only its height.
+    ///
+    /// A percentage cannot tell a field that is too large from a field that is
+    /// the wrong field: both lower the score by roughly as much. The surface
+    /// height read as a map can. Its standard deviation answers scale, its
+    /// structure function answers which wavelengths are present, and its
+    /// correlation with the game's own map answers whether our noise is the
+    /// same noise at all — an octave stack seeded differently correlates at
+    /// chance however well its amplitude is tuned.
+    bool surface{false};
+    /// Where `--surface` writes its raw per-column map, one line per column.
+    ///
+    /// The aggregate figures above can rank two candidates but they cannot
+    /// say *why* one wins, because a term that is simply absent scores almost
+    /// as well as a term that is right. Two runs dumped and regressed against
+    /// each other can: the residual the game leaves when a term is removed is
+    /// a field, and asking whether a candidate reproduces that field — and at
+    /// what slope — is a different question from asking whether it lowers an
+    /// average.
+    std::string dump;
     /// Dump one column: what the game has, and every term we compute.
     std::string column;
     std::filesystem::path pack{"data/vanilla/1.20.1/registry.ovpack"};
@@ -98,6 +122,10 @@ struct Options {
             options.carvers = true;
         } else if (argument == "--stats") {
             options.stats = true;
+        } else if (argument == "--surface") {
+            options.surface = true;
+        } else if (argument.starts_with("--dump=")) {
+            options.dump = value("--dump=");
         } else if (argument.starts_with("--column=")) {
             options.column = value("--column=");
         } else if (argument.starts_with("--pack=")) {
@@ -343,6 +371,236 @@ int main(int argc, char** argv) {
                        term_initial ? term_initial->compute({cx, y, cz}) : 0.0,
                        generator.density_at(cx, y, cz),
                        generator.is_solid(cx, y, cz) ? "solid" : "");
+        }
+        return 0;
+    }
+
+    if (options.surface) {
+        auto loaded = registry::BlockRegistry::load(options.pack);
+        if (!loaded) {
+            OV_LOG_ERROR("registry {}: run tools/ov_datagen first", options.pack.string());
+            return 1;
+        }
+        registry::BlockRegistry        blocks = std::move(*loaded);
+        const worldgen::ChunkGenerator generator{*router, *biomes, blocks};
+
+        /// One column: what the game put on top, what we put on top, and
+        /// whether the game left it dry. Every column of every chunk rather
+        /// than a stride, because the statistics below are about *neighbours*
+        /// and a stride of three has no neighbour at distance one.
+        struct Column {
+            i32  theirs{0};
+            i32  ours{0};
+            bool dry{false};
+        };
+        std::map<i64, Column> map;
+        const auto            key = [](i32 x, i32 z) {
+            return (static_cast<i64>(x) << 32) | static_cast<i64>(static_cast<u32>(z));
+        };
+
+        usize read_chunks = 0;
+        for (const auto& entry : std::filesystem::directory_iterator(options.world / "region")) {
+            if (entry.path().extension() != ".mca") {
+                continue;
+            }
+            auto region = nbt::RegionFile::open(entry.path());
+            if (!region) {
+                continue;
+            }
+            for (u32 index = 0;
+                 index < 1024 && read_chunks < static_cast<usize>(options.chunks); ++index) {
+                if (!region->has_chunk(index % 32, index / 32)) {
+                    continue;
+                }
+                auto document = region->read_chunk(index % 32, index / 32);
+                if (!document) {
+                    continue;
+                }
+                const nbt::Tag* status = document->root.find("Status");
+                if (status == nullptr || status->as_string() != "minecraft:full") {
+                    continue;
+                }
+                const nbt::Tag* x_pos = document->root.find("xPos");
+                const nbt::Tag* z_pos = document->root.find("zPos");
+                if (x_pos == nullptr || z_pos == nullptr) {
+                    continue;
+                }
+                const auto chunk_x = static_cast<i32>(x_pos->as_i64());
+                const auto chunk_z = static_cast<i32>(z_pos->as_i64());
+
+                for (i32 local_z = 0; local_z < 16; ++local_z) {
+                    for (i32 local_x = 0; local_x < 16; ++local_x) {
+                        const i32 world_x = chunk_x * 16 + local_x;
+                        const i32 world_z = chunk_z * 16 + local_z;
+                        i32       theirs  = -65;
+                        i32       ours    = -65;
+                        for (i32 probe = 200; probe > -64; --probe) {
+                            if (theirs == -65) {
+                                const auto* at = block_at(*document, local_x, probe, local_z);
+                                if (at != nullptr && is_solid_name(*at)) {
+                                    theirs = probe;
+                                }
+                            }
+                            if (ours == -65 && generator.is_solid(world_x, probe, world_z)) {
+                                ours = probe;
+                            }
+                            if (theirs != -65 && ours != -65) {
+                                break;
+                            }
+                        }
+                        if (theirs == -65 || ours == -65) {
+                            continue;
+                        }
+                        bool wet = false;
+                        for (i32 above = 1; above <= 8 && !wet; ++above) {
+                            const auto* at = block_at(*document, local_x, theirs + above, local_z);
+                            wet = at != nullptr &&
+                                  (*at == "minecraft:water" || *at == "minecraft:ice" ||
+                                   *at == "minecraft:seagrass" || *at == "minecraft:kelp_plant");
+                        }
+                        map[key(world_x, world_z)] = Column{theirs, ours, !wet};
+                    }
+                }
+                ++read_chunks;
+            }
+        }
+
+        f64   sum_theirs = 0.0;
+        f64   sum_ours   = 0.0;
+        f64   sum_tt     = 0.0;
+        f64   sum_oo     = 0.0;
+        f64   sum_to     = 0.0;
+        f64   sum_error  = 0.0;
+        f64   sum_error2 = 0.0;
+        usize dry        = 0;
+        for (const auto& [at, column] : map) {
+            if (!column.dry) {
+                continue;
+            }
+            const auto t = static_cast<f64>(column.theirs);
+            const auto o = static_cast<f64>(column.ours);
+            sum_theirs += t;
+            sum_ours += o;
+            sum_tt += t * t;
+            sum_oo += o * o;
+            sum_to += t * o;
+            sum_error += o - t;
+            sum_error2 += (o - t) * (o - t);
+            ++dry;
+        }
+        if (dry < 16) {
+            OV_LOG_ERROR("only {} dry columns; raise --chunks", dry);
+            return 1;
+        }
+
+        if (!options.dump.empty()) {
+            std::ofstream out(options.dump);
+            if (!out) {
+                OV_LOG_ERROR("cannot write {}", options.dump);
+                return 1;
+            }
+            out << "# x z dry theirs ours\n";
+            for (const auto& [at, column] : map) {
+                out << static_cast<i32>(at >> 32) << ' '
+                    << static_cast<i32>(static_cast<u32>(at & 0xFFFFFFFF)) << ' '
+                    << (column.dry ? 1 : 0) << ' ' << column.theirs << ' ' << column.ours << '\n';
+            }
+            OV_LOG_INFO("wrote {} columns to {}", map.size(), options.dump);
+        }
+        const auto n         = static_cast<f64>(dry);
+        const f64  mean_t    = sum_theirs / n;
+        const f64  mean_o    = sum_ours / n;
+        const f64  var_t     = std::max(0.0, sum_tt / n - mean_t * mean_t);
+        const f64  var_o     = std::max(0.0, sum_oo / n - mean_o * mean_o);
+        const f64  covariance = sum_to / n - mean_t * mean_o;
+        const f64  correlation =
+            var_t > 0.0 && var_o > 0.0 ? covariance / std::sqrt(var_t * var_o) : 0.0;
+
+        fmt::print("\nseed {}, {} chunks, {} columns, {} of them dry\n", options.seed,
+                   read_chunks, map.size(), dry);
+        fmt::print("\nsurface height over dry land\n");
+        fmt::print("  {:>24} {:>10} {:>10}\n", "", "the game", "ours");
+        fmt::print("  {:>24} {:>10.3f} {:>10.3f}\n", "mean", mean_t, mean_o);
+        fmt::print("  {:>24} {:>10.3f} {:>10.3f}\n", "standard deviation", std::sqrt(var_t),
+                   std::sqrt(var_o));
+        fmt::print("  {:>24} {:>10.3f}\n", "mean error (ours-theirs)", sum_error / n);
+        fmt::print("  {:>24} {:>10.3f}\n", "rms error", std::sqrt(sum_error2 / n));
+        fmt::print("  {:>24} {:>10.4f}\n", "correlation", correlation);
+
+        // The structure function: the mean squared difference between two
+        // columns d apart. It is a spectrum read in the space domain, and it
+        // is what separates a field that is merely too large from a field
+        // missing its longest wavelengths — the first raises every d by the
+        // same factor, the second only the large ones.
+        constexpr std::array<i32, 12> kDistances{1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64};
+        fmt::print("\nstructure function of the surface, rms height difference at distance d\n");
+        fmt::print("  {:>4} {:>10} {:>10} {:>10} {:>10}\n", "d", "the game", "ours", "ratio",
+                   "pairs");
+        for (const i32 distance : kDistances) {
+            f64   theirs_sum = 0.0;
+            f64   ours_sum   = 0.0;
+            usize pairs      = 0;
+            for (const auto& [at, column] : map) {
+                if (!column.dry) {
+                    continue;
+                }
+                const auto x = static_cast<i32>(at >> 32);
+                const auto z = static_cast<i32>(static_cast<u32>(at & 0xFFFFFFFF));
+                for (const auto& [dx, dz] :
+                     std::array<std::array<i32, 2>, 2>{{{distance, 0}, {0, distance}}}) {
+                    const auto found = map.find(key(x + dx, z + dz));
+                    if (found == map.end() || !found->second.dry) {
+                        continue;
+                    }
+                    const auto dt =
+                        static_cast<f64>(found->second.theirs - column.theirs);
+                    const auto doo = static_cast<f64>(found->second.ours - column.ours);
+                    theirs_sum += dt * dt;
+                    ours_sum += doo * doo;
+                    ++pairs;
+                }
+            }
+            if (pairs == 0) {
+                continue;
+            }
+            const f64 their_rms = std::sqrt(theirs_sum / static_cast<f64>(pairs));
+            const f64 our_rms   = std::sqrt(ours_sum / static_cast<f64>(pairs));
+            fmt::print("  {:>4} {:>10.3f} {:>10.3f} {:>10.3f} {:>10}\n", distance, their_rms,
+                       our_rms, their_rms > 0.0 ? our_rms / their_rms : 0.0, pairs);
+        }
+
+        // And the same reading of the noise itself, with no reference world
+        // involved. It says which wavelengths this build's base_3d_noise
+        // actually carries, so that the surface figures above can be read as a
+        // consequence rather than a coincidence.
+        if (const auto* base = router->function("minecraft:overworld/base_3d_noise")) {
+            fmt::print("\nbase_3d_noise itself, rms difference at distance d along x (y = 64)\n");
+            fmt::print("  {:>4} {:>12}\n", "d", "rms");
+            f64   noise_sum2 = 0.0;
+            usize noise_n    = 0;
+            for (i32 x = -1024; x <= 1024; x += 7) {
+                for (i32 z = -1024; z <= 1024; z += 11) {
+                    const f64 value = base->compute({x, 64, z});
+                    noise_sum2 += value * value;
+                    ++noise_n;
+                }
+            }
+            fmt::print("  {:>4} {:>12.6f}   (rms of the field itself)\n", 0,
+                       std::sqrt(noise_sum2 / static_cast<f64>(noise_n)));
+            for (const i32 distance : kDistances) {
+                f64   sum2  = 0.0;
+                usize count = 0;
+                for (i32 x = -1024; x <= 1024; x += 7) {
+                    for (i32 z = -1024; z <= 1024; z += 11) {
+                        const f64 difference =
+                            base->compute({x + distance, 64, z}) - base->compute({x, 64, z});
+                        sum2 += difference * difference;
+                        ++count;
+                    }
+                }
+                fmt::print("  {:>4} {:>12.6f}\n", distance,
+                           std::sqrt(sum2 / static_cast<f64>(count)));
+            }
         }
         return 0;
     }

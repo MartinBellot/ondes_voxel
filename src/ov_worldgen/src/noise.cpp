@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <limits>
 #include <string>
 
@@ -242,6 +243,27 @@ namespace {
 /// horizontal wavelength is set by it.
 constexpr f64 kOldNoiseScale = 684.412;
 
+/// Temporary instruments. Two arithmetics divide this noise by four and the
+/// documentation names neither, so both are made runnable and the reference
+/// world decides. Removed once it has.
+[[nodiscard]] usize octave_count_from_environment() {
+    const char* text = std::getenv("OV_BASE3D_OCTAVES");
+    if (text == nullptr) {
+        return 16;
+    }
+    const long value = std::strtol(text, nullptr, 10);
+    return value <= 0 || value > 16 ? 16 : static_cast<usize>(value);
+}
+
+[[nodiscard]] f64 second_divisor_from_environment() {
+    const char* text = std::getenv("OV_BASE3D_DIV2");
+    if (text == nullptr) {
+        return 128.0;
+    }
+    const f64 value = std::strtod(text, nullptr);
+    return value == 0.0 ? 128.0 : value;
+}
+
 }  // namespace
 
 BlendedNoise::LegacyStack BlendedNoise::LegacyStack::create(math::XoroshiroRandomSource& random,
@@ -267,11 +289,14 @@ BlendedNoise::LegacyStack BlendedNoise::LegacyStack::create(math::XoroshiroRando
 BlendedNoise BlendedNoise::create(math::XoroshiroRandomSource& random, f64 xz_scale, f64 y_scale,
                                   f64 xz_factor, f64 y_factor, f64 smear_scale_multiplier) {
     BlendedNoise noise;
+    const usize limit_octaves = octave_count_from_environment();
+    const auto  limit_first   = -static_cast<i32>(limit_octaves) + 1;
     // All three from the same generator, in this order: the two limits at
     // sixteen octaves each, then the selector at eight.
-    noise.min_limit_ = LegacyStack::create(random, -15, 16);
-    noise.max_limit_ = LegacyStack::create(random, -15, 16);
+    noise.min_limit_ = LegacyStack::create(random, limit_first, limit_octaves);
+    noise.max_limit_ = LegacyStack::create(random, limit_first, limit_octaves);
     noise.main_      = LegacyStack::create(random, -7, 8);
+    noise.second_divisor_ = second_divisor_from_environment();
 
     noise.xz_multiplier_          = kOldNoiseScale * xz_scale;
     noise.y_multiplier_           = kOldNoiseScale * y_scale;
@@ -292,11 +317,11 @@ BlendedNoise BlendedNoise::create(math::XoroshiroRandomSource& random, f64 xz_sc
     // first version of this line produced six hundredths of a thousandth.
     f64 bound = 0.0;
     f64 weight = 1.0;
-    for (usize i = 0; i < 16; ++i) {
+    for (usize i = 0; i < limit_octaves; ++i) {
         bound += 2.0 * weight;
         weight *= 2.0;
     }
-    noise.max_value_ = bound / 512.0 / 128.0;
+    noise.max_value_ = bound / 512.0 / noise.second_divisor_;
     return noise;
 }
 
@@ -353,7 +378,7 @@ f64 BlendedNoise::value(i32 x, i32 y, i32 z) const noexcept {
     }
 
     const f64 t = std::clamp(blend, 0.0, 1.0);
-    return (low / 512.0 + (high / 512.0 - low / 512.0) * t) / 128.0;
+    return (low / 512.0 + (high / 512.0 - low / 512.0) * t) / second_divisor_;
 }
 
 }  // namespace ov::worldgen
