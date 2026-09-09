@@ -19,6 +19,7 @@
 #include "ov/worldgen/biome_source.hpp"
 #include "ov/worldgen/carver.hpp"
 #include "ov/worldgen/density.hpp"
+#include "ov/worldgen/surface_system.hpp"
 
 #include <expected>
 
@@ -34,6 +35,16 @@ public:
     /// The chunk must already have the world's shape; only its contents are
     /// written.
     void generate(world::Chunk& chunk) const;
+
+    /// Give the generator the surface rules, so a generated chunk gets grass,
+    /// dirt, sand, gravel, snow, the desert's sandstone, the badlands' clay
+    /// bands and the bedrock floor rather than bare stone.
+    ///
+    /// Optional, and the option is not laziness: the noise stage is measured on
+    /// its own against the reference world, and a harness that wants that
+    /// number needs a generator that stops there. Not owned — the system
+    /// outlives the generator.
+    void set_surface_system(const SurfaceSystem* surface) noexcept { surface_ = surface; }
 
     /// Whether the noise says a position is solid. Exposed because a parity
     /// harness wants the decision rather than the block, and because the
@@ -59,6 +70,7 @@ private:
     const BiomeSource*             biomes_;
     const registry::BlockRegistry* blocks_;
     const DensityFunction*         density_{nullptr};
+    const SurfaceSystem*           surface_{nullptr};
     const CarverStage*             carvers_{nullptr};
 
     registry::BlockStateId stone_{};
