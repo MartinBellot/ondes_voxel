@@ -35,6 +35,6 @@ ov_add_test(test_ov_gameplay
         tests/test_physics.cpp
         tests/test_connections.cpp
         tests/test_loot.cpp
-    DEPS ov_gameplay
+    DEPS ov_gameplay simdjson::simdjson
     LABELS unit
 )

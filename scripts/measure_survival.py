@@ -779,20 +779,57 @@ def campaign_always_edible(server: Server, bot: Bot, foods: list[str]) -> dict:
     out = {}
     sequence = 90000
     for item in foods:
-        fill_food(server, bot)
-        # Spend the pool and nothing else. Six wraps at 1.28 exhaustion a tick
-        # is about a second; the bar cannot move until the pool is empty.
-        for _ in range(24):
-            saturation = number(server.batch([f"data get entity {BOT} foodSaturationLevel"]))
-            if saturation is not None and saturation <= 0.0:
+        if bot.lost:
+            print(f"  probe lost at {item}; reconnecting")
+            try:
+                bot.socket.close()
+            except OSError:
+                pass
+            bot.__dict__.update(Bot(PORT).__dict__)
+            bot.lost = False
+            bot.pump(2.0)
+            server.batch([f"gamemode survival {BOT}"])
+
+        # Spend the pool and nothing else — and stop *exactly* when it is empty.
+        #
+        # The first version polled every 0.3 s at amplifier 255, which charges
+        # 1.28 exhaustion a tick: six ticks is two whole points, so it sailed
+        # past zero saturation and took the bar down to 19 with it. Seventeen of
+        # the forty foods came back "could not reach a full bar", golden apple
+        # and chorus fruit among them — which are exactly the ones this campaign
+        # exists to classify.
+        #
+        # So the last stretch runs at amplifier 15, which charges 0.08 a tick:
+        # a fifth of a second is 0.016 of a point, and the bar cannot move.
+        for _ in range(60):
+            fill_food(server, bot)
+            for _ in range(40):
+                now = read_player(server)
+                saturation = now["saturation"]
+                food = now["food"]
+                if saturation is None or food is None:
+                    break
+                if saturation <= 0.0:
+                    break
+                if food < 20:
+                    # Overshot anyway. Refill and try again rather than
+                    # reporting a measurement taken in the wrong state.
+                    saturation = None
+                    break
+                amplifier = 255 if saturation > 3.0 else 15
+                server.batch([f"effect give {BOT} minecraft:hunger 2 {amplifier} true"])
+                bot.pump(0.3 if amplifier == 255 else 0.2)
+            server.batch([f"effect clear {BOT}"])
+            bot.pump(0.2)
+            before = read_player(server)
+            if before["food"] is not None and int(before["food"]) >= 20 and \
+                    (before["saturation"] or 0.0) <= 0.0:
                 break
-            server.batch([f"effect give {BOT} minecraft:hunger 2 255 true"])
-            bot.pump(0.3)
-        server.batch([f"effect clear {BOT}"])
-        bot.pump(0.2)
-        before = read_player(server)
-        if before["food"] is None or int(before["food"]) < 20:
-            out[item] = {"inconclusive": f"could not reach a full bar; food was {before['food']}"}
+        if before["food"] is None or int(before["food"]) < 20 or \
+                (before["saturation"] or 0.0) > 0.0:
+            out[item] = {"inconclusive": f"could not reach a full bar with an empty pool; "
+                                         f"food {before['food']}, "
+                                         f"saturation {before['saturation']}"}
             continue
         server.batch([f"clear {BOT}", f"give {BOT} {item} 1"])
         bot.pump(0.3)

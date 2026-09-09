@@ -6,10 +6,15 @@
 // not in a loop, and regeneration is what makes a well-fed player hungry.
 #include "ov/gameplay/food.hpp"
 
+#include <simdjson.h>
+
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
+#include <cmath>
+#include <filesystem>
+#include <string>
 #include <string_view>
 
 using namespace ov;
@@ -198,4 +203,82 @@ TEST_CASE("a full bar refuses everything but the always-edible", "[food]") {
 TEST_CASE("an item that is not food says so", "[food]") {
     REQUIRE_FALSE(food_for("minecraft:stone").has_value());
     REQUIRE_FALSE(food_for("").has_value());
+}
+
+TEST_CASE("every food in the table is the one the server fed the probe",
+          "[food][parity]") {
+    // The table in food.cpp is the output of scripts/measure_survival.py, and
+    // this reads the measurement back to ask whether it survived the trip into
+    // C++ unchanged. It is not "does the number look right" — it is "did any
+    // number change on the way", which is the part a test can falsify.
+    //
+    // The measurement is gitignored, so a machine without it skips. A machine
+    // with it checks every entry both ways: nothing measured is missing from
+    // the table, and nothing in the table was invented.
+    const auto path = std::filesystem::path{OV_SOURCE_DIR} / "data" / "vanilla" / "1.20.1" /
+                      "normalized" / "survival.json";
+    if (!std::filesystem::exists(path)) {
+        WARN("survival.json missing; run scripts/measure_survival.py");
+        return;
+    }
+
+    simdjson::dom::parser parser;
+    auto                  document = parser.load(path.string());
+    if (document.error() != simdjson::SUCCESS) {
+        WARN("survival.json could not be parsed");
+        return;
+    }
+    simdjson::dom::object measured;
+    if ((*document)["food"].get(measured) != simdjson::SUCCESS) {
+        WARN("survival.json has no food campaign yet");
+        return;
+    }
+
+    usize checked = 0;
+    usize missing = 0;
+    for (const auto [name, value] : measured) {
+        const std::string item{name};
+        int64_t           nutrition = 0;
+        double            saturation = 0.0;
+        bool              clamped = false;
+        if (value["nutrition"].get(nutrition) != simdjson::SUCCESS ||
+            value["saturation"].get(saturation) != simdjson::SUCCESS) {
+            continue;
+        }
+        (void)value["saturation_clamped"].get(clamped);
+        if (nutrition <= 0) {
+            // Something that moved saturation and not the bar, or an item that
+            // was refused. Not food, and not silently folded into the table.
+            continue;
+        }
+
+        const auto entry = food_for(item);
+        INFO("measured food " << item);
+        if (!entry) {
+            ++missing;
+            continue;
+        }
+        REQUIRE(entry->nutrition == static_cast<i32>(nutrition));
+        if (!clamped) {
+            // modifier = saturation / (2 * nutrition), which is the game's own
+            // definition of it. A clamped measurement only bounds the modifier
+            // from below, so it is checked as a bound rather than as a value.
+            const f32 expected =
+                static_cast<f32>(saturation) / (2.0F * static_cast<f32>(nutrition));
+            REQUIRE(std::abs(entry->saturation_modifier - expected) < 1e-3F);
+        } else {
+            REQUIRE(entry->saturation_modifier * 2.0F * static_cast<f32>(nutrition) >=
+                    static_cast<f32>(saturation) - 1e-3F);
+        }
+        ++checked;
+    }
+
+    INFO(checked << " foods checked, " << missing << " measured but absent from the table");
+    REQUIRE(missing == 0);
+    // And nothing in the table that the server never confirmed.
+    for (const FoodValue& entry : food_table()) {
+        INFO("table entry " << entry.name);
+        REQUIRE(measured[entry.name].error() == simdjson::SUCCESS);
+    }
+    REQUIRE(checked + missing == food_table().size());
 }
