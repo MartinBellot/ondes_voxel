@@ -3,6 +3,7 @@ ov_add_library(ov_base
     SOURCES
         src/alloc_scope.cpp
         src/assert.cpp
+        src/job_pool.cpp
         src/log.cpp
         src/md5.cpp
         src/resource_location.cpp
@@ -16,6 +17,7 @@ ov_add_library(ov_base
 ov_add_test(test_ov_base
     SOURCES
         tests/test_alloc_scope.cpp
+        tests/test_job_pool.cpp
         tests/test_md5.cpp
         tests/test_resource_location.cpp
         tests/test_time.cpp
