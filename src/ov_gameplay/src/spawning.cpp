@@ -199,7 +199,7 @@ bool NaturalSpawner::can_spawn_at(const SpawnEnvironment& environment, MobCatego
         return false;
     }
     const world::WorldShape shape = level.shape();
-    if (pos.y < shape.min_y || pos.y >= shape.min_y + shape.height) {
+    if (!shape.contains_y(pos.y)) {
         return false;
     }
 
@@ -314,7 +314,8 @@ void NaturalSpawner::spawn_tick(const SpawnEnvironment& environment,
                 const i32 x = chunk.min_block_x() + random_.next_int(kSectionSize);
                 const i32 z = chunk.min_block_z() + random_.next_int(kSectionSize);
                 const world::WorldShape shape = environment.level->shape();
-                const i32               y     = shape.min_y + random_.next_int(shape.height);
+                const i32               y =
+                    shape.min_y + random_.next_int(static_cast<i32>(shape.height));
                 const BlockPos          pos{x, y, z};
 
                 // Which type. A weighted draw over the category's entries, so

@@ -158,6 +158,14 @@ public:
     /// Which controls this goal holds while it runs.
     [[nodiscard]] virtual GoalFlag flags() const noexcept = 0;
 
+    /// May a higher-priority goal take this one's controls away mid-flight?
+    ///
+    /// True for almost everything, and the default is what makes a panicking
+    /// animal stop wandering on the tick it is frightened rather than at the
+    /// end of whatever stroll it had begun. A goal that must finish what it
+    /// started says so by returning false.
+    [[nodiscard]] virtual bool interruptible() const noexcept { return true; }
+
     [[nodiscard]] virtual std::string_view name() const noexcept = 0;
 };
 
@@ -167,14 +175,21 @@ public:
 ///
 ///   1. every running goal whose `can_continue_to_use` is false stops, and
 ///      releases its flags;
-///   2. every stopped goal is offered a start, in priority order, and starts
-///      if its flags are free *and* it can be used.
+///   2. every stopped goal is offered a start, in priority order. It starts if
+///      it can be used and every control it wants is either free or held by a
+///      goal that is both lower-priority and interruptible — and in that second
+///      case the holder is stopped first.
 ///
-/// Priority-order in step 2 is what makes a lower number win: a panicking
-/// chicken at priority 1 takes the move control before the wander goal at
-/// priority 5 is ever asked. And that is also why step 1 comes first — a
-/// higher-priority goal cannot pre-empt a lower one mid-tick, which is
-/// deliberate: vanilla's mobs finish the tick they are in.
+/// That eviction is the part worth being careful about. A selector that merely
+/// waited for a control to be released would let a chicken finish its stroll
+/// before panicking, which is visibly not what the game does; the priority
+/// number only means anything because a lower one can take a control away from
+/// a higher one that already has it.
+///
+/// The flags are checked *before* `can_use` is called, deliberately: `can_use`
+/// draws random numbers on several goals, and testing it for a goal that could
+/// not have started anyway would make the mob's RNG stream depend on which
+/// other goals happened to be running.
 class GoalSelector {
 public:
     /// Lower priority runs first. Ties keep insertion order, which makes the
@@ -197,6 +212,10 @@ private:
         std::unique_ptr<Goal> goal;
         bool                  running{false};
     };
+
+    /// Which entry holds each control, or -1. Indexed by the bit position of
+    /// GoalFlag, so four slots: move, look, jump, target.
+    static constexpr usize kFlagCount = 4;
 
     std::vector<Entry> entries_;
     u32                next_order_{0};

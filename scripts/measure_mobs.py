@@ -587,11 +587,66 @@ def campaign_speed(server: Server, probe: KeptAlive) -> dict:
     }
 
 
+# ── Campaign 5: how far a mob sees ──────────────────────────────────────────
+
+ACQUIRE_BASE_X = 9000
+ACQUIRE_DISTANCES = (8, 16, 24, 32, 40, 48, 56, 64)
+
+
+def campaign_acquire(server: Server, probe: KeptAlive) -> dict:
+    """At what separation does a zombie start walking towards a villager?
+
+    Asked because the speed campaign ran into it rather than around it: at
+    sixty blocks apart the zombie never moved, and the honest response to "I
+    shortened it until it worked" is to find out what the number is.
+
+    Each distance gets its own arena, its own pair of entities and sixty ticks.
+    The verdict is displacement towards the quarry, which is unambiguous — a
+    wandering zombie does not walk thirty blocks in one direction in three
+    seconds. Run twice: once with the type's own `follow_range` of 35, and once
+    with it raised to 128, which says whether the radius is that attribute or
+    something else.
+    """
+    y = GROUND_Y
+    out: dict = {}
+    for label, follow_range in (("default_follow_range", None), ("follow_range_128", 128)):
+        verdicts = {}
+        for index, gap in enumerate(ACQUIRE_DISTANCES):
+            ox = ACQUIRE_BASE_X + index * 256 + (0 if follow_range is None else 4096)
+            half = gap // 2 + 6
+            server.batch(["kill @e[type=!minecraft:player]"], timeout=60.0)
+            build_arena(server, ox, half, 8, walled=True)
+            server.batch([f"gamemode spectator {probe.name}",
+                          f"tp {probe.name} {ox} {y + 6} 45"], timeout=60.0)
+            server.batch([
+                f"summon {TARGET_TYPE} {ox + gap // 2}.5 {y} 0.5 "
+                + GOAL_NBT.format(tag="ovq"),
+                f"summon minecraft:zombie {ox - gap // 2}.5 {y} 0.5 "
+                + WALKER_NBT.format(tag="ovz"),
+            ], timeout=60.0)
+            arm_target(server, "ovq")
+            if follow_range is not None:
+                server.batch([f"attribute @e[tag=ovz,limit=1] "
+                              f"minecraft:generic.follow_range base set {follow_range}"],
+                             timeout=60.0)
+            start = sample_pos(server, "ovz")
+            trace = walk_trace(server, "ovz", lambda p: False, limit=60)
+            if start is None or not trace:
+                verdicts[gap] = None
+                continue
+            moved = trace[-1][1] - start[1][0]
+            verdicts[gap] = round(moved, 4)
+            print(f"   acquire {label} gap={gap}: moved {moved:+.2f} towards", flush=True)
+        out[label] = verdicts
+    return out
+
+
 CAMPAIGNS = {
     "light": (campaign_light, VoidServer, 25596),
     "caps": (campaign_caps, FlatServer, 25595),
     "maze": (campaign_maze, FlatServer, 25594),
     "speed": (campaign_speed, FlatServer, 25593),
+    "acquire": (campaign_acquire, FlatServer, 25592),
 }
 
 SETUP = [

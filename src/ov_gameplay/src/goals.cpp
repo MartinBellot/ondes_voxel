@@ -152,35 +152,91 @@ void GoalSelector::add(i32 priority, std::unique_ptr<Goal> goal) {
 }
 
 void GoalSelector::tick(GoalContext& context) {
-    // 1. Stop what can no longer continue, and collect what the survivors hold.
-    u8 taken = 0;
+    const usize count = entries_.size();
+
+    // 1. Stop what can no longer continue.
     for (Entry& entry : entries_) {
-        if (!entry.running) {
-            continue;
-        }
-        if (!entry.goal->can_continue_to_use(context)) {
+        if (entry.running && !entry.goal->can_continue_to_use(context)) {
             entry.goal->stop(context);
             entry.running = false;
-            continue;
         }
-        taken |= static_cast<u8>(entry.goal->flags());
     }
 
-    // 2. Offer a start, in priority order.
-    for (Entry& entry : entries_) {
+    // Who holds which control. An index into `entries_`, which is sorted by
+    // priority, so a smaller index *is* a higher priority.
+    i32 holder[kFlagCount];
+    for (usize flag = 0; flag < kFlagCount; ++flag) {
+        holder[flag] = -1;
+    }
+    for (usize index = 0; index < count; ++index) {
+        if (!entries_[index].running) {
+            continue;
+        }
+        const u8 held = static_cast<u8>(entries_[index].goal->flags());
+        for (usize flag = 0; flag < kFlagCount; ++flag) {
+            if ((held & (1U << flag)) != 0) {
+                holder[flag] = static_cast<i32>(index);
+            }
+        }
+    }
+
+    // 2. Offer a start, in priority order, evicting where allowed.
+    for (usize index = 0; index < count; ++index) {
+        Entry& entry = entries_[index];
         if (entry.running) {
             continue;
         }
         const u8 wanted = static_cast<u8>(entry.goal->flags());
-        if ((taken & wanted) != 0) {
+
+        bool available = true;
+        for (usize flag = 0; flag < kFlagCount && available; ++flag) {
+            if ((wanted & (1U << flag)) == 0) {
+                continue;
+            }
+            const i32 held_by = holder[flag];
+            if (held_by < 0) {
+                continue;  // free
+            }
+            // Held by something at least as important, or by something that
+            // has said it must finish: leave it alone.
+            if (static_cast<usize>(held_by) < index ||
+                !entries_[static_cast<usize>(held_by)].goal->interruptible()) {
+                available = false;
+            }
+        }
+        if (!available) {
             continue;
         }
+        // Flags first, then `can_use`. See the note in the header: several
+        // goals draw random numbers here, and asking one that could not have
+        // started would make the mob's stream depend on what else was running.
         if (!entry.goal->can_use(context)) {
             continue;
         }
+
+        // Evict every holder of a control this goal wants. A goal that loses
+        // one control loses all of them — it is stopped, not partially stopped.
+        for (usize flag = 0; flag < kFlagCount; ++flag) {
+            if ((wanted & (1U << flag)) == 0 || holder[flag] < 0) {
+                continue;
+            }
+            const usize victim = static_cast<usize>(holder[flag]);
+            entries_[victim].goal->stop(context);
+            entries_[victim].running = false;
+            for (usize other = 0; other < kFlagCount; ++other) {
+                if (holder[other] == static_cast<i32>(victim)) {
+                    holder[other] = -1;
+                }
+            }
+        }
+
         entry.goal->start(context);
         entry.running = true;
-        taken |= wanted;
+        for (usize flag = 0; flag < kFlagCount; ++flag) {
+            if ((wanted & (1U << flag)) != 0) {
+                holder[flag] = static_cast<i32>(index);
+            }
+        }
     }
 
     // 3. Tick whatever is running, in the same order.

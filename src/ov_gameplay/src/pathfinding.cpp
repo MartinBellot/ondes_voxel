@@ -46,11 +46,6 @@ namespace {
 // registry/block_states.hpp), so "does this stop movement" is the game's
 // answer and not a guess about what sounds solid.
 
-[[nodiscard]] bool is_air_at(const world::LevelView& level, BlockPos pos) {
-    const registry::BlockRegistry& blocks = level.blocks();
-    return blocks.is_air(blocks.block_of(level.block_at(pos)));
-}
-
 [[nodiscard]] bool holds_water(const world::LevelView& level, BlockPos pos) {
     const registry::BlockRegistry& blocks = level.blocks();
     const registry::BlockStateId   state  = level.block_at(pos);
@@ -369,13 +364,35 @@ usize WalkNodeEvaluator::neighbours(const world::LevelView& level, BlockPos from
         for (i32 dy = 0; dy <= abilities.step_up && !placed; ++dy) {
             const BlockPos     candidate{nx, from.y + dy, nz};
             const PathNodeType type = type_at(level, candidate, size, abilities);
-            if (type != PathNodeType::Walkable && !is_passable(type)) {
-                break;  // solid: a higher step is behind the same wall
+            if (!is_passable(type)) {
+                // Solid at this height. Not a reason to stop: a block at foot
+                // level with air above it is a *step*, and this is precisely
+                // where a mob climbs one. Breaking out here instead — which is
+                // what this loop did first — makes every stair and every ledge
+                // in the world impassable, and looks in a test exactly like a
+                // path finder that refuses to jump.
+                continue;
             }
             if (type == PathNodeType::Open) {
                 continue;  // nothing to stand on here; try higher
             }
             if (dy > 0) {
+                // Not onto a fence. A fence is a block tall and half a block
+                // more, so a one-block step does not reach its top — which is
+                // the whole reason a fence pens animals in and a wall of stone
+                // does not. Without this the classification above is useless:
+                // the mob refuses to walk *through* the fence and then climbs
+                // over it on the very next candidate.
+                bool fence_below = false;
+                for (i32 fx = 0; fx < size.width && !fence_below; ++fx) {
+                    for (i32 fz = 0; fz < size.width && !fence_below; ++fz) {
+                        const BlockPos under{candidate.x + fx, candidate.y - 1, candidate.z + fz};
+                        fence_below = is_fence_like(level.blocks(), level.block_at(under));
+                    }
+                }
+                if (fence_below) {
+                    continue;
+                }
                 // Jumping needs the ceiling above the *current* position to be
                 // out of the way, or the mob bangs its head and stays put.
                 bool headroom = true;
