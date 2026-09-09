@@ -1109,28 +1109,36 @@ def measure_ticks(out: Path) -> None:
 
         for attempt in range(12):
             z = 2 + attempt
-            server.batch([
-                f"setblock 2 {Y} {z} minecraft:frosted_ice[age=0] replace",
-                f"setblock 5 {Y} {z} minecraft:repeater[facing=west,delay=4,powered=false,"
-                "locked=false] replace",
-                f"setblock 8 {Y} {z} minecraft:comparator[facing=west,mode=compare,"
+            # One of every device, so a single capture gives the delay and the
+            # priority of each. The four repeaters sit at x = 2, 5, 8, 11 with
+            # delays 1 to 4, each fed from its own west side.
+            setup = [f"setblock {3 * d - 1} {Y} {z} "
+                     f"minecraft:repeater[facing=west,delay={d},powered=false,locked=false] "
+                     "replace" for d in range(1, 5)]
+            setup += [
+                f"setblock 14 {Y} {z} minecraft:comparator[facing=west,mode=compare,"
                 "powered=false] replace",
-                f"setblock 11 {Y} {z} minecraft:stone replace",
-                f"setblock 11 {Y + 1} {z} minecraft:redstone_torch[lit=true] replace",
-            ], timeout=120.0)
+                f"setblock 17 {Y} {z} minecraft:stone replace",
+                f"setblock 17 {Y + 1} {z} minecraft:redstone_torch[lit=true] replace",
+                f"setblock 20 {Y} {z} minecraft:observer[facing=west,powered=false] replace",
+            ]
+            server.batch(setup, timeout=120.0)
             # Trigger everything and save without waiting for anything.
-            server.send(
-                f"setblock 4 {Y} {z} minecraft:redstone_block replace",
-                f"setblock 7 {Y} {z} minecraft:redstone_block replace",
-                f"setblock 11 {Y - 1} {z} "
+            triggers = [f"setblock {3 * d - 2} {Y} {z} minecraft:redstone_block replace"
+                        for d in range(1, 5)]
+            triggers += [
+                f"setblock 13 {Y} {z} minecraft:redstone_block replace",
+                f"setblock 17 {Y - 1} {z} "
                 "minecraft:lever[face=ceiling,facing=north,powered=true] replace",
-                "save-all flush")
+                f"setblock 19 {Y} {z} minecraft:redstone_block replace",
+                "save-all flush",
+            ]
+            server.send(*triggers)
             server.batch([], timeout=600.0)
             chunk = region_chunk(world / "r.0.0.mca", 0, 0)
             entries = nbt_read(chunk).get("block_ticks", []) if chunk else []
             snapshots.append({"attempt": attempt, "entries": entries})
-            names = {e.get("i") for e in entries}
-            if any(n != "minecraft:frosted_ice" for n in names):
+            if len({e.get("i") for e in entries}) >= 3:
                 break
             time.sleep(0.4)
 

@@ -147,7 +147,7 @@ fil témoin ne lit 15 que si le candidat relaie de la puissance forte.
 
 ---
 
-## 5. Le répéteur
+## 5. Le répéteur et le comparateur
 
 | Cas | État lu |
 |---|---|
@@ -162,9 +162,52 @@ verrouillé est perdu, pas mis en attente. C'est le point du verrouillage.
 Seul un **diode** verrouille — un répéteur ou un comparateur pointant sur le
 côté. Un levier collé au flanc d'un répéteur ne le verrouille pas.
 
-Le délai vaut `2 × delay` ticks, confirmé par le §7.
+**Tick par tick**, lu dans le `block_ticks` d'une sauvegarde attrapée en vol
+(§7), un dispositif de chaque posé côte à côte et déclenchés ensemble :
 
----
+| Dispositif | `t` demandé | `p` |
+|---|---|---|
+| répéteur délai 1 | 2 | −1 |
+| répéteur délai 2 | 4 | −1 |
+| répéteur délai 3 | 6 | −1 |
+| répéteur délai 4 | 8 | −1 |
+| comparateur | 2 | 0 |
+
+**5 dispositifs sur 5.** Le délai est bien `2 × delay`, et — le point qui était
+faux dans la première version du code — **les deux diodes n'utilisent pas la
+même priorité** : le répéteur demande −1 là où le comparateur demande 0.
+
+### Le comparateur, table complète
+
+72 cellules : six niveaux d'entrée arrière × six niveaux d'entrée latérale ×
+deux modes, chacune avec ses deux niveaux d'entrée **relus** et non supposés.
+
+**72 calibrées sur 72, 72 conformes sur 72** à :
+
+- `compare` : `side > back ? 0 : back`
+- `subtract` : `max(0, back - side)`
+
+Le cas qu'une implémentation fausse inverse est l'égalité en mode `compare` :
+l'entrée arrière **passe**, elle ne s'annule pas.
+
+La première campagne avait donné 1 sur 72. Les cellules étaient espacées de deux
+blocs et la chaîne de calibration latérale, longue de seize, traversait les
+quatre rangées suivantes ; chaque sortie lisait 13 à 15. Espacement porté à 24,
+soit un de plus que la cellule la plus large.
+
+### Le conteneur
+
+Un coffre simple, 27 emplacements, `n` d'entre eux remplis d'une pile complète.
+**28 lectures sur 28** conformes à `floor(14 n / 27) + (n > 0)` :
+
+```
+n     0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27
+sortie 0 1 2 2 3 3 4 4 5 5  6  6  7  7  8  8  9  9 10 10 11 11 12 12 13 13 14 15
+```
+
+Le `+1` est ce qui fait qu'un seul objet dans un coffre lit 1 et non 0. La
+première campagne remplissait un seul emplacement avec `n` objets, ce qui ne
+dépasse jamais un quarantième du coffre et lit 1 partout : sweep inutile.
 
 ## 6. La torche et son burn-out
 
@@ -215,7 +258,16 @@ Trois faits, tous les trois nécessaires à la parité de sauvegarde :
    un répéteur qui s'allume demande `-1`, un comparateur `0`. C'est mesuré, et
    c'était faux dans la première version du code, qui donnait `-1` aux deux.
 
-Un répéteur de délai 4 demande `t = 8` : le délai est bien `2 × delay`.
+La capture est une course : un répéteur se déclenche huit ticks après avoir été
+alimenté, et un `save-all flush` envoyé dans le même souffle arrive quand même
+après. Ce qui la rend gagnable, c'est d'envoyer déclenchement et sauvegarde dans
+un seul `write` sur l'entrée standard, sans marqueur de synchronisation entre
+les deux : le serveur vide toute la file de console dans un même tick. Attrapé
+au premier essai sur douze prévus.
+
+Deux dispositifs n'ont **pas** été attrapés et ne sont donc pas mesurés : la
+torche (deux ticks, trop court) et l'observateur. Leurs délais dans le code
+valent 2 et 2, et c'est dit au §10.
 
 ---
 
@@ -316,6 +368,10 @@ Nommé plutôt que passé sous silence :
 - **`minecraft:tripwire`.** Son `powered` est posé par une entité sur le fil et
   le signal ressort par le crochet ; ce n'est ni une source ni un consommateur.
   Nommé explicitement dans le test, qui échoue si un autre bloc rejoint la liste.
+- **Le délai de la torche (2 ticks) et celui de l'observateur (2 ticks).** Trop
+  courts pour être attrapés dans un `block_ticks` sauvegardé en vol, là où les
+  quatre délais du répéteur et celui du comparateur l'ont été. Le comportement
+  de la torche est mesuré (§6) ; c'est le *nombre* qui ne l'est pas.
 
 ---
 

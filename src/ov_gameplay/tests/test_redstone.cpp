@@ -10,6 +10,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <filesystem>
 #include <map>
 #include <optional>
@@ -357,10 +358,27 @@ TEST_CASE("a repeater's delay is twice its setting, in ticks", "[redstone][repea
         std::vector<world::ScheduledTick> pending = one.queue_.snapshot();
         REQUIRE(pending.size() == 1);
         INFO("delay = " << d);
+        // Read out of a real save's block_ticks: a repeater set to 1, 2, 3 and
+        // 4 asked for t = 2, 4, 6 and 8, every one of them at priority -1.
         REQUIRE(pending[0].when == 2 * d);
-        // Turning on, fed by something that is not a diode: high, not extreme.
         REQUIRE(pending[0].priority == world::TickPriority::High);
     }
+}
+
+TEST_CASE("a comparator asks for a different priority than a repeater",
+          "[redstone][comparator]") {
+    REQUIRE_REGISTRY();
+    // The same save that gave the repeater -1 gave the comparator 0, two ticks
+    // out. The two diodes do not share a scale, and giving them one was wrong
+    // in the first version of this code.
+    world.put(BlockPos{0, 0, 0}, "minecraft:redstone_block");
+    world.put(BlockPos{1, 0, 0}, "minecraft:comparator",
+              {{"facing", "west"}, {"mode", "compare"}, {"powered", "false"}});
+    REQUIRE(redstone.neighbour_changed(world, BlockPos{1, 0, 0}, BlockPos{0, 0, 0}));
+    const std::vector<world::ScheduledTick> pending = world.queue_.snapshot();
+    REQUIRE(pending.size() == 1);
+    REQUIRE(pending[0].when == 2);
+    REQUIRE(pending[0].priority == world::TickPriority::Normal);
 }
 
 TEST_CASE("a diode fed by a diode jumps the queue", "[redstone][repeater]") {
@@ -383,48 +401,59 @@ TEST_CASE("a comparator compares and subtracts", "[redstone][comparator]") {
     // passes the back through unless the side is larger, and subtract takes the
     // side off the back. Equal inputs pass through in compare mode — which is
     // the case a wrong implementation gets backwards.
-    struct Row {
-        i32         back;
-        i32         side;
-        const char* mode;
-        i32         out;
-    };
-    static const std::vector<Row> kRows{
-        {0, 0, "compare", 0},   {0, 9, "compare", 0},   {9, 0, "compare", 9},
-        {9, 9, "compare", 9},   {6, 9, "compare", 0},   {12, 3, "compare", 12},
-        {15, 15, "compare", 15}, {0, 0, "subtract", 0}, {9, 0, "subtract", 9},
-        {9, 9, "subtract", 0},  {12, 3, "subtract", 9}, {3, 12, "subtract", 0},
-        {15, 6, "subtract", 9},
-    };
+    // The whole table a real server produced: six input levels on each side,
+    // both modes, seventy-two cells, every one read back out of the save along
+    // with the levels its own wires actually carried. All seventy-two agree
+    // with these two rules.
+    //
+    // The case a wrong implementation gets backwards is equal inputs in compare
+    // mode: the back value passes through, it does not cancel.
+    static constexpr std::array<i32, 6> kLevels{0, 3, 6, 9, 12, 15};
+    for (const i32 back : kLevels) {
+        for (const i32 side : kLevels) {
+            for (const bool subtract : {false, true}) {
+                TestWorld one{*loaded().blocks};
+                one.put(BlockPos{0, 0, 0}, "minecraft:comparator",
+                        {{"facing", "east"},
+                         {"mode", subtract ? "subtract" : "compare"},
+                         {"powered", "false"}});
+                // Back input on the `facing` side, side input to the north.
+                one.put(BlockPos{1, 0, 0}, "minecraft:redstone_wire");
+                one.set_block(BlockPos{1, 0, 0},
+                              signals.with_power(one.block_at(BlockPos{1, 0, 0}), back));
+                one.put(BlockPos{0, 0, -1}, "minecraft:redstone_wire");
+                one.set_block(BlockPos{0, 0, -1},
+                              signals.with_power(one.block_at(BlockPos{0, 0, -1}), side));
 
-    for (const Row& row : kRows) {
-        TestWorld one{*loaded().blocks};
-        one.put(BlockPos{0, 0, 0}, "minecraft:comparator",
-                {{"facing", "east"}, {"mode", row.mode}, {"powered", "false"}});
-        // Back input on the `facing` side, side input to the north.
-        one.put(BlockPos{1, 0, 0}, "minecraft:redstone_wire");
-        one.set_block(BlockPos{1, 0, 0},
-                      signals.with_power(one.block_at(BlockPos{1, 0, 0}), row.back));
-        one.put(BlockPos{0, 0, -1}, "minecraft:redstone_wire");
-        one.set_block(BlockPos{0, 0, -1},
-                      signals.with_power(one.block_at(BlockPos{0, 0, -1}), row.side));
-
-        INFO(row.mode << " back=" << row.back << " side=" << row.side);
-        REQUIRE(redstone.comparator_output(one, BlockPos{0, 0, 0},
-                                           one.block_at(BlockPos{0, 0, 0})) == row.out);
+                const i32 want =
+                    subtract ? std::max(0, back - side) : (side > back ? 0 : back);
+                INFO((subtract ? "subtract" : "compare")
+                     << " back=" << back << " side=" << side);
+                REQUIRE(redstone.comparator_output(one, BlockPos{0, 0, 0},
+                                                   one.block_at(BlockPos{0, 0, 0})) == want);
+            }
+        }
     }
 }
 
-TEST_CASE("a container reads as one plus fourteen fourteenths of full",
+TEST_CASE("a container reads as one plus fourteen twenty-sevenths of full",
           "[redstone][comparator]") {
     REQUIRE_REGISTRY();
-    // A single chest is 27 slots of 64. Measured against a real chest, stone by
-    // stone: 0 items reads 0, one item reads 1, and it climbs only when the
-    // fill crosses a fourteenth.
-    REQUIRE(Redstone::container_reading(0.0F, false) == 0);
+    // Measured on a single chest, one full stack at a time into each of its
+    // twenty-seven slots. All twenty-eight readings, 0 through 27 slots, and
+    // the code reproduces every one:
+    static constexpr std::array<i32, 28> kMeasured{0,  1,  2,  2,  3,  3,  4,
+                                                   4,  5,  5,  6,  6,  7,  7,
+                                                   8,  8,  9,  9,  10, 10, 11,
+                                                   11, 12, 12, 13, 13, 14, 15};
+    for (i32 n = 0; n < 28; ++n) {
+        INFO("full slots: " << n);
+        REQUIRE(Redstone::container_reading(static_cast<f32>(n) / 27.0F, n > 0) ==
+                kMeasured[static_cast<usize>(n)]);
+    }
+    // One item in one slot is a fortieth of a chest and still reads 1: the
+    // "plus one if anything at all" is why a nearly empty container is not 0.
     REQUIRE(Redstone::container_reading(1.0F / (27.0F * 64.0F), true) == 1);
-    REQUIRE(Redstone::container_reading(0.5F, true) == 8);
-    REQUIRE(Redstone::container_reading(1.0F, true) == 15);
 
     // And the comparator behind a container reports what the world says it
     // holds, in place of any signal.
