@@ -98,6 +98,7 @@ BOT = "ovsurvive"
 
 DATA = re.compile(r"following entity data: (.*)$")
 ORB_VALUE = re.compile(r"following entity data: (\d+)s?$")
+SCORE = re.compile(r"has (-?\d+) \[")
 
 # Serverbound ids this probe needs beyond the ones the capture harness already
 # uses. Not taken on trust: every one of them is *verified by its effect* —
@@ -156,6 +157,7 @@ class Bot(Probe):
         self.xp_bar: float | None = None
         self.xp_level: int | None = None
         self.xp_total: int | None = None
+        self.lost = False
 
     def pump(self, seconds: float) -> None:
         """Same as the base pump, plus the survival packets this needs."""
@@ -165,6 +167,11 @@ class Bot(Probe):
             try:
                 packet_id, payload = self.read()
             except (TimeoutError, OSError):
+                return
+            except EOFError:
+                # The server dropped us. Not an OSError, which is why the first
+                # version of this let it escape and take the whole run with it.
+                self.lost = True
                 return
             self.captured.append((packet_id, payload))
             if packet_id == 0x23:  # keep alive
@@ -275,8 +282,16 @@ def read_player(server: Server, name: str = BOT) -> dict:
 
 
 def fill_food(server: Server, bot: Bot) -> None:
-    server.batch([f"effect give {BOT} minecraft:saturation 1 9 true"])
-    bot.pump(0.4)
+    # Applied until it stops helping. One application of amplifier 9 feeds ten
+    # points, so a starved player reaches ten and not twenty — which is how the
+    # first regeneration run came to measure a player who could not regenerate
+    # and report that regeneration does not happen.
+    for _ in range(5):
+        server.batch([f"effect give {BOT} minecraft:saturation 1 9 true"])
+        bot.pump(0.35)
+        food = number(server.batch([f"data get entity {BOT} foodLevel"]))
+        if food is not None and food >= 20:
+            break
     server.batch([f"effect clear {BOT}"])
     bot.pump(0.2)
 
@@ -307,8 +322,9 @@ def drain_food(server: Server, bot: Bot, target: int, timeout: float = 30.0) -> 
         # about a third of a food point per tick and overshoots a target by two
         # or three; amplifier 15 charges 0.08 and lands on it. Starting slow
         # would take a minute, so the coarse one runs until the last few points.
+        saturation = number(server.batch([f"data get entity {BOT} foodSaturationLevel"]))
         gap = food - target
-        if gap > 4:
+        if gap > 4 or (saturation or 0.0) > 0.0:
             server.batch([f"effect give {BOT} minecraft:hunger 2 255 true"])
             bot.pump(0.30)
         else:
@@ -665,7 +681,8 @@ def candidate_items() -> list[str]:
     return [name for name in items if name not in blocks]
 
 
-def campaign_food(server: Server, bot: Bot, items: list[str]) -> dict:
+def campaign_food(server: Server, bot: Bot, items: list[str], document: dict,
+                  out_path: Path) -> dict:
     """Nutrition and saturation, one item at a time.
 
     The baseline is foodLevel 10 and saturation 0. Ten is not arbitrary: the
@@ -678,20 +695,43 @@ def campaign_food(server: Server, bot: Bot, items: list[str]) -> dict:
     happens to hurt the player (a splash potion of harming, say) starts a
     regeneration that spends saturation, and the next item measured comes out
     wrong for a reason nothing in its own numbers would show.
+
+    Four hundred items at three seconds each is three quarters of an hour, and
+    somewhere in the middle of it is an item that disconnects the probe — a
+    teleport the server reads as moving wrongly, most likely. So the results are
+    written after every item and the list of items already tried is written with
+    them: a run that dies resumes where it stopped, and a probe that is dropped
+    reconnects and carries on.
     """
     server.batch([f"gamemode survival {BOT}", "difficulty normal",
                   "gamerule naturalRegeneration false"])
-    out: dict[str, dict] = {}
+    out: dict[str, dict] = dict(document.get("food", {}))
+    tested: set[str] = set(document.get("food_tested", []))
     sequence = 1
     drain_food(server, bot, 10)
-    for index, item in enumerate(items):
+    remaining = [item for item in items if item not in tested]
+    print(f"  {len(tested)} already tried, {len(remaining)} to go")
+
+    for index, item in enumerate(remaining):
+        if bot.lost:
+            print(f"  probe lost at {item}; reconnecting")
+            try:
+                bot.socket.close()
+            except OSError:
+                pass
+            new_bot = Bot(PORT)
+            bot.__dict__.update(new_bot.__dict__)
+            bot.lost = False
+            bot.pump(2.0)
+            server.batch([f"gamemode survival {BOT}"])
         if index % 25 == 0:
             heal(server, bot)
-            print(f"  ... {index}/{len(items)}")
+            print(f"  ... {index}/{len(remaining)}")
         before = read_player(server)
         if before["food"] is None or before["food"] > 10 or (before["saturation"] or 0) > 0.0:
             drain_food(server, bot, 10)
             before = read_player(server)
+        tested.add(item)
         server.batch([f"clear {BOT}", f"give {BOT} {item} 1"])
         bot.pump(0.3)
         bot.hold(0)
@@ -699,6 +739,10 @@ def campaign_food(server: Server, bot: Bot, items: list[str]) -> dict:
         sequence += 1
         bot.pump(2.3)
         after = read_player(server)
+        document["food"] = out
+        document["food_tested"] = sorted(tested)
+        with open(out_path, "w") as f:
+            json.dump(document, f, indent=1, sort_keys=True)
         if before["food"] is None or after["food"] is None:
             continue
         nutrition = int(after["food"]) - int(before["food"])
@@ -712,81 +756,178 @@ def campaign_food(server: Server, bot: Bot, items: list[str]) -> dict:
         print(f"  {item}: +{nutrition} food, +{saturation} saturation"
               f"{' (CLAMPED)' if clamped else ''}")
     server.batch([f"clear {BOT}", "gamerule naturalRegeneration true"])
-    print(f"  {len(out)} of {len(items)} candidates changed the player's food")
+    print(f"  {len(out)} of {len(tested)} items tried changed the player's food")
+    document["food_tested"] = sorted(tested)
+    return out
+
+
+def campaign_always_edible(server: Server, bot: Bot, foods: list[str]) -> dict:
+    """Which foods can be eaten on a full bar.
+
+    A separate pass because it needs a state the main food campaign cannot be
+    in: twenty food and *zero* saturation. Filling the bar fills both, and the
+    hunger effect spends saturation before food — so a short drain from a full
+    bar empties the pool and leaves the bar alone, which is exactly the state
+    this needs.
+
+    An item that adds saturation from there is always edible; one that does
+    nothing was refused. The distinction is not cosmetic: it is the whole of
+    what makes a golden apple worth carrying.
+    """
+    server.batch([f"gamemode survival {BOT}", "difficulty normal",
+                  "gamerule naturalRegeneration false"])
+    out = {}
+    sequence = 90000
+    for item in foods:
+        fill_food(server, bot)
+        # Spend the pool and nothing else. Six wraps at 1.28 exhaustion a tick
+        # is about a second; the bar cannot move until the pool is empty.
+        for _ in range(24):
+            saturation = number(server.batch([f"data get entity {BOT} foodSaturationLevel"]))
+            if saturation is not None and saturation <= 0.0:
+                break
+            server.batch([f"effect give {BOT} minecraft:hunger 2 255 true"])
+            bot.pump(0.3)
+        server.batch([f"effect clear {BOT}"])
+        bot.pump(0.2)
+        before = read_player(server)
+        if before["food"] is None or int(before["food"]) < 20:
+            out[item] = {"inconclusive": f"could not reach a full bar; food was {before['food']}"}
+            continue
+        server.batch([f"clear {BOT}", f"give {BOT} {item} 1"])
+        bot.pump(0.3)
+        bot.hold(0)
+        bot.use_item(sequence)
+        sequence += 1
+        bot.pump(2.3)
+        after = read_player(server)
+        gained = round((after["saturation"] or 0.0) - (before["saturation"] or 0.0), 4)
+        out[item] = {"always_edible": gained > 0.0, "saturation_gained": gained}
+        if gained > 0.0:
+            print(f"  {item}: eaten on a full bar (+{gained} saturation)")
+    server.batch([f"clear {BOT}", "gamerule naturalRegeneration true"])
+    print(f"  {sum(1 for v in out.values() if v.get('always_edible'))} of {len(foods)} "
+          f"foods are edible on a full bar")
     return out
 
 
 def campaign_exhaustion(server: Server, bot: Bot) -> dict:
-    """What each action costs in exhaustion."""
+    """What each action costs in exhaustion, per action the server counted.
+
+    The first version of this divided exhaustion by the distance the *bot sent*
+    and got 0.065 a block for sprinting, which is not a number the game has. The
+    bot had sent fifty-six blocks and the server had credited thirty-six: a
+    client driven from Python does not get every position packet processed, and
+    the ones dropped around a teleport are dropped silently.
+
+    So the denominator comes from the server instead. Minecraft keeps a
+    statistic for every one of these — centimetres sprinted, centimetres walked,
+    jumps made, blocks mined — and a scoreboard objective exposes it to
+    `scoreboard players get`. Dividing the exhaustion charged by the work the
+    server says it saw makes the answer independent of how many packets
+    survived the trip.
+    """
+    if bot.dead:
+        bot.respawn()
+        bot.pump(1.5)
     server.batch([f"gamemode survival {BOT}", "difficulty normal",
                   "gamerule naturalRegeneration false"])
+
+    counters = {
+        "sprint_cm": "minecraft.custom:minecraft.sprint_one_cm",
+        "walk_cm": "minecraft.custom:minecraft.walk_one_cm",
+        "jumps": "minecraft.custom:minecraft.jump",
+        "mined_stone": "minecraft.mined:minecraft.stone",
+        "damage_taken": "minecraft.custom:minecraft.damage_taken",
+    }
+    for name, criterion in counters.items():
+        server.batch([f"scoreboard objectives remove ov_{name}",
+                      f"scoreboard objectives add ov_{name} {criterion}"])
     bot.pump(0.5)
 
-    def reset() -> None:
-        # Food and saturation to their ceiling, health to its own, and the
-        # exhaustion counter wherever the last wrap left it — which is why the
-        # measurement below is a *difference* rather than a reading.
-        heal(server, bot)
-        fill_food(server, bot)
-        bot.pump(0.3)
+    def scores() -> dict:
+        out = {}
+        for name in counters:
+            lines = server.batch([f"scoreboard players get {BOT} ov_{name}"])
+            value = 0
+            for line in lines:
+                match = SCORE.search(line)
+                if match:
+                    value = int(match.group(1))
+                    break
+            out[name] = value
+        return out
 
     baseline: dict = {}
 
     def mark() -> None:
         baseline.clear()
         baseline.update(read_player(server))
+        baseline["scores"] = scores()
 
-    def spent() -> float | None:
+    def spent() -> tuple[float | None, dict]:
         now = read_player(server)
+        after = scores()
+        moved = {name: after[name] - baseline["scores"][name] for name in counters}
         for field in ("exhaustion", "saturation", "food"):
             if now[field] is None or baseline.get(field) is None:
-                return None
+                return None, moved
         # Each 4.0 of exhaustion wraps into one point of saturation, and once
         # saturation is gone, one point of food. Reconstructing the total from
         # what was consumed is the only way to see past the counter's own
         # ceiling of four.
         wrapped = (baseline["saturation"] - now["saturation"]) + (baseline["food"] - now["food"])
-        return round(4.0 * wrapped + (now["exhaustion"] - baseline["exhaustion"]), 5)
+        return round(4.0 * wrapped + (now["exhaustion"] - baseline["exhaustion"]), 5), moved
+
+    def reset() -> None:
+        heal(server, bot)
+        fill_food(server, bot)
+        bot.pump(0.3)
 
     out: dict = {}
 
-    # Sprinting. The bot walks a straight line in ticks of a realistic length so
-    # the server's own movement checks stay quiet.
     if bot.position is None:
         raise RuntimeError("the bot was never told where it is")
     x0, y0, z0 = bot.position
     server.batch([f"forceload add {int(x0) - 48} {int(z0) - 48} {int(x0) + 48} {int(z0) + 48}"])
-    for label, sprinting, step, steps in (("sprint", True, 0.28, 200),
-                                          ("walk", False, 0.13, 200)):
+
+    for label, sprinting, step, steps in (("sprint", True, 0.28, 250),
+                                          ("walk", False, 0.13, 250)):
         server.batch([f"tp {BOT} {x0} {y0} {z0}"])
-        bot.pump(0.6)
+        # Long enough for the teleport to be confirmed. Movement sent while the
+        # server is still waiting for that confirmation is discarded, and that
+        # is most of what the first version of this campaign lost.
+        bot.pump(2.0)
         reset()
         mark()
         bot.sprint(sprinting)
         bot.move_to(x0, y0, z0)
+        bot.pump(0.3)
         for i in range(1, steps + 1):
             bot.move_to(x0 + step * i, y0, z0)
             bot.pump(0.05)
         bot.sprint(False)
-        bot.pump(0.6)
-        distance = step * steps
-        total = spent()
-        out[label] = {"blocks": distance, "exhaustion": total,
-                      "per_block": None if total is None else round(total / distance, 6)}
-        print(f"  {label} {distance:.2f} blocks -> {total} exhaustion")
+        bot.pump(1.0)
+        total, moved = spent()
+        counted = moved["sprint_cm" if sprinting else "walk_cm"] / 100.0
+        out[label] = {"blocks_sent": step * steps, "blocks_counted": counted,
+                      "exhaustion": total, "counters": moved,
+                      "per_block": None if total is None or counted <= 0.0
+                      else round(total / counted, 6)}
+        print(f"  {label}: sent {step * steps:.1f} blocks, server counted {counted:.2f}, "
+              f"{total} exhaustion -> {out[label]['per_block']} a block")
 
-    # Breaking blocks. Survival, a diamond pickaxe, and stone put back each time
-    # so every break is the same job.
+    # Breaking blocks. Stone put back each time so every break is the same job.
     server.batch([f"tp {BOT} {x0} {y0} {z0}", f"clear {BOT}",
                   f"give {BOT} minecraft:diamond_pickaxe 1"])
-    bot.pump(0.6)
+    bot.pump(2.0)
     reset()
     mark()
     bot.hold(0)
     bx, by, bz = int(x0) + 2, int(y0), int(z0)
-    breaks = 20
+    breaks = 25
     sequence = 5000
-    for i in range(breaks):
+    for _ in range(breaks):
         server.batch([f"setblock {bx} {by} {bz} minecraft:stone replace"])
         bot.dig(bx, by, bz, 0, sequence)
         sequence += 1
@@ -794,37 +935,57 @@ def campaign_exhaustion(server: Server, bot: Bot) -> dict:
         bot.dig(bx, by, bz, 2, sequence)
         sequence += 1
         bot.pump(0.35)
-    total = spent()
-    out["break_block"] = {"blocks": breaks, "exhaustion": total,
-                          "per_block": None if total is None else round(total / breaks, 6)}
-    print(f"  {breaks} blocks broken -> {total} exhaustion")
+    total, moved = spent()
+    out["break_block"] = {"attempts": breaks, "mined": moved["mined_stone"],
+                          "exhaustion": total, "counters": moved,
+                          "per_block": None if total is None or moved["mined_stone"] <= 0
+                          else round(total / moved["mined_stone"], 6)}
+    print(f"  break_block: {breaks} attempts, server counted {moved['mined_stone']} mined, "
+          f"{total} exhaustion -> {out['break_block']['per_block']} a block")
+    server.batch([f"setblock {bx} {by} {bz} minecraft:air replace"])
 
     # Taking damage. The damage type's own exhaustion figure is in the data
     # generator's output; this checks that it is what actually gets charged.
+    #
+    # Two seconds between hits, not one: a hit opens a twenty-tick window and
+    # the second half of it swallows anything no bigger. The first run of this
+    # measured zero for every damage type for exactly that reason.
     for damage_type in ("minecraft:cactus", "minecraft:generic", "minecraft:fall",
-                        "minecraft:starve", "minecraft:player_attack"):
+                        "minecraft:starve", "minecraft:player_attack",
+                        "minecraft:lightning_bolt"):
         reset()
+        bot.pump(2.0)
         mark()
         server.batch([f"damage {BOT} 1 {damage_type}"])
-        bot.pump(0.6)
-        out.setdefault("damage", {})[damage_type] = spent()
-        print(f"  one point of {damage_type} -> {out['damage'][damage_type]} exhaustion")
+        bot.pump(1.5)
+        total, moved = spent()
+        out.setdefault("damage", {})[damage_type] = {"exhaustion": total,
+                                                     "hits": moved["damage_taken"]}
+        print(f"  one point of {damage_type}: {total} exhaustion "
+              f"({moved['damage_taken']} damage_taken counted)")
 
     # A jump, expressed the only way a client can express one: position packets
-    # that go up and come back down.
+    # that leave the ground and come back to it.
     server.batch([f"tp {BOT} {x0} {y0} {z0}"])
-    bot.pump(0.6)
+    bot.pump(2.0)
     reset()
     mark()
-    for _ in range(10):
+    for _ in range(20):
         for dy, ground in ((0.42, False), (0.75, False), (0.98, False), (1.1, False),
                            (0.98, False), (0.75, False), (0.42, False), (0.0, True)):
             bot.move_to(x0, y0 + dy, z0, ground)
             bot.pump(0.05)
-    out["jump"] = {"jumps": 10, "exhaustion": spent()}
-    print(f"  ten jumps -> {out['jump']['exhaustion']} exhaustion")
+    total, moved = spent()
+    out["jump"] = {"attempts": 20, "counted": moved["jumps"], "exhaustion": total,
+                   "counters": moved,
+                   "per_jump": None if total is None or moved["jumps"] <= 0
+                   else round(total / moved["jumps"], 6)}
+    print(f"  jump: 20 attempts, server counted {moved['jumps']}, {total} exhaustion "
+          f"-> {out['jump']['per_jump']} a jump")
 
     server.batch([f"clear {BOT}", "gamerule naturalRegeneration true"])
+    for name in counters:
+        server.batch([f"scoreboard objectives remove ov_{name}"])
     return out
 
 
@@ -859,6 +1020,9 @@ def campaign_starve(server: Server, bot: Bot) -> dict:
 
 def campaign_regen(server: Server, bot: Bot) -> dict:
     """How fast health comes back, at each food level that allows it."""
+    if bot.dead:
+        bot.respawn()
+        bot.pump(1.5)
     server.batch(["difficulty normal", f"gamemode survival {BOT}",
                   "gamerule naturalRegeneration true"])
     out = {}
@@ -866,6 +1030,10 @@ def campaign_regen(server: Server, bot: Bot) -> dict:
                         ("food6_sat0", 6)):
         fill_food(server, bot)
         if food < 20:
+            # Draining spends the saturation first, so every case below
+            # food 20 arrives with an empty pool. That is the intent — the
+            # slow branch is what is being measured — but it is worth saying,
+            # because it means "food18_sat0" is a description and not a wish.
             drain_food(server, bot, food)
         set_health(server, bot, 10.0)
         before = read_player(server)
@@ -944,6 +1112,11 @@ def campaign_death_xp(server: Server, bot: Bot) -> dict:
 
 def campaign_mining_xp(server: Server, bot: Bot) -> dict:
     """The experience a broken ore is worth, thirty draws at a time."""
+    if bot.dead:
+        bot.respawn()
+        bot.pump(1.5)
+    heal(server, bot)
+    fill_food(server, bot)
     server.batch([f"gamemode survival {BOT}", f"clear {BOT}",
                   f"give {BOT} minecraft:diamond_pickaxe 1"])
     bot.pump(0.5)
@@ -958,7 +1131,8 @@ def campaign_mining_xp(server: Server, bot: Bot) -> dict:
                 "emerald_ore", "lapis_ore", "redstone_ore", "nether_quartz_ore",
                 "nether_gold_ore", "deepslate_coal_ore", "deepslate_diamond_ore",
                 "ancient_debris", "spawner", "stone"):
-        draws = []
+        draws: list[int] = []
+        broken: list[bool] = []
         for _ in range(30):
             server.batch(["kill @e[type=minecraft:experience_orb]",
                           f"setblock {bx} {by} {bz} minecraft:{ore} replace"])
@@ -973,19 +1147,23 @@ def campaign_mining_xp(server: Server, bot: Bot) -> dict:
             total = sum(int(m.group(1)) for line in lines
                         for m in [ORB_VALUE.search(line)] if m)
             draws.append(total)
+            broke = server.batch([f"execute if block {bx} {by} {bz} minecraft:air"])
+            broken.append(any("Test passed" in line for line in broke))
         out[ore] = {"draws": draws, "min": min(draws), "max": max(draws),
-                    "mean": round(sum(draws) / len(draws), 4)}
+                    "mean": round(sum(draws) / len(draws), 4),
+                    "blocks_broken": sum(1 for b in broken if b), "attempts": len(broken)}
         print(f"  {ore}: {out[ore]['min']}..{out[ore]['max']} "
-              f"(mean {out[ore]['mean']})")
+              f"(mean {out[ore]['mean']}), "
+              f"{out[ore]['blocks_broken']}/{out[ore]['attempts']} actually broken")
     server.batch([f"setblock {bx} {by} {bz} minecraft:air replace", f"clear {BOT}"])
     return out
 
 
-ALL = ["packets", "fall", "invuln", "xp", "food", "exhaustion", "starve", "regen",
-       "oxygen", "death_xp", "mining_xp"]
+ALL = ["packets", "fall", "invuln", "xp", "food", "always_edible", "exhaustion",
+       "starve", "regen", "oxygen", "death_xp", "mining_xp"]
 
-NEEDS_BOT = {"packets", "xp", "food", "exhaustion", "starve", "regen", "death_xp",
-             "mining_xp"}
+NEEDS_BOT = {"packets", "xp", "food", "always_edible", "exhaustion", "starve", "regen",
+             "death_xp", "mining_xp"}
 
 
 def main() -> int:
@@ -1059,7 +1237,14 @@ def main() -> int:
             print(f"bot at {px:.2f} {py:.2f} {pz:.2f}, entity {bot.entity_id}")
 
         for name in wanted:
-            if args.skip_done and name in document:
+            if name == "food" and args.skip_done and "food" in document:
+                done = len(document.get("food_tested", []))
+                if done < len(candidate_items()):
+                    print(f"\n── food: {done} of {len(candidate_items())} tried, resuming ──")
+                else:
+                    print("\n── food: already measured, kept ──")
+                    continue
+            elif args.skip_done and name in document:
                 print(f"\n── {name}: already measured, kept ──")
                 continue
             print(f"\n── {name} ──")
@@ -1077,7 +1262,14 @@ def main() -> int:
                 elif name == "xp":
                     document["xp"] = campaign_xp(server, bot)
                 elif name == "food":
-                    document["food"] = campaign_food(server, bot, candidate_items())
+                    document["food"] = campaign_food(server, bot, candidate_items(),
+                                                     document, out_path)
+                elif name == "always_edible":
+                    known = sorted(document.get("food", {}))
+                    if not known:
+                        raise RuntimeError("run the `food` campaign first; this one only "
+                                           "revisits what it found")
+                    document["always_edible"] = campaign_always_edible(server, bot, known)
                 elif name == "exhaustion":
                     document["exhaustion"] = campaign_exhaustion(server, bot)
                 elif name == "starve":

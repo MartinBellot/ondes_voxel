@@ -3279,13 +3279,32 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         .broadcast = [&](i32 id, std::span<const u8> payload) {
                             broadcast(who.connection.get(), id, payload);
                         }};
+                    // Are their eyes under water? Vanilla measures the block
+                    // at eye height, not at the feet: standing waist-deep is
+                    // not drowning, and using the feet would suffocate anyone
+                    // who waded in. 1.62 is the player's eye height.
+                    bool submerged = false;
+                    if (blocks) {
+                        const std::scoped_lock water_lock{chunk_mutex};
+                        const auto             eyes = net::WirePosition{
+                            static_cast<i32>(std::floor(who.x)),
+                            static_cast<i32>(std::floor(who.y + 1.62)),
+                            static_cast<i32>(std::floor(who.z))};
+                        const std::string_view name =
+                            blocks->block_name(blocks->block_of(block_at(eyes)));
+                        submerged = name == "minecraft:water";
+                    }
                     const SurvivalPlayer view{.entity_id = who.entity_id,
                                               .name      = who.name,
                                               .x         = who.x,
                                               .y         = who.y,
                                               .z         = who.z,
                                               .on_ground = who.on_ground,
-                                              .game_mode = 0};
+                                              // The survival block only runs
+                                              // with --survival, so this is
+                                              // always a survival player.
+                                              .game_mode = 0,
+                                              .submerged = submerged};
                     SurvivalOutcome outcome = who.survival.tick(
                         view, io, gameplay::Difficulty::Normal, true,
                         static_cast<f64>(world::WorldShape::overworld().min_y));
@@ -3303,7 +3322,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                     net::encode_synchronize_position(who.x, who.y, who.z, who.yaw,
                                                                      who.pitch,
                                                                      who.pending_teleport));
-                            who.streaming = false;
+                            // A Respawn packet makes the client throw its
+                            // world away, so the server has to forget what it
+                            // thinks the client holds. Without this the
+                            // difference-based streaming sends nothing at all
+                            // and the player comes back standing in the void.
+                            who.loaded_chunks.clear();
+                            who.pending_chunks.clear();
+                            who.streaming       = false;
                             who.broadcast_valid = false;
                             stream_chunks(who.connection, who);
                             broadcast(who.connection.get(), net::clientbound::kEntityTeleport,

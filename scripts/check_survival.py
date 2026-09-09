@@ -52,6 +52,7 @@ CB_RESPAWN = 0x41
 CB_SYNCHRONIZE_POSITION = 0x3C
 CB_SPAWN_EXPERIENCE_ORB = 0x02
 CB_REMOVE_ENTITIES = 0x3E
+CB_CHUNK_DATA = 0x24
 SB_CLIENT_COMMAND = 0x07
 SB_POSITION = 0x14
 
@@ -99,6 +100,7 @@ class Faller(Probe):
         self.entity_id = 0
         self.orbs: dict[int, int] = {}
         self.removed: set[int] = set()
+        self.chunks = 0
 
     def pump(self, seconds: float) -> None:
         deadline = time.monotonic() + seconds
@@ -139,6 +141,8 @@ class Faller(Probe):
                 self.death_message = payload[i:i + length].decode("utf-8", "replace")
             elif packet_id == CB_RESPAWN:
                 self.respawned = True
+            elif packet_id == CB_CHUNK_DATA:
+                self.chunks += 1
             elif packet_id == CB_SPAWN_EXPERIENCE_ORB:
                 entity, i = read_varint(payload, 0)
                 count = struct.unpack_from(">h", payload, i + 24)[0]
@@ -275,8 +279,9 @@ def main() -> int:
         # ── and back ────────────────────────────────────────────────────────
         bot.respawned = False
         bot.health_updates.clear()
+        bot.chunks = 0
         bot.respawn()
-        bot.pump(3.0)
+        bot.pump(6.0)
         if not bot.respawned:
             failures.append("no Respawn packet after Client Command 0")
         if bot.health is None or abs(bot.health - 20.0) > 1e-6:
@@ -285,7 +290,14 @@ def main() -> int:
             failures.append(f"respawned at {bot.food} food, expected 20")
         if bot.position is None:
             failures.append("respawned without being told where")
-        print(f"respawned: {bot.health} health, {bot.food} food, at {bot.position}")
+        # A Respawn packet makes a vanilla client discard its world. If the
+        # server does not resend the chunks, the player comes back standing in
+        # nothing — and every other assertion here would still pass.
+        if bot.chunks == 0:
+            failures.append("no chunks after the respawn: the client would come back "
+                            "to an empty world")
+        print(f"respawned: {bot.health} health, {bot.food} food, at {bot.position}, "
+              f"{bot.chunks} chunks resent")
     finally:
         server.terminate()
         try:

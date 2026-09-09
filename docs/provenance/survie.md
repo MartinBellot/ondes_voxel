@@ -283,54 +283,137 @@ Trace : `200 → 198 → 196 → 194 …`, à une seconde d'intervalle exactemen
 
 ---
 
-## 8. Épuisement, régénération, aliments
+## 8. Épuisement
 
 Les coûts d'épuisement des **types de dégâts** ne sont pas mesurés à la main :
 ils sont déclarés par le datapack (`exhaustion` dans chaque
 `data/minecraft/damage_type/*.json`), avec `message_id`, `scaling` et
 `death_message_type`. Les 44 entrées et les 23 tags sont repris tels quels dans
-`damage.cpp` et le test compare la table au codec.
+`damage.cpp`, et le test compare l'ordre de la table au codec : **44/44**.
 
-Le reste de cette section est le point faible de ce travail et est décrit tel
-quel dans le rapport de session : la campagne `food` (valeurs de faim et de
-saturation de tous les aliments) et la campagne `exhaustion` (coût du sprint, de
-la casse de bloc, du saut) sont écrites et exécutables
-(`python3 scripts/measure_survival.py --only food,exhaustion`) mais leurs
-résultats ne sont pas encore intégrés au moment de ce commit. Les valeurs
-présentes dans `food.cpp` pour les constantes d'épuisement sont donc **non
-mesurées** et le fichier le dit.
+Le reste — ce que coûte une action — se mesure. Et la première version de cette
+campagne a mesuré la mauvaise chose.
 
-Ce qui *est* mesuré et intégré :
+**Ce qui a raté.** Elle divisait l'épuisement facturé par la distance que le
+*bot avait envoyée* : 56 blocs sprintés pour 3,634 d'épuisement, soit 0,065 par
+bloc, un nombre que le jeu n'a pas. Le bot avait envoyé 56 blocs ; le serveur en
+avait crédité 36. Un client piloté depuis Python ne voit pas tous ses paquets de
+position traités, et ceux envoyés pendant que le serveur attend la confirmation
+d'une téléportation sont jetés en silence.
 
-* **régénération à partir de 18 de faim**, et régénération rapide à 20 avec de
-  la saturation — un joueur à 10 points de vie, faim 20, saturation ~19, est
-  remonté à 20 en moins de la fenêtre d'échantillonnage, ce qui exclut la
-  branche lente (un point toutes les 80 ticks aurait pris 40 s) ;
-* **pas de régénération en dessous de 18** ;
-* le seuil d'épuisement à **4,0**, dépensé d'abord en saturation puis en faim.
+**Ce qui a marché.** Le dénominateur vient du serveur. Minecraft tient une
+statistique pour chacune de ces actions — centimètres sprintés, centimètres
+marchés, sauts, blocs minés — et un objectif de tableau d'affichage l'expose à
+`scoreboard players get`. Diviser l'épuisement par le travail que le serveur dit
+avoir vu rend la réponse indépendante du nombre de paquets survivants.
+
+Un résultat propre est sorti de la première version malgré tout :
+
+| action | mesure | par action |
+|---|---|---|
+| dix sauts | 0,5 d'épuisement | **0,05 par saut** |
+
+Et il apprend au passage quelque chose sur le protocole : un client ne dit
+jamais « je saute ». Le serveur le *déduit* d'un paquet de position qui quitte
+le sol en montant, et facture l'épuisement là. C'est pour ça que la mesure
+fonctionne du tout.
+
+La marche a donné 0,217 d'épuisement sur 26 blocs envoyés, soit un huitième du
+sprint : compatible avec zéro plus du bruit, pas avec un coût réel. Les valeurs
+retenues dans `FoodConstants` — 0,1 par bloc sprinté, 0,005 par bloc cassé,
+0,01 par bloc nagé, 0,2 pour un saut en sprint, 6,0 par demi-cœur régénéré —
+**ne sont pas toutes mesurées**, et le fichier le dit. Seul le saut simple l'est.
 
 ---
 
-## 9. Ce qui n'a pas pu être mesuré
+## 9. Régénération
+
+**Protocole.** Le bot est amené à un couple (faim, saturation) choisi, puis à
+10 points de vie, et sa vie est relue chaque seconde.
+
+| état | résultat |
+|---|---|
+| faim 20, saturation ~19 | **+10 points de vie** dans la fenêtre d'échantillonnage |
+| faim 17, saturation 0 | **+0** en 22 s |
+
+La première exclut la branche lente : un point toutes les 80 ticks aurait mis
+quarante secondes. La seconde fixe le seuil : en dessous de 18 de faim, rien.
+
+C'est aussi la campagne qui a révélé le piège de la saturation décrit au § 0 :
+sa première exécution rapportait « aucune régénération nulle part », parce que
+`drain_food` n'arrivait jamais à la cible et mesurait un joueur qui n'avait pas
+l'état demandé.
+
+---
+
+## 10. Aliments
+
+**Protocole.** Chaque objet du registre `minecraft:item` qui n'est **pas** aussi
+dans `minecraft:block` — un filtre sur les registres, pas une liste devinée :
+aucun objet comestible de 1.20.1 n'est un objet-bloc. Cela ramène 1319 objets à
+399. Le bot est amené à 10 de faim et 0 de saturation, reçoit l'objet, l'utilise,
+et les deux compteurs sont relus.
+
+Dix, parce que la plus grande valeur nutritive du jeu vaut dix : depuis là rien
+ne peut heurter le plafond de vingt et être noté trop bas. La première version
+partait de quinze et rapportait 6 pour la côtelette de porc cuite au lieu de 8.
+
+La saturation, elle, a un plafond atteignable — le **nouveau** niveau de faim —
+et c'est ce qui fait qu'un steak mangé le ventre vide vaut moins qu'un steak
+mangé à moitié rassasié. Le cas est détecté et signalé par objet.
+
+Le modificateur est reconstruit comme `saturation / (2 × nutrition)`, ce qui est
+la définition du jeu.
+
+Exemples relevés :
+
+| objet | faim | saturation | modificateur |
+|---|---|---|---|
+| `minecraft:apple` | +4 | +2,4 | 0,3 |
+| `minecraft:bread` | +5 | +6,0 | 0,6 |
+| `minecraft:mushroom_stew` | +6 | +7,2 | 0,6 |
+| `minecraft:porkchop` | +3 | +1,8 | 0,3 |
+| `minecraft:cooked_porkchop` | +8 | +12,8 | 0,8 |
+| `minecraft:golden_apple` | +4 | +9,6 | 1,2 |
+| `minecraft:enchanted_golden_apple` | +4 | +9,6 | 1,2 |
+
+**Comestible à ventre plein.** Une seconde passe, sur les seuls objets trouvés
+comestibles : le bot est amené à 20 de faim et **0** de saturation — l'effet
+`hunger` vide la réserve avant la barre, ce qui donne exactement cet état — puis
+on lui donne l'objet. Ce qui ajoute de la saturation depuis là est
+`always_edible` ; ce qui ne fait rien a été refusé.
+
+**Un piège de plus, et il a coûté quarante-cinq minutes.** Quelque part vers le
+125ᵉ objet, un objet déconnecte la sonde — une téléportation que le serveur lit
+comme un déplacement illégal, très probablement. `EOFError` n'hérite pas de
+`OSError` ; il traversait tous les gestionnaires et emportait la campagne entière
+avec lui, sans qu'aucun résultat n'ait été écrit. La campagne écrit maintenant
+après **chaque** objet, retient la liste de ceux déjà essayés, et reconnecte la
+sonde plutôt que de mourir.
+
+---
+
+## 11. Ce qui n'a pas pu être mesuré
 
 Nommé plutôt que passé sous silence, comme le veut la règle du dépôt.
 
-* **XP du minage.** La campagne est écrite et tourne, mais le bot n'arrive pas à
-  casser un bloc contre le serveur vanilla : les quinze minerais testés
-  rapportent 0, y compris le diamant, ce qui est impossible. Le paquet Player
-  Action est envoyé avec le bon id (0x1D, capturé par un travail antérieur du
-  dépôt) et le bon empaquetage de position ; la cause n'est pas identifiée. La
-  campagne vérifie maintenant si le bloc a réellement disparu, ce qui
-  distinguera « rien cassé » de « cassé sans orbe ».
+* **XP du minage.** La campagne est écrite et tourne, mais les quinze minerais
+  testés rapportent 0, y compris le diamant, ce qui est impossible. La cause la
+  plus probable est que le bloc n'est jamais cassé : la campagne vérifie
+  désormais avec `execute if block … minecraft:air` si le bloc a réellement
+  disparu, ce qui distinguera « rien cassé » de « cassé sans orbe ». Le coût de
+  l'épuisement par bloc cassé est bloqué derrière le même problème.
 * **XP de la fonte.** Pas besoin de mesure : le champ `experience` est dans les
-  recettes du data generator (`minecraft:smelting`, p. ex. 0,7 pour le lingot de
-  fer). Non intégré faute de recettes dans ce module.
-* **Épuisement du saut.** Un client ne « saute » pas du point de vue du serveur ;
-  il envoie des positions. La campagne envoie une parabole en paquets de
-  position et lit le compteur ; le résultat n'a pas encore été relevé.
+  recettes du data generator (`minecraft:smelting`, 0,7 pour le lingot de fer).
+  Non intégré, faute d'un module de recettes ici.
 * **Point de réapparition sur un lit ou une ancre.** Le serveur remet le joueur
   au spawn du monde. `SurvivalSession::SpawnPoint` porte déjà le drapeau
   `is_bed` mais rien ne le pose : il n'y a pas encore de bloc de lit utilisable.
 * **Armure, résistance, enchantements de protection.** Les tags
   `#bypasses_armor` et `#bypasses_resistance` sont dans la table et lisibles ;
   rien ne les consulte encore, parce qu'il n'y a pas d'armure.
+* **Dégâts de mêlée, projectiles, explosions, foudre, feu, lave, cactus.** Les
+  *types* sont tous là, avec leur épuisement, leurs tags et leur message de
+  mort ; ce qui manque est ce qui les déclenche — une flèche, un creeper, un
+  bloc de lave. Le chemin qui va d'une source à une barre de vie est mesuré et
+  testé une fois pour toutes, quelle que soit la source.
