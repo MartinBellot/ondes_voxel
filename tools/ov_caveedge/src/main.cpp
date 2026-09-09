@@ -75,9 +75,13 @@ struct Options {
     i32 per_region{2};
     /// How many of the most common disagreements to print per arm.
     i32 show{10};
-    /// Carve fluids too, which is what the tag literally says. Passed through
-    /// to the generator, which reads it from the environment.
-    bool carve_fluids{false};
+    /// Spare a carved cell that holds a fluid, instead of emptying it.
+    ///
+    /// The generator empties them by default, because the tag lists water and
+    /// because it measures better. This puts it back, which is how that was
+    /// settled and how it can be re-settled once an aquifer exists. Passed to
+    /// the generator through the environment variable it already documents.
+    bool keep_fluids{false};
 };
 
 [[nodiscard]] Options parse(int argc, char** argv) {
@@ -105,8 +109,8 @@ struct Options {
             options.per_region = std::atoi(value("--per-region=").c_str());
         } else if (argument.starts_with("--show=")) {
             options.show = std::atoi(value("--show=").c_str());
-        } else if (argument == "--carve-fluids") {
-            options.carve_fluids = true;
+        } else if (argument == "--keep-fluids") {
+            options.keep_fluids = true;
         }
     }
     return options;
@@ -338,11 +342,11 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if (options.carve_fluids) {
+    if (options.keep_fluids) {
         // Read by the generator when the carvers are attached. Set here rather
         // than exposed as a setter because it is the same switch the generator
         // already documents, and two ways to say one thing is one too many.
-        ::setenv("OV_CARVE_FLUIDS", "1", 1);
+        ::setenv("OV_CARVE_FLUIDS", "0", 1);
     }
 
     const worldgen::CarvingContext carving_context{router->min_y(), router->height()};

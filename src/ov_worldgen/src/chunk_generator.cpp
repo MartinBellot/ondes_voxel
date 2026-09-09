@@ -140,9 +140,13 @@ std::expected<void, CarverAttachError> ChunkGenerator::set_carvers(
     carvers_     = carvers;
 
     // Emptying a carved cell that holds a fluid is what the tag literally says
-    // — `minecraft:water` is a member — and it is not what the game does,
-    // because the game asks the aquifer and we have none. Off unless asked, and
-    // the switch exists so the cost can be measured instead of asserted.
+    // — `minecraft:water` is a member. The reasoning against it was that the
+    // game asks the aquifer, we have none, and draining carved water would
+    // empty sea beds the game kept full. The measurement said otherwise, which
+    // is why it is on: our noise fills every non-solid cell below the sea level
+    // with water, so a dry cave under dry land comes out flooded, and cutting
+    // the fluid fixes far more of those than it breaks under the sea. Set to 0
+    // to put it back and re-measure once the aquifer exists.
     if (const char* setting = std::getenv("OV_CARVE_FLUIDS"); setting != nullptr) {
         carve_fluids_ = std::string_view(setting) != "0";
     }

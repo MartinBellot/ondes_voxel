@@ -167,12 +167,20 @@ private:
 
     /// Whether a carved cell that currently holds a fluid is emptied.
     ///
-    /// The tag says yes — `minecraft:water` is in it. The game says "ask the
-    /// aquifer", and we have no aquifer, so emptying every carved water cell
-    /// drains sea beds the game kept full. Off by default and switchable
-    /// through `OV_CARVE_FLUIDS`, so the question is settled by measurement
-    /// rather than by argument. See docs/provenance/ordre-des-etages.md.
-    bool carve_fluids_{false};
+    /// On, because the tag says so — `minecraft:water` is a member — and
+    /// because it measures better, which is the part that settled it. The
+    /// reasoning said the opposite: the game asks the aquifer, we have none,
+    /// so emptying carved water should drain sea beds the game kept full. The
+    /// measurement disagreed. Our noise stage fills *every* non-solid cell
+    /// below the sea level with water, so a dry cave under dry land comes out
+    /// flooded; cutting the fluid fixes far more of those than it breaks under
+    /// the sea. Cave interiors: 70,53 % with fluids spared, **73,50 %** with
+    /// them cut, walls identical to the block. See
+    /// docs/provenance/ordre-des-etages.md § 5.
+    ///
+    /// `OV_CARVE_FLUIDS=0` puts it back, so the question can be re-measured
+    /// when the aquifer lands and takes the decision away from here entirely.
+    bool carve_fluids_{true};
 
     i32 sea_level_{63};
 };

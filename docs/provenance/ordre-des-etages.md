@@ -6,9 +6,9 @@ la différence a été **mesurée**, puisqu'aucune des trois sondes existantes n
 
 Le résultat court, d'abord :
 
-> **Sur les cellules que le réordonnancement change réellement, le nouvel ordre met le bloc du
-> vrai jeu dans 71,1 % des cas contre 18,1 % pour l'ancien** (échantillon de validation,
-> 12 chunks ; voir § 4 pour l'échantillon complet). Les trois sondes existantes ne bougent
+> **Sur les 763 cellules que le réordonnancement change réellement, le nouvel ordre met le bloc
+> du vrai jeu dans 73,3 % des cas contre 8,9 % pour l'ancien.** L'accord sur la peau des
+> grottes passe de **87,40 % à 89,12 %** (+1,72 point). Les trois sondes existantes ne bougent
 > pas d'un chiffre, et c'est attendu : **aucune des trois n'exécute `ChunkGenerator::generate()`**.
 
 ---
@@ -126,8 +126,21 @@ réordonnancement pour un non-événement.
 
 Et surtout : **`ov_parity --terrain` n'appelle pas `generate()`**. Il interroge `is_solid()`
 (la densité) et soustrait le masque directement. Les trois sondes sont donc, structurellement,
-insensibles à ce changement. Leurs chiffres avant/après sont identiques, et cette identité est
-un **contrôle de non-régression**, pas une mesure de l'effet.
+insensibles à ce changement.
+
+Les chiffres ont quand même été pris des deux côtés, sur le même échantillon, avec le même
+binaire reconstruit — parce qu'« ça ne peut pas bouger » est un raisonnement et que ce dépôt
+demande une mesure :
+
+| sonde | commande | avant | après |
+|---|---|---|---|
+| `ov_carveparity` | `--chunks=1200` | 1 200 / 1 200 — **100,000 %**<br>1 615 858 cellules, 0 en trop, 0 manquante | **identique**, au bit près |
+| `ov_surfparity` | `--chunks=250 --per-region=4` | colonnes 58 378 / 64 000 — **91,216 %**<br>blocs 429 195 / 439 432 — **97,670 %** | **identique**, au bloc près |
+| `ov_parity --terrain --carvers` | `--chunks=600` | 3 415 855 / 3 456 000 — **98,838 %**<br>pierre en trop 14 060, manquante 26 085 | **identique**, au bloc près |
+
+Aucune ne baisse, aucune ne monte. Cette identité est un **contrôle de non-régression** — elle
+prouve que le masque et les règles n'ont pas été abîmés — et **pas** une mesure de l'effet du
+réordonnancement, qu'elles sont incapables de voir.
 
 C'est pourquoi il a fallu une quatrième sonde.
 
@@ -152,8 +165,6 @@ ci-dessous deviendraient silencieusement une comparaison de quelque chose avec l
 
 ### 4.1 Le chiffre absolu, et pourquoi il ne suffit pas
 
-_(chiffres remplis en § 4.3)_
-
 Le taux d'accord brut sur les murs de grotte est plafonné par quelque chose qui n'a rien à voir
 avec l'ordre : **notre bruit place sa surface 1 à 8 blocs à côté de celle du jeu dans neuf
 colonnes sur dix** (mesuré : `ov_parity --terrain` donne 15,9 % de colonnes à la bonne hauteur).
@@ -167,66 +178,108 @@ l'erreur de hauteur en premier — s'annule, et il ne reste que l'ordre.
 
 ### 4.3 Les chiffres
 
-Échantillon de validation, 12 chunks, `--per-region=2`, seed 1234567890 :
+40 chunks `minecraft:full`, `--per-region=2`, seed 1234567890 — 39 d'entre eux sont creusés,
+31 243 cellules de mur et 46 135 cellules d'intérieur.
 
-| | murs de grotte | intérieur |
+| | murs de grotte | intérieur de grotte |
 |---|---|---|
-| **avant** (carvers puis surface, pierre seule) | 11 206 / 12 666 — **88,47 %** | 9 959 / 15 326 — 64,98 % |
-| **après** (surface puis carvers, le tag) | 11 402 / 12 657 — **90,09 %** | 10 094 / 15 326 — **65,86 %** |
+| **avant** (carvers puis surface, pierre seule) | 27 305 / 31 243 — **87,396 %** | 32 395 / 46 135 — 70,218 % |
+| **après** (surface puis carvers, le tag) | 27 796 / 31 191 — **89,115 %** | **33 910 / 46 135 — 73,502 %** |
 
-**+1,61 point** sur les murs, **+0,88 point** à l'intérieur.
+**+1,72 point** sur les murs, **+3,28 points** à l'intérieur. (Le dénominateur des murs bouge de
+52 cellules parce que le nombre de cellules attribuées à l'étage des minerais change avec le
+bloc qu'on y met — elles sont tenues à l'écart des deux totaux, pas comptées comme erreurs.)
 
-Comparaison appariée, sur les 370 cellules de mur que le réordonnancement change :
+Le gain à l'intérieur se décompose : +0,31 point vient du réordonnancement lui-même, et
++2,97 points de la décision sur les fluides que le réordonnancement a rendue mesurable — voir
+§ 5. Les deux sont dans la même colonne parce qu'ils arrivent dans le même commit, et ils sont
+séparés ici parce qu'ils ne sont pas le même résultat.
+
+Comparaison appariée, sur les **763** cellules de mur que le réordonnancement change :
 
 | | cellules | part |
 |---|---|---|
-| seul le **nouvel** ordre correspond au jeu | **263** | **71,08 %** |
-| seul l'**ancien** ordre correspond | 67 | 18,11 % |
-| ni l'un ni l'autre | 40 | 10,81 % |
+| seul le **nouvel** ordre correspond au jeu | **559** | **73,26 %** |
+| seul l'**ancien** ordre correspond | 68 | 8,91 % |
+| ni l'un ni l'autre | 136 | 17,82 % |
+
+Le rapport est de **8,2 contre 1** en faveur du nouvel ordre.
 
 Le désaccord que le réordonnancement fait disparaître est nommé et visible dans la liste des
-confusions : **`minecraft:stone -> minecraft:grass_block`, 209 occurrences avant, 0 après.**
+confusions : **`minecraft:stone -> minecraft:grass_block`, 468 occurrences avant, 0 après.**
 C'est exactement l'artefact prédit : de l'herbe posée par les règles de surface à l'intérieur
 d'un plafond de grotte, là où le jeu a de la pierre. C'est la signature de l'ordre, et elle
-disparaît complètement.
+disparaît complètement — ce n'est pas une amélioration graduelle, c'est un mode d'erreur qui
+n'existe plus.
 
-En sens inverse, `minecraft:grass_block -> minecraft:stone` apparaît à 67 dans le bras
-« après ». Ce sont les 18,11 % où l'ancien ordre gagnait : des colonnes où notre erreur de
-hauteur de surface fait que la grotte coupe notre herbe à un endroit où le jeu ne coupait pas
-la sienne. Ce n'est pas un défaut de l'ordre, c'est l'erreur du bruit qui devient visible parce
-que l'ordre est maintenant correct — et elle appartient à l'étage de densité.
+En sens inverse, `minecraft:grass_block -> minecraft:stone` apparaît à **67** dans le bras
+« après » et n'existait pas dans le bras « avant ». Ce sont, à une cellule près, les 68 cas où
+l'ancien ordre gagnait : des colonnes où notre erreur de hauteur de surface fait que la grotte
+coupe notre herbe à un endroit où le jeu ne coupait pas la sienne. **Ce n'est pas un défaut de
+l'ordre** — c'est l'erreur du bruit qui devient visible parce que l'ordre est maintenant
+correct, et elle appartient à l'étage de densité. C'est le coût du changement, il est nommé, et
+il est huit fois plus petit que le gain.
 
 ### 4.4 Ce qui n'est pas récupéré
 
 Le plus gros désaccord de mur est identique dans les deux bras — **`minecraft:air ->
-minecraft:water`, 673 occurrences** — et n'a rien à voir avec l'ordre : c'est **l'aquifère
-manquant**. Le jeu demande à `computeSubstance` ce que devient une cellule creusée ; nous
-n'avons pas d'aquifère, donc l'eau du niveau de la mer reste là où le jeu a mis de l'air.
+minecraft:water`, 1 535 occurrences, au bloc près dans les deux** — et n'a rien à voir avec
+l'ordre : c'est **l'aquifère manquant**. Le jeu demande à `computeSubstance` ce que devient une
+cellule creusée ; nous n'avons pas d'aquifère, donc l'eau du niveau de la mer reste là où le
+jeu a mis de l'air. À lui seul il vaut 4,9 points sur les murs.
+
+Le deuxième, `minecraft:dripstone_block -> minecraft:stone` (418, identique dans les deux bras
+aussi), est une **feature** — les grottes de dripstone sont décorées après les carvers. Il
+n'appartient ni à cet étage ni à cet ordre.
+
+Un échantillon plus large (250 chunks) a été lancé et **abandonné** : le générateur en build
+debug met plusieurs minutes par chunk quand il génère deux fois, et la mesure ne tenait pas
+dans le temps de la session. Les 40 chunks ci-dessus couvrent 20 fichiers de région et
+77 378 cellules comparées ; c'est dit ici pour que la taille de l'échantillon soit une donnée
+connue et non une omission.
 
 ---
 
-## 5. Le cas des fluides, laissé ouvert et nommé
+## 5. Le cas des fluides : le raisonnement disait non, la mesure a dit oui
 
 `minecraft:water` **est** membre du tag : littéralement, un carver a le droit de vider une
-cellule d'eau. Le jeu ne le fait pourtant presque jamais, parce qu'il demande d'abord à
-l'aquifère, qui répond « garde l'eau » sous le niveau de la mer.
+cellule d'eau.
 
-Sans aquifère, appliquer le tag à la lettre viderait des fonds marins que le jeu a laissés
-pleins. Le choix par défaut est donc de **ne pas creuser les fluides**, et c'est un
-**interrupteur** (`OV_CARVE_FLUIDS`, ou `ov_caveedge --carve-fluids`) et non une décision
-enterrée : la question se tranche par la mesure quand l'aquifère arrivera, pas par un
-raisonnement aujourd'hui.
+Le raisonnement disait de ne pas le faire. Le jeu ne vide pas l'eau n'importe où : il demande
+d'abord à l'aquifère, qui répond « garde l'eau » sous le niveau de la mer. Sans aquifère,
+appliquer le tag à la lettre devait vider des fonds marins que le jeu a laissés pleins. Le
+premier jet du générateur épargnait donc les fluides, avec un commentaire expliquant pourquoi.
 
-C'est nommé ici plutôt que silencieux, parce que c'est un endroit où notre générateur s'écarte
-sciemment de la donnée.
+**La mesure a dit le contraire**, sur le même échantillon de 40 chunks :
+
+| | murs de grotte | intérieur de grotte |
+|---|---|---|
+| fluides épargnés (`--keep-fluids`) | 27 796 / 31 191 — 89,115 % | 32 540 / 46 135 — 70,532 % |
+| **fluides creusés** (défaut) | 27 796 / 31 191 — 89,115 % | **33 910 / 46 135 — 73,502 %** |
+
+**+2,97 points** à l'intérieur des grottes, et les murs **identiques au bloc près** — ce qui
+est cohérent : la décision ne porte que sur des cellules creusées, donc que sur l'intérieur.
+
+L'explication est dans notre propre étage de bruit, pas dans le tag. Nous remplissons **toute**
+cellule non solide sous le niveau de la mer avec de l'eau. Une grotte sèche sous une terre
+sèche ressort donc inondée, et c'est un cas bien plus fréquent que la grotte sous l'océan que
+le raisonnement redoutait. Creuser le fluide répare beaucoup plus de cellules qu'il n'en casse.
+
+Le défaut est donc **fluides creusés**, c'est-à-dire le tag appliqué à la lettre, et
+l'interrupteur reste (`OV_CARVE_FLUIDS=0`, ou `ov_caveedge --keep-fluids`) pour que la question
+se re-tranche par la mesure quand l'aquifère arrivera et la retirera d'ici complètement.
+
+C'est le deuxième endroit de ce travail où un raisonnement plausible a été démenti par un
+oracle ; le premier est le § 3, où trois sondes ne mesuraient pas ce qu'on croyait.
 
 ---
 
 ## 6. Ce qui n'est pas fait
 
 1. **L'aquifère.** C'est la plus grosse pièce manquante de cet étage et elle est chiffrée :
-   673 cellules `air -> water` sur 12 chunks, identiques dans les deux ordres. Tant qu'elle
-   manque, le remplissage d'une cellule creusée reste « air, ou lave sous `min_y + 8` ».
+   1 535 cellules `air -> water` sur 40 chunks, identiques au bloc près dans les deux ordres,
+   soit 4,9 points sur les murs de grotte. Tant qu'elle manque, le remplissage d'une cellule
+   creusée reste « air, ou lave sous `min_y + 8` ».
 2. **Les features.** L'étage 5 du jeu n'existe pas encore ici. Les minerais, les variantes de
    pierre, les disques de gravier et les amas `ore_dirt` / `ore_gravel` sont posés *après* les
    carvers et expliquent une part des désaccords restants ; `ov_caveedge` les compte à part
@@ -248,11 +301,12 @@ sciemment de la donnée.
 ```bash
 cmake --build build/macos-debug --parallel 2
 
-# la mesure qui voit l'ordre : les deux bras, un seul binaire, un seul échantillon
-./build/macos-debug/bin/ov_caveedge --chunks=250 --per-region=4
+# la mesure qui voit l'ordre : les deux bras, un seul binaire, un seul échantillon.
+# Compter en minutes, pas en secondes : chaque chunk est généré deux fois, en debug.
+./build/macos-debug/bin/ov_caveedge --chunks=40 --per-region=2
 
-# la même, en appliquant le tag à la lettre sur les fluides
-./build/macos-debug/bin/ov_caveedge --chunks=250 --per-region=4 --carve-fluids
+# la même, en épargnant les fluides — la mesure du § 5
+./build/macos-debug/bin/ov_caveedge --chunks=40 --per-region=2 --keep-fluids
 
 # les trois contrôles de non-régression — ils doivent être identiques à l'avant
 ./build/macos-debug/bin/ov_carveparity --chunks=1200
