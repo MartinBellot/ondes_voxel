@@ -5,16 +5,16 @@ Four campaigns, each answering one question this project refuses to take from a
 wiki page:
 
   light       At which light level does a monster stop spawning, and does sky
-              light have a say of its own? Built as a row of 7x7 rooms in a
-              **void** world — a superflat of one air layer — so that the room
-              floors are the only spawnable surface for a hundred blocks and
-              every mob counted spawned in a room whose light is known. Each
-              room is lit to one level by `minecraft:light`, a block that emits
-              without occluding and without taking up floor a mob could have
-              used, so the rooms differ in exactly one variable. Run three
-              times: sealed at midnight, open to the sky at midnight, open at
-              noon. Comparing the three separates "block light decides" from
-              "the larger of block and sky light decides".
+              light have a say of its own? A row of 7x7 rooms in a **void**
+              world — a superflat of one air layer — so the room floors are the
+              only spawnable surface for a hundred blocks and every mob counted
+              spawned somewhere whose light is known. Each room's floor is lit
+              to one level by a full layer of `minecraft:light` two blocks
+              above it, which emits without occluding and leaves the mob's own
+              two blocks of body clear. Run three times: sealed at midnight,
+              open to the sky at midnight, open at noon. Comparing the three is
+              what separates "block light decides" from "the larger of block
+              light and dimmed sky light decides".
 
   caps        How many mobs of each category does the server maintain around a
               single player? On an ordinary superflat, one player, spawning on,
@@ -24,46 +24,62 @@ wiki page:
               Sampled every ten seconds for four minutes so the plateau is
               visible and not one lucky reading.
 
-  maze        Given a maze, which way does a mob go? A zombie is put at one end
-              and an iron golem — NoAI, NoGravity, Invulnerable — at the other,
-              and the zombie is told to chase it with `/damage <zombie> 1
-              minecraft:mob_attack by <golem>`. The damage command is what makes
-              this work at all: a zombie's *target selector* needs line of sight
-              to acquire anything, and a maze wall is exactly what denies it —
-              the first run of this rig watched a zombie wander out of the arena
-              because the golem four walls away was never a target. Being hurt
-              needs no line of sight, and the pathfinder that follows the target
-              does not either. The zombie's Pos and the world's gametime are
+  maze        Given a maze, which way does a mob go? A zombie at one end, a
+              villager — NoAI, NoGravity, kept alive by health rather than by
+              invulnerability — at the other, and nothing supplied from outside
+              once the two exist. The zombie's Pos and the world's gametime are
               sampled together, so the trace carries the game's clock and not
               the measuring machine's. `test_pathfinding.cpp` replays the same
-              maze through our A* and compares.
+              maze through our A* and compares which gap the route takes at
+              each wall.
 
   speed       How fast does a chasing mob actually move, against its measured
-              movement_speed attribute? The same rig on an open floor: the
-              golem is far enough that the zombie runs in a straight line, and
-              the displacement per game tick is read off the trace.
+              movement_speed attribute? The same rig on an open floor, with the
+              quarry near enough to be acquired.
+
+  acquire     And how near is that? Written because the speed campaign ran into
+              the question rather than around it: at sixty blocks apart the
+              zombie never moved at all. Each separation gets its own arena and
+              sixty ticks, and the verdict is displacement towards the quarry.
 
 Usage: python3 scripts/measure_mobs.py [campaign ...]
 
 Writes data/vanilla/1.20.1/normalized/mob_spawning.json. Campaign names are
-`light`, `caps`, `maze`, `speed`; with none given, all four run.
+`light`, `caps`, `maze`, `speed`, `acquire`; with none given, all of them run.
 
 ── Traps this rig pays for, each already worth a whole lost run ─────────────
+
+  * **`Invulnerable:1b` makes an entity untargetable.** Vanilla will not accept
+    one as a target at all, so the first version of the maze had a zombie
+    standing three blocks from an invulnerable iron golem and ignoring it. Every
+    workaround built on top of that — hurting the zombie to force a target,
+    then hurting it every tick because the forced target is dropped without line
+    of sight — was aimed at the wrong symptom. A quarry is kept alive with
+    health and resistance instead.
+
+  * **A zombie needs line of sight for a player or an iron golem, and not for a
+    villager.** That is why the quarry is a villager: a maze wall denies sight
+    by construction, and the experiment is the path, not the acquisition.
 
   * `spawn-animals=false` does not merely stop natural spawning: the server
     discards every Animal on its first tick, summoned ones included, and
     `PersistenceRequired` does not save them. Natural spawning is switched with
     the `doMobSpawning` gamerule instead and the properties stay `true`.
 
-  * `NoAI:1b` stops a Mob's physics, not only its brain. Right for the golem,
-    which must stand still; catastrophic for the zombie, which would then be
-    measured not moving.
+  * `NoAI:1b` stops a Mob's physics, not only its brain. Right for a quarry that
+    must stand still; catastrophic for the walker, which would then be measured
+    not moving.
+
+  * `PersistenceRequired:1b` resets `noActionTime` on every despawn check, and
+    vanilla's random-stroll goal goes quiet only once `noActionTime` passes 100.
+    Pinning a mob against despawning therefore also keeps its wander goal
+    competing for the movement control.
 
   * **A vanilla server with no player connected spawns nothing at all.** The
     natural spawner runs over the chunks a player ticket reaches, and there are
     none. Every spawning campaign here therefore joins a probe client and keeps
     it alive for the whole run; a run with the probe dropped reads zero
-    everywhere and looks like a threshold of zero.
+    everywhere and looks exactly like a threshold of zero.
 
   * A mob is refused within 24 blocks of a player and never offered past 128,
     so the probe stands off to one side of the test site rather than in it.
@@ -198,8 +214,12 @@ def sample_pos(server: Server, tag: str) -> tuple[int, list[float]] | None:
 # ── Campaign 1: the light thresholds ────────────────────────────────────────
 
 LIGHT_ROOM = 7          # inner size, in blocks
-LIGHT_LEVELS = list(range(0, 9))
-LIGHT_PITCH = LIGHT_ROOM + 3
+# The emission of the light block, not the light on the floor. The block sits
+# two above the floor, so the floor reads `level - 2`; the campaign reports the
+# floor value, which is what the spawn rule actually tests.
+LIGHT_LEVELS = list(range(2, 13))
+LIGHT_DROP = 2
+LIGHT_PITCH = LIGHT_ROOM + 5
 LIGHT_BASE_X = -((len(LIGHT_LEVELS) * LIGHT_PITCH) // 2)
 # The probe stands here: off the row on Z, so every room is past the 24-block
 # refusal radius and inside the 128-block offer radius.
@@ -212,7 +232,30 @@ MONSTERS = ("minecraft:zombie", "minecraft:skeleton", "minecraft:spider",
 
 
 def build_light_rooms(server: Server, roof_open: bool) -> list[tuple[int, int]]:
-    """One room per level. Returns each room's (x0, x1) inner span."""
+    """One room per level. Returns each room's (x0, x1) inner span.
+
+    Three things here were got wrong the first time round and each one made the
+    result meaningless in a different, plausible-looking way.
+
+      * **A corner light does not light a floor.** The light block was first put
+        in two ceiling corners, six or seven blocks away from the middle of the
+        floor; block light falls off one per block, so a room "at level 8" had a
+        floor lit somewhere between 2 and 0 depending where you stood. The whole
+        *layer* two blocks above the floor is filled instead, so every floor
+        cell is exactly `level - 2` and the room has one light value rather than
+        a gradient.
+
+      * **Mobs spawn on the roofs.** The rooms sit in a void world, so their
+        stone roofs were the only other surface for a hundred blocks — and at
+        midnight a roof in the open reads light 4. They consume the same
+        category cap the rooms are competing for. The top surface is bottom
+        slabs, whose upper face is not sturdy and which nothing will spawn on.
+
+      * **Room `n` was counted in room `n + 1`.** The counting selector was a
+        sphere of radius 7 around a room 7 wide with a pitch of 10, so each
+        count included its neighbours' edges. It is a box now, exactly the
+        interior.
+    """
     spans = []
     for index, level in enumerate(LIGHT_LEVELS):
         x0 = LIGHT_BASE_X + index * LIGHT_PITCH
@@ -229,10 +272,16 @@ def build_light_rooms(server: Server, roof_open: bool) -> list[tuple[int, int]]:
             cmds.append(f"fill {x0} {y1 + 1} {z0} {x1} {y1 + 1} {z1} minecraft:air")
         else:
             cmds.append(f"fill {x0} {y1 + 1} {z0} {x1} {y1 + 1} {z1} minecraft:stone")
-        # The light block goes in the ceiling, out of the floor a mob needs.
-        for x, z in ((x0, z0), (x1, z1)):
-            cmds.append(f"setblock {x} {y1} {z} "
-                        + (f"minecraft:light[level={level}]" if level > 0 else "minecraft:air"))
+        # Nothing stands on a bottom slab: its top face is not sturdy. This is
+        # what keeps the void world's only other surface — these roofs — out of
+        # the category cap the rooms are competing for.
+        cmds.append(f"fill {x0 - 1} {y1 + 2} {z0 - 1} {x1 + 1} {y1 + 2} {z1 + 1} "
+                    "minecraft:smooth_stone_slab[type=bottom]")
+        # The light layer: the whole cross-section, two above the floor, so the
+        # floor is uniformly at `level - LIGHT_DROP` and the mob's own two
+        # blocks of body are clear of it.
+        cmds.append(f"fill {x0} {y0 + LIGHT_DROP} {z0} {x1} {y0 + LIGHT_DROP} {z1} "
+                    f"minecraft:light[level={level}]")
         server.batch(cmds, timeout=120.0)
         spans.append((x0, x1))
     return spans
@@ -251,14 +300,19 @@ def light_run(server: Server, roof_open: bool, at_time: str) -> dict[int, int]:
 
     selectors = {}
     for index, (x0, x1) in enumerate(spans):
-        cx = (x0 + x1) / 2.0
+        # A box, exactly the room's interior. A sphere of radius LIGHT_ROOM
+        # around a room LIGHT_ROOM wide reaches into both neighbours, which is
+        # how the first run of this campaign produced counts that rose again at
+        # the bright end.
+        box = f"x={x0},y={VOID_Y},z=-3,dx={LIGHT_ROOM - 1},dy=3,dz=6"
         for kind, type_name in enumerate(MONSTERS):
-            selectors[f"{index}:{kind}"] = (
-                f"@e[type={type_name},x={cx},y={VOID_Y + 1},z=0.0,distance=..{LIGHT_ROOM}]")
+            selectors[f"{index}:{kind}"] = f"@e[type={type_name},{box}]"
     counts = count(server, selectors)
     per_level = {}
     for index, level in enumerate(LIGHT_LEVELS):
-        per_level[level] = sum(counts[f"{index}:{k}"] for k in range(len(MONSTERS)))
+        # Keyed by the light on the floor, which is what the spawn rule tests —
+        # not by the emission of the block two above it.
+        per_level[level - LIGHT_DROP] = sum(counts[f"{index}:{k}"] for k in range(len(MONSTERS)))
     server.batch(["kill @e[type=!minecraft:player]"], timeout=60.0)
     return per_level
 

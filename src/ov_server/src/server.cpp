@@ -3543,10 +3543,22 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 state->uuid                = uuid_for_entity(state->network_id);
                 state->broadcast_position  = state->position;
                 state->broadcast_valid     = true;
-                // Behaviour, in the one component that carries it. Falling is
-                // all any of them does so far, and it is the floor everything
-                // else will be built on rather than a placeholder.
-                mobs->set_logic(*spawned, std::make_unique<gameplay::FallingMob>());
+                // Behaviour, in the one component that carries it: a brain for
+                // a species we have goals for, and the bare falling floor for
+                // one we do not. Refused by name rather than given a plausible
+                // default — a mob invented a behaviour for is worse than one
+                // that only falls, because only one of them says so.
+                //
+                // The seed is the wire id, so a world replayed from the same
+                // sequence of spawns behaves identically.
+                if (const gameplay::MobKind* kind = gameplay::mob_kind(options.mobs[index])) {
+                    mobs->set_logic(*spawned,
+                                    std::make_unique<gameplay::Mob>(*kind, state->width,
+                                                                    state->height,
+                                                                    state->network_id));
+                } else {
+                    mobs->set_logic(*spawned, std::make_unique<gameplay::FallingMob>());
+                }
                 OV_LOG_INFO("spawned {} as entity {} at {:.1f} {:.1f} {:.1f} "
                             "({:.2f} wide, {:.2f} tall, {:.0f} health)",
                             options.mobs[index], state->network_id, where.x, where.y, where.z,
@@ -3575,7 +3587,34 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 // than being applied to each state by hand: the whole point of
                 // IEntityLogic is that a zombie and a dropped stack differ in
                 // what they do, not in who calls them.
-                gameplay::MobContext mob_context{&collisions};
+                // The blocks a goal reads. `CollisionWorld` answers boxes and a
+                // LevelView answers states, and pathfinding needs the second:
+                // it has to tell water from lava from a fence, and all three
+                // are the same shape. Both read the same chunks through the
+                // same lock, so this is an adapter and not a second world.
+                struct MobLevel final : world::LevelView {
+                    std::function<registry::BlockStateId(BlockPos)> read;
+                    const registry::BlockRegistry*                  registry{nullptr};
+
+                    [[nodiscard]] registry::BlockStateId block_at(BlockPos pos) const override {
+                        return read(pos);
+                    }
+                    [[nodiscard]] bool is_loaded(BlockPos) const override { return true; }
+                    [[nodiscard]] world::WorldShape shape() const override {
+                        return world::WorldShape::overworld();
+                    }
+                    [[nodiscard]] world::DimensionTraits traits() const override { return {}; }
+                    [[nodiscard]] const registry::BlockRegistry& blocks() const override {
+                        return *registry;
+                    }
+                };
+                MobLevel mob_level;
+                mob_level.read     = [&](BlockPos pos) {
+                    return block_at({pos.x, pos.y, pos.z});
+                };
+                mob_level.registry = &*blocks;
+
+                gameplay::MobContext mob_context{&collisions, &mob_level, false};
                 mobs->tick(entity::TickContext{clock.tick_count(), &mob_context});
 
                 for (const i32 gone : mobs->removed_ids()) {
