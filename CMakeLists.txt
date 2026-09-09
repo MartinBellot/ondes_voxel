@@ -132,6 +132,7 @@ add_subdirectory(tools/ov_carveparity)
 add_subdirectory(tools/ov_surfparity)
 add_subdirectory(tools/ov_caveedge)
 add_subdirectory(tools/ov_lab)
+add_subdirectory(tools/ov_mobloot)
 add_subdirectory(tools/ov_assetimport)
 
 if(OV_BUILD_CLIENT)

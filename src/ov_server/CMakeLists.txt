@@ -10,6 +10,7 @@ ov_add_library(ov_server
         src/generated_world.cpp
         src/generation_check.cpp
         src/server.cpp
+        src/combat_session.cpp
         src/survival_session.cpp
         src/workbench.cpp
     DEPS
