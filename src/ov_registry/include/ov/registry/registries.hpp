@@ -24,6 +24,7 @@
 #include <optional>
 #include <span>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace ov::registry {
@@ -237,6 +238,24 @@ private:
     std::vector<u8>                data_;
     std::vector<Entry>             registries_;
     std::vector<std::string_view>  entry_names_;
+
+    // ── name → id, because this stopped being a load-time path ──────────────
+    //
+    // `protocol_id` was a linear scan, and its own comment said why that was
+    // fine: "resolving a datapack, not a hot loop". `NaturalSpawner` made it a
+    // hot loop. Profiled on the lab world with one player connected
+    // (`scripts/bench_tick.py`, macos-release, `sample` over 20 s): **19 of the
+    // 50 samples inside the whole spawn pass were `memcmp` under this one
+    // call**, because the spawner resolves a mob type by name once per spawn
+    // attempt and there are a couple of thousand attempts per tick.
+    //
+    // One map per registry rather than one keyed by (registry, name): entry
+    // names repeat across registries — "minecraft:stone" is both a block and an
+    // item — and a single map would need a composite key for no gain.
+    // Built at load, from the same views as `entry_names_`, so it lives exactly
+    // as long as `data_` does and carries no strings of its own.
+    std::vector<std::unordered_map<std::string_view, ProtocolId>> entry_index_;
+
     std::vector<Tag>               tags_;
     std::span<const u8>            stack_sizes_;
     std::span<const ProtocolId>    members_;

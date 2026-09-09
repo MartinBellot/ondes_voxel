@@ -116,11 +116,42 @@ usize WorldTicks::settle(ServerLevel& level, usize& waves) {
 }
 
 usize WorldTicks::notify(ServerLevel& level, BlockPos pos) {
-    // Seeded the same way a write is, so a player's edit and a rule's edit go
-    // down exactly one path. The alternative — a second, shorter notification
-    // for players — is how the two drift apart.
+    // Seeded the same way a write is — through `changed`, into `settle` — so a
+    // player's edit and a rule's edit go down one path. What differs is the
+    // *width* of the seed, and that difference is a stated stand-in rather than
+    // an accident.
+    //
+    // A wave notifies a position and its six neighbours. That is exactly what
+    // vanilla's `Level.updateNeighborsAt` does, and it is **not enough for a
+    // lever**: a floor lever powers the block underneath it, and the wire it is
+    // meant to light is diagonal from the lever — one ring too far. Vanilla
+    // reaches it because `LeverBlock` notifies twice, once around itself and
+    // once around the block it is attached to; `ButtonBlock` and
+    // `PressurePlateBlock` do the same.
+    //
+    // `ov_gameplay` has no per-block hook for that. `Redstone::neighbour_changed`
+    // is the whole vocabulary, and adding an `updateNeighbours` override per
+    // block is a layer-9 change this file may not make. So the seed for an edge
+    // change is the position **and its six neighbours**, which notifies the
+    // support ring among others — a superset of vanilla's rule.
+    //
+    // Over-notifying is safe here and that is not a hope: every rule recomputes
+    // its state from the world rather than integrating a delta, so a position
+    // told twice about nothing writes nothing and produces no second wave.
+    // Under-notifying is not safe, and it is what left the lab's lever lighting
+    // nothing at all.
+    //
+    // Measured on the lab's `dust` plot: with the one-ring seed, pulling the
+    // lever moved the lever and **zero** of the fourteen wires. With this one,
+    // 14 of 14.
     level.clear_changed();
     level.mark_changed(pos);
+    for (u8 i = 0; i < kDirectionCount; ++i) {
+        const BlockPos neighbour = pos.offset(static_cast<Direction>(i));
+        if (level.shape().contains_y(neighbour.y)) {
+            level.mark_changed(neighbour);
+        }
+    }
     usize waves = 0;
     return settle(level, waves);
 }

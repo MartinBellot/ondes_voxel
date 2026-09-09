@@ -50,6 +50,13 @@
 #include "async_chunk_source.hpp"
 #include "generated_world.hpp"
 #include "survival_session.hpp"
+// ── combat and interaction ───────────────────────────────────────────
+#include "combat_session.hpp"
+#include "mob_combat.hpp"
+#include "player_level.hpp"
+#include "ov/gameplay/food.hpp"
+#include "ov/gameplay/item_use.hpp"
+#include "ov/protocol/interaction.hpp"
 
 #include <fmt/format.h>
 
@@ -87,6 +94,11 @@ using ov::server::SurvivalIo;
 using ov::server::SurvivalOutcome;
 using ov::server::SurvivalPlayer;
 using ov::server::SurvivalSession;
+// ── combat and interaction ───────────────────────────────────────────
+using ov::server::CombatIo;
+using ov::server::CombatOutcome;
+using ov::server::CombatPlayer;
+using ov::server::CombatSession;
 // ── crafting and smelting ───────────────────────────────────────────────────
 using namespace ov::server;
 
@@ -1043,6 +1055,21 @@ struct Player {
     /// Health, hunger and experience, and the packets they owe this client.
     /// Everything about it lives in survival_session.{hpp,cpp}.
     SurvivalSession survival;
+
+    // ── combat and interaction ───────────────────────────────────────────
+    /// The attack gauge, the eat in progress, and the four verbs' state.
+    /// Everything about it lives in combat_session.{hpp,cpp}.
+    CombatSession combat;
+    /// Where this player was on the previous tick, so the tick can hand the
+    /// combat session the step it needs for the sweep. A sweep wants a
+    /// *standing* attacker, and only the server can measure that.
+    f64  combat_last_x{0.0};
+    f64  combat_last_z{0.0};
+    bool combat_last_valid{false};
+    /// The client's own sneak flag. It decides whether right-clicking a chest
+    /// with a block in hand opens the chest or places the block, and it is
+    /// unknowable from anything else the client sends.
+    bool sneaking{false};
     /// Set by the network thread when the client presses "respawn", acted on by
     /// the tick. A flag rather than a call, because respawning moves the player
     /// and only the tick thread may do that.
@@ -1272,6 +1299,18 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         connections.emplace(*blocks, *registries);
     }
 
+    // ── combat and interaction ──────────────────────────────────────────────
+    //
+    // The right-click rules, and the tables a killed mob draws on. Both were
+    // written, measured and left unwired by the wave that produced them; this
+    // is where they are read in. `ItemUse` resolves its registry lookups once
+    // for the same reason `BreakRules` does — it sits on the path of every
+    // Use Item On packet.
+    std::optional<gameplay::ItemUse> item_use;
+    if (blocks && registries) {
+        item_use.emplace(*blocks, *registries);
+    }
+
     // ── crafting and smelting ───────────────────────────────────────────────
     // The recipe book, and the handful of registry ids the crafting screens
     // need. Built once for the same reason the break rules are: matching a grid
@@ -1289,6 +1328,26 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             workbench_context.menu_registry = *menus;
         }
     }
+
+    // ── combat and interaction ──────────────────────────────────────────────
+    //
+    // What a mob leaves behind. Its own pack rather than a section of
+    // registry.ovpack, for the reason the pack itself gives: the registry pack
+    // is shared by every branch in flight. The recipe book is handed in because
+    // nineteen tables smelt their own drop — a burning cow drops steak.
+    std::optional<gameplay::EntityLootTables> entity_loot;
+    std::optional<MobCombat>                  mob_combat;
+    if (registries) {
+        entity_loot = load_entity_loot(data_dir / "vanilla" / "1.20.1" / "entity_loot.ovpack",
+                                       *registries, recipe_book ? &*recipe_book : nullptr);
+        mob_combat.emplace(*registries, entity_loot ? &*entity_loot : nullptr);
+    }
+    /// The draw for a mob's table. A source of its own rather than
+    /// `loot_random`: a block broken and a mob killed on the same tick must be
+    /// two draws, and sharing one stream would make the block's drop depend on
+    /// whether something died beside it.
+    math::XoroshiroRandomSource mob_loot_random{0x0BADC0DEFEEDFACEULL, 0x00C0FFEE12345678ULL};
+    gameplay::DamageConstants   mob_damage_constants{};
 
     Superflat superflat = world_available ? Superflat::from(*blocks) : Superflat{};
     if (world_available) {
@@ -2483,6 +2542,389 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         return host;
     };
 
+    // ── combat and interaction ──────────────────────────────────────────────
+    //
+    // Six short pieces, and between them they turn `combat_session.hpp` and
+    // `ItemUse` from written code into a lever that moves.
+    //
+    //   1. `player_level` — the LevelWriter a right-click writes through. See
+    //      player_level.hpp for why `ServerLevel` is the wrong one.
+    //   2. `held_name`, `held_weapon` and the four inventory sinks around them.
+    //   3. `combat_view` — the Player record, as the session wants to read it.
+    //   4. `hurt_mob` — the damage path, the death, and the loot.
+    //   5. `combat_io` — the sinks, assembled per packet.
+    //
+    // Everything here runs on the **network thread**, inside the packet switch,
+    // with `players_mutex` already held by the caller — which is also what
+    // makes touching `mobs` safe against the tick's own mob block, since that
+    // one takes the same lock before it runs.
+
+    /// The blocks a player's right-click reads and writes.
+    ///
+    /// Built once. The hooks capture this frame, so a second one would be a
+    /// second copy of the same six lambdas.
+    PlayerLevel player_level{[&] {
+        PlayerLevelHooks hooks;
+        hooks.blocks   = blocks ? &*blocks : nullptr;
+        hooks.block_at = [&](BlockPos pos) -> registry::BlockStateId {
+            const std::scoped_lock chunk_lock{chunk_mutex};
+            return block_at({pos.x, pos.y, pos.z});
+        };
+        hooks.is_loaded = [&](BlockPos pos) {
+            const std::scoped_lock chunk_lock{chunk_mutex};
+            return chunk_if_resident(pos.x >> 4, pos.z >> 4) != nullptr;
+        };
+        hooks.set_block = [&](BlockPos pos, registry::BlockStateId state) {
+            // Through the placement path, not the drain's: this is a player's
+            // edit, so it relights, broadcasts and queues the neighbour
+            // notification exactly as placing a block does. Called with
+            // `chunk_mutex` released — it takes it itself.
+            set_block_and_broadcast({pos.x, pos.y, pos.z}, state);
+        };
+        hooks.schedule_tick = [&](BlockPos pos, std::string_view what, i64 delay,
+                                  world::TickQueue queue, world::TickPriority priority) {
+            if (!level) {
+                return;
+            }
+            // Straight into the tick thread's own queue. `BlockTickScheduler`
+            // is not thread-safe and does not have to be: every access to it in
+            // this server happens under `chunk_mutex`, and this is one more.
+            const std::scoped_lock chunk_lock{chunk_mutex};
+            level->schedule_tick(pos, what, delay, queue, priority);
+        };
+        hooks.has_scheduled_tick = [&](BlockPos pos, std::string_view what,
+                                       world::TickQueue queue) {
+            if (!level) {
+                return false;
+            }
+            const std::scoped_lock chunk_lock{chunk_mutex};
+            return level->has_scheduled_tick(pos, what, queue);
+        };
+        hooks.game_time = [&] { return server_tick.load(std::memory_order_relaxed); };
+        return hooks;
+    }()};
+
+    /// The registry name of what a player is holding, empty for a bare hand.
+    const auto held_name = [&](const Player& who) -> std::string_view {
+        const net::ItemStack& held = who.inventory[36 + static_cast<usize>(who.held_slot)];
+        if (held.item_id == 0 || held.count <= 0 || !registries || !item_registry) {
+            return {};
+        }
+        return registries->entry_of(*item_registry, held.item_id);
+    };
+
+    /// What a player is holding, as the combat rules read it.
+    ///
+    /// Read per swing rather than stored: the player can change hands between
+    /// two of them, and a cached weapon is a second thing that can be stale.
+    const auto held_weapon = [&](const Player& who) {
+        const net::ItemStack& held = who.inventory[36 + static_cast<usize>(who.held_slot)];
+        gameplay::Weapon      weapon;
+        weapon.item          = held_name(who);
+        weapon.sharpness     = enchantment_level(held, "minecraft:sharpness");
+        weapon.knockback     = enchantment_level(held, "minecraft:knockback");
+        weapon.sweeping_edge = enchantment_level(held, "minecraft:sweeping");
+        weapon.fire_aspect   = enchantment_level(held, "minecraft:fire_aspect");
+        weapon.looting       = enchantment_level(held, "minecraft:looting");
+        weapon.unbreaking    = enchantment_level(held, "minecraft:unbreaking");
+        return weapon;
+    };
+
+    /// The `Damage` an item carries.
+    ///
+    /// The stack's NBT is kept as raw bytes on purpose — re-encoding a tag we
+    /// do not understand loses data — so it is decoded only when a number is
+    /// actually wanted from it, which is here and in `enchantment_level`.
+    const auto held_damage = [&](const Player& who) -> i32 {
+        const net::ItemStack& held = who.inventory[36 + static_cast<usize>(who.held_slot)];
+        if (held.nbt.empty()) {
+            return 0;
+        }
+        const auto document = nbt::read(held.nbt);
+        if (!document) {
+            return 0;
+        }
+        const nbt::Tag* damage = document->root.find("Damage");
+        return damage == nullptr ? 0 : static_cast<i32>(damage->as_i64());
+    };
+
+    /// Tell one client about one of its own slots. Without it the client shows
+    /// its predicted durability and then rolls it back.
+    const auto send_slot = [&](Player& who, usize slot) {
+        if (!who.connection) {
+            return;
+        }
+        if (const auto framed = net::encode_packet(
+                net::clientbound::kContainerSlot,
+                net::encode_container_slot(0, 0, static_cast<i16>(slot), who.inventory[slot]))) {
+            who.connection->send(*framed);
+        }
+    };
+
+    const auto set_held_damage = [&](Player& who, i32 damage) {
+        const usize     slot = 36 + static_cast<usize>(who.held_slot);
+        net::ItemStack& held = who.inventory[slot];
+        if (held.item_id == 0 || held.count <= 0) {
+            return;
+        }
+        nbt::Document document;
+        if (!held.nbt.empty()) {
+            if (auto parsed = nbt::read(held.nbt)) {
+                document = std::move(*parsed);
+            }
+        }
+        if (document.root.type() != nbt::TagType::Compound) {
+            document.root = nbt::Tag::make_compound();
+        }
+        (void)document.root.put("Damage", nbt::Tag{damage});
+        held.nbt = nbt::write(document);
+        send_slot(who, slot);
+    };
+
+    const auto break_held_item = [&](Player& who) {
+        const usize slot    = 36 + static_cast<usize>(who.held_slot);
+        who.inventory[slot] = net::ItemStack{};
+        send_slot(who, slot);
+        // Status 47 is "main-hand item broke" on a living entity: the crack and
+        // the particle burst every client that can see the player plays.
+        broadcast(nullptr, net::clientbound::kEntityEvent,
+                  net::encode_entity_event(who.entity_id, 47));
+    };
+
+    const auto consume_one_held = [&](Player& who) {
+        const usize     slot = 36 + static_cast<usize>(who.held_slot);
+        net::ItemStack& held = who.inventory[slot];
+        if (held.item_id == 0 || held.count <= 0) {
+            return;
+        }
+        held.count = static_cast<i8>(held.count - 1);
+        if (held.count <= 0) {
+            held = net::ItemStack{};
+        }
+        send_slot(who, slot);
+    };
+
+    /// The player, as the combat session reads them.
+    const auto combat_view = [&](const Player& who) {
+        CombatPlayer view;
+        view.entity_id     = who.entity_id;
+        view.x             = who.x;
+        view.y             = who.y;
+        view.z             = who.z;
+        view.yaw           = who.yaw;
+        view.on_ground     = who.on_ground;
+        view.sprinting     = who.survival.sprinting;
+        view.sneaking      = who.sneaking;
+        view.fall_distance = who.survival.health.fall_distance;
+        // Named rather than guessed: this server does not yet know whether a
+        // player's eyes are in water, whether they are on a ladder, blind or
+        // riding. All four disqualify a critical, so leaving them false makes a
+        // critical slightly too easy — a stated gap, not a silent one.
+        view.in_water     = false;
+        view.on_climbable = false;
+        view.blind        = false;
+        view.riding       = false;
+        view.game_mode    = options.survival ? u8{0} : u8{1};
+        view.food         = who.survival.food.food;
+        // Twenty. `FoodState` has no maximum of its own — the bar is
+            // always twenty haunches — and `begin_use` compares against
+            // this to refuse an eat a full player cannot make.
+            view.max_food     = 20;
+        return view;
+    };
+
+    /// How hard a mob resists being knocked back, by attribute id.
+    const auto attribute_registry_id =
+        registries ? registries->find("minecraft:attribute") : std::nullopt;
+    const auto knockback_resistance_id =
+        registries && attribute_registry_id
+            ? registries->protocol_id(*attribute_registry_id,
+                                      "minecraft:generic.knockback_resistance")
+            : std::nullopt;
+
+    /// Hurt one mob, and finish it if that was the last point.
+    ///
+    /// Caller holds players_mutex.
+    const auto hurt_mob = [&](Player& attacker, i32 target_id, f32 damage, u8 looting) -> bool {
+        if (!mobs || !mob_combat) {
+            return false;
+        }
+        const entity::EntityHandle handle = mobs->find(target_id);
+        if (handle == entity::kNoEntity) {
+            return false;
+        }
+        entity::EntityState* state = mobs->mutable_state(handle);
+        if (state == nullptr || state->removed) {
+            return false;
+        }
+
+        const MobHurt result = mob_combat->hurt(*state, damage, mob_damage_constants);
+        if (!result.applied) {
+            // The mob is there and the window swallowed the hit. True, not
+            // false: false means "no such entity", and the session uses the
+            // difference to decide whether the swing reached anything at all.
+            return true;
+        }
+
+        broadcast(nullptr, net::clientbound::kDamageEvent,
+                  net::encode_damage_event(state->network_id,
+                                           damage_type_id(gameplay::DamageKind::PlayerAttack),
+                                           attacker.entity_id, attacker.entity_id));
+        net::MetadataWriter fields;
+        fields.float_value(net::metadata::kHealth, state->health);
+        broadcast(nullptr, net::clientbound::kEntityMetadata,
+                  net::encode_entity_metadata(state->network_id, fields.take()));
+
+        if (!result.killed) {
+            return true;
+        }
+
+        // Status 3 on a living entity is the death animation. Sent before the
+        // removal so the clients play it rather than making the mob vanish.
+        broadcast(nullptr, net::clientbound::kEntityEvent,
+                  net::encode_entity_event(state->network_id, 3));
+
+        std::vector<gameplay::Drop> drops;
+        const gameplay::DrawResult  drawn =
+            mob_combat->loot(*state, true, looting, mob_loot_random, drops);
+        if (!drawn.complete()) {
+            // Counted rather than silent: two of 1.20.1's entity tables
+            // delegate to a fishing table, which is not an entity table and is
+            // not in this pack.
+            OV_LOG_DEBUG("{} loot: {} referenced tables, {} unsupported entries",
+                         mob_combat->type_name(*state), drawn.referenced_tables,
+                         drawn.unsupported_entries);
+        }
+
+        std::vector<ItemEntity> dropped;
+        dropped.reserve(drops.size());
+        for (const gameplay::Drop& drop : drops) {
+            ItemEntity item;
+            item.entity_id = next_entity_id.fetch_add(1);
+            item.uuid      = uuid_for_entity(item.entity_id);
+            item.x         = state->position.x;
+            // Half the mob's height, which is where vanilla drops from — not
+            // its feet. A stack spawned at the feet of a mob standing on a slab
+            // falls through it.
+            item.y     = state->position.y + static_cast<f64>(state->height) * 0.5;
+            item.z     = state->position.z;
+            item.stack = net::ItemStack{drop.item, static_cast<i8>(std::min(drop.count, 64)), {}};
+            item.born  = server_tick.load(std::memory_order_relaxed);
+            dropped.push_back(std::move(item));
+        }
+        const std::string_view victim = mob_combat->type_name(*state);
+        publish_items(dropped);
+
+        OV_LOG_INFO("{} killed {} ({} stacks dropped)", attacker.name, victim, drops.size());
+
+        // Flagged, never removed here: the entity world applies removals at the
+        // end of its own tick, and taking one out from under the tick's loop is
+        // how a list gets modified underneath itself.
+        state->removed = true;
+        mob_combat->forget(state->network_id);
+        return true;
+    };
+
+    /// Everything the combat session reaches outside itself for.
+    ///
+    /// Rebuilt per packet rather than stored: it captures the player by
+    /// reference, and a `Player&` is only valid while `players_mutex` is held.
+    ///
+    /// Caller holds players_mutex.
+    const auto combat_io = [&](Player& who) {
+        CombatIo io;
+        io.send = [&](i32 id, std::span<const u8> payload) {
+            if (const auto framed = net::encode_packet(id, payload); framed && who.connection) {
+                who.connection->send(*framed);
+            }
+        };
+        io.broadcast = [&](i32 id, std::span<const u8> payload) {
+            // nullptr, not the attacker's connection: a player has to see their
+            // own arm swing, and the client does not draw it for itself.
+            broadcast(nullptr, id, payload);
+        };
+        io.hurt_entity = [&](i32 entity_id, f32 damage, bool /*critical*/) {
+            return hurt_mob(who, entity_id, damage, held_weapon(who).looting);
+        };
+        io.entity_position = [&](i32 entity_id) -> std::optional<Vec3d> {
+            if (!mobs) {
+                return std::nullopt;
+            }
+            const entity::EntityHandle handle = mobs->find(entity_id);
+            if (handle == entity::kNoEntity) {
+                return std::nullopt;
+            }
+            const entity::EntityState* state = mobs->state(handle);
+            return state == nullptr ? std::nullopt : std::optional<Vec3d>{state->position};
+        };
+        io.entity_on_ground = [&](i32 entity_id) {
+            if (!mobs) {
+                return true;
+            }
+            const entity::EntityHandle handle = mobs->find(entity_id);
+            if (handle == entity::kNoEntity) {
+                return true;
+            }
+            const entity::EntityState* state = mobs->state(handle);
+            return state == nullptr || state->on_ground;
+        };
+        io.entity_knockback_resistance = [&](i32 entity_id) -> f32 {
+            if (!mobs || !knockback_resistance_id) {
+                return 0.0F;
+            }
+            const entity::EntityHandle handle = mobs->find(entity_id);
+            if (handle == entity::kNoEntity) {
+                return 0.0F;
+            }
+            const auto value = mobs->attribute(handle, *knockback_resistance_id);
+            return value ? static_cast<f32>(*value) : 0.0F;
+        };
+        io.set_entity_velocity = [&](i32 entity_id, Vec3d velocity) {
+            // A player's own id reaches here too — a sprinting hit slows the
+            // attacker — and a player is not in the entity world, so for them
+            // the packet is the whole of it.
+            if (mobs) {
+                if (const entity::EntityHandle handle = mobs->find(entity_id);
+                    handle != entity::kNoEntity) {
+                    if (entity::EntityState* state = mobs->mutable_state(handle)) {
+                        state->velocity = velocity;
+                    }
+                }
+            }
+            broadcast(nullptr, net::clientbound::kEntityVelocity,
+                      net::encode_entity_velocity(entity_id, velocity.x, velocity.y, velocity.z));
+        };
+        io.entities_near = [&](Vec3d centre, f64 radius, i32 exclude,
+                               const std::function<void(i32)>& visit) {
+            if (!mobs) {
+                return;
+            }
+            for (const entity::EntityHandle handle : mobs->handles()) {
+                const entity::EntityState* state = mobs->state(handle);
+                if (state == nullptr || state->removed || state->network_id == exclude) {
+                    continue;
+                }
+                // The attacker's box grown by `radius` on each horizontal axis
+                // and by a quarter of a block vertically — vanilla's own sweep
+                // box, which is why a sheep on the step above is not swept.
+                if (std::abs(state->position.x - centre.x) <= radius + 1.0 &&
+                    std::abs(state->position.z - centre.z) <= radius + 1.0 &&
+                    std::abs(state->position.y - centre.y) <= 1.25) {
+                    visit(state->network_id);
+                }
+            }
+        };
+        io.exhaust          = [&](f32 amount) { who.survival.exhaust(amount); };
+        io.held_item        = [&] { return held_name(who); };
+        io.held_damage      = [&] { return held_damage(who); };
+        io.set_held_damage  = [&](i32 damage) { set_held_damage(who, damage); };
+        io.break_held_item  = [&] { break_held_item(who); };
+        io.consume_one_held = [&] { consume_one_held(who); };
+        io.held_weapon      = [&] { return held_weapon(who); };
+        return io;
+    };
+    // ── end combat and interaction ──────────────────────────────────────────
+
     // Per-connection protocol state. A packet id means different things in
     // different states, so this cannot be global.
     std::unordered_map<const net::Connection*, ConnectionState> states;
@@ -2972,6 +3414,18 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                        net::PlayerCommandAction::StopSprinting) {
                                 player.survival.sprinting = false;
                             }
+                            // ── combat and interaction ──────────────────────
+                            // Sneaking decides whether a right-click reaches
+                            // the block or the item, and nothing else the
+                            // client sends carries it.
+                            else if (command->action ==
+                                     net::PlayerCommandAction::StartSneaking) {
+                                player.sneaking = true;
+                            } else if (command->action ==
+                                       net::PlayerCommandAction::StopSneaking) {
+                                player.sneaking = false;
+                            }
+                            // ── end combat and interaction ──────────────────
                         }
                         return true;
                     }
@@ -2980,10 +3434,75 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     case net::serverbound::kSetHeldItem: {
                         const auto slot = net::parse_set_held_item(body);
                         if (slot && *slot >= 0 && *slot < 9) {
+                            // ── combat and interaction ──────────────────────
+                            // Changing hands abandons whatever was being eaten.
+                            // A player who switches slots at tick 31 has eaten
+                            // nothing, which is a rule rather than a timer.
+                            if (*slot != player.held_slot) {
+                                player.combat.on_release(combat_io(player));
+                            }
+                            // ── end combat and interaction ──────────────────
                             player.held_slot = *slot;
                         }
                         return true;
                     }
+
+                    // ── combat and interaction ─────────────────────────────
+                    //
+                    // The three packets the combat session owns outright. Each
+                    // one parses and delegates: everything about hitting,
+                    // using and swinging lives in combat_session.{hpp,cpp},
+                    // and this switch must not grow a fifth system inside it.
+                    case net::serverbound::kInteract: {
+                        const auto interact = net::parse_interact(body);
+                        if (!interact) {
+                            return false;
+                        }
+                        // The client sends its sneak flag with every
+                        // interaction, and it is more current than the last
+                        // Player Command.
+                        player.sneaking = interact->sneaking;
+
+                        const CombatOutcome out = player.combat.on_interact(
+                            *interact, combat_view(player), combat_io(player));
+                        if (!out.unsupported.empty()) {
+                            OV_LOG_DEBUG("interact: {} is recognised and not carried out",
+                                         out.unsupported);
+                        }
+                        if (out.hit) {
+                            OV_LOG_DEBUG("{} hit entity {} for {:.2f}{}{}", player.name,
+                                         interact->entity_id, out.damage,
+                                         out.critical ? " (critical)" : "",
+                                         out.swept ? " (swept)" : "");
+                        }
+                        return true;
+                    }
+
+                    case net::serverbound::kUseItem: {
+                        const auto use = net::parse_use_item(body);
+                        if (!use) {
+                            return false;
+                        }
+                        const CombatOutcome out = player.combat.on_use_item(
+                            *use, combat_view(player), combat_io(player));
+                        if (!out.unsupported.empty()) {
+                            OV_LOG_DEBUG("use item: {} does nothing in the hand yet",
+                                         out.unsupported);
+                        }
+                        return true;
+                    }
+
+                    case net::serverbound::kSwingArm: {
+                        const auto hand = net::parse_swing_arm(body);
+                        if (!hand) {
+                            return false;
+                        }
+                        // Animation only. A server that took this for an attack
+                        // would let a client hit fifty times a second.
+                        player.combat.on_swing(*hand, combat_view(player), combat_io(player));
+                        return true;
+                    }
+                    // ── end combat and interaction ─────────────────────────
 
                     case net::serverbound::kSetCreativeSlot: {
                         if (options.survival) {
@@ -3012,6 +3531,16 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                             return false;
                         }
                         acknowledge(connection, action->sequence);
+
+                        // ── combat and interaction ──────────────────────────
+                        // Status 5 is "release use item": the button was let
+                        // go. A player who lets go at tick 31 has eaten
+                        // nothing, so this is a cancel and not a completion.
+                        if (action->status == 5) {
+                            player.combat.on_release(combat_io(player));
+                            return true;
+                        }
+                        // ── end combat and interaction ──────────────────────
 
                         if (!options.survival) {
                             // Creative breaks on the first packet: the block is
@@ -3137,6 +3666,51 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                 return true;
                             }
                         }
+
+                        // ── combat and interaction ──────────────────────────
+                        //
+                        // The block gets first refusal, then the item — the
+                        // game's own order, and `ItemUse::use_on` is the whole
+                        // of it. **Before** the placement path below, because a
+                        // door clicked with a block in hand has to open rather
+                        // than be built against; getting this the other way
+                        // round makes every container in the game impossible to
+                        // open with something in hand.
+                        //
+                        // Anything but Pass stops here. Fail is not Pass: an
+                        // iron door clicked bare-handed refuses, and letting
+                        // that fall through would place a block through it.
+                        if (item_use) {
+                            const CombatOutcome used = player.combat.on_use_item_on(
+                                *place, combat_view(player), combat_io(player), player_level,
+                                *item_use);
+                            if (!used.unsupported.empty()) {
+                                OV_LOG_DEBUG("use on block: {} is recognised and not carried out",
+                                             used.unsupported);
+                            }
+                            if (used.screen != gameplay::ScreenKind::None) {
+                                // Named rather than silently dropped. The
+                                // screens this server does open — chest,
+                                // crafting table, furnace — are handled above
+                                // and never reach here; what lands here is a
+                                // barrel, an anvil, a lectern, and saying so is
+                                // better than a click that does nothing.
+                                OV_LOG_DEBUG("use on block: a screen at ({}, {}, {}) is not "
+                                             "opened by this server yet",
+                                             used.screen_position.x, used.screen_position.y,
+                                             used.screen_position.z);
+                            }
+                            if (used.spawn_primed_tnt) {
+                                OV_LOG_DEBUG("use on block: primed TNT at ({}, {}, {}) is not "
+                                             "spawned by this server yet",
+                                             used.tnt_position.x, used.tnt_position.y,
+                                             used.tnt_position.z);
+                            }
+                            if (used.result != gameplay::UseResult::Pass) {
+                                return true;
+                            }
+                        }
+                        // ── end combat and interaction ──────────────────────
 
                         const net::ItemStack& held =
                             player.inventory[36 + static_cast<usize>(player.held_slot)];
@@ -3777,6 +4351,21 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     std::vector<i64> tick_micros;
     tick_micros.reserve(64 * 1024);
 
+    // ── Natural spawning, on its own line ───────────────────────────────────
+    //
+    // The tick histogram says the tick got slower and cannot say what made it
+    // so. This one says. It is the same discipline as the histogram above —
+    // steady_clock, never feeding a decision — and it exists because the
+    // spawner was named as the cost of the last wave from a *difference of two
+    // whole-tick numbers*, which is an inference and not a measurement.
+    std::vector<i64> spawn_micros;
+    spawn_micros.reserve(64 * 1024);
+    /// How many chunk lists were rebuilt, and what that cost. The rebuild is a
+    /// spike every twentieth tick rather than a cost every tick, and a
+    /// percentile over the sum of the two hides it.
+    std::vector<i64> spawn_rebuild_micros;
+    spawn_rebuild_micros.reserve(4 * 1024);
+
     // Reused across ticks rather than built inside one. Both grow to their
     // working size in the first few seconds and never allocate again.
     std::vector<GeneratedBlock> finished_blocks;
@@ -4096,6 +4685,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // needs that a `LevelView` cannot answer — the light, the players, the
         // ticking set, the live counts — is assembled here and nowhere else.
         if (spawning_ready && level && mobs && registries && blocks) {
+            const auto spawn_started = std::chrono::steady_clock::now();
             spawn_players.clear();
             {
                 const std::unique_lock lock{players_mutex, std::try_to_lock};
@@ -4148,6 +4738,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     // A second of latency on that is invisible against a spawn
                     // cycle; two and a half milliseconds a tick is not.
                     if (clock.tick_count() % 20 == 0 || spawn_ticking.empty()) {
+                        const auto rebuild_started = std::chrono::steady_clock::now();
                         spawn_ticking.clear();
                         // The **spawn square**: the 17x17 of chunks around each
                         // player, not every ticking chunk in the world.
@@ -4187,6 +4778,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         std::ranges::sort(spawn_ticking, [](ChunkPos a, ChunkPos b) {
                             return a.z != b.z ? a.z < b.z : a.x < b.x;
                         });
+                        spawn_rebuild_micros.push_back(
+                            std::chrono::duration_cast<std::chrono::microseconds>(
+                                std::chrono::steady_clock::now() - rebuild_started)
+                                .count());
                     }
 
                     gameplay::SpawnEnvironment environment;
@@ -4238,6 +4833,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                  clock.tick_count(), spawn_requests.size(), spawn_ticking.size());
                 }
             }
+            spawn_micros.push_back(std::chrono::duration_cast<std::chrono::microseconds>(
+                                       std::chrono::steady_clock::now() - spawn_started)
+                                       .count());
         }
 
         // Mobs: gravity, collision, and only the movement that actually
@@ -4288,6 +4886,13 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 for (const i32 gone : mobs->removed_ids()) {
                     broadcast(nullptr, net::clientbound::kRemoveEntities,
                               net::encode_remove_entity(gone));
+                    // ── combat and interaction ──────────────────────────────
+                    // Its damage window goes with it. Without this a long
+                    // server keeps one row per mob that ever lived.
+                    if (mob_combat) {
+                        mob_combat->forget(gone);
+                    }
+                    // ── end combat and interaction ──────────────────────────
                 }
 
                 for (const entity::EntityHandle handle : mobs->handles()) {
@@ -4389,6 +4994,84 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 }
             }
         }
+
+        // ── combat and interaction: the gauge, and the eating ──────────────
+        //
+        // One block, and it delegates like the survival one does. Two things
+        // happen here that cannot happen on the network thread: the attack
+        // gauge advances by one tick, and an eat that finishes on this tick is
+        // applied — nutrition into hunger and one off the stack.
+        //
+        // Not gated on `--survival`: a creative player's gauge still charges,
+        // and a swing sent while it is cold still does a fifth of its damage.
+        // Only the eating is a survival rule, and `begin_use` already refuses
+        // to start one for a player who is not hungry.
+        {
+            std::unique_lock combat_lock{players_mutex, std::try_to_lock};
+            if (combat_lock.owns_lock()) {
+                // Before any damage, and on the same thread that will apply it:
+                // `tick_health` counts the gap between two hits in these calls,
+                // so a window ticked after a hit is a window one tick young.
+                if (mob_combat) {
+                    mob_combat->tick(mob_damage_constants);
+                }
+
+                for (auto& [combat_key, who] : players) {
+                    if (!who.confirmed || !who.connection) {
+                        continue;
+                    }
+                    // How far they moved since the last tick. The sweep wants a
+                    // *standing* attacker and this is the only place that can
+                    // measure it — a position packet knows where the player is,
+                    // not how fast.
+                    const f64 step =
+                        who.combat_last_valid
+                            ? std::sqrt((who.x - who.combat_last_x) * (who.x - who.combat_last_x) +
+                                        (who.z - who.combat_last_z) * (who.z - who.combat_last_z))
+                            : 0.0;
+                    who.combat_last_x     = who.x;
+                    who.combat_last_z     = who.z;
+                    who.combat_last_valid = true;
+
+                    const std::string_view finished = who.combat.tick(combat_view(who), step);
+                    if (finished.empty()) {
+                        continue;
+                    }
+
+                    // The item's use has just completed. What it *does* is the
+                    // caller's, which is this: `tick_use` says when, and
+                    // `food_for` says what.
+                    const auto value = gameplay::food_for(finished);
+                    if (!value) {
+                        // Refused and named. A potion, a milk bucket and a
+                        // chorus fruit all finish a use and none of them is
+                        // food; treating them as nutrition zero would look
+                        // exactly like eating that did nothing.
+                        OV_LOG_DEBUG("{} finished using {}, which this server does not apply yet",
+                                     who.name, finished);
+                        continue;
+                    }
+                    gameplay::eat(who.survival.food, *value);
+                    if (options.survival) {
+                        consume_one_held(who);
+                    }
+                    who.survival.send_state(SurvivalIo{
+                        .send =
+                            [&](i32 id, std::span<const u8> payload) {
+                                if (const auto framed = net::encode_packet(id, payload);
+                                    framed && who.connection) {
+                                    who.connection->send(*framed);
+                                }
+                            },
+                        .broadcast = [&](i32 id, std::span<const u8> payload) {
+                            broadcast(who.connection.get(), id, payload);
+                        }});
+                    OV_LOG_INFO("{} ate {} (+{} food, hunger now {})", who.name, finished,
+                                value->nutrition, who.survival.food.food);
+                }
+            }
+        }
+        // ── end combat and interaction ─────────────────────────────────────
 
         // ── survival: health, hunger, experience, death and respawn ────────
         //
@@ -4990,6 +5673,27 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     tick_micros.size(), at(0.50), at(0.90), at(0.99), tick_micros.back(),
                     over_budget);
     }
+
+    // The same shape, for the one phase that was named as a regression.
+    const auto report_phase = [](std::string_view what, std::vector<i64>& samples) {
+        if (samples.empty()) {
+            return;
+        }
+        std::ranges::sort(samples);
+        const auto at = [&](double quantile) {
+            return samples[static_cast<usize>(quantile *
+                                              static_cast<double>(samples.size() - 1))];
+        };
+        i64 total = 0;
+        for (const i64 sample : samples) {
+            total += sample;
+        }
+        OV_LOG_INFO("{} over {} runs: p50 {} us, p90 {} us, p99 {} us, max {} us, mean {} us",
+                    what, samples.size(), at(0.50), at(0.90), at(0.99), samples.back(),
+                    total / static_cast<i64>(samples.size()));
+    };
+    report_phase("natural spawning", spawn_micros);
+    report_phase("spawn chunk list rebuild", spawn_rebuild_micros);
 
     if (chunk_source) {
         OV_LOG_INFO(

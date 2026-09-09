@@ -279,3 +279,128 @@ maintenant construit une fois.
   `player.gameMode.isCreative()` en tête de son handler et ignore le paquet
   sinon ; c'est déjà ce que fait `server.cpp`, avec le commentaire qui le dit. Le
   point 5 du mandat était un faux positif.
+
+---
+
+## 6. Suite : la régression du spawner, reprise et mesurée
+
+Vague suivante. Le § 4 ci-dessus nommait le `NaturalSpawner` comme coût du
+câblage, et le chiffre à battre était **5 ticks sur 921 au-dessus de 50 ms** en
+release, là où `main` n'en avait aucun. Ce qui suit corrige la méthode d'abord,
+puis le coût.
+
+### 6.1 Le coût du spawner était une *inférence*, pas une mesure
+
+Le § 4 obtient « ~0,38 ms par tick » en soustrayant deux nombres de tick entiers
+pris dans deux exécutions différentes. C'est un raisonnement, et le dépôt ne fait
+pas confiance aux raisonnements.
+
+`server.cpp` chronomètre maintenant la passe d'apparition **pour elle-même**, et
+la reconstruction de la liste de chunks à part — même discipline que
+l'histogramme de tick : `steady_clock`, jamais dans une décision. Deux lignes de
+plus à l'arrêt :
+
+```
+natural spawning over 901 runs: p50 195 us, p90 239 us, p99 1057 us, max 8456 us
+spawn chunk list rebuild over 46 runs: p50 12 us, p90 13 us, p99 13 us, max 14 us
+```
+
+Premier résultat : **la reconstruction de la liste ne coûte rien** (12 µs, 46
+fois sur 900 ticks). L'optimisation « une fois par seconde » du § 4 a fait son
+travail ; ce n'est plus là que le temps passe.
+
+### 6.2 Le profil : 19 échantillons sur 50 dans un `memcmp`
+
+`sample` sur 20 s, release, banc `ov_lab`, un client connecté. La passe
+d'apparition tient 50 échantillons, répartis ainsi :
+
+| ligne | quoi | échantillons |
+|---|---|---|
+| `spawning.cpp:341` | `registries->protocol_id(entity_registry, nom)` | **23**, dont 19 dans `memcmp` |
+| `spawning.cpp:350` | `can_spawn_at` → lectures de blocs | 19 |
+| reste | tirages RNG, poids | 8 |
+
+`Registries::protocol_id` était une **recherche linéaire**, et son propre
+commentaire disait pourquoi c'était acceptable :
+
+> Linear: […] this is a load-time path — resolving a datapack, not a hot loop.
+
+Le spawner en a fait une boucle chaude : il résout un type de mob **par son nom**
+une fois par tentative, quelques milliers de fois par tick, et chaque résolution
+comparait la chaîne à jusqu'à 124 noms d'entité. Ce n'est ni une relumination, ni
+une recherche de hauteur, ni une allocation — c'est une recherche de chaîne, et
+seul le profil pouvait le dire.
+
+Corrigé par un index nom → id construit au chargement, un par registre
+(`src/ov_registry/`). Comportement identique — le premier doublon gagne, comme
+`std::ranges::find` —, gain pour tous les appelants.
+
+### 6.3 Avant / après, trois exécutions de chaque
+
+Release, `--ticks=900`, banc `ov_lab`, une sonde connectée et immobile
+(`scripts/bench_tick.py`, rejouable). Attention au piège 22 : les colonnes
+« tours » et « ticks » sont les tours de boucle et les ticks d'horloge, et leur
+écart est ce qui dit si du travail a quitté le thread.
+
+| | p50 | p90 | p99 | max | > 50 ms | tours / ticks |
+|---|---|---|---|---|---|---|
+| avant — recherche linéaire | 313 µs | 407 µs | 15,2 ms | 21,0 ms | **0 / 900** | 901 / 900 |
+| après — index de registre | 222 µs | 322 µs | 13,9 ms | 19,1 ms | **0 / 900** | 901 / 900 |
+
+Passe d'apparition seule, p50 par exécution :
+
+| | run 1 | run 2 | run 3 | médiane |
+|---|---|---|---|---|
+| avant | 279 µs | 285 µs | 178 µs | **279 µs** |
+| après | 195 µs | 183 µs | 199 µs | **195 µs** |
+
+**−30 % sur la passe, −29 % sur le tick au p50.** La dispersion est réelle et
+elle est dite : la machine porte d'autres compilations, et la troisième
+exécution « avant » est plus rapide que n'importe quelle exécution « après ». Ce
+qui distingue les deux séries est la *forme* — « après » tient dans 183–199,
+« avant » s'étale sur 178–285.
+
+### 6.4 Les 5 ticks sur 921 ne se reproduisent pas
+
+**Six exécutions, 5400 ticks, zéro tick au-dessus de 50 ms**, avant comme après,
+et l'écart tours/ticks est de −1 partout (le tour qui imprime le rapport). Le
+`max` est de 19 à 38 ms selon l'exécution.
+
+Ce n'est pas un démenti du § 4 : les cinq y sont décrits comme survenant
+**pendant la connexion**, quand la première passe tombe sur le streaming de
+chunks — et le streaming est bien la longue queue ici aussi (p99 ≈ 14 ms, contre
+0,2 ms au p50). C'est un tick à 45 ms qui devient un tick à 55 ms, pas une passe
+d'apparition qui coûte 50 ms. Sur cette machine il ne franchit pas la barre.
+
+Dit franchement : **le chiffre à battre n'était pas reproductible**, et ce qui
+peut être affirmé est ce qui a été mesuré — la passe elle-même vaut 195 µs au
+p50, soit **0,4 % du budget de 50 ms**, contre 279 µs avant.
+
+### 6.5 Ce que le profil nomme et que cette vague n'a pas fait
+
+Après l'index, la passe est dominée par ce pour quoi elle est écrite :
+`can_spawn_at` → `WalkNodeEvaluator::type_at` → lectures de blocs (30
+échantillons sur 47), puis `is_loaded` (6). Ce sont de vraies lectures de
+`PalettedContainer`, irréductibles sans changer *combien* de positions sont
+examinées. Deux leviers restent, tous deux dans `src/ov_gameplay/` :
+
+1. **Les mobs passifs ne devraient tenter d'apparaître qu'un tick sur 400.**
+   Documenté : « Most mobs have a spawning cycle once every game tick, but
+   passive mobs have only one spawning cycle every 400 game ticks (20 seconds) »
+   (minecraft.wiki, *Mob spawning*). Notre `spawn_tick` parcourt les huit
+   catégories à chaque tick. En régime établi le gain est faible — le plafond de
+   la catégorie `Creature` (10 × chunks/289, soit 5 sur ce banc) la fait sortir
+   d'elle-même dès que cinq animaux existent — mais au démarrage, quand tous les
+   plafonds sont ouverts, c'est une catégorie sur quatre pour rien. Il faudrait
+   que `SpawnEnvironment` porte le temps du jeu ou la liste des catégories dues.
+
+2. **Le type est tiré avant que la position soit testée.** `spawn_tick` fait le
+   tirage pondéré *puis* résout le nom *puis* appelle `can_spawn_at`. Résoudre
+   après le test de position rendrait l'index du § 6.2 inutile plutôt que
+   nécessaire.
+
+Et une observation qui déborde le spawner : dans le même profil, **41
+échantillons sont dans `Mob::tick` → `GoalSelector` → `PathFinder::find`** —
+autant que dans toute la passe d'apparition. Le coût du câblage du spawner n'est
+pas tant le spawner que les mobs qu'il crée, dont chacun lance un A* à chaque
+tick. C'est le prochain endroit à regarder, et c'est `pathfinding.cpp`.

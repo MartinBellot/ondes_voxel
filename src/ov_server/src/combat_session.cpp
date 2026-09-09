@@ -209,6 +209,7 @@ CombatOutcome CombatSession::on_use_item_on(const net::UseItemOn& packet,
 
     const gameplay::UseOutcome result = rules.use_on(level, context);
     out.unsupported                   = result.unsupported;
+    out.result                        = result.result;
 
     if (result.result == gameplay::UseResult::Pass) {
         return out;
