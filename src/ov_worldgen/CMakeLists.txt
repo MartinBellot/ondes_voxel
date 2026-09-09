@@ -10,15 +10,20 @@ ov_add_library(ov_worldgen
     SOURCES
         src/biome_source.cpp
         src/chunk_generator.cpp
+        src/decoration.cpp
         src/density.cpp
+        src/feature.cpp
         src/noise.cpp
+        src/ore_feature.cpp
+        src/placement.cpp
     DEPS
         ov_math
         ov_registry
         ov_world
     PRIVATE_DEPS
-        # Same rule as everywhere else: simdjson is a template-heavy header and
-        # it appears in density.cpp and nowhere else.
+        # Same rule as everywhere else: simdjson is a template-heavy header, so
+        # it appears in the .cpp files that read the datapack and in no
+        # installed one.
         simdjson::simdjson
 )
 
@@ -26,6 +31,7 @@ ov_add_test(test_ov_worldgen
     SOURCES
         tests/test_biome_source.cpp
         tests/test_density.cpp
+        tests/test_feature.cpp
         tests/test_noise.cpp
     DEPS ov_worldgen
     LABELS unit
