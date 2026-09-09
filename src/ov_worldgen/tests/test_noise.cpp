@@ -174,3 +174,68 @@ TEST_CASE("normal noise is bounded by what it reports", "[worldgen][noise]") {
         CHECK(std::abs(v) <= noise.max_value());
     }
 }
+
+TEST_CASE("the old terrain noise keeps the amplitude the Nether measured",
+          "[worldgen][noise]") {
+    // Two arithmetics would divide this noise by four — two octaves fewer in
+    // each limit stack, or a second divisor of 512 instead of 128 — and the
+    // overworld cannot tell either from the current one: its surface is the sum
+    // of six stages, and an amplitude four times smaller merely trades one kind
+    // of error there for another.
+    //
+    // The Nether can. Its noise_settings name no depth, no factor and no
+    // aquifers, and above y = 104 a clamped gradient walks final_density's
+    // threshold away from zero by about four hundredths of a unit per block, so
+    // the fraction of stone at each height is this noise's survival function as
+    // the game itself writes it. Measured that way on seeds 1234567890 and
+    // 987654321 (`ov_parity --nether`), the game's distribution is 1.03 and
+    // 0.80 times as wide as this one — and about four times wider than either
+    // quarter-size candidate, each of which saturates before the game's curve
+    // has even left three quarters.
+    //
+    // The numbers below are therefore a fence around a measured amplitude, not
+    // a calibration. They are wide because the Nether is seeded from the legacy
+    // random source and this is not, so the two are different draws of the same
+    // process; they are still four times tighter than the gap to either
+    // candidate.
+    math::XoroshiroRandomSource random{1234567890};
+    // The overworld's own parameters, from
+    // worldgen/density_function/overworld/base_3d_noise.json.
+    const BlendedNoise noise = BlendedNoise::create(random, 0.25, 0.125, 80.0, 160.0, 8.0);
+
+    f64   sum       = 0.0;
+    f64   sum2      = 0.0;
+    f64   step_sum2 = 0.0;
+    usize count     = 0;
+    for (i32 x = -512; x <= 512; x += 7) {
+        for (i32 z = -512; z <= 512; z += 11) {
+            const f64 here = noise.value(x, 64, z);
+            const f64 next = noise.value(x + 1, 64, z);
+            sum += here;
+            sum2 += here * here;
+            const f64 step = next - here;
+            step_sum2 += step * step;
+            ++count;
+            CHECK(std::abs(here) <= noise.max_value());
+        }
+    }
+    const auto n    = static_cast<f64>(count);
+    const f64  mean = sum / n;
+    const f64  rms  = std::sqrt(sum2 / n);
+
+    // Symmetric: it blends two stacks that are drawn the same way.
+    CHECK(std::abs(mean) < 0.05);
+    // The amplitude. A second divisor of 512 lands at 0.041 and fourteen
+    // octaves at 0.061; both are far outside.
+    CHECK(rms > 0.12);
+    CHECK(rms < 0.21);
+
+    // And the spectrum, which the amplitude alone does not pin. Dropping the
+    // two heaviest octaves takes away the 96- and 192-block wavelengths and
+    // leaves the fine ones at full size, so it *raises* this ratio — to 0.159,
+    // where sixteen octaves give 0.119 whatever the divisors are. A test that
+    // only checked the size would pass a stack with a hole in it.
+    const f64 roughness = std::sqrt(step_sum2 / n) / rms;
+    CHECK(roughness > 0.10);
+    CHECK(roughness < 0.14);
+}

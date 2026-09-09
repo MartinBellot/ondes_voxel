@@ -569,10 +569,12 @@ private:
 class BlendedNoiseNode final : public DensityFunction {
 public:
     explicit BlendedNoiseNode(std::shared_ptr<const BlendedNoise> noise)
-        : noise_(std::move(noise)), gain_(gain_from_environment()) {}
+        : noise_(std::move(noise)),
+          gain_(gain_from_environment()),
+          shift_(shift_from_environment()) {}
 
     [[nodiscard]] f64 compute(const FunctionContext& at) const override {
-        return noise_->value(at.x, at.y, at.z) * gain_;
+        return noise_->value(at.x + shift_, at.y, at.z + shift_) * gain_;
     }
     [[nodiscard]] f64 min_value() const override { return -noise_->max_value() * gain_; }
     [[nodiscard]] f64 max_value() const override { return noise_->max_value() * gain_; }
@@ -598,8 +600,23 @@ private:
         return value == 0.0 ? 1.0 : value;
     }
 
+    /// OV_BASE3D_SHIFT samples the same noise somewhere else entirely.
+    ///
+    /// It is the control every correlation in this comparison needs. Asking
+    /// whether a candidate field matches the game's surface is only a question
+    /// if a field that certainly does *not* match scores lower, and two fields
+    /// built the same way share so much structure that a naive correlation
+    /// answers yes for both. Displacing the sample by ten thousand blocks keeps
+    /// every statistic of the field and destroys the alignment, so whatever it
+    /// scores is the artefact floor and only the excess above it is evidence.
+    [[nodiscard]] static i32 shift_from_environment() {
+        const char* text = std::getenv("OV_BASE3D_SHIFT");
+        return text == nullptr ? 0 : static_cast<i32>(std::strtol(text, nullptr, 10));
+    }
+
     std::shared_ptr<const BlendedNoise> noise_;
     f64                                 gain_{1.0};
+    i32                                 shift_{0};
 };
 
 }  // namespace

@@ -1,20 +1,35 @@
-// Turning the density function graph into blocks.
+// Turning the density function graph into blocks, in the order the game does.
 //
-// The noise stage and nothing else: for every position, the final density
-// decides solid or not, and what is not solid is water below the sea level,
-// lava below y = -54, and air above. That is `NoiseBasedChunkGenerator`'s
-// `fillFromNoise` with the two things that come after it left out — aquifers,
-// which put water in caves, and the carvers, which cut the caves in the first
-// place.
+// The stages, and the order is the whole point of this file:
 //
-// Leaving them out is deliberate for now and it is measurable: a comparison
-// against a world the real game generated shows exactly how much of it they
-// account for, which is a better way to decide what to build next than
-// guessing.
+//     noise  ->  biomes  ->  surface rules  ->  carvers  ->  (features)
+//
+// The noise stage puts down stone, water, lava and air and nothing else. The
+// surface rules then turn the top of every stone column into grass, dirt, sand,
+// gravel, the desert's sandstone and the badlands' bands. Only then do the
+// carvers cut, and they cut through what the surface rules put there — which is
+// why the order matters and why it is not a detail:
+//
+//   * a column whose top a cave has already eaten counts `stone_depth` from the
+//     cave's ceiling instead of from the real surface, so carving first gives
+//     the rules a terrain the game never showed them;
+//   * and the rule that turns the grass above a carved cell into dirt cannot
+//     exist at all until the grass has been placed, which is to say until the
+//     surface rules have run.
+//
+// The carving mask itself does not care: it is a pure function of the seed, the
+// chunk and the world's height, and it is bit-for-bit identical to the game's
+// (1200/1200 chunks, see docs/provenance/carvers.md). What moved is when it is
+// applied, not how it is computed.
+//
+// Still missing, and named rather than silently absent: the aquifer, which is
+// what decides that a carved cell under the sea stays water instead of becoming
+// air, and the features.
 #pragma once
 
 #include "ov/base/types.hpp"
 #include "ov/registry/block_states.hpp"
+#include "ov/registry/registries.hpp"
 #include "ov/world/chunk.hpp"
 #include "ov/worldgen/biome_source.hpp"
 #include "ov/worldgen/carver.hpp"
@@ -22,18 +37,39 @@
 #include "ov/worldgen/surface_system.hpp"
 
 #include <expected>
+#include <vector>
 
 namespace ov::worldgen {
+
+/// Why attaching the carvers to a generator failed.
+///
+/// Attaching them needs the block tag that says what a carver may replace, and
+/// a missing tag is refused here rather than papered over with a hand-written
+/// list: a list typed out by hand is a list that is wrong by the next version,
+/// and the whole point of resolving the tag is that nobody has to maintain it.
+enum class CarverAttachError : u8 {
+    /// The pack has no `minecraft:block` registry.
+    NoBlockRegistry,
+    /// The pack has no `minecraft:overworld_carver_replaceables` tag.
+    NoReplaceablesTag,
+    /// The tag names a block the block registry does not have. Two packs built
+    /// from different versions, and carving would then silently spare blocks it
+    /// should cut.
+    UnknownMember,
+};
+
+[[nodiscard]] std::string_view to_string(CarverAttachError error) noexcept;
 
 class ChunkGenerator {
 public:
     ChunkGenerator(const NoiseRouter& router, const BiomeSource& biomes,
                    const registry::BlockRegistry& blocks);
 
-    /// Fill a chunk's blocks and biomes from the noise.
+    /// Fill a chunk's blocks and biomes: noise, biomes, surface, carvers.
     ///
     /// The chunk must already have the world's shape; only its contents are
-    /// written.
+    /// written. The heightmaps are recomputed last, after the carvers, because
+    /// a carved cell can be the one the heightmap was pointing at.
     void generate(world::Chunk& chunk) const;
 
     /// Give the generator the surface rules, so a generated chunk gets grass,
@@ -59,13 +95,46 @@ public:
     /// What fills a position that is not solid: water, lava or air.
     [[nodiscard]] registry::BlockStateId fluid_at(i32 y) const;
 
-    /// Attach the carvers. Optional, and off by default: a generator that is
-    /// only asked about the noise — a column dump, the biome comparison —
-    /// would otherwise pay 867 carver seedings for a question the carvers do
-    /// not answer. Borrowed, not owned; the stage must outlive the generator.
-    void set_carvers(const CarverStage* carvers) noexcept { carvers_ = carvers; }
+    /// Attach the carvers, and with them the tag that says what they may cut.
+    ///
+    /// The two arrive together and cannot be separated, which is deliberate.
+    /// Carving is not "remove stone": it is "remove anything in
+    /// `minecraft:overworld_carver_replaceables`", and once the surface rules
+    /// have run the top of a column is grass, dirt, sand or gravel — every one
+    /// of them in that tag. A `set_carvers` that took only the stage would let
+    /// a caller carve with the tag missing and quietly leave a crust of dirt
+    /// hanging over every cave.
+    ///
+    /// Optional as a whole, and off by default: a generator that is only asked
+    /// about the noise — a column dump, the biome comparison — would otherwise
+    /// pay 867 carver seedings for a question the carvers do not answer.
+    /// Borrowed, not owned; the stage must outlive the generator.
+    [[nodiscard]] std::expected<void, CarverAttachError> set_carvers(
+        const CarverStage* carvers, const registry::Registries& registries);
+
+    /// Put the carvers back before the surface rules, cutting stone only —
+    /// the order this generator had before the stages were separated.
+    ///
+    /// A measuring instrument, not a supported way to generate a world. It
+    /// exists so that a harness can hold both orders at once and compare them
+    /// on the same chunks in the same process: a reordering can make parity
+    /// worse, and taking the before from one build and the after from another
+    /// is how that goes unnoticed. Defaults to what `OV_CARVE_BEFORE_SURFACE`
+    /// said at construction, which is off.
+    void set_carve_before_surface(bool legacy) noexcept { carve_before_surface_ = legacy; }
+
+    /// Whether a carver is allowed to replace this block.
+    ///
+    /// The membership of `minecraft:overworld_carver_replaceables`, resolved
+    /// once at attach time into a flat lookup. Exposed so a test can check the
+    /// resolution against the tag file rather than against itself.
+    [[nodiscard]] bool is_carver_replaceable(registry::BlockId block) const noexcept;
 
 private:
+    /// Apply an already-computed carving mask to a chunk whose surface has been
+    /// built. Split out because it is the stage this file is about.
+    void apply_carving(world::Chunk& chunk, const CarvingMask& mask, i32 lava_level) const;
+
     const NoiseRouter*             router_;
     const BiomeSource*             biomes_;
     const registry::BlockRegistry* blocks_;
@@ -76,6 +145,42 @@ private:
     registry::BlockStateId stone_{};
     registry::BlockStateId water_{};
     registry::BlockStateId lava_{};
+    registry::BlockStateId dirt_{};
+
+    registry::BlockId grass_block_{};
+    bool              has_grass_block_{false};
+
+    /// One bit per block id: is it in the replaceables tag? A flat table rather
+    /// than a binary search per cell — a chunk asks this once per carved cell
+    /// and a busy chunk carves thousands.
+    std::vector<bool> replaceable_;
+
+    /// Run the carvers *before* the surface rules, and let them cut only
+    /// stone — the order this generator had before the stages were separated.
+    ///
+    /// Kept, and switchable through `OV_CARVE_BEFORE_SURFACE`, for exactly one
+    /// reason: a reordering can make parity worse, and the only honest way to
+    /// say whether it did is to take the before and the after out of the same
+    /// binary on the same sample. It is not a supported way to generate a
+    /// world; it is a measuring instrument.
+    bool carve_before_surface_{false};
+
+    /// Whether a carved cell that currently holds a fluid is emptied.
+    ///
+    /// On, because the tag says so — `minecraft:water` is a member — and
+    /// because it measures better, which is the part that settled it. The
+    /// reasoning said the opposite: the game asks the aquifer, we have none,
+    /// so emptying carved water should drain sea beds the game kept full. The
+    /// measurement disagreed. Our noise stage fills *every* non-solid cell
+    /// below the sea level with water, so a dry cave under dry land comes out
+    /// flooded; cutting the fluid fixes far more of those than it breaks under
+    /// the sea. Cave interiors: 70,53 % with fluids spared, **73,50 %** with
+    /// them cut, walls identical to the block. See
+    /// docs/provenance/ordre-des-etages.md § 5.
+    ///
+    /// `OV_CARVE_FLUIDS=0` puts it back, so the question can be re-measured
+    /// when the aquifer lands and takes the decision away from here entirely.
+    bool carve_fluids_{true};
 
     i32 sea_level_{63};
 };
