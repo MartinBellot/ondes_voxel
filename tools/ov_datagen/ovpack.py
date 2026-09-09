@@ -42,6 +42,7 @@ import json
 import biomes as biomes_module
 import collision
 import loot
+import recipes as recipes_module
 import struct
 import sys
 from pathlib import Path
@@ -57,9 +58,16 @@ MAGIC = b"OVPK"
 # Bumped by hand whenever the layout changes, so a stale cache is detected
 # rather than misread. A mismatched cache read as if it were current is far
 # worse than no cache at all.
-FORMAT_VERSION = 12
+FORMAT_VERSION = 13
 
 _loot_report = ""
+_recipe_report = ""
+_fuel_report = ""
+
+# L'ordre des tables de combustion dans le pack. Les trois fours ne lisent pas
+# forcément la même durée pour le même objet, et le rapport entre eux est une
+# mesure — pas une division supposée. Cet ordre est celui que lit ov_registry.
+FUEL_KINDS = ["minecraft:furnace", "minecraft:blast_furnace", "minecraft:smoker"]
 
 # Le pack a dépassé 128 octets d'en-tête en gagnant les tables de butin.
 HEADER_SIZE = 256
@@ -93,7 +101,8 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
           opacity_doc: dict, stacks_doc: dict, motion_doc: dict,
           hardness_doc: dict, loot_dir, loot_map_doc: dict,
           collision_doc: dict, emission_doc: dict, biome_list: list,
-          entities_doc: dict) -> bytes:
+          entities_doc: dict, recipe_dir, fuel_doc: dict,
+          remainder_doc: dict) -> bytes:
     blocks = blocks_doc["blocks"]
     state_count = blocks_doc["state_count"]
 
@@ -240,6 +249,50 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
                                               lambda tag: item_tags[tag], strings.intern,
                                               loot_map_doc["tables"])
     loot_bytes = loot.pack(loot_sections)
+
+    # ── Recettes ────────────────────────────────────────────────────────────
+    #
+    # Aplaties pour la même raison : un ingrédient qui dit `#minecraft:planks`
+    # est développé ici en liste triée d'ids, pour que l'appariement ne fasse
+    # jamais qu'une recherche dichotomique par case de grille.
+    recipe_sections = recipes_module.compile_recipes(recipe_dir, item_index, item_tags,
+                                                     strings.intern)
+    recipe_bytes = recipes_module.pack(recipe_sections)
+
+    # ── Combustibles et restes de fabrication ───────────────────────────────
+    #
+    # Ni les uns ni les autres ne sont dans les données : `getBurnDuration` et
+    # `craftingRemainingItem` sont du code Java. Ils viennent de mesures faites
+    # sur un vrai serveur 1.20.1 (scripts/measure_fuel.py, scripts/measure_crafting.py),
+    # et un objet non mesuré vaut « pas un combustible » / « pas de reste » —
+    # ce qui est ici la vérité observée, pas un défaut : les deux mesures
+    # couvrent tout le registre des objets.
+    burn = fuel_doc["burn_ticks"]
+    fuel_bytes = b""
+    for kind in FUEL_KINDS:
+        if kind not in burn:
+            sys.exit(f"error: fuel.json ne couvre pas {kind}")
+        table = burn[kind]
+        fuel_bytes += b"".join(struct.pack("<H", min(65535, table.get(name, 0)))
+                               for name in item_entries)
+
+    remainder_of = dict(fuel_doc.get("fuel_remainder", {}))
+    for name, left in remainder_doc.get("crafting_remainder", {}).items():
+        if name in remainder_of and remainder_of[name] != left:
+            sys.exit(f"error: {name} rend {remainder_of[name]} comme combustible et "
+                     f"{left} en fabrication — les deux ne peuvent pas être vrais")
+        remainder_of[name] = left
+    remainder_bytes = b"".join(
+        struct.pack("<i", item_index.get(remainder_of[name], -1) if name in remainder_of else -1)
+        for name in item_entries)
+
+    global _recipe_report
+    _recipe_report = (f"{len(recipe_sections['records'])} / {recipe_sections['seen']} chargées, "
+                      f"{len(recipe_sections['declaration_only'])} déclarées sans appariement, "
+                      f"{len(recipe_sections['refused'])} refusées")
+    global _fuel_report
+    _fuel_report = (f"{sum(1 for name in item_entries if burn[FUEL_KINDS[0]].get(name))} "
+                    f"combustibles, {len(remainder_of)} objets à reste")
 
     global _loot_report
     _loot_report = (f"{loot_sections['present']} blocks, {len(loot_sections['pools'])} pools, "
@@ -418,8 +471,28 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
         body += struct.pack("<B7xd", index, value)
     align8(body)
 
+    recipes_offset = HEADER_SIZE + len(body)
+    body += recipe_bytes["recipes"]
+    align8(body)
+
+    recipe_ings_offset = HEADER_SIZE + len(body)
+    body += recipe_bytes["ingredients"]
+    align8(body)
+
+    recipe_choices_offset = HEADER_SIZE + len(body)
+    body += recipe_bytes["choices"]
+    align8(body)
+
+    fuel_offset = HEADER_SIZE + len(body)
+    body += fuel_bytes
+    align8(body)
+
+    remainder_offset = HEADER_SIZE + len(body)
+    body += remainder_bytes
+    align8(body)
+
     header = struct.pack(
-        "<4s" + "I" * 49,
+        "<4s" + "I" * 57,
         MAGIC,
         FORMAT_VERSION,
         len(block_records),
@@ -469,6 +542,14 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
         entities_offset,
         entity_attrs_offset,
         len(entity_records),
+        recipes_offset,
+        recipe_ings_offset,
+        recipe_choices_offset,
+        len(recipe_sections["records"]),
+        len(recipe_sections["ingredients"]),
+        len(recipe_sections["choices"]),
+        fuel_offset,
+        remainder_offset,
         0,  # reserved
     )
     assert len(header) <= HEADER_SIZE
@@ -527,9 +608,27 @@ def main() -> int:
         sys.exit(f"error: {biome_dir} not found. Run tools/ov_datagen/datagen.py first.")
     biome_list = biomes_module.collect(biome_dir)
 
+    recipe_dir = NORMALIZED.parent / "generated" / "data" / "minecraft" / "recipes"
+    if not recipe_dir.is_dir():
+        sys.exit(f"error: {recipe_dir} not found. Run tools/ov_datagen/datagen.py first.")
+
+    fuel_path = NORMALIZED / "fuel.json"
+    if not fuel_path.is_file():
+        sys.exit(f"error: {fuel_path} not found. Run scripts/measure_fuel.py first.")
+    with open(fuel_path) as f:
+        fuel_doc = json.load(f)
+
+    remainder_path = NORMALIZED / "crafting.json"
+    if not remainder_path.is_file():
+        sys.exit(f"error: {remainder_path} not found. "
+                 f"Run scripts/measure_crafting.py first.")
+    with open(remainder_path) as f:
+        remainder_doc = json.load(f)
+
     payload = build(blocks_doc, registries_doc, tags_doc, opacity_doc, stacks_doc,
                     motion_doc, hardness_doc, loot_dir, loot_map_doc, collision_doc,
-                    emission_doc, biome_list, entities_doc)
+                    emission_doc, biome_list, entities_doc, recipe_dir, fuel_doc,
+                    remainder_doc)
     tag_records_count = [t for g in tags_doc["tags"].values() for t in g]
     member_count_total = sum(len(v) for g in tags_doc["tags"].values() for v in g.values())
     OUTPUT.write_bytes(payload)
@@ -551,13 +650,16 @@ def main() -> int:
     print(f"    entities ....... {entities_doc['present']} of {entities_doc['types']} "
           f"types measured, {sum(len(v) for v in entities_doc['attributes'].values())} "
           f"attribute values")
+    print(f"    recipes ........ {_recipe_report}")
+    print(f"    fuel ........... {_fuel_report}")
     print(f"    size ........... {len(payload):,} bytes")
 
     # Byte-stability is the property the manifest depends on. Checking it here
     # costs nothing and catches a non-deterministic dict order immediately.
     if build(blocks_doc, registries_doc, tags_doc, opacity_doc, stacks_doc,
              motion_doc, hardness_doc, loot_dir, loot_map_doc, collision_doc,
-             emission_doc, biome_list, entities_doc) != payload:
+             emission_doc, biome_list, entities_doc, recipe_dir, fuel_doc,
+             remainder_doc) != payload:
         sys.exit("error: emitter is not deterministic")
     print("    deterministic .. yes")
     return 0

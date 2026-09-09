@@ -14,6 +14,7 @@
 #pragma once
 
 #include "ov/base/types.hpp"
+#include "ov/registry/recipe_data.hpp"
 
 #include <vector>
 
@@ -23,7 +24,7 @@ namespace ov::registry {
 /// were current is far worse than no cache: the ids would be plausible and
 /// wrong, and nothing would report an error until a vanilla client crashed on
 /// an entity type that does not exist.
-inline constexpr u32 kFormatVersion = 12;
+inline constexpr u32 kFormatVersion = 13;
 
 /// Grew past 128 when the loot tables arrived.
 inline constexpr u32 kHeaderSize = 256;
@@ -93,6 +94,23 @@ struct PackHeader {
     u32 entities_offset;
     u32 entity_attrs_offset;
     u32 entity_count;
+
+    /// The compiled recipes. See ov/registry/recipe_data.hpp.
+    u32 recipes_offset;
+    u32 recipe_ingredients_offset;
+    u32 recipe_choices_offset;
+    u32 recipe_count;
+    u32 recipe_ingredient_count;
+    u32 recipe_choice_count;
+
+    /// Burn times, `kFuelKinds` tables of one u16 per item, in the order
+    /// furnace, blast furnace, smoker. Zero means "not a fuel", which here is
+    /// a measurement and not a default: every item was tried.
+    u32 fuel_offset;
+
+    /// One i32 per item: the item left behind when it is consumed by a recipe,
+    /// or -1 for none. Measured, like the burn times.
+    u32 remainder_offset;
 
     u32 reserved;
 };
@@ -188,6 +206,8 @@ struct TagRecord {
 };
 
 static_assert(sizeof(RegistryRecord) == 16, "layout must match the emitter");
+static_assert(sizeof(RecipeRecord) == 44, "layout must match the emitter");
+static_assert(sizeof(RecipeIngredientRecord) == 8, "layout must match the emitter");
 static_assert(sizeof(TagRecord) == 16, "layout must match the emitter");
 static_assert(sizeof(PackHeader) <= kHeaderSize, "header must fit its reserved space");
 

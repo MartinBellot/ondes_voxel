@@ -20,6 +20,9 @@ ov_add_library(ov_gameplay
         src/redstone.cpp
         src/piston.cpp
         src/loot.cpp
+        src/recipe.cpp
+        src/crafting.cpp
+        src/smelting.cpp
     DEPS
         ov_world
         ov_entity
@@ -43,6 +46,9 @@ ov_add_test(test_ov_gameplay
         tests/test_redstone.cpp
         tests/test_piston.cpp
         tests/test_loot.cpp
+        tests/test_crafting.cpp
+        tests/test_crafting_parity.cpp
+        tests/test_smelting.cpp
     DEPS ov_gameplay simdjson::simdjson
     LABELS unit
 )

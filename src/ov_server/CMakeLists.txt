@@ -8,6 +8,7 @@ ov_add_library(ov_server
     SOURCES
         src/server.cpp
         src/survival_session.cpp
+        src/workbench.cpp
     DEPS
         ov_gameplay
         ov_io
