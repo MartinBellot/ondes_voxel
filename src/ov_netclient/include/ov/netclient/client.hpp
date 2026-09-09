@@ -121,10 +121,67 @@ struct ClientEvents {
     /// nothing is maintaining.
     std::optional<u8> game_mode;
 
+    // ── What a renderer needs to draw the things that move ──────────────────
+    //
+    // Ordered, and kept as one stream rather than as several vectors, because
+    // the order between them is load-bearing: a spawn, three moves and a remove
+    // for the same entity id, applied out of order, leaves a ghost. Everything
+    // else in this struct is idempotent; this is not.
+
+    /// Spawn Player and Spawn Experience Orb carry no entity type id: the
+    /// packet *is* the type. These two negatives say so. Inventing a number for
+    /// them would be inventing a Mojang id, which is the one thing the registry
+    /// rule forbids — a reader maps them to `minecraft:player` and
+    /// `minecraft:experience_orb` by name.
+    static constexpr i32 kSpawnedAsPlayer         = -1;
+    static constexpr i32 kSpawnedAsExperienceOrb  = -2;
+
+    enum class EntityChangeKind : u8 {
+        /// Spawn Entity (0x01), Spawn Player (0x03) or Spawn Experience Orb
+        /// (0x02). `type` carries Mojang's entity type id.
+        Spawn,
+        /// Update Entity Position (0x2B) and its rotating variants: a **delta**
+        /// in position, quantised to 1/4096 of a block on the wire.
+        Move,
+        /// Teleport Entity (0x68): an absolute position.
+        Teleport,
+        /// Entity Head Rotation (0x42). Sent for players only in this server.
+        HeadRotation,
+        /// Remove Entities (0x3E), or a pickup that ends in one.
+        Remove,
+        /// Set Entity Metadata (0x52), already decoded down to the fields this
+        /// client understands. An index it does not know is skipped by name in
+        /// the log, never by silently mis-parsing the rest of the packet.
+        Metadata,
+    };
+
+    struct EntityChange {
+        EntityChangeKind kind{EntityChangeKind::Remove};
+        i32              id{0};
+        /// Mojang's entity type id, on Spawn only.
+        i32 type{0};
+        /// Absolute for Spawn and Teleport, a delta for Move, in blocks.
+        Vec3d position{};
+        f32   yaw{0.0F};
+        f32   pitch{0.0F};
+        f32   head_yaw{0.0F};
+        bool  on_ground{true};
+        /// Spawn Entity's type-specific field, and an orb's value.
+        i32 data{0};
+        /// The player's name, on the spawn of a player.
+        std::string name;
+        /// The stack a dropped item carries, from metadata index 8. Empty when
+        /// the change said nothing about it.
+        std::optional<net::ItemStack> stack;
+    };
+
+    std::vector<EntityChange> entities;
+
     [[nodiscard]] bool empty() const noexcept {
         return loaded.empty() && unloaded.empty() && changed.empty() && !teleport &&
                !time_of_day && !health && !experience && containers.empty() &&
-               container_slots.empty() && !open_screen && !close_window && !game_mode;
+               container_slots.empty() && !open_screen && !close_window && !game_mode &&
+               entities.empty();
     }
     void clear();
 };

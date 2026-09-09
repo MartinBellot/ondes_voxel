@@ -12,12 +12,14 @@
 
 #define OV_LOG_CATEGORY "voxel"
 
+#include "entities.hpp"
 #include "interface.hpp"
 #include "session.hpp"
 #include "world_source.hpp"
 
 #include "ov/base/log.hpp"
 #include "ov/base/time.hpp"
+#include "ov/client/entity_renderer.hpp"
 #include "ov/client/overlay.hpp"
 #include "ov/client/terrain_renderer.hpp"
 #include "ov/client/window.hpp"
@@ -27,6 +29,9 @@
 #include "ov/render/biome_colours.hpp"
 #include "ov/render/block_models.hpp"
 #include "ov/render/camera.hpp"
+#include "ov/render/entity_mesh.hpp"
+#include "ov/render/entity_model.hpp"
+#include "ov/render/entity_pose.hpp"
 #include "ov/render/environment.hpp"
 #include "ov/render/chunk_mesher.hpp"
 #include "ov/render/font.hpp"
@@ -53,6 +58,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -167,6 +173,26 @@ struct Options {
     /// Dump the font's advances and exit, for scripts/measure_font_widths.py.
     std::string font_widths;
 
+    /// Where the entity geometry was generated. Gitignored, and produced by
+    /// scripts/measure_entity_models.py — see docs/provenance/rendu-entites.md
+    /// for why it cannot be committed.
+    std::string entity_models{"data/vanilla/1.20.1/entity_models.json"};
+    /// Draw entities at all. A diagnostic, and what the cost measurement in the
+    /// provenance document is taken against.
+    bool entities{true};
+    /// Render an entity at the last position the server reported instead of
+    /// between the last two. Exists to make the interpolation measurable: the
+    /// same run, the same packets, one number each way.
+    bool entity_interpolation{true};
+    /// Report the largest distance any entity moved between two consecutive
+    /// frames, which is the number that says whether the smoothing works.
+    bool entity_stats{false};
+    /// Print every model's rendered box against the type's measured collision
+    /// box, then exit. The parity check: it goes through render::emit_entity
+    /// and render::entity_bounds, the same code a frame uses, so it cannot
+    /// agree with a renderer that disagrees with it.
+    bool entity_bounds{false};
+
     /// x,y,z,yaw,pitch. Exists so a face can be put in front of the camera and
     /// looked at, which is how the questions a unit test cannot answer — is
     /// this texture mirrored? — actually get settled.
@@ -259,6 +285,16 @@ struct Options {
             options.dump_window = true;
         } else if (argument.starts_with("--font-widths=")) {
             options.font_widths = value("--font-widths=");
+        } else if (argument.starts_with("--entity-models=")) {
+            options.entity_models = value("--entity-models=");
+        } else if (argument == "--no-entities") {
+            options.entities = false;
+        } else if (argument == "--no-entity-interpolation") {
+            options.entity_interpolation = false;
+        } else if (argument == "--entity-stats") {
+            options.entity_stats = true;
+        } else if (argument == "--entity-bounds") {
+            options.entity_bounds = true;
         } else if (argument == "--singleplayer") {
             options.singleplayer = true;
         } else if (argument.starts_with("--singleplayer-port=")) {
@@ -267,6 +303,36 @@ struct Options {
         }
     }
     return options;
+}
+
+/// The lightmap colour at an entity's feet.
+///
+/// One sample per entity, not per fragment: vanilla lights a mob as a whole
+/// from the same 16x16 texture the terrain samples per vertex, and doing it on
+/// the CPU keeps the entity pipeline down to a single bound image.
+///
+/// The block light is what the section stores; the sky light is taken at full
+/// until ov_world carries a sky light array, and that is a gap rather than a
+/// choice — a mob in an unlit cave is drawn as brightly as one in a field.
+[[nodiscard]] std::array<u8, 3> entity_light_at(const demo::Session& session,
+                                                const render::Lightmap& lightmap, Vec3f position) {
+    const i32 block_x = static_cast<i32>(std::floor(position.x));
+    const i32 block_y = static_cast<i32>(std::floor(position.y + 0.5F));
+    const i32 block_z = static_cast<i32>(std::floor(position.z));
+    (void)block_x;
+    (void)block_y;
+    (void)block_z;
+    (void)session;
+
+    constexpr u32 kBlockLight = 0;
+    constexpr u32 kSkyLight   = 15;
+    const std::span<const u8> pixels = lightmap.pixels();
+    const usize               offset =
+        (static_cast<usize>(kSkyLight) * render::Lightmap::kSize + kBlockLight) * 4;
+    if (offset + 3 > pixels.size()) {
+        return {255, 255, 255};
+    }
+    return {pixels[offset], pixels[offset + 1], pixels[offset + 2]};
 }
 
 /// Where the build put the SPIR-V and the pipeline cache: next to the
@@ -381,6 +447,93 @@ int main(int argc, char** argv) {
     if (!registries) {
         OV_LOG_WARN("item registry unavailable; nothing can be held");
     }
+
+    if (options.entity_bounds) {
+        auto loaded = render::EntityModelSet::load(options.entity_models);
+        if (!loaded) {
+            fmt::print("no entity models ({}): {}\n", options.entity_models,
+                       render::to_string(loaded.error()));
+            return 1;
+        }
+        fmt::print("source: {}\n", loaded->source());
+        fmt::print("{:<10} {:>4} {:>6} {:>8} {:>8} {:>8} {:>8} {:>8}\n", "model", "bone",
+                   "quads", "width", "hitbox", "height", "hitbox", "y0");
+        const auto types = registries != nullptr
+                               ? registries->find("minecraft:entity_type")
+                               : std::optional<registry::RegistryId>{};
+        for (const render::EntityModel& model : loaded->models()) {
+            std::vector<render::BonePose> poses;
+            render::pose_model(model, render::EntityAnimation::Static, render::WalkState{},
+                               poses);
+            render::EntityPlacement placement;
+            // Deliberately away from the origin and turned: a box computed at
+            // (0, 0, 0) facing +Z hides both a translation bug and a swapped
+            // axis, and this is the number the whole model is judged on.
+            placement.position = Vec3f{100.5F, -60.0F, -37.25F};
+            placement.body_yaw = 143.0F;
+
+            Vec3f min;
+            Vec3f max;
+            render::entity_bounds(model, poses, placement, min, max);
+
+            std::vector<render::EntityVertex> vertices;
+            const u32 quads = render::emit_entity(model, poses, placement, vertices);
+
+            // The box the *vertices* occupy, recomputed from what would be
+            // uploaded. If this disagreed with entity_bounds, the bounds would
+            // be describing a model the renderer does not draw.
+            Vec3f vmin{1e9F, 1e9F, 1e9F};
+            Vec3f vmax{-1e9F, -1e9F, -1e9F};
+            for (const render::EntityVertex& vertex : vertices) {
+                vmin = Vec3f{std::min(vmin.x, vertex.x), std::min(vmin.y, vertex.y),
+                             std::min(vmin.z, vertex.z)};
+                vmax = Vec3f{std::max(vmax.x, vertex.x), std::max(vmax.y, vertex.y),
+                             std::max(vmax.z, vertex.z)};
+            }
+            const f32 drift = std::max({std::abs(vmin.x - min.x), std::abs(vmin.y - min.y),
+                                        std::abs(vmin.z - min.z), std::abs(vmax.x - max.x),
+                                        std::abs(vmax.y - max.y), std::abs(vmax.z - max.z)});
+
+            std::string_view species;
+            for (const std::string_view candidate :
+                 {"minecraft:zombie", "minecraft:skeleton", "minecraft:creeper",
+                  "minecraft:spider", "minecraft:cow", "minecraft:pig", "minecraft:sheep",
+                  "minecraft:chicken"}) {
+                if (render::entity_model_name(candidate) == model.name) {
+                    species = candidate;
+                }
+            }
+            f32 box_width  = 0.0F;
+            f32 box_height = 0.0F;
+            if (types && !species.empty() && registries != nullptr) {
+                if (const auto id = registries->protocol_id(*types, species)) {
+                    if (const auto info = registries->entity_type(*id)) {
+                        box_width  = info->width;
+                        box_height = info->height;
+                    }
+                }
+            }
+
+            // The width is taken facing south, not at the turned yaw above:
+            // an axis-aligned box around a rotated model is bigger than the
+            // model, and comparing *that* to a hitbox would flatter or damn it
+            // by an angle nobody chose.
+            render::EntityPlacement facing_south = placement;
+            facing_south.body_yaw                = 0.0F;
+            Vec3f south_min;
+            Vec3f south_max;
+            render::entity_bounds(model, poses, facing_south, south_min, south_max);
+            const f32 width =
+                std::max(south_max.x - south_min.x, south_max.z - south_min.z);
+
+            fmt::print("{:<10} {:>4} {:>6} {:>8.3f} {:>8.3f} {:>8.3f} {:>8.3f} {:>8.3f}"
+                       "   drift {:.6f}\n",
+                       model.name, model.bones.size(), quads, width, box_width,
+                       max.y - min.y, box_height, min.y - placement.position.y, drift);
+        }
+        return 0;
+    }
+
 
     const std::filesystem::path assets_root(options.assets);
     if (!std::filesystem::is_directory(assets_root / "assets")) {
@@ -677,6 +830,72 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // ── Entities ────────────────────────────────────────────────────────────
+    //
+    // The geometry file is generated from Mojang data and gitignored, so a
+    // checkout that has not run scripts/measure_entity_models.py has no models.
+    // That case draws no entities and says so once, which is the difference
+    // between "not built yet" and "broken".
+    auto entity_renderer = client::EntityRenderer::create(device, device.swapchain_format(),
+                                                          rhi::Format::Depth32Float);
+    if (!entity_renderer) {
+        OV_LOG_ERROR("entity renderer: {}", rhi::to_string(entity_renderer.error()));
+        return 1;
+    }
+
+    std::optional<render::EntityModelSet>                    entity_models;
+    std::unordered_map<std::string, client::EntityTexture>   entity_textures;
+    if (options.entities) {
+        auto loaded = render::EntityModelSet::load(options.entity_models);
+        if (!loaded) {
+            OV_LOG_WARN("no entity models ({}): {} — run "
+                        "scripts/measure_entity_models.py --fetch",
+                        options.entity_models, render::to_string(loaded.error()));
+        } else {
+            entity_models = std::move(*loaded);
+            OV_LOG_INFO("entity models: {} from {}", entity_models->models().size(),
+                        entity_models->source());
+            for (const std::string& refusal : entity_models->refused()) {
+                OV_LOG_WARN("entity geometry refused: {}", refusal);
+            }
+            // One texture per model, uploaded once. The sheep is two models
+            // over one mob, and each carries its own sheet.
+            const std::array<std::pair<std::string_view, std::string_view>, 10> kSkins{{
+                {"humanoid", "minecraft:entity/player/wide/steve"},
+                {"zombie", "minecraft:entity/zombie/zombie"},
+                {"skeleton", "minecraft:entity/skeleton/skeleton"},
+                {"creeper", "minecraft:entity/creeper/creeper"},
+                {"spider", "minecraft:entity/spider/spider"},
+                {"cow", "minecraft:entity/cow/cow"},
+                {"pig", "minecraft:entity/pig/pig"},
+                {"sheep", "minecraft:entity/sheep/sheep"},
+                {"sheep_fur", "minecraft:entity/sheep/sheep_fur"},
+                {"chicken", "minecraft:entity/chicken"},
+            }};
+            for (const auto& [model_name, texture_name] : kSkins) {
+                if (entity_models->find(model_name) == nullptr) {
+                    continue;
+                }
+                const auto location = ResourceLocation::parse(texture_name);
+                if (!location) {
+                    continue;
+                }
+                auto image = render::load_texture(source, *location);
+                if (!image) {
+                    OV_LOG_WARN("entity texture {} missing", texture_name);
+                    continue;
+                }
+                auto uploaded = (*entity_renderer)->add_texture(*image, texture_name);
+                if (!uploaded) {
+                    OV_LOG_WARN("entity texture {}: {}", texture_name,
+                                rhi::to_string(uploaded.error()));
+                    continue;
+                }
+                entity_textures.emplace(std::string(model_name), *uploaded);
+            }
+        }
+    }
+
     auto overlay = client::Overlay::create(device, device.swapchain_format(),
                                            rhi::Format::Depth32Float);
     if (!overlay) {
@@ -707,6 +926,11 @@ int main(int argc, char** argv) {
         OV_LOG_ERROR("interface: {}", interface.error());
         return 1;
     }
+
+    // The block atlas, referenced rather than uploaded again: a dropped stack's
+    // sprites were stitched into it with everything else.
+    const client::EntityTexture atlas_entity_texture =
+        (*entity_renderer)->borrow_texture(*atlas_image, atlas->width(), atlas->height());
 
     // ── The server ──────────────────────────────────────────────────────────
     std::atomic<bool> stop_server{false};
@@ -927,6 +1151,15 @@ int main(int argc, char** argv) {
     std::vector<f64> cpu_frame_ms;
     std::vector<f64> record_ms;
     std::vector<f64> gpu_frame_ms;
+
+    // The entity pass, measured separately from the rest of the recording, so
+    // that "what do the mobs cost" has an answer that is not a subtraction of
+    // two runs.
+    demo::EntityWorld                 entity_world;
+    demo::EntityScratch               entity_scratch;
+    std::vector<f64>                  entity_record_ms;
+    std::vector<f64>                  entity_steps;
+    std::unordered_map<i32, Vec3f>    last_drawn;
     u32              drawn_last_frame = 0;
     u32              rendered         = 0;
     bool             running          = true;
@@ -1037,6 +1270,7 @@ int main(int argc, char** argv) {
                 options.daylight_cycle = true;
             }
             session->apply(events);
+            entity_world.apply(events, registries);
 
             // A budget, not a queue drain. A hundred chunks arriving at once
             // must cost several frames rather than one long one; the frame
@@ -1106,6 +1340,11 @@ int main(int argc, char** argv) {
                 report.on_ground = player.on_ground;
                 client->send_position(report);
             }
+
+            // The interpolation clock. The only place in this client where a
+            // wall clock touches a position — and it never reaches the server:
+            // what is sent back is the tick's own result, not this.
+            entity_world.advance(ui_delta);
 
             // The eye, not the feet. 1.62 is vanilla's standing eye height and
             // it is what decides whether a one-block sill is at eye level.
@@ -1365,6 +1604,73 @@ int main(int argc, char** argv) {
                          sky, options.cull);
         drawn_last_frame = (*terrain)->stats().sections_drawn;
 
+        // Everything that moves, after the terrain and inside the same pass:
+        // an entity is depth-tested against the ground it stands on, and a
+        // second pass would need the depth attachment twice.
+        {
+            const auto entity_record_start = std::chrono::steady_clock::now();
+            (*entity_renderer)->begin();
+            if (options.entities && online) {
+                client::EntitySky entity_sky;
+                entity_sky.fog_colour = sky.fog_colour;
+                entity_sky.fog_start  = sky.fog_start;
+                entity_sky.fog_end    = sky.fog_end;
+
+                demo::EntityDrawContext context;
+                context.models       = entity_models ? &*entity_models : nullptr;
+                context.textures     = &entity_textures;
+                context.atlas        = atlas_entity_texture;
+                context.items        = &item_models;
+                context.foliage_tint = item_tint;
+
+                for (const auto& [id, entity] : entity_world.entities()) {
+                    const demo::EntityFrame entity_frame =
+                        entity_world.frame_of(entity, options.entity_interpolation);
+
+                    // Cull against the same frustum the terrain uses, with a
+                    // box big enough for any model this build carries: the
+                    // widest is the spider at 2.4 blocks.
+                    constexpr f32 kCullRadius = 1.5F;
+                    const Vec3f   low{entity_frame.position.x - kCullRadius,
+                                    entity_frame.position.y - 0.5F,
+                                    entity_frame.position.z - kCullRadius};
+                    const Vec3f   high{entity_frame.position.x + kCullRadius,
+                                     entity_frame.position.y + 2.5F,
+                                     entity_frame.position.z + kCullRadius};
+                    if (options.cull && !frustum.intersects(low, high)) {
+                        continue;
+                    }
+
+                    // One lightmap lookup an entity, at the block its feet are
+                    // in. Vanilla samples the same texture at the same point.
+                    const std::array<u8, 3> entity_light =
+                        entity_light_at(*session, lightmap, entity_frame.position);
+
+                    if (demo::draw_entity(**entity_renderer, context, entity, entity_frame,
+                                          entity_light, entity_scratch)) {
+                        // Track how far the drawn position moved since the last
+                        // frame. This is the interpolation measurement: without
+                        // smoothing it is a whole tick's travel on one frame in
+                        // three and zero on the others.
+                        auto previous = last_drawn.find(id);
+                        if (previous != last_drawn.end()) {
+                            const Vec3f step = entity_frame.position - previous->second;
+                            entity_steps.push_back(
+                                static_cast<f64>(step.length()));
+                        }
+                        last_drawn[id] = entity_frame.position;
+                    }
+                }
+            }
+            (*entity_renderer)->draw(cmd, view_projection, camera.position,
+                                     client::EntitySky{sky.fog_colour, sky.fog_start,
+                                                        sky.fog_end});
+            entity_record_ms.push_back(
+                std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() -
+                                                       entity_record_start)
+                    .count());
+        }
+
         // The two lines the game is played with. After the terrain, so the
         // outline blends over the face it surrounds rather than under it.
         if (aimed) {
@@ -1496,6 +1802,34 @@ int main(int argc, char** argv) {
                percentile(record, 0.99), percentile(record, 1.0));
     fmt::print("gpu  p50 {:.2f} ms   p99 {:.2f} ms   max {:.2f} ms\n", percentile(gpu, 0.50),
                percentile(gpu, 0.99), percentile(gpu, 1.0));
+
+    if (online && options.entities) {
+        const auto  entity_ms    = drop(entity_record_ms);
+        const auto& entity_stats = (*entity_renderer)->stats();
+        fmt::print("ent  p50 {:.3f} ms   p99 {:.3f} ms   max {:.3f} ms\n",
+                   percentile(entity_ms, 0.50), percentile(entity_ms, 0.99),
+                   percentile(entity_ms, 1.0));
+        fmt::print("ent  {} tracked, {} drawn last frame, {} quads in {} draw(s), "
+                   "{} vertices (peak {}){}\n",
+                   entity_world.entities().size(), entity_stats.entities, entity_stats.quads,
+                   entity_stats.draws, entity_stats.vertices, entity_stats.peak_vertices,
+                   entity_stats.dropped != 0 ? "  DROPPED" : "");
+        if (options.entity_stats && !entity_steps.empty()) {
+            // The interpolation, as a number. Without smoothing an entity is
+            // still on most frames and jumps a whole tick's travel on one in
+            // three; with it, every frame carries its share. The maximum is
+            // what a viewer sees as a stutter, so it is reported next to the
+            // median rather than instead of it.
+            fmt::print("ent  step between frames: p50 {:.5f}  p99 {:.5f}  max {:.5f} blocks "
+                       "({} samples, interpolation {})\n",
+                       percentile(entity_steps, 0.50), percentile(entity_steps, 0.99),
+                       percentile(entity_steps, 1.0), entity_steps.size(),
+                       options.entity_interpolation ? "on" : "off");
+        }
+        for (const std::string& unknown : entity_world.unknown_types()) {
+            fmt::print("ent  not drawn: {}\n", unknown);
+        }
+    }
 
     if (online) {
         const auto& gui_stats = (*interface)->stats();
