@@ -242,6 +242,28 @@ namespace {
 /// horizontal wavelength is set by it.
 constexpr f64 kOldNoiseScale = 684.412;
 
+/// Sixteen octaves in each limit stack, and the divisors that undo their
+/// weights.
+///
+/// These three numbers were doubted together. The octaves *grow* — octave i is
+/// divided by a falloff that halves, so it contributes up to 2 * 2^i and the
+/// sum over sixteen is 131070, not the 4 a halving series would give — and
+/// 512 * 128 is 65536, which is exactly what it takes to bring that sum back to
+/// about two. Dropping two octaves, or making the second divisor 512, each
+/// divides the result by four; a surface histogram in the overworld liked the
+/// smaller field, and for a while that looked like evidence.
+///
+/// It was not. The Nether's noise_settings put this noise on its own — no
+/// depth, no factor, no aquifers — with a threshold that slides one step per
+/// block above y = 104, so the fraction of stone at each height there is this
+/// noise's own survival function as the game writes it. Measured that way on
+/// two seeds (`ov_parity --nether`), the game's distribution is as wide as the
+/// one below and about four times wider than either quarter-size candidate.
+/// The three constants stay.
+constexpr usize kLimitOctaves  = 16;
+constexpr f64   kFirstDivisor  = 512.0;
+constexpr f64   kSecondDivisor = 128.0;
+
 }  // namespace
 
 BlendedNoise::LegacyStack BlendedNoise::LegacyStack::create(math::XoroshiroRandomSource& random,
@@ -269,8 +291,9 @@ BlendedNoise BlendedNoise::create(math::XoroshiroRandomSource& random, f64 xz_sc
     BlendedNoise noise;
     // All three from the same generator, in this order: the two limits at
     // sixteen octaves each, then the selector at eight.
-    noise.min_limit_ = LegacyStack::create(random, -15, 16);
-    noise.max_limit_ = LegacyStack::create(random, -15, 16);
+    constexpr auto kLimitFirst = -static_cast<i32>(kLimitOctaves) + 1;
+    noise.min_limit_ = LegacyStack::create(random, kLimitFirst, kLimitOctaves);
+    noise.max_limit_ = LegacyStack::create(random, kLimitFirst, kLimitOctaves);
     noise.main_      = LegacyStack::create(random, -7, 8);
 
     noise.xz_multiplier_          = kOldNoiseScale * xz_scale;
@@ -292,11 +315,11 @@ BlendedNoise BlendedNoise::create(math::XoroshiroRandomSource& random, f64 xz_sc
     // first version of this line produced six hundredths of a thousandth.
     f64 bound = 0.0;
     f64 weight = 1.0;
-    for (usize i = 0; i < 16; ++i) {
+    for (usize i = 0; i < kLimitOctaves; ++i) {
         bound += 2.0 * weight;
         weight *= 2.0;
     }
-    noise.max_value_ = bound / 512.0 / 128.0;
+    noise.max_value_ = bound / kFirstDivisor / kSecondDivisor;
     return noise;
 }
 
@@ -353,7 +376,9 @@ f64 BlendedNoise::value(i32 x, i32 y, i32 z) const noexcept {
     }
 
     const f64 t = std::clamp(blend, 0.0, 1.0);
-    return (low / 512.0 + (high / 512.0 - low / 512.0) * t) / 128.0;
+    const f64 lower = low / kFirstDivisor;
+    const f64 upper = high / kFirstDivisor;
+    return (lower + (upper - lower) * t) / kSecondDivisor;
 }
 
 }  // namespace ov::worldgen
