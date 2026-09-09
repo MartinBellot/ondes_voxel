@@ -9,9 +9,12 @@ ov_add_library(ov_server
         src/async_chunk_source.cpp
         src/generated_world.cpp
         src/generation_check.cpp
+        src/natural_spawning.cpp
+        src/player_inventory.cpp
         src/server.cpp
         src/survival_session.cpp
         src/workbench.cpp
+        src/world_ticks.cpp
     DEPS
         ov_base
         ov_gameplay
@@ -24,6 +27,21 @@ ov_add_library(ov_server
         ov_worldgen
     PRIVATE_DEPS
         fmt::fmt
+        # simdjson stays private, as everywhere else: a template-heavy header
+        # must not reach an installed one. Only natural_spawning.cpp uses it,
+        # to read the biome spawner lists out of the data generator output.
+        simdjson::simdjson
+)
+
+# The units that can be tested without a socket. The server itself is a loop
+# around a world and cannot be unit-tested; the pieces this wave added to it —
+# the player's own window and the day's clock — can be, and both of them were
+# bugs found the hard way.
+ov_add_test(test_ov_server
+    SOURCES
+        tests/test_player_inventory.cpp
+    DEPS ov_server
+    LABELS unit
 )
 
 # Where the locally generated vanilla data lives. Passed in rather than searched

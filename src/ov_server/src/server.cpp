@@ -38,6 +38,10 @@
 #include "ov/registry/registries.hpp"
 // ── crafting and smelting ───────────────────────────────────────────────────
 #include "workbench.hpp"
+// ── scheduled ticks, natural spawning, and the player's own window ─────────
+#include "natural_spawning.hpp"
+#include "player_inventory.hpp"
+#include "world_ticks.hpp"
 #include "ov/world/chunk.hpp"
 #include "ov/world/chunk_map.hpp"
 #include "ov/world/chunk_storage.hpp"
@@ -998,6 +1002,12 @@ struct Player {
     std::vector<i16> drag_slots;
     i8               drag_button{-1};
 
+    /// The same thing for the player's own screen, and deliberately not the
+    /// same variable. A player can have a chest open and their own inventory
+    /// showing beneath it; one drag state shared between the two windows would
+    /// paint slots of one window with the other's numbering.
+    DragState drag;
+
     // ── crafting and smelting ───────────────────────────────────────────────
     /// The crafting table or furnace screen this player has open. Separate from
     /// `window_open` below, which is the chest's: the two screens obey
@@ -1443,6 +1453,18 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     /// microseconds. See docs/provenance/chunkmap.md § 5 for the numbers.
     std::mutex              chunk_mutex;
     world::ChunkMap         chunks;
+
+    /// The level a block behaviour writes through, and the two queues it wakes
+    /// from. Declared here rather than where they are built because both
+    /// `chunk_at` and `save_world` reach for them — a chunk read from disk
+    /// carries pending ticks that have to land in the queues, and a chunk
+    /// written back has to carry its own share of them out again.
+    ///
+    /// Empty until the registries are loaded, which is the only state in which
+    /// fluids and redstone do nothing at all.
+    std::optional<ServerLevel> level;
+    std::optional<WorldTicks>  world_ticks;
+
     std::unordered_set<i64> dirty_chunks;
 
     /// Chunks the tick thread had to generate itself because something needed a
@@ -1564,6 +1586,34 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                             if (!has_sky_light) {
                                 relight_chunk(placed);
                             }
+                            // The ticks the chunk was written with. `t` on disk
+                            // is a delay relative to the chunk's game time, so
+                            // loading has to be told what "now" is — which is
+                            // the whole reason a chunk can sit unloaded for an
+                            // hour and resume where it left off.
+                            if (level) {
+                                const i64 now = server_tick.load(std::memory_order_relaxed);
+                                if (const nbt::Tag* pending =
+                                        document->root.find("block_ticks");
+                                    pending != nullptr) {
+                                    if (!world::ticks_from_nbt(
+                                            *pending, now,
+                                            level->queue(world::TickQueue::Block))) {
+                                        OV_LOG_WARN("chunk {},{} has a malformed block_ticks list",
+                                                    cx, cz);
+                                    }
+                                }
+                                if (const nbt::Tag* pending =
+                                        document->root.find("fluid_ticks");
+                                    pending != nullptr) {
+                                    if (!world::ticks_from_nbt(
+                                            *pending, now,
+                                            level->queue(world::TickQueue::Fluid))) {
+                                        OV_LOG_WARN("chunk {},{} has a malformed fluid_ticks list",
+                                                    cx, cz);
+                                    }
+                                }
+                            }
                             return placed;
                         }
                     } else {
@@ -1632,8 +1682,22 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 if (held == nullptr) {
                     continue;
                 }
+                // The chunk's own pending ticks. A copy of the context per
+                // chunk rather than one shared: the two spans and `game_time`
+                // are the only fields that differ, and `ticks_to_nbt` filters
+                // the level's queue down to this column.
+                world::ChunkCodecContext with_ticks = codec_context;
+                with_ticks.game_time                = server_tick.load(std::memory_order_relaxed);
+                std::vector<world::ScheduledTick> block_snapshot;
+                std::vector<world::ScheduledTick> fluid_snapshot;
+                if (level) {
+                    block_snapshot = level->queue(world::TickQueue::Block).snapshot();
+                    fluid_snapshot = level->queue(world::TickQueue::Fluid).snapshot();
+                    with_ticks.block_ticks = block_snapshot;
+                    with_ticks.fluid_ticks = fluid_snapshot;
+                }
                 writer.set_chunk(static_cast<u32>(cx & 31), static_cast<u32>(cz & 31),
-                                 world::to_nbt(*held, codec_context), 0);
+                                 world::to_nbt(*held, with_ticks), 0);
                 ++written;
             }
             if (!writer.write(path)) {
@@ -2002,6 +2066,71 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             block_at({where.x - 1, where.y, where.z}), block_at({where.x + 1, where.y, where.z})};
     };
 
+    /// A block changed outside the queues — a player placed or broke one.
+    ///
+    /// This is what makes a lever do anything at all. Vanilla's `setBlock`
+    /// notifies the six neighbours as part of writing; ours cannot do it where
+    /// the write happens, because placement runs on the network thread while
+    /// the rules must run on the tick thread. So the position is queued and the
+    /// next tick picks it up — one tick of latency, and the single-writer
+    /// rule intact.
+    std::vector<net::WirePosition> pending_notifications;
+    std::mutex                     notification_mutex;
+    const auto                     notify_change = [&](net::WirePosition where) {
+        const std::scoped_lock lock{notification_mutex};
+        pending_notifications.push_back(where);
+    };
+
+    /// Write a block and everything the world needs around it, **with the lock
+    /// already held**, and say whether anything has to be sent.
+    ///
+    /// Split out of `set_block_and_broadcast` so that the tick driver — which
+    /// runs hundreds of writes in one drain — can take `chunk_mutex` once
+    /// instead of once per block, and so that it can defer relighting. Taking
+    /// it per write is not merely slower: `chunk_mutex` is not recursive, and a
+    /// rule that already holds it deadlocks the tick thread the first time
+    /// water moves.
+    ///
+    /// `relight` false leaves the light stale on purpose. A puddle settling
+    /// writes a few hundred blocks and relighting a 3x3 neighbourhood for each
+    /// of them is the single most expensive thing this server could do per
+    /// tick; the driver relights the chunks it touched once, at the end.
+    const auto apply_block_change = [&](net::WirePosition position, registry::BlockStateId state,
+                                        bool relight) {
+        const i32 chunk_x = position.x >> 4;
+        const i32 chunk_z = position.z >> 4;
+        world::Chunk& chunk = chunk_at(chunk_x, chunk_z);
+
+        const auto local_x = static_cast<usize>(position.x & 15);
+        const auto local_z = static_cast<usize>(position.z & 15);
+        chunk.set_block(local_x, position.y, local_z, state);
+        dirty_chunks.insert(chunk_key(chunk_x, chunk_z));
+
+        if (relight) {
+            relight_neighbourhood(
+                [&](i32 nx, i32 nz) -> world::Chunk* { return chunks.find(ChunkPos{nx, nz}); },
+                chunk_x, chunk_z);
+            if (blocks) {
+                for (i32 dz = -1; dz <= 1; ++dz) {
+                    for (i32 dx = -1; dx <= 1; ++dx) {
+                        if (world::Chunk* found = chunks.find(ChunkPos{chunk_x + dx, chunk_z + dz});
+                            found != nullptr) {
+                            relight_blocks(*found, *blocks);
+                        }
+                    }
+                }
+            }
+        }
+
+        for (i32 dz = -1; dz <= 1; ++dz) {
+            for (i32 dx = -1; dx <= 1; ++dx) {
+                if (chunks.contains(ChunkPos{chunk_x + dx, chunk_z + dz})) {
+                    dirty_chunks.insert(chunk_key(chunk_x + dx, chunk_z + dz));
+                }
+            }
+        }
+    };
+
     const auto set_block_and_broadcast = [&](net::WirePosition      position,
                                              registry::BlockStateId state) {
         const auto shape = world::WorldShape::overworld();
@@ -2067,6 +2196,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 other.connection->send(*framed);
             }
         }
+
+        // And tell the rules. Every write that is not the drain's own goes
+        // through here — a placement, a break, a sign, a furnace lighting up —
+        // so this one line is what wakes the fluid beside a broken dam and the
+        // wire beside a flipped lever. The drain writes through
+        // `apply_block_change` instead and does its own notifying, which is
+        // what keeps a settling puddle from re-queueing itself for ever.
+        notify_change(position);
     };
 
     /// Place a block, then let it and its neighbours reshape around each other.
@@ -2121,6 +2258,140 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         for (usize i = 0; i < count; ++i) {
             set_block_and_broadcast(changes[i].first, changes[i].second);
         }
+    };
+
+    // ── scheduled ticks: fluids and redstone ──────────────────────
+    //
+    // The two queues and the engines that answer them. Everything about how
+    // they are driven is in world_ticks.{hpp,cpp}; what is here is the four
+    // hooks that join a `LevelWriter` to this server's chunks, and the buffers
+    // the drain needs.
+    //
+    // The hooks never take `chunk_mutex`. The drain takes it **once**, around
+    // the whole thing, for two reasons: `chunk_mutex` is not recursive, so a
+    // rule that wrote through `set_block_and_broadcast` would deadlock the tick
+    // thread the first time water moved; and a puddle settling is a few hundred
+    // writes, which would otherwise be a few hundred lock round-trips inside
+    // one tick.
+
+    /// Positions written by the drain, to be broadcast once the lock is
+    /// released. Reused between ticks so the drain never allocates.
+    std::vector<std::pair<net::WirePosition, registry::BlockStateId>> tick_broadcasts;
+    /// The chunks the drain touched, relit once at the end instead of once per
+    /// block. Reused for the same reason.
+    std::unordered_set<i64> tick_relight;
+
+    if (blocks && registries) {
+        LevelHooks hooks;
+        hooks.block_at = [&](BlockPos pos) -> registry::BlockStateId {
+            // `chunk_if_resident`, never `chunk_at`: a rule reading into a
+            // chunk that is not loaded yet must get "air, and not loaded"
+            // rather than three hundred milliseconds of worldgen on the tick
+            // thread. Fluids ask `is_loaded` for exactly this reason.
+            const world::Chunk* chunk = chunk_if_resident(pos.x >> 4, pos.z >> 4);
+            if (chunk == nullptr) {
+                return registry::kAirState;
+            }
+            return chunk->get_block(static_cast<usize>(pos.x & 15), pos.y,
+                                    static_cast<usize>(pos.z & 15));
+        };
+        hooks.is_loaded = [&](BlockPos pos) {
+            return chunk_if_resident(pos.x >> 4, pos.z >> 4) != nullptr;
+        };
+        hooks.set_block = [&](BlockPos pos, registry::BlockStateId state) {
+            const net::WirePosition where{pos.x, pos.y, pos.z};
+            apply_block_change(where, state, false);
+            tick_broadcasts.emplace_back(where, state);
+            tick_relight.insert(chunk_key(pos.x >> 4, pos.z >> 4));
+        };
+        hooks.container_signal = [&](BlockPos pos) -> i32 {
+            // A comparator behind a chest reads how full it is. -1 for "there
+            // is no container here", which a comparator has to tell apart from
+            // an empty one: an empty container gives 0 and a missing one lets
+            // the ordinary signal through.
+            world::Chunk* chunk = chunk_if_resident(pos.x >> 4, pos.z >> 4);
+            if (chunk == nullptr) {
+                return -1;
+            }
+            const world::BlockEntity* entity =
+                chunk->block_entity_at(static_cast<usize>(pos.x & 15), pos.y,
+                                       static_cast<usize>(pos.z & 15));
+            if (entity == nullptr || entity->type != "minecraft:chest") {
+                return -1;
+            }
+            const auto slots =
+                chest_items(entity->data, registries ? &*registries : nullptr, item_registry);
+            f32  fullness = 0.0F;
+            bool any      = false;
+            for (const net::ItemStack& stack : slots) {
+                if (stack.empty()) {
+                    continue;
+                }
+                any = true;
+                const f32 limit =
+                    registries ? static_cast<f32>(registries->max_stack_size(stack.item_id))
+                               : 64.0F;
+                fullness += static_cast<f32>(stack.count) / (limit > 0.0F ? limit : 64.0F);
+            }
+            return gameplay::Redstone::container_reading(
+                fullness / static_cast<f32>(slots.size()), any);
+        };
+
+        level.emplace(*blocks, std::move(hooks));
+        world_ticks.emplace(*blocks, *registries);
+        tick_broadcasts.reserve(4096);
+    } else {
+        OV_LOG_WARN("no block registry — fluids and redstone stay inert");
+    }
+
+    /// Send what the drain wrote, and relight the chunks it touched.
+    ///
+    /// Called with `chunk_mutex` **released**: broadcasting walks the player
+    /// map under `players_mutex`, and the two locks taken in the other order
+    /// anywhere else would be a deadlock waiting for a busy server.
+    const auto flush_tick_writes = [&] {
+        if (!tick_relight.empty()) {
+            const std::scoped_lock lock{chunk_mutex};
+            for (const i64 key : tick_relight) {
+                const auto cx = static_cast<i32>(key >> 32);
+                const auto cz = static_cast<i32>(static_cast<u32>(key & 0xFFFFFFFF));
+                relight_neighbourhood(
+                    [&](i32 nx, i32 nz) -> world::Chunk* { return chunks.find(ChunkPos{nx, nz}); },
+                    cx, cz);
+                if (blocks) {
+                    for (i32 dz = -1; dz <= 1; ++dz) {
+                        for (i32 dx = -1; dx <= 1; ++dx) {
+                            if (world::Chunk* found = chunks.find(ChunkPos{cx + dx, cz + dz});
+                                found != nullptr) {
+                                relight_blocks(*found, *blocks);
+                            }
+                        }
+                    }
+                }
+            }
+            tick_relight.clear();
+        }
+
+        if (tick_broadcasts.empty()) {
+            return;
+        }
+        const std::unique_lock lock{players_mutex, std::try_to_lock};
+        if (lock.owns_lock()) {
+            for (const auto& [where, state] : tick_broadcasts) {
+                const auto framed = net::encode_packet(
+                    net::clientbound::kBlockUpdate,
+                    net::encode_block_update(where, static_cast<i32>(state.value())));
+                if (!framed) {
+                    continue;
+                }
+                for (auto& [key, other] : players) {
+                    if (other.connection) {
+                        other.connection->send(*framed);
+                    }
+                }
+            }
+        }
+        tick_broadcasts.clear();
     };
 
     // ── crafting and smelting ───────────────────────────────────────────────
@@ -2378,14 +2649,79 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     // buries the player in stone.
                     player.x = static_cast<f64>(level_settings.spawn_x) + 0.5;
                     player.z = static_cast<f64>(level_settings.spawn_z) + 0.5;
-                    const std::scoped_lock chunk_lock{chunk_mutex};
-                    world::Chunk&          home =
-                        chunk_at(level_settings.spawn_x >> 4, level_settings.spawn_z >> 4);
+
+                    // **Wait** for the spawn chunk; never generate it here.
+                    //
+                    // This runs on the network thread, but it used to hold
+                    // `chunk_mutex` across a `chunk_at` that could run the whole
+                    // worldgen pipeline — and the tick thread waits behind that
+                    // lock. Measured on this server, the first connection to a
+                    // generated world logged `joined` and then "can't keep up"
+                    // 43 ms later, once, every time: one tick lost to a chunk
+                    // the tick loop was already asking for.
+                    //
+                    // It is already asking for it: the loop plants a `Forced`
+                    // ticket on the spawn column at start-up, so the chunk is
+                    // on its way before anyone connects. All that is needed is
+                    // to let it arrive, with the lock **released** between
+                    // looks so the thread that publishes it can get in.
+                    constexpr auto kSpawnWait = std::chrono::seconds{20};
+                    const auto     deadline   = std::chrono::steady_clock::now() + kSpawnWait;
+                    const i32      home_x     = level_settings.spawn_x >> 4;
+                    const i32      home_z     = level_settings.spawn_z >> 4;
                     const auto local_x = static_cast<usize>(level_settings.spawn_x & 15);
                     const auto local_z = static_cast<usize>(level_settings.spawn_z & 15);
-                    player.y           = static_cast<f64>(
-                        home.heightmap(world::HeightmapType::WorldSurface)
-                            .first_free(local_x, local_z));
+
+                    // Waiting is for the **streaming** path only. Without a
+                    // chunk source there is nothing on its way: a saved world
+                    // reaches `chunk_at` and gets a disk read measured in
+                    // microseconds, and a superflat gets a chunk built in about
+                    // as long. Waiting for those would wait for ever, because
+                    // nothing else ever publishes them — which is exactly what
+                    // the first run of this code did, refusing every join to
+                    // the lab world after twenty seconds.
+                    bool have_home = false;
+                    if (!chunk_source) {
+                        const std::scoped_lock chunk_lock{chunk_mutex};
+                        const world::Chunk&    home = chunk_at(home_x, home_z);
+                        player.y                    = static_cast<f64>(
+                            home.heightmap(world::HeightmapType::WorldSurface)
+                                .first_free(local_x, local_z));
+                        have_home = true;
+                    }
+                    while (!have_home && std::chrono::steady_clock::now() < deadline) {
+                        {
+                            const std::scoped_lock chunk_lock{chunk_mutex};
+                            if (const world::Chunk* home = chunk_if_resident(home_x, home_z);
+                                home != nullptr) {
+                                player.y = static_cast<f64>(
+                                    home->heightmap(world::HeightmapType::WorldSurface)
+                                        .first_free(local_x, local_z));
+                                have_home = true;
+                            }
+                        }
+                        if (have_home) {
+                            break;
+                        }
+                        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+                    }
+
+                    if (!have_home) {
+                        // Twenty seconds and the spawn chunk is still not here.
+                        // Refused with a reason rather than generated on this
+                        // thread: a join that costs the tick loop a second is
+                        // worse for everyone already playing than a join that
+                        // does not happen and says why.
+                        OV_LOG_WARN("spawn chunk {},{} did not arrive in {} s — refusing the join",
+                                    home_x, home_z,
+                                    std::chrono::duration_cast<std::chrono::seconds>(kSpawnWait)
+                                        .count());
+                        send_packet(static_cast<i32>(net::LoginPacket::Disconnect),
+                                    net::encode_login_disconnect(
+                                        "Ondes VOXEL — the spawn chunk is still generating.\n"
+                                        "Try again in a moment."));
+                        return true;
+                    }
                 }
                 {
                     const std::scoped_lock lock{states_mutex};
@@ -2997,7 +3333,64 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         }
 
                         const auto click = net::parse_container_click(body);
-                        if (!click || !player.window_open || click->window_id != player.window_id) {
+                        if (!click) {
+                            return true;
+                        }
+
+                        // ── the player's own screen ─────────────────────────
+                        //
+                        // Window 0 is the one the client opens by itself, when
+                        // the player presses E. The server is never told, sends
+                        // no `Open Screen`, and so has no `window_open` and no
+                        // `window_id` to match — which is exactly why every
+                        // click on it used to be dropped here, and why moving a
+                        // stack inside one's own inventory did nothing at all.
+                        if (click->window_id == 0) {
+                            const auto outcome = apply_player_click(
+                                registries ? &*registries : nullptr,
+                                recipe_book ? &*recipe_book : nullptr, *click, player.inventory,
+                                player.carried, player.drag);
+
+                            for (const net::ItemStack& stack : outcome.dropped) {
+                                if (stack.empty()) {
+                                    continue;
+                                }
+                                ItemEntity item;
+                                item.entity_id = next_entity_id.fetch_add(1);
+                                item.uuid      = net::Uuid{
+                                    0x4f564954454d0000ULL | static_cast<u64>(item.entity_id),
+                                    static_cast<u64>(item.entity_id) * 0x9E3779B97F4A7C15ULL};
+                                item.x     = player.x;
+                                item.y     = player.y + 1.0;
+                                item.z     = player.z;
+                                item.stack = stack;
+                                item.born  = server_tick.load(std::memory_order_relaxed);
+                                // Longer than a broken block's: a player who
+                                // throws something away must be able to step
+                                // aside before it comes back.
+                                item.pickup_delay = 40;
+                                std::vector<ItemEntity> thrown_items;
+                                thrown_items.push_back(std::move(item));
+                                publish_items(thrown_items);
+                            }
+
+                            // Resent whether the click was handled or not. The
+                            // client has already applied its own guess, and
+                            // anything this server did differently would
+                            // otherwise stay on screen as an item that does not
+                            // exist.
+                            send_packet(net::clientbound::kContainerContent,
+                                        net::encode_container_content(
+                                            0, click->state_id + 1,
+                                            player_window_contents(
+                                                registries ? &*registries : nullptr,
+                                                recipe_book ? &*recipe_book : nullptr,
+                                                player.inventory),
+                                            player.carried));
+                            return true;
+                        }
+
+                        if (!player.window_open || click->window_id != player.window_id) {
                             return true;
                         }
 
@@ -3389,6 +3782,74 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     std::vector<GeneratedBlock> finished_blocks;
     std::vector<ChunkPos>       to_evict;
     std::vector<ChunkPos>       wanted_scratch;
+    // ── Natural spawning ────────────────────────────────────────────────────
+    //
+    // The spawner itself has been complete and measured since M2 and nothing
+    // called it: a world only ever held the mobs `--mobs=` put there by hand.
+    // What it needed was a light source over our chunks and the three spans
+    // `SpawnEnvironment` asks for, and both are here.
+    //
+    // The seed is fixed, not drawn from a clock: two runs of the same server
+    // must produce the same world (principle 5), and a spawner seeded from the
+    // wall clock makes every replay differ.
+    gameplay::NaturalSpawner spawner{0x4f56'4d4f'4253'0001ULL};
+    /// The mob names the spawner hands out are **views** into this. It has to
+    /// outlive every request, which is why it is not a local of the loader.
+    std::vector<std::string>          spawner_names;
+    bool                              spawning_ready = false;
+    /// The light the spawn rule reads, built **once**.
+    ///
+    /// Three `std::function`s over capturing lambdas: constructing one of these
+    /// allocates, and constructing it inside the tick body is straight through
+    /// the rule that forbids allocating there — the `NoAllocScope` guard exists
+    /// to catch exactly this. It is also simply wasted work, three heap
+    /// allocations twenty times a second for an object that never changes.
+    ///
+    /// The tick it reports is read through `server_tick` rather than captured,
+    /// so the object can outlive any one tick without going stale.
+    const ChunkLight spawn_light{[&] {
+        LightHooks hooks;
+        hooks.block_light = [&](BlockPos pos) -> u8 {
+            const world::Chunk* chunk = chunk_if_resident(pos.x >> 4, pos.z >> 4);
+            if (chunk == nullptr) {
+                return 0;
+            }
+            const world::ChunkSection* section = chunk->section_for_y(pos.y);
+            return section == nullptr ? u8{0}
+                                      : section->block_light().get(world::section_index(
+                                            static_cast<usize>(pos.x & 15),
+                                            static_cast<usize>(pos.y & 15),
+                                            static_cast<usize>(pos.z & 15)));
+        };
+        hooks.sky_light = [&](BlockPos pos) -> u8 {
+            const world::Chunk* chunk = chunk_if_resident(pos.x >> 4, pos.z >> 4);
+            if (chunk == nullptr) {
+                return 0;
+            }
+            const world::ChunkSection* section = chunk->section_for_y(pos.y);
+            return section == nullptr ? u8{0}
+                                      : section->sky_light().get(world::section_index(
+                                            static_cast<usize>(pos.x & 15),
+                                            static_cast<usize>(pos.y & 15),
+                                            static_cast<usize>(pos.z & 15)));
+        };
+        hooks.sky_darken = [&] {
+            return sky_darken_for(server_tick.load(std::memory_order_relaxed));
+        };
+        return hooks;
+    }()};
+
+    std::vector<gameplay::SpawnRequest> spawn_requests;
+    std::vector<Vec3d>                  spawn_players;
+    std::vector<ChunkPos>               spawn_ticking;
+    std::array<i32, 8>                  spawn_live{};
+
+    /// Every furnace in a loaded chunk, rebuilt once a second. See the headless
+    /// furnace pass for why it is an index and not a scan.
+    std::vector<net::WirePosition> furnace_index;
+    /// The screen a headless furnace is ticked through. One, reused: building a
+    /// `Workbench` per furnace per tick would allocate inside the tick body.
+    Workbench headless_furnace;
     u64                         chunks_published = 0;
 
     // The spawn is a reason of its own, and it has to exist before anyone is
@@ -3405,6 +3866,15 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         world::LevelChanges spawn_changes;
         chunks.refresh(spawn_changes);
     }
+    // The mob lists, read out of the data generator's own output rather than
+    // invented. `spawning.hpp` refuses a made-up distribution in as many words,
+    // and a spawner configured with an empty list is indistinguishable from one
+    // that is not wired up — so a failure here turns spawning **off** and says
+    // so, rather than running with nothing in it.
+    spawning_ready = load_biome_spawners(std::filesystem::path{OV_DATA_DIR} / "vanilla" /
+                                             "1.20.1" / "generated",
+                                         "minecraft:plains", spawner, spawner_names);
+
     bool      mobs_placed   = false;
     auto      last_autosave = std::chrono::steady_clock::now();
 
@@ -3580,6 +4050,192 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     mob_packets(*state, [&](i32 id, std::span<const u8> payload) {
                         broadcast(nullptr, id, payload);
                     });
+                }
+            }
+        }
+
+        // ── Scheduled ticks ─────────────────────────────────────────
+        //
+        // Water flows and levers light things here, and nowhere else. Two
+        // queues drained in order, then the notifications the drain produced
+        // settled to a fixed point, all of it under one `chunk_mutex` and none
+        // of it under `players_mutex` — the packets go out afterwards.
+        if (level && world_ticks) {
+            // Whatever a player did since the last tick, first. A lever flipped
+            // on the network thread is only a block until this runs.
+            std::vector<net::WirePosition> edits;
+            {
+                const std::scoped_lock lock{notification_mutex};
+                edits.swap(pending_notifications);
+            }
+
+            WorldTickStats stats;
+            {
+                const std::scoped_lock chunk_lock{chunk_mutex};
+                level->set_game_time(clock.tick_count());
+                for (const net::WirePosition& where : edits) {
+                    (void)world_ticks->notify(*level, BlockPos{where.x, where.y, where.z});
+                }
+                stats = world_ticks->run(*level, clock.tick_count());
+            }
+            flush_tick_writes();
+
+            // Loud only when something happened, and at debug: a server with
+            // nothing flowing must not print twenty lines a second.
+            if (stats.fluid_ticks + stats.block_ticks > 0) {
+                OV_LOG_DEBUG("tick {}: {} fluid, {} block, {} refused, {} waves, {} notified",
+                             clock.tick_count(), stats.fluid_ticks, stats.block_ticks,
+                             stats.refused, stats.waves, stats.notifications);
+            }
+        }
+
+        // ── Natural spawning ────────────────────────────────────────
+        //
+        // Once a tick, over the chunks a ticket actually ticks, with the light
+        // read out of the same arrays the client is sent. Everything the rule
+        // needs that a `LevelView` cannot answer — the light, the players, the
+        // ticking set, the live counts — is assembled here and nowhere else.
+        if (spawning_ready && level && mobs && registries && blocks) {
+            spawn_players.clear();
+            {
+                const std::unique_lock lock{players_mutex, std::try_to_lock};
+                if (lock.owns_lock()) {
+                    for (const auto& [key, who] : players) {
+                        spawn_players.push_back(Vec3d{who.x, who.y, who.z});
+                    }
+                }
+            }
+
+            // No players means no spawning — the game's rule, not an
+            // optimisation, and the one that made a whole measurement campaign
+            // read zero everywhere before the rig learned to keep a probe
+            // client connected.
+            if (!spawn_players.empty()) {
+                // How many of each category are already alive. The cap is
+                // compared against this, so counting them as `Monster` because
+                // that is the enum's first value would stop every kind of
+                // spawning as soon as enough cows existed. `EntityState` carries
+                // Mojang's numeric type and not a name, so the name comes back
+                // through the registry.
+                spawn_live.fill(0);
+                if (const auto entity_registry = registries->find("minecraft:entity_type")) {
+                    for (const entity::EntityHandle handle : mobs->handles()) {
+                        const entity::EntityState* state = mobs->state(handle);
+                        if (state == nullptr) {
+                            continue;
+                        }
+                        const std::string_view name =
+                            registries->entry_of(*entity_registry, state->type);
+                        if (name.empty()) {
+                            continue;
+                        }
+                        ++spawn_live[static_cast<usize>(gameplay::category_of(name))];
+                    }
+                }
+
+                spawn_requests.clear();
+                {
+                    const std::scoped_lock chunk_lock{chunk_mutex};
+
+                    // The ticking set, rebuilt once a second and not once a
+                    // tick.
+                    //
+                    // Measured, and the reason this is written down: rebuilding
+                    // it every tick walked the whole resident map and sorted the
+                    // result, and it took an idle tick on the lab world from
+                    // **4 us to 2599 us** — six hundred times, for a list that
+                    // only changes when somebody walks across a chunk border.
+                    // A second of latency on that is invisible against a spawn
+                    // cycle; two and a half milliseconds a tick is not.
+                    if (clock.tick_count() % 20 == 0 || spawn_ticking.empty()) {
+                        spawn_ticking.clear();
+                        // The **spawn square**: the 17x17 of chunks around each
+                        // player, not every ticking chunk in the world.
+                        //
+                        // Not a cost cut but the rule. `effective_cap` scales a
+                        // category's cap by `eligible_chunks / 289`, and 289 is
+                        // 17x17 — the square around one player. Handing it every
+                        // ticking chunk instead inflates the denominator, so a
+                        // world with plenty loaded would allow several times the
+                        // real cap, and each extra chunk is also three spawn
+                        // attempts a tick spent nowhere near anybody.
+                        //
+                        // Walked out from each player rather than filtered from
+                        // the resident set: with two players the square is a few
+                        // hundred lookups, while the resident set grows with the
+                        // world.
+                        for (const Vec3d& who : spawn_players) {
+                            const i32 centre_x = static_cast<i32>(std::floor(who.x)) >> 4;
+                            const i32 centre_z = static_cast<i32>(std::floor(who.z)) >> 4;
+                            for (i32 dz = -8; dz <= 8; ++dz) {
+                                for (i32 dx = -8; dx <= 8; ++dx) {
+                                    const ChunkPos pos{centre_x + dx, centre_z + dz};
+                                    if (chunks.is_ticking(pos) &&
+                                        std::ranges::find(spawn_ticking, pos) ==
+                                            spawn_ticking.end()) {
+                                        spawn_ticking.push_back(pos);
+                                    }
+                                }
+                            }
+                        }
+
+                        // Sorted, because `for_each` walks a hash map: the order
+                        // decides which chunk the spawner offers a position in
+                        // first, and a hash order is neither stable across runs
+                        // nor across a rebuild of the map. Determinism is
+                        // principle 5.
+                        std::ranges::sort(spawn_ticking, [](ChunkPos a, ChunkPos b) {
+                            return a.z != b.z ? a.z < b.z : a.x < b.x;
+                        });
+                    }
+
+                    gameplay::SpawnEnvironment environment;
+                    environment.level             = &*level;
+                    environment.light             = &spawn_light;
+                    environment.players           = spawn_players;
+                    environment.ticking_chunks    = spawn_ticking;
+                    environment.live_per_category = spawn_live;
+                    environment.registries        = &*registries;
+
+                    spawner.spawn_tick(environment, spawn_requests);
+                }
+
+                for (const gameplay::SpawnRequest& request : spawn_requests) {
+                    const auto spawned =
+                        mobs->spawn(request.type_name, request.position, net::Uuid{});
+                    if (!spawned) {
+                        continue;
+                    }
+                    entity::EntityState* state = mobs->mutable_state(*spawned);
+                    state->uuid               = uuid_for_entity(state->network_id);
+                    state->broadcast_position = state->position;
+                    state->broadcast_valid    = true;
+                    // Behaviour, by name, and refused rather than invented: a
+                    // mob given a plausible default brain is worse than one that
+                    // only falls, because only one of them says so.
+                    if (const gameplay::MobKind* kind = gameplay::mob_kind(request.type_name)) {
+                        const auto entity_types = registries->find("minecraft:entity_type");
+                        const auto player_type =
+                            entity_types
+                                ? registries->protocol_id(*entity_types, "minecraft:player")
+                                : std::nullopt;
+                        mobs->set_logic(*spawned,
+                                        std::make_unique<gameplay::Mob>(
+                                            *kind, state->width, state->height, state->network_id,
+                                            player_type ? *player_type : gameplay::kNoQuarry));
+                    } else {
+                        mobs->set_logic(*spawned, std::make_unique<gameplay::FallingMob>());
+                    }
+                    const std::unique_lock lock{players_mutex, std::try_to_lock};
+                    if (lock.owns_lock()) {
+                        mob_packets(*state, [&](i32 id, std::span<const u8> payload) {
+                            broadcast(nullptr, id, payload);
+                        });
+                    }
+                }
+                if (!spawn_requests.empty()) {
+                    OV_LOG_DEBUG("tick {}: spawned {} over {} ticking chunks",
+                                 clock.tick_count(), spawn_requests.size(), spawn_ticking.size());
                 }
             }
         }
@@ -4110,11 +4766,11 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 }
 
                 // ── crafting and smelting ───────────────────────────────────
-                // A furnace only runs while someone is watching it. That is a
-                // stated gap, not an oversight: ticking every furnace in the
-                // world needs a block-entity tick list, which is a different
-                // piece of work — and a furnace nobody has open would otherwise
-                // finish silently and never tell anyone.
+                // The screens someone has open. What runs a furnace **nobody**
+                // is watching is the pass below this one; this one exists
+                // separately because an open screen also owes its viewer four
+                // property packets and a resend, which a headless furnace does
+                // not.
                 for (auto& [key, player] : players) {
                     if (!player.bench || !player.connection) {
                         continue;
@@ -4127,6 +4783,144 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     const std::scoped_lock chunk_lock{chunk_mutex};
                     tick_open_workbench(workbench_context, workbench_host(player, send),
                                         *player.bench, player.inventory);
+                }
+
+                // ── Furnaces nobody is watching ─────────────────────────────
+                //
+                // A furnace is a **ticked block entity**: it cooks whether a
+                // player is standing there or not, and one left burning with
+                // eight ores in it finishes them while its owner is away. That
+                // is the whole reason a furnace is worth building.
+                //
+                // The index rather than a scan every tick: walking every block
+                // entity of every loaded chunk twenty times a second is a cost
+                // that grows with the world and buys nothing, because a smelt
+                // takes 200 ticks. It is rebuilt once a second, so a furnace
+                // placed now starts cooking at most a second later — stated,
+                // and invisible against a ten-second smelt.
+                if (clock.tick_count() % 20 == 0) {
+                    const std::scoped_lock chunk_lock{chunk_mutex};
+                    furnace_index.clear();
+                    chunks.for_each([&](ChunkPos pos, const world::Chunk& chunk) {
+                        for (const world::BlockEntity& entity : chunk.block_entities()) {
+                            const auto kind = workbench_of_block(entity.type);
+                            if (!kind || !furnace_of(*kind)) {
+                                continue;
+                            }
+                            // A block entity stores its position **local** to
+                            // the chunk; the index holds world coordinates,
+                            // because that is what the tick below looks blocks
+                            // up by. Mixing the two conventions puts every
+                            // furnace in a different chunk, silently.
+                            furnace_index.push_back(net::WirePosition{
+                                pos.x * 16 + static_cast<i32>(entity.x), entity.y,
+                                pos.z * 16 + static_cast<i32>(entity.z)});
+                        }
+                    });
+                }
+
+                if (!furnace_index.empty() && registries) {
+                    const std::scoped_lock chunk_lock{chunk_mutex};
+                    for (const net::WirePosition& where : furnace_index) {
+                        // Skip the ones a player has open. Those already tick
+                        // above, holding their own copy of the state, and
+                        // ticking the block entity underneath one would advance
+                        // the same furnace twice a tick and show its viewer a
+                        // bar that jumps.
+                        bool watched = false;
+                        for (const auto& [key, other] : players) {
+                            if (other.bench && other.bench->x == where.x &&
+                                other.bench->y == where.y && other.bench->z == where.z) {
+                                watched = true;
+                                break;
+                            }
+                        }
+                        if (watched) {
+                            continue;
+                        }
+
+                        world::Chunk* chunk = chunk_if_resident(where.x >> 4, where.z >> 4);
+                        if (chunk == nullptr) {
+                            continue;
+                        }
+                        world::BlockEntity* entity = chunk->block_entity_at(
+                            static_cast<usize>(where.x & 15), where.y,
+                            static_cast<usize>(where.z & 15));
+                        if (entity == nullptr) {
+                            continue;
+                        }
+                        const auto kind = workbench_of_block(entity->type);
+                        if (!kind || !furnace_of(*kind)) {
+                            // The block entity changed under the index. Not an
+                            // error: the index is a second old by design.
+                            continue;
+                        }
+
+                        // A scratch screen, reused. `Workbench` is what
+                        // `tick_furnace` reads and writes, and building one per
+                        // furnace per tick would allocate inside the tick.
+                        headless_furnace           = Workbench{};
+                        headless_furnace.kind      = *kind;
+                        headless_furnace.window_id = 0;
+                        headless_furnace.x         = where.x;
+                        headless_furnace.y         = where.y;
+                        headless_furnace.z         = where.z;
+                        load_furnace(workbench_context, entity->data, headless_furnace);
+
+                        // Nothing to do, and the common case by far: an empty
+                        // furnace with a cold fire. Checked before the tick so
+                        // that a world full of decorative furnaces costs a load
+                        // and a comparison.
+                        if (!headless_furnace.furnace_state.lit() &&
+                            headless_furnace.furnace_slots.input.empty()) {
+                            continue;
+                        }
+
+                        const gameplay::FurnaceTick step =
+                            tick_furnace(workbench_context, headless_furnace);
+                        if (step.slots_changed) {
+                            store_furnace(workbench_context, entity->data, headless_furnace);
+                            dirty_chunks.insert(chunk_key(where.x >> 4, where.z >> 4));
+                        }
+                        if (step.lit_changed && blocks) {
+                            // The `lit` property, not a different block: looking
+                            // `minecraft:furnace` up by name would find it
+                            // either way and lose the facing it was placed
+                            // with. Written straight into the chunk because
+                            // `chunk_mutex` is already held here and is not
+                            // recursive.
+                            const registry::BlockStateId state = block_at(where);
+                            const registry::BlockId      block = blocks->block_of(state);
+                            const auto property = blocks->find_property(block, "lit");
+                            if (!property) {
+                                continue;
+                            }
+                            const auto wanted = headless_furnace.furnace_state.lit()
+                                                    ? std::string_view{"true"}
+                                                    : std::string_view{"false"};
+                            for (u16 index = 0; index < property->values.size(); ++index) {
+                                if (property->values[index] != wanted) {
+                                    continue;
+                                }
+                                const registry::BlockStateId next =
+                                    blocks->with_property(state, *property, index);
+                                chunk->set_block(static_cast<usize>(where.x & 15), where.y,
+                                                 static_cast<usize>(where.z & 15), next);
+                                dirty_chunks.insert(chunk_key(where.x >> 4, where.z >> 4));
+                                if (const auto framed = net::encode_packet(
+                                        net::clientbound::kBlockUpdate,
+                                        net::encode_block_update(
+                                            where, static_cast<i32>(next.value())))) {
+                                    for (auto& [other_key, other] : players) {
+                                        if (other.connection) {
+                                            other.connection->send(*framed);
+                                        }
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
                 }
 
                 for (auto& [key, player] : players) {
