@@ -18,10 +18,14 @@
 //   * `flat_cache` genuinely changes the result — it quantises x and z to
 //     multiples of four and evaluates at y = 0 — and is reproduced.
 //   * `interpolated` also changes the result: it samples on the coarse cell
-//     grid and interpolates between. Point-by-point it cannot be reproduced,
-//     so this evaluator returns the direct value and says so. That is exact
-//     for the climate functions, which is what the biome parity check needs,
-//     and NOT exact for the final terrain density, which needs the cell grid.
+//     grid — four blocks wide, eight tall — and interpolates trilinearly
+//     between the eight corners, in the game's order (y, then x, then z). It
+//     is reproduced, corner values memoised. This paragraph used to say the
+//     opposite, and it was several commits out of date: `ov_parity
+//     --column=100,100` shows the slope breaking exactly on a cell boundary,
+//     which is what an interpolated field does and a point-by-point one does
+//     not. The stale note cost a session's worth of chasing a smoothing bug
+//     that was not there — see docs/provenance/aquiferes.md § 6.
 #pragma once
 
 #include "ov/base/types.hpp"
@@ -102,6 +106,12 @@ public:
     /// Router entries that could not be built, and why. Empty when the whole
     /// graph loaded.
     [[nodiscard]] std::vector<std::pair<std::string, DensityError>> unavailable() const;
+
+    /// The `old_blended_noise` this router built, or nullptr if it has none.
+    ///
+    /// Handed out so that a measurement harness can read the selector stack on
+    /// its own — see `BlendedNoise::selector`. Nothing in generation uses it.
+    [[nodiscard]] const BlendedNoise* blended_noise() const noexcept;
 
     [[nodiscard]] i32 sea_level() const noexcept;
     [[nodiscard]] i32 min_y() const noexcept;

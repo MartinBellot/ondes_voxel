@@ -650,6 +650,10 @@ struct NoiseRouter::Impl {
     /// stream, not from the positional factory. Kept here because the fork
     /// consumes state and must happen exactly once.
     math::XoroshiroRandomSource blended_random{0};
+    /// The blended noise this router built, kept so a harness can read the
+    /// selector stack on its own. Nothing in generation reads it; it is the
+    /// handle `NoiseRouter::blended_noise()` hands out.
+    std::shared_ptr<const BlendedNoise> blended;
 
     std::unordered_map<std::string, std::shared_ptr<const NormalNoise>> noises;
     std::unordered_map<std::string, DensityRef>                         functions;
@@ -748,6 +752,32 @@ std::expected<DensityRef, DensityError> NoiseRouter::Impl::reference(std::string
     const std::string key(name);
     if (const auto found = functions.find(key); found != functions.end()) {
         return found->second;
+    }
+    // OV_MUTE_FUNCTION replaces named functions by a large constant.
+    //
+    // It is a measuring instrument, and it exists because "the cave terms" is
+    // not a localisation: `final_density` reaches them through several `min`
+    // nodes and a large constant takes exactly one of them out of the picture
+    // without touching the rest. `OV_NO_CAVE_NOISE` mutes every
+    // `weird_scaled_sampler` at once and so cannot say *which*. A
+    // comma-separated list of full names, and a name that is never reached
+    // silently does nothing — which is why the list is echoed at load.
+    if (const char* muted = std::getenv("OV_MUTE_FUNCTION"); muted != nullptr) {
+        const std::string_view list{muted};
+        for (usize start = 0; start <= list.size();) {
+            const usize comma = list.find(',', start);
+            const auto  piece = list.substr(start, comma - start);
+            if (piece == name) {
+                OV_LOG_WARN("worldgen: {} is muted to +64 by OV_MUTE_FUNCTION", key);
+                auto constant = std::make_shared<const Constant>(64.0);
+                functions.emplace(key, constant);
+                return DensityRef{constant};
+            }
+            if (comma == std::string_view::npos) {
+                break;
+            }
+            start = comma + 1;
+        }
     }
     if (resolving.contains(key)) {
         OV_LOG_ERROR("worldgen: {} refers to itself", key);
@@ -995,6 +1025,7 @@ std::expected<DensityRef, DensityError> NoiseRouter::Impl::parse(Json node) {
             blended_random, number_at("xz_scale", 1.0), number_at("y_scale", 1.0),
             number_at("xz_factor", 80.0), number_at("y_factor", 160.0),
             number_at("smear_scale_multiplier", 8.0)));
+        blended = forked;
         return wrap(std::make_shared<const BlendedNoiseNode>(std::move(forked)));
     }
     if (kind == "weird_scaled_sampler") {
@@ -1128,6 +1159,10 @@ std::vector<std::pair<std::string, DensityError>> NoiseRouter::unavailable() con
 const DensityFunction* NoiseRouter::function(std::string_view name) const {
     const auto found = impl_->functions.find(std::string(name));
     return found == impl_->functions.end() ? nullptr : found->second.get();
+}
+
+const BlendedNoise* NoiseRouter::blended_noise() const noexcept {
+    return impl_->blended.get();
 }
 
 i32 NoiseRouter::sea_level() const noexcept {

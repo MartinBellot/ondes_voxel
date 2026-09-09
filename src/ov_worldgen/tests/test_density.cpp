@@ -220,3 +220,54 @@ TEST_CASE("the old blended noise is centred on zero", "[worldgen][density]") {
     CAPTURE(mean, count);
     CHECK(std::abs(mean) < 0.05);
 }
+
+TEST_CASE("the aquifer's fluid level lattice is what the reference world shows",
+          "[worldgen][density]") {
+    // The aquifer itself is not implemented — the barrier half has no source
+    // this project may read, and it is refused rather than guessed. One half of
+    // it *is* measured, and this fences the input that measurement rests on.
+    //
+    // Every fluid level read out of `run/reference-1234567890` sits on
+    // `40k + 20 + 3j` for the y band `k = floor(y / 40)`, and the offset `3j`
+    // follows `3 * floor(3.2 * spread)` where `spread` is the router's
+    // `fluid_level_spread` sampled **at the aquifer grid index**, not at a
+    // block position: 142 of 159 cells, against a 32,7 % base rate, while the
+    // same noise read at the cell's block centre or block corner, and the other
+    // three aquifer noises read at the grid index, all sit at that base rate.
+    // See docs/provenance/aquiferes.md.
+    //
+    // What is checked here is only what the code can check without the
+    // reference world: that the entry exists, that it is the small-amplitude
+    // field the arithmetic assumes, and that reading it at a grid index rather
+    // than a block position is a different question — which is the whole point
+    // of the result and the one thing a refactor could silently break.
+    if (!std::filesystem::is_directory(data_root() / "worldgen")) {
+        SKIP("vanilla worldgen data absent; run tools/ov_datagen first");
+    }
+    auto router = NoiseRouter::load(data_root(), "overworld", 1234567890);
+    REQUIRE(router.has_value());
+
+    const auto* spread = router->entry("fluid_level_spread");
+    REQUIRE(spread != nullptr);
+
+    // `3 * floor(3.2 * spread)` only produces the observed offsets — which run
+    // from -12 to +6 — if the field stays inside about +/- 1. A field an order
+    // of magnitude larger would put the level outside its own cell.
+    f64   largest = 0.0;
+    usize distinct_from_block_sample = 0;
+    usize compared                   = 0;
+    for (i32 gx = -60; gx <= 60; ++gx) {
+        for (i32 gz = -60; gz <= 60; ++gz) {
+            const f64 at_index = spread->compute({gx, 0, gz});
+            largest            = std::max(largest, std::abs(at_index));
+            // The same cell, addressed in blocks. If these ever agreed, the
+            // measurement that separated them would have been reading noise.
+            const f64 at_block = spread->compute({gx * 16 + 8, 20, gz * 16 + 8});
+            distinct_from_block_sample += at_index != at_block ? 1 : 0;
+            ++compared;
+        }
+    }
+    CAPTURE(largest, compared);
+    CHECK(largest < 1.5);
+    CHECK(distinct_from_block_sample == compared);
+}

@@ -152,6 +152,21 @@ public:
 
     [[nodiscard]] f64 value(i32 x, i32 y, i32 z) const noexcept;
 
+    /// The selector stack's raw sum, before the blend maps it to [0, 1].
+    ///
+    /// An instrument, and it answers a question that was asked in
+    /// docs/provenance/amplitude-old-blended-noise.md § 5 and never measured:
+    /// the blend is `(selector / 10 + 1) / 2`, and eight octaves whose weights
+    /// double reach several hundred, so the suspicion was that it saturates
+    /// almost everywhere and turns a crossfade into a hard switch. Whether it
+    /// does is a fact about this field, not a matter of opinion, and this is
+    /// how it is read.
+    [[nodiscard]] f64 selector(i32 x, i32 y, i32 z) const noexcept;
+
+    /// What `selector` is divided by before the blend. One, unless
+    /// `OV_SELECTOR_DIV` says otherwise.
+    [[nodiscard]] f64 selector_divisor() const noexcept { return selector_divisor_; }
+
     [[nodiscard]] f64 max_value() const noexcept { return max_value_; }
 
 private:
@@ -177,6 +192,13 @@ private:
     f64 y_factor_{0.0};
     f64 smear_scale_multiplier_{0.0};
     f64 max_value_{0.0};
+
+    /// A measuring instrument for the selector, read from `OV_SELECTOR_DIV`
+    /// once when the noise is built. One means the field as it stands; a large
+    /// value is the "the game normalises this stack" hypothesis, and the
+    /// Nether's distribution oracle is what decides between them. Never
+    /// changed by anything but that environment variable.
+    f64 selector_divisor_{1.0};
 };
 
 }  // namespace ov::worldgen
