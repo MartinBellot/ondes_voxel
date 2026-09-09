@@ -39,9 +39,11 @@
 // ── crafting and smelting ───────────────────────────────────────────────────
 #include "workbench.hpp"
 #include "ov/world/chunk.hpp"
+#include "ov/world/chunk_map.hpp"
 #include "ov/world/chunk_storage.hpp"
 #include "ov/protocol/survival.hpp"
 #include "ov/world/level_dat.hpp"
+#include "async_chunk_source.hpp"
 #include "generated_world.hpp"
 #include "survival_session.hpp"
 
@@ -1400,21 +1402,55 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     // and — for the first time — the feature stage, so the stone has ores in
     // it. `GeneratedWorld` owns the whole worldgen stack and the pipeline that
     // holds the nine chunks decoration needs; see generated_world.hpp.
-    std::unique_ptr<GeneratedWorld> generated;
+    std::unique_ptr<GeneratedWorld>   generated;
+    std::unique_ptr<AsyncChunkSource>  chunk_source;
+    usize                              generation_workers = 0;
     if (const char* seed_text = std::getenv("OV_WORLDGEN_SEED");
         seed_text != nullptr && world_available && registries) {
         const i64 world_seed = std::strtoll(seed_text, nullptr, 10);
-        generated = GeneratedWorld::load(data_dir, *blocks, *registries, biome_names, world_seed);
+
+        // One worldgen stack per worker, plus one for the tick thread's own
+        // synchronous fallback. Overridable because the right number depends on
+        // the machine and on what else it is doing, and because a run with one
+        // worker is how the determinism check gets its serial arm.
+        generation_workers = recommended_worker_count();
+        if (const char* worker_text = std::getenv("OV_WORLDGEN_WORKERS")) {
+            const long parsed  = std::strtol(worker_text, nullptr, 10);
+            generation_workers = parsed < 0 ? usize{0} : static_cast<usize>(parsed);
+        }
+        generated = GeneratedWorld::load(data_dir, *blocks, *registries, biome_names, world_seed,
+                                         generation_workers + 1);
         if (!generated) {
             OV_LOG_ERROR("OV_WORLDGEN_SEED was set but the generator could not be built");
             return 1;
         }
+        chunk_source = std::make_unique<AsyncChunkSource>(*generated, generation_workers);
     }
     // ────────────────────────────────────────────────────────────────────────
 
-    std::mutex                            chunk_mutex;
-    std::unordered_map<i64, world::Chunk> chunk_cache;
-    std::unordered_set<i64>               dirty_chunks;
+    /// What `chunk_mutex` still protects, and what it no longer does.
+    ///
+    /// It guards the map itself — a lookup, an insert, an eviction — because
+    /// the network thread reads chunks while the tick thread publishes them,
+    /// and that arrangement predates this work.
+    ///
+    /// What it used to guard as well was **generation**: `chunk_at` ran the
+    /// whole worldgen pipeline with the lock held, hundreds of milliseconds at
+    /// a time, and any thread that wanted a block waited behind it. That is
+    /// gone. Terrain is built by `chunk_source` on its own threads, out of any
+    /// lock, on chunks nobody can see, and arrives here by move on the tick
+    /// thread. What is left under the lock is bookkeeping measured in
+    /// microseconds. See docs/provenance/chunkmap.md § 5 for the numbers.
+    std::mutex              chunk_mutex;
+    world::ChunkMap         chunks;
+    std::unordered_set<i64> dirty_chunks;
+
+    /// Chunks the tick thread had to generate itself because something needed a
+    /// block in them right now — a dig, a place, a fluid step. Counted rather
+    /// than hidden: every one of these is a tick that paid full worldgen price,
+    /// and if the number is not near zero the streaming path is not doing its
+    /// job.
+    u64 synchronous_generations = 0;
 
     // Chunks that exist on disk and could not be read. They are served as
     // generated terrain so the player is not left in a hole, and never written
@@ -1490,8 +1526,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     /// Caller holds chunk_mutex.
     const auto chunk_at = [&](i32 cx, i32 cz) -> world::Chunk& {  // NOLINT(misc-no-recursion)
         const i64 key = chunk_key(cx, cz);
-        if (const auto it = chunk_cache.find(key); it != chunk_cache.end()) {
-            return it->second;
+        if (world::Chunk* resident = chunks.find(ChunkPos{cx, cz}); resident != nullptr) {
+            return *resident;
         }
 
         const auto region = nbt::RegionFile::open(region_path(world_dir, cx, cz));
@@ -1503,8 +1539,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     const auto version = world::chunk_data_version(*document);
                     if (version == world::kDataVersion1201) {
                         if (auto loaded = world::from_nbt(*document, codec_context)) {
-                            world::Chunk& placed =
-                                chunk_cache.emplace(key, std::move(*loaded)).first->second;
+                            chunks.publish(ChunkPos{cx, cz}, std::move(*loaded));
+                            world::Chunk& placed = *chunks.find(ChunkPos{cx, cz});
                             // A saved chunk carries the light it was written
                             // with, which may have come from another
                             // implementation. Recomputing costs a pass and
@@ -1542,10 +1578,29 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 }
             }
         }
-        return chunk_cache
-            .emplace(key, generated ? generated->generate(cx, cz)
-                                    : superflat.generate(ChunkPos{cx, cz}))
-            .first->second;
+        // Last resort, and for generated worlds an expensive one: this runs the
+        // pipeline on the calling thread. The streaming path never reaches
+        // here — it asks `chunk_source` and waits — so what lands here is a
+        // gameplay packet touching a chunk that is not loaded yet. Counted, so
+        // that "never happens" is a measurement rather than a belief.
+        if (generated) {
+            ++synchronous_generations;
+            chunks.publish(ChunkPos{cx, cz}, generated->generate(cx, cz));
+        } else {
+            chunks.publish(ChunkPos{cx, cz}, superflat.generate(ChunkPos{cx, cz}));
+        }
+        return *chunks.find(ChunkPos{cx, cz});
+    };
+
+    /// The chunk if it is already here, and nothing if it is not.
+    ///
+    /// The streaming path uses this and never `chunk_at`: a chunk that is not
+    /// resident yet is asked for and waited on, never generated on the thread
+    /// that owes a packet every fifty milliseconds.
+    ///
+    /// Caller holds chunk_mutex.
+    const auto chunk_if_resident = [&](i32 cx, i32 cz) -> world::Chunk* {
+        return chunks.find(ChunkPos{cx, cz});
     };
 
     /// Write every changed chunk, grouped by region so each file opens once.
@@ -1571,14 +1626,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 world_dir / fmt::format("r.{}.{}.mca", region_pos.first, region_pos.second);
             auto writer = nbt::RegionWriter::open_or_empty(path);
             for (const i64 key : keys) {
-                const auto it = chunk_cache.find(key);
-                if (it == chunk_cache.end()) {
+                const auto cx    = static_cast<i32>(key >> 32);
+                const auto cz    = static_cast<i32>(static_cast<u32>(key & 0xFFFFFFFF));
+                const auto* held = chunks.find(ChunkPos{cx, cz});
+                if (held == nullptr) {
                     continue;
                 }
-                const auto cx = static_cast<i32>(key >> 32);
-                const auto cz = static_cast<i32>(static_cast<u32>(key & 0xFFFFFFFF));
                 writer.set_chunk(static_cast<u32>(cx & 31), static_cast<u32>(cz & 31),
-                                 world::to_nbt(it->second, codec_context), 0);
+                                 world::to_nbt(*held, codec_context), 0);
                 ++written;
             }
             if (!writer.write(path)) {
@@ -1614,6 +1669,20 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         player.centre_x  = centre_x;
         player.centre_z  = centre_z;
         player.streaming = true;
+
+        // The ticket. From here on the chunk is loaded because this player is
+        // standing there, and it stops being loaded when they are not: the
+        // level a ticket gives falls off by one per chunk, so `kRadius` of them
+        // land inside `LoadLevel::kLoaded` and the ring beyond it does not.
+        // Moving the ticket rather than adding one is what makes walking free.
+        {
+            const std::scoped_lock lock{chunk_mutex};
+            chunks.set_ticket(world::TicketType::Player, static_cast<u64>(player.entity_id),
+                              ChunkPos{centre_x, centre_z},
+                              world::LoadLevel::for_view_distance(kRadius));
+            world::LevelChanges changes;
+            chunks.refresh(changes);
+        }
 
         const auto send = [&](i32 id, std::span<const u8> payload) {
             if (const auto framed = net::encode_packet(id, payload)) {
@@ -1961,10 +2030,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             // respect chunk borders, so a block placed against one changes cells
             // on the other side of it.
             relight_neighbourhood(
-                [&](i32 nx, i32 nz) -> world::Chunk* {
-                    const auto found = chunk_cache.find(chunk_key(nx, nz));
-                    return found == chunk_cache.end() ? nullptr : &found->second;
-                },
+                [&](i32 nx, i32 nz) -> world::Chunk* { return chunks.find(ChunkPos{nx, nz}); },
                 chunk_x, chunk_z);
 
             // Block light too, chunk by chunk. A torch placed at a border lights
@@ -1973,9 +2039,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             if (blocks) {
                 for (i32 dz = -1; dz <= 1; ++dz) {
                     for (i32 dx = -1; dx <= 1; ++dx) {
-                        const auto found = chunk_cache.find(chunk_key(chunk_x + dx, chunk_z + dz));
-                        if (found != chunk_cache.end()) {
-                            relight_blocks(found->second, *blocks);
+                        if (world::Chunk* found = chunks.find(ChunkPos{chunk_x + dx, chunk_z + dz});
+                            found != nullptr) {
+                            relight_blocks(*found, *blocks);
                         }
                     }
                 }
@@ -1983,7 +2049,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
 
             for (i32 dz = -1; dz <= 1; ++dz) {
                 for (i32 dx = -1; dx <= 1; ++dx) {
-                    if (chunk_cache.contains(chunk_key(chunk_x + dx, chunk_z + dz))) {
+                    if (chunks.contains(ChunkPos{chunk_x + dx, chunk_z + dz})) {
                         dirty_chunks.insert(chunk_key(chunk_x + dx, chunk_z + dz));
                     }
                 }
@@ -2164,6 +2230,17 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 const i32       entity_id = it->second.entity_id;
                 const net::Uuid uuid      = it->second.uuid;
                 players.erase(it);
+
+                // The reason goes with the player. Without this the chunks they
+                // were standing on stay loaded for the life of the process,
+                // which is what the ticket system exists to stop.
+                {
+                    const std::scoped_lock chunk_lock{chunk_mutex};
+                    chunks.remove_ticket(world::TicketType::Player,
+                                         static_cast<u64>(entity_id));
+                    world::LevelChanges changes;
+                    chunks.refresh(changes);
+                }
 
                 // After the erase, so the leaving player is not sent their own
                 // removal on a socket that is already closing.
@@ -3294,6 +3371,40 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
 
     TickClock clock;
     i64       behind_events = 0;
+
+    // ── Tick-time histogram (instrumentation, not logic) ────────────────────
+    //
+    // A tick that runs past 50 ms is a lost tick, and it is the only number
+    // that says whether work really left this thread: "can't keep up" only
+    // fires once the clock has already slipped a whole tick, so a server
+    // sitting at 45 ms looks identical to one sitting at 5 ms until it does
+    // not. steady_clock is read here and nowhere else in the loop — the
+    // measurement never feeds a decision, which is what keeps principle 5
+    // intact.
+    std::vector<i64> tick_micros;
+    tick_micros.reserve(64 * 1024);
+
+    // Reused across ticks rather than built inside one. Both grow to their
+    // working size in the first few seconds and never allocate again.
+    std::vector<GeneratedBlock> finished_blocks;
+    std::vector<ChunkPos>       to_evict;
+    std::vector<ChunkPos>       wanted_scratch;
+    u64                         chunks_published = 0;
+
+    // The spawn is a reason of its own, and it has to exist before anyone is
+    // there to ask for it. Without this ticket the chunk the first player lands
+    // in is generated at start-up and then thrown away by the first unload
+    // pass — nothing wanted it, because nobody had joined yet — and the join
+    // then waits for a whole generation block. `kTicking` gives it a radius of
+    // two, so the five-by-five around spawn is resident and warm.
+    {
+        const std::scoped_lock lock{chunk_mutex};
+        chunks.set_ticket(world::TicketType::Forced, 0,
+                          ChunkPos{level_settings.spawn_x >> 4, level_settings.spawn_z >> 4},
+                          world::LoadLevel::kTicking);
+        world::LevelChanges spawn_changes;
+        chunks.refresh(spawn_changes);
+    }
     bool      mobs_placed   = false;
     auto      last_autosave = std::chrono::steady_clock::now();
 
@@ -3303,8 +3414,88 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     };
 
     while (!should_stop()) {
-        const i32 ticks = clock.advance();
+        const auto tick_started = std::chrono::steady_clock::now();
+        const i32  ticks        = clock.advance();
         server_tick.store(clock.tick_count(), std::memory_order_relaxed);
+
+        // ── Terrain comes home ──────────────────────────────────────────────
+        //
+        // The single-writer rule in one place: workers build chunks nothing
+        // else can reach, and this — the tick thread, and only the tick thread
+        // — is what makes them part of the world. A chunk moves once, from a
+        // vector the worker has already let go of into the map, and is never
+        // touched by two threads at any point in its life.
+        //
+        // A chunk that is already resident wins. It was either read from disk,
+        // which must beat anything generated, or it has been built in, which
+        // must beat everything.
+        if (chunk_source) {
+            finished_blocks.clear();
+            if (chunk_source->drain(finished_blocks) != 0) {
+                const std::scoped_lock lock{chunk_mutex};
+                for (GeneratedBlock& block : finished_blocks) {
+                    for (auto& [pos, chunk] : block.chunks) {
+                        if (chunks.contains(pos)) {
+                            continue;
+                        }
+                        chunks.publish(pos, std::move(chunk));
+                        ++chunks_published;
+                    }
+                }
+            }
+        }
+
+        // ── What the tickets want and the map has not got ───────────────────
+        //
+        // This is the whole model in six lines: a chunk is generated because
+        // something asked for it to be loaded, not because a client is waiting
+        // for a packet. The two used to be the same thing, and that is why a
+        // chunk nobody had asked for yet was generated on this thread while a
+        // player watched.
+        //
+        // `wanted_chunks` comes back ordered by level, which is nearest-first
+        // without the map having to know where anybody is. The source refuses
+        // once its queue is full and the scan simply continues; next tick asks
+        // again, from where the player is then.
+        if (chunk_source) {
+            const std::scoped_lock lock{chunk_mutex};
+            chunks.wanted_chunks(wanted_scratch);
+            for (const ChunkPos pos : wanted_scratch) {
+                if (chunks.contains(pos)) {
+                    continue;
+                }
+                (void)chunk_source->request(pos);
+            }
+        }
+
+        // ── Chunks nothing wants any more ───────────────────────────────────
+        //
+        // Every five seconds rather than every tick: eviction walks the
+        // resident set, and a walk of a few thousand entries twenty times a
+        // second would be the new thing that eats the budget. A dirty chunk
+        // stays until the next save, because dropping it would throw away
+        // somebody's building.
+        if (clock.tick_count() % 100 == 0) {
+            const std::scoped_lock lock{chunk_mutex};
+            to_evict.clear();
+            chunks.for_each([&](ChunkPos pos, const world::Chunk&) {
+                if (chunks.is_wanted(pos)) {
+                    return;
+                }
+                const i64 key = chunk_key(pos.x, pos.z);
+                if (dirty_chunks.contains(key) || read_only_chunks.contains(key)) {
+                    return;
+                }
+                to_evict.push_back(pos);
+            });
+            for (const ChunkPos pos : to_evict) {
+                (void)chunks.evict(pos);
+            }
+            if (!to_evict.empty()) {
+                OV_LOG_DEBUG("unloaded {} chunks no ticket reaches, {} resident", to_evict.size(),
+                             chunks.resident());
+            }
+        }
 
         // Finish the digs the client claimed too early to be believed. Vanilla
         // keeps its own clock for those, and so do we: the block comes off on
@@ -3804,30 +3995,66 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 // server said so on every join. Eight a tick is 160 a second,
                 // so a view distance of 8 fills in under two seconds while the
                 // tick clock stays inside its 50 ms.
+                // Eight a tick is 160 a second, which fills a view distance of
+                // eight in under two seconds — when the chunks exist. The
+                // budget is unchanged; what changed is that a chunk which does
+                // not exist yet is **asked for and left in the queue** instead
+                // of generated here. Generating it here is what used to cost
+                // three hundred milliseconds and print "can't keep up".
                 constexpr usize kChunksPerTick = 8;
+                std::array<usize, kChunksPerTick> sent_at{};
                 for (auto& [key, player] : players) {
                     if (player.pending_chunks.empty() || !player.connection) {
                         continue;
                     }
-                    for (usize sent = 0; sent < kChunksPerTick && !player.pending_chunks.empty();
-                         ++sent) {
-                        const i64 chunk = player.pending_chunks.back();
-                        player.pending_chunks.pop_back();
+                    usize sent = 0;
+                    // Backwards: `pending_chunks` is sorted furthest-first, so
+                    // the back is what the player is standing on. Requests go
+                    // out in that order too, which is why the ground arrives
+                    // before the horizon.
+                    for (usize index = player.pending_chunks.size();
+                         index-- > 0 && sent < kChunksPerTick;) {
+                        const i64  chunk = player.pending_chunks[index];
+                        const auto cx    = static_cast<i32>(chunk >> 32);
+                        const auto cz    = static_cast<i32>(static_cast<u32>(chunk & 0xFFFFFFFF));
                         if (player.loaded_chunks.contains(chunk)) {
+                            sent_at[sent] = index;
+                            ++sent;
                             continue;
                         }
-                        const auto cx = static_cast<i32>(chunk >> 32);
-                        const auto cz = static_cast<i32>(static_cast<u32>(chunk & 0xFFFFFFFF));
+
                         std::vector<u8> payload;
                         {
-                            const std::scoped_lock chunks{chunk_mutex};
-                            payload = net::encode_chunk_data(chunk_at(cx, cz));
+                            const std::scoped_lock chunk_lock{chunk_mutex};
+                            world::Chunk*          ready = chunk_if_resident(cx, cz);
+                            if (ready == nullptr) {
+                                if (chunk_source) {
+                                    // Not here yet. The fill pass above has
+                                    // already asked for it; this loop's job is
+                                    // to send, not to generate.
+                                    continue;
+                                }
+                                // Superflat: a chunk costs microseconds, so
+                                // there is nothing to move off this thread.
+                                ready = &chunk_at(cx, cz);
+                            }
+                            payload = net::encode_chunk_data(*ready);
                         }
                         if (const auto framed =
                                 net::encode_packet(net::clientbound::kChunkDataAndLight, payload)) {
                             player.connection->send(*framed);
                         }
                         player.loaded_chunks.insert(chunk);
+                        sent_at[sent] = index;
+                        ++sent;
+                    }
+                    // Erase back to front so the earlier indices stay valid.
+                    // `sent_at` is filled in descending index order because the
+                    // scan runs backwards.
+                    for (usize i = 0; i < sent; ++i) {
+                        player.pending_chunks.erase(
+                            player.pending_chunks.begin() +
+                            static_cast<std::ptrdiff_t>(sent_at[i]));
                     }
                 }
 
@@ -3869,6 +4096,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             }
         }
 
+        tick_micros.push_back(std::chrono::duration_cast<std::chrono::microseconds>(
+                                  std::chrono::steady_clock::now() - tick_started)
+                                  .count());
+
         if (clock.is_behind()) {
             ++behind_events;
             OV_LOG_WARN(
@@ -3897,6 +4128,31 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
 
     listener->stop();
     network_thread.join();
+
+    if (!tick_micros.empty()) {
+        std::ranges::sort(tick_micros);
+        const auto at = [&](double quantile) {
+            const auto index = static_cast<usize>(quantile * static_cast<double>(
+                                                                 tick_micros.size() - 1));
+            return tick_micros[index];
+        };
+        usize over_budget = 0;
+        for (const i64 sample : tick_micros) {
+            over_budget += static_cast<usize>(sample > 50'000);
+        }
+        OV_LOG_INFO("tick time over {} ticks: p50 {} us, p90 {} us, p99 {} us, max {} us, "
+                    "{} over 50 ms",
+                    tick_micros.size(), at(0.50), at(0.90), at(0.99), tick_micros.back(),
+                    over_budget);
+    }
+
+    if (chunk_source) {
+        OV_LOG_INFO(
+            "chunk source: {} blocks generated ({} chunks), {} published, {} generated on the "
+            "tick thread",
+            chunk_source->blocks_done(), chunk_source->chunks_done(), chunks_published,
+            synchronous_generations);
+    }
 
     OV_LOG_INFO("stopped after {} ticks ({} overload events)", clock.tick_count(), behind_events);
     return 0;

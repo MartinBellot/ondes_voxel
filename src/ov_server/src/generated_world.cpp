@@ -12,6 +12,7 @@
 #include "ov/worldgen/pipeline.hpp"
 #include "ov/worldgen/surface_system.hpp"
 
+#include <memory>
 #include <optional>
 #include <unordered_map>
 #include <utility>
@@ -19,14 +20,25 @@
 
 namespace ov::server {
 
+/// One complete, self-contained worldgen stack.
+///
 /// Held in declaration order, because that is destruction order reversed and
 /// the generator must go before the router it points at.
-struct GeneratedWorld::Impl {
-    i64 seed{0};
-
-    worldgen::NoiseRouter   router;
-    worldgen::BiomeSource   biomes;
-    worldgen::SurfaceSystem surface;
+///
+/// There is one of these **per thread that generates**, and that is the whole
+/// of the concurrency design for worldgen. It is not a memory-for-simplicity
+/// trade made on taste: `NoiseRouter`'s interpolated density nodes and the
+/// surface system keep `mutable` memo caches (`src/ov_worldgen/src/density.cpp`
+/// and `surface_system.cpp`), so one router driven from two threads is a data
+/// race on an `unordered_map` — the kind that corrupts rather than the kind
+/// that returns a stale number. Making those caches per-thread would mean
+/// editing `src/ov_worldgen/`, which this work is not allowed to touch and
+/// which another line of work is editing at the same time. Whole stacks are
+/// the honest answer: nothing is shared, so nothing needs a lock.
+struct GeneratedWorld::Stack {
+    worldgen::NoiseRouter     router;
+    worldgen::BiomeSource     biomes;
+    worldgen::SurfaceSystem   surface;
     worldgen::FeatureRegistry features;
 
     /// Built *after* `features` is in its final home, never before.
@@ -44,15 +56,9 @@ struct GeneratedWorld::Impl {
     std::optional<worldgen::ChunkGenerator> generator;
     std::optional<worldgen::ChunkPipeline>  pipeline;
 
-    /// Block-registry biome index -> the id the chunk packet uses. Built once,
-    /// by name; see the header for why the two numberings are not assumed to
-    /// be the same one.
-    std::vector<u16> to_codec;
-
-    Impl(i64 world_seed, worldgen::NoiseRouter&& r, worldgen::BiomeSource&& b,
-         worldgen::SurfaceSystem&& s, worldgen::FeatureRegistry&& f)
-        : seed(world_seed),
-          router(std::move(r)),
+    Stack(i64 world_seed, worldgen::NoiseRouter&& r, worldgen::BiomeSource&& b,
+          worldgen::SurfaceSystem&& s, worldgen::FeatureRegistry&& f)
+        : router(std::move(r)),
           biomes(std::move(b)),
           surface(std::move(s)),
           features(std::move(f)),
@@ -60,17 +66,27 @@ struct GeneratedWorld::Impl {
           carvers{world_seed, carving} {}
 };
 
-GeneratedWorld::GeneratedWorld(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+struct GeneratedWorld::Impl {
+    i64 seed{0};
 
-GeneratedWorld::~GeneratedWorld() = default;
+    /// One per generating thread. `stacks[0]` belongs to whoever calls
+    /// `generate` directly — the tick thread's fallback path.
+    std::vector<std::unique_ptr<Stack>> stacks;
 
-std::unique_ptr<GeneratedWorld> GeneratedWorld::load(
-    const std::filesystem::path& data_root, const registry::BlockRegistry& blocks,
-    const registry::Registries& registries, std::span<const std::string_view> codec_biomes,
-    i64 seed) {
-    const auto data    = data_root / "vanilla" / "1.20.1" / "generated" / "data" / "minecraft";
-    const auto reports = data_root / "vanilla" / "1.20.1" / "generated";
+    /// Block-registry biome index -> the id the chunk packet uses. Built once,
+    /// by name; see the header for why the two numberings are not assumed to
+    /// be the same one. Immutable after `load`, which is what makes it the one
+    /// thing every stack may share.
+    std::vector<u16> to_codec;
+};
 
+namespace {
+
+/// Build one stack, or say which piece is missing.
+[[nodiscard]] std::unique_ptr<GeneratedWorld::Stack> build_stack(
+    const std::filesystem::path& data, const std::filesystem::path& reports,
+    const registry::BlockRegistry& blocks, const registry::Registries& registries, i64 seed,
+    bool quiet) {
     auto router = worldgen::NoiseRouter::load(data, "overworld", seed);
     if (!router) {
         OV_LOG_ERROR("worldgen: router: {} — run tools/ov_datagen first",
@@ -92,21 +108,22 @@ std::unique_ptr<GeneratedWorld> GeneratedWorld::load(
         OV_LOG_ERROR("worldgen: features: {}", worldgen::to_string(features.error()));
         return nullptr;
     }
-    auto impl = std::make_unique<Impl>(seed, std::move(*router), std::move(*biomes),
-                                       std::move(*surface), std::move(*features));
 
-    // From `impl->features` and `impl->biomes`, not from the locals that were
-    // just moved out of them: see the comment on Impl::decorator.
-    auto decorator = worldgen::Decorator::load(data, blocks, impl->features, impl->biomes);
+    auto stack = std::make_unique<GeneratedWorld::Stack>(
+        seed, std::move(*router), std::move(*biomes), std::move(*surface), std::move(*features));
+
+    // From `stack->features` and `stack->biomes`, not from the locals that were
+    // just moved out of them: see the comment on Stack::decorator.
+    auto decorator = worldgen::Decorator::load(data, blocks, stack->features, stack->biomes);
     if (!decorator) {
         OV_LOG_ERROR("worldgen: decorator: {}", worldgen::to_string(decorator.error()));
         return nullptr;
     }
-    impl->decorator = std::move(*decorator);
+    stack->decorator = std::move(*decorator);
 
-    impl->generator.emplace(impl->router, impl->biomes, blocks);
-    impl->generator->set_surface_system(&impl->surface);
-    if (auto attached = impl->generator->set_carvers(&impl->carvers, registries); !attached) {
+    stack->generator.emplace(stack->router, stack->biomes, blocks);
+    stack->generator->set_surface_system(&stack->surface);
+    if (auto attached = stack->generator->set_carvers(&stack->carvers, registries); !attached) {
         // Refused rather than carried on without: carving without the tag
         // leaves a crust of dirt over every cave, and a world that looks nearly
         // right is worse than one that refuses to start.
@@ -114,8 +131,37 @@ std::unique_ptr<GeneratedWorld> GeneratedWorld::load(
         return nullptr;
     }
 
-    impl->pipeline.emplace(*impl->generator, &*impl->decorator, blocks,
-                           world::WorldShape::overworld(), seed);
+    stack->pipeline.emplace(*stack->generator, &*stack->decorator, blocks,
+                            world::WorldShape::overworld(), seed);
+    (void)quiet;
+    return stack;
+}
+
+}  // namespace
+
+GeneratedWorld::GeneratedWorld(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+
+GeneratedWorld::~GeneratedWorld() = default;
+
+std::unique_ptr<GeneratedWorld> GeneratedWorld::load(
+    const std::filesystem::path& data_root, const registry::BlockRegistry& blocks,
+    const registry::Registries& registries, std::span<const std::string_view> codec_biomes,
+    i64 seed, usize stacks) {
+    const auto data    = data_root / "vanilla" / "1.20.1" / "generated" / "data" / "minecraft";
+    const auto reports = data_root / "vanilla" / "1.20.1" / "generated";
+
+    auto impl  = std::make_unique<Impl>();
+    impl->seed = seed;
+
+    const usize wanted = stacks == 0 ? usize{1} : stacks;
+    impl->stacks.reserve(wanted);
+    for (usize index = 0; index < wanted; ++index) {
+        auto stack = build_stack(data, reports, blocks, registries, seed, index != 0);
+        if (!stack) {
+            return nullptr;
+        }
+        impl->stacks.push_back(std::move(stack));
+    }
 
     // The two numberings, reconciled by name rather than assumed equal.
     std::unordered_map<std::string_view, u16> by_name;
@@ -144,17 +190,16 @@ std::unique_ptr<GeneratedWorld> GeneratedWorld::load(
         return nullptr;
     }
 
-    OV_LOG_INFO("worldgen: overworld ready at seed {} — noise, biomes, surface, carvers, features",
-                seed);
+    OV_LOG_INFO(
+        "worldgen: overworld ready at seed {} — noise, biomes, surface, carvers, features; "
+        "{} independent stacks",
+        seed, impl->stacks.size());
     return std::unique_ptr<GeneratedWorld>(new GeneratedWorld(std::move(impl)));
 }
 
-world::Chunk GeneratedWorld::generate(i32 chunk_x, i32 chunk_z) {
-    // `take` rather than a copy: `Full` means all eight neighbours have run
-    // their features, so nothing can write into this chunk again and the
-    // pipeline has no reason to keep it. The server's own cache owns it now.
-    world::Chunk chunk = impl_->pipeline->take(chunk_x, chunk_z);
+usize GeneratedWorld::stack_count() const noexcept { return impl_->stacks.size(); }
 
+void GeneratedWorld::to_codec_biomes(world::Chunk& chunk) const {
     // Biome indices out of the block registry, translated into the ids the
     // chunk packet carries. 1536 cells a chunk, once, against a world that
     // would otherwise be painted in another world's colours.
@@ -169,14 +214,59 @@ world::Chunk GeneratedWorld::generate(i32 chunk_x, i32 chunk_z) {
             }
         }
     }
+}
+
+world::Chunk GeneratedWorld::generate(i32 chunk_x, i32 chunk_z) {
+    Stack& stack = *impl_->stacks.front();
+
+    // `take` rather than a copy: `Full` means all eight neighbours have run
+    // their features, so nothing can write into this chunk again and the
+    // pipeline has no reason to keep it. The server's own cache owns it now.
+    world::Chunk chunk = stack.pipeline->take(chunk_x, chunk_z);
+    to_codec_biomes(chunk);
+
     // Bound what the pipeline holds. Eight chunks is more than the two the
     // feature stage's radius needs, so an ordinary streaming pattern — chunk
     // after neighbouring chunk — keeps its support and pays nothing; a jump
     // across the world drops a cache that was about to be useless anyway.
     constexpr i32 kKeep = 8;
-    impl_->pipeline->trim(chunk_x, chunk_z, kKeep);
+    stack.pipeline->trim(chunk_x, chunk_z, kKeep);
 
     return chunk;
+}
+
+void GeneratedWorld::generate_square(usize stack_index, i32 origin_x, i32 origin_z, i32 side,
+                                     std::vector<std::pair<ChunkPos, world::Chunk>>& out) {
+    Stack& stack = *impl_->stacks[stack_index];
+
+    // The cold start is the determinism. `ChunkPipeline::promote` decorates a
+    // chunk's eight neighbours on the way to `Full` and skips any that have
+    // already been decorated, so what a chunk ends up containing depends on
+    // what the pipeline was asked for before. Clearing here — and again at the
+    // end — makes this square a pure function of the seed and its origin, which
+    // is what lets N workers produce the world one worker would have.
+    stack.pipeline->clear();
+
+    // Two passes, and the order of the first one is part of the contract.
+    // Promoting every chunk before taking any means no chunk is ever removed
+    // and then rebuilt as somebody else's neighbour, which would decorate it a
+    // second time into a fresh copy.
+    for (i32 dz = 0; dz < side; ++dz) {
+        for (i32 dx = 0; dx < side; ++dx) {
+            (void)stack.pipeline->promote(origin_x + dx, origin_z + dz, worldgen::ChunkStatus::Full);
+        }
+    }
+    for (i32 dz = 0; dz < side; ++dz) {
+        for (i32 dx = 0; dx < side; ++dx) {
+            const i32    x     = origin_x + dx;
+            const i32    z     = origin_z + dz;
+            world::Chunk chunk = stack.pipeline->take(x, z);
+            to_codec_biomes(chunk);
+            out.emplace_back(ChunkPos{x, z}, std::move(chunk));
+        }
+    }
+
+    stack.pipeline->clear();
 }
 
 i64 GeneratedWorld::seed() const noexcept { return impl_->seed; }
