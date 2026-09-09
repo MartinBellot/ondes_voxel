@@ -220,8 +220,14 @@ class Bot(Probe):
 
     def dig(self, x: int, y: int, z: int, status: int, sequence: int) -> None:
         packed = ((x & 0x3FFFFFF) << 38) | ((z & 0x3FFFFFF) << 12) | (y & 0xFFF)
+        # Packed as **unsigned**. The three fields are already two's-complement
+        # bit patterns, so the assembled word routinely has its top bit set —
+        # and struct's signed 'q' refuses it rather than wrapping. That refusal
+        # is why every mining and block-breaking measurement came back zero: the
+        # bot stood at a negative x and never sent a dig packet at all.
         self.send(SB_PLAYER_ACTION,
-                  varint(status) + struct.pack(">q", packed) + bytes([1]) + varint(sequence))
+                  varint(status) + struct.pack(">Q", packed & 0xFFFFFFFFFFFFFFFF) +
+                  bytes([1]) + varint(sequence))
 
     def respawn(self) -> None:
         self.send(SB_CLIENT_COMMAND, varint(0))
@@ -790,45 +796,27 @@ def campaign_always_edible(server: Server, bot: Bot, foods: list[str]) -> dict:
             bot.pump(2.0)
             server.batch([f"gamemode survival {BOT}"])
 
-        # Spend the pool and nothing else — and stop *exactly* when it is empty.
-        #
-        # The first version polled every 0.3 s at amplifier 255, which charges
-        # 1.28 exhaustion a tick: six ticks is two whole points, so it sailed
-        # past zero saturation and took the bar down to 19 with it. Seventeen of
-        # the forty foods came back "could not reach a full bar", golden apple
-        # and chorus fruit among them — which are exactly the ones this campaign
-        # exists to classify.
-        #
-        # So the last stretch runs at amplifier 15, which charges 0.08 a tick:
-        # a fifth of a second is 0.016 of a point, and the bar cannot move.
-        for _ in range(60):
-            fill_food(server, bot)
-            for _ in range(40):
-                now = read_player(server)
-                saturation = now["saturation"]
-                food = now["food"]
-                if saturation is None or food is None:
-                    break
-                if saturation <= 0.0:
-                    break
-                if food < 20:
-                    # Overshot anyway. Refill and try again rather than
-                    # reporting a measurement taken in the wrong state.
-                    saturation = None
-                    break
-                amplifier = 255 if saturation > 3.0 else 15
-                server.batch([f"effect give {BOT} minecraft:hunger 2 {amplifier} true"])
-                bot.pump(0.3 if amplifier == 255 else 0.2)
-            server.batch([f"effect clear {BOT}"])
-            bot.pump(0.2)
-            before = read_player(server)
+        # A full bar with room left in the pool. Not an empty pool: the hunger
+        # effect removes saturation by wrapping exhaustion, and the wrap that
+        # takes the last point of saturation is followed immediately by one that
+        # takes a point of food. (20, 0) is not a state this instrument can
+        # hold, and asking for it cost three and a half hours of retries.
+        before = read_player(server)
+        for _ in range(40):
             if before["food"] is not None and int(before["food"]) >= 20 and \
-                    (before["saturation"] or 0.0) <= 0.0:
+                    0.0 < (before["saturation"] or 0.0) <= 8.0:
                 break
+            if before["food"] is None or int(before["food"]) < 20 or \
+                    (before["saturation"] or 0.0) <= 0.0:
+                fill_food(server, bot)
+            else:
+                server.batch([f"effect give {BOT} minecraft:hunger 2 255 true"])
+                bot.pump(0.3)
+                server.batch([f"effect clear {BOT}"])
+            before = read_player(server)
         if before["food"] is None or int(before["food"]) < 20 or \
-                (before["saturation"] or 0.0) > 0.0:
-            out[item] = {"inconclusive": f"could not reach a full bar with an empty pool; "
-                                         f"food {before['food']}, "
+                not 0.0 < (before["saturation"] or 0.0) <= 8.0:
+            out[item] = {"inconclusive": f"food {before['food']}, "
                                          f"saturation {before['saturation']}"}
             continue
         server.batch([f"clear {BOT}", f"give {BOT} {item} 1"])

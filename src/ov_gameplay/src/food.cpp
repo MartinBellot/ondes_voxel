@@ -21,7 +21,48 @@ namespace {
 // of fifteen and cooked porkchop came back as six instead of eight.
 //
 // See scripts/measure_survival.py and docs/provenance/survie.md.
-constexpr std::array<FoodValue, 0> kFoods{};
+constexpr std::array<FoodValue, 40> kFoods{{
+    {"minecraft:apple",                   4, 0.3F, false},
+    {"minecraft:mushroom_stew",           6, 0.6F, false},
+    {"minecraft:bread",                   5, 0.6F, false},
+    {"minecraft:porkchop",                3, 0.3F, false},
+    {"minecraft:cooked_porkchop",         8, 0.8F, false},
+    {"minecraft:golden_apple",            4, 1.2F, false},
+    {"minecraft:enchanted_golden_apple",  4, 1.2F, false},
+    {"minecraft:cod",                     2, 0.1F, false},
+    {"minecraft:salmon",                  2, 0.1F, false},
+    {"minecraft:tropical_fish",           1, 0.1F, false},
+    {"minecraft:pufferfish",              1, 0.1F, false},
+    {"minecraft:cooked_cod",              5, 0.6F, false},
+    {"minecraft:cooked_salmon",           6, 0.8F, false},
+    {"minecraft:cookie",                  2, 0.1F, false},
+    {"minecraft:melon_slice",             2, 0.3F, false},
+    {"minecraft:dried_kelp",              1, 0.3F, false},
+    {"minecraft:beef",                    3, 0.3F, false},
+    {"minecraft:cooked_beef",             8, 0.8F, false},
+    {"minecraft:chicken",                 2, 0.3F, false},
+    {"minecraft:cooked_chicken",          6, 0.6F, false},
+    {"minecraft:rotten_flesh",            4, 0.1F, false},
+    {"minecraft:spider_eye",              2, 0.8F, false},
+    {"minecraft:carrot",                  3, 0.6F, false},
+    {"minecraft:potato",                  1, 0.3F, false},
+    {"minecraft:baked_potato",            5, 0.6F, false},
+    {"minecraft:poisonous_potato",        2, 0.3F, false},
+    {"minecraft:golden_carrot",           6, 1.2F, false},
+    {"minecraft:pumpkin_pie",             8, 0.3F, false},
+    {"minecraft:rabbit",                  3, 0.3F, false},
+    {"minecraft:cooked_rabbit",           5, 0.6F, false},
+    {"minecraft:rabbit_stew",            10, 0.6F, false},
+    {"minecraft:mutton",                  2, 0.3F, false},
+    {"minecraft:cooked_mutton",           6, 0.8F, false},
+    {"minecraft:chorus_fruit",            4, 0.3F, false},
+    {"minecraft:beetroot",                1, 0.6F, false},
+    {"minecraft:beetroot_soup",           6, 0.6F, false},
+    {"minecraft:suspicious_stew",         6, 0.6F, false},
+    {"minecraft:sweet_berries",           2, 0.1F, false},
+    {"minecraft:glow_berries",            2, 0.1F, false},
+    {"minecraft:honey_bottle",            6, 0.1F, false},
+}};
 
 }  // namespace
 
