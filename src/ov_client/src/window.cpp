@@ -20,7 +20,7 @@ struct Binding {
     int glfw_code;
 };
 
-constexpr std::array<Binding, 9> kBindings{{
+constexpr std::array<Binding, 11> kBindings{{
     {Key::Forward, GLFW_KEY_W},
     {Key::Back, GLFW_KEY_S},
     {Key::Left, GLFW_KEY_A},
@@ -30,7 +30,14 @@ constexpr std::array<Binding, 9> kBindings{{
     {Key::Sprint, GLFW_KEY_LEFT_CONTROL},
     {Key::Escape, GLFW_KEY_ESCAPE},
     {Key::Reload, GLFW_KEY_F3},
+    {Key::Inventory, GLFW_KEY_E},
+    {Key::Drop, GLFW_KEY_Q},
 }};
+
+/// The number row, in hotbar order.
+constexpr std::array<int, 9> kHotbarKeys{GLFW_KEY_1, GLFW_KEY_2, GLFW_KEY_3,
+                                         GLFW_KEY_4, GLFW_KEY_5, GLFW_KEY_6,
+                                         GLFW_KEY_7, GLFW_KEY_8, GLFW_KEY_9};
 
 /// GLFW is a process-wide library with a global init count. It is initialised
 /// once and terminated when the last window goes, which keeps the "no mutable
@@ -58,7 +65,19 @@ struct Window::Impl {
     std::array<bool, static_cast<usize>(Key::Count)> previous{};
     bool                                             previous_attack{false};
     bool                                             previous_use{false};
+    bool                                             previous_middle{false};
+    std::array<bool, 9>                              previous_hotbar{};
+    /// Accumulated by the scroll callback and drained by poll(). A wheel notch
+    /// arrives as an event, not as a state, so polling it would lose it.
+    f64 scroll{0.0};
 };
+
+void scroll_callback(GLFWwindow* window, double /*x*/, double y) {
+    auto* impl = static_cast<Window::Impl*>(glfwGetWindowUserPointer(window));
+    if (impl != nullptr) {
+        impl->scroll += y;
+    }
+}
 
 Window::Window() : impl_(std::make_unique<Impl>()) {}
 
@@ -96,6 +115,7 @@ std::expected<std::unique_ptr<Window>, WindowError> Window::create(u32 width, u3
     ++g_window_count;
 
     glfwSetWindowUserPointer(self->impl_->window, self->impl_.get());
+    glfwSetScrollCallback(self->impl_->window, scroll_callback);
     return self;
 }
 
@@ -127,6 +147,18 @@ const InputState& Window::poll() {
     // Polled rather than taken from a callback, like the keys: one place that
     // reads the whole input state, and no edge that can arrive between frames
     // and be lost.
+    input.hotbar_pressed = -1;
+    for (usize i = 0; i < kHotbarKeys.size(); ++i) {
+        const bool down = glfwGetKey(impl_->window, kHotbarKeys[i]) == GLFW_PRESS;
+        if (down && !impl_->previous_hotbar[i]) {
+            input.hotbar_pressed = static_cast<i32>(i);
+        }
+        impl_->previous_hotbar[i] = down;
+    }
+    input.shift_held =
+        glfwGetKey(impl_->window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
+        glfwGetKey(impl_->window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
+
     const bool attack     = glfwGetMouseButton(impl_->window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
     const bool use        = glfwGetMouseButton(impl_->window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
     input.attack_held     = attack;
@@ -135,6 +167,13 @@ const InputState& Window::poll() {
     input.use_pressed     = use && !impl_->previous_use;
     impl_->previous_attack = attack;
     impl_->previous_use    = use;
+
+    const bool middle = glfwGetMouseButton(impl_->window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS;
+    input.middle_pressed    = middle && !impl_->previous_middle;
+    impl_->previous_middle  = middle;
+
+    input.scroll  = impl_->scroll;
+    impl_->scroll = 0.0;
 
     f64 x = 0.0;
     f64 y = 0.0;
@@ -148,6 +187,20 @@ const InputState& Window::poll() {
     // teleports the view by however far the pointer travelled across the desk.
     input.mouse_delta_x = impl_->captured ? x - impl_->last_mouse_x : 0.0;
     input.mouse_delta_y = impl_->captured ? y - impl_->last_mouse_y : 0.0;
+    // In *framebuffer* pixels, not window ones. They differ by the display
+    // scale on a Retina screen, and hit-testing a slot in window pixels on a
+    // 2x display misses every slot by half the window.
+    int window_width  = 0;
+    int window_height = 0;
+    glfwGetWindowSize(impl_->window, &window_width, &window_height);
+    const f64 scale_x = window_width > 0 ? static_cast<f64>(framebuffer_width()) /
+                                               static_cast<f64>(window_width)
+                                         : 1.0;
+    const f64 scale_y = window_height > 0 ? static_cast<f64>(framebuffer_height()) /
+                                                static_cast<f64>(window_height)
+                                          : 1.0;
+    input.mouse_x = x * scale_x;
+    input.mouse_y = y * scale_y;
     impl_->last_mouse_x = x;
     impl_->last_mouse_y = y;
 

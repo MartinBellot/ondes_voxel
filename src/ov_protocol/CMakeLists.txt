@@ -6,6 +6,7 @@
 ov_add_library(ov_protocol
     LAYER 7
     SOURCES
+        src/client_play.cpp
         src/entity.cpp
         src/framing.cpp
         src/listener.cpp
@@ -30,6 +31,7 @@ ov_add_library(ov_protocol
 ov_add_test(test_ov_protocol
     SOURCES
         tests/test_chunk_roundtrip.cpp
+        tests/test_client_play.cpp
         tests/test_entities.cpp
         tests/test_entity_packets.cpp
         tests/test_framing.cpp

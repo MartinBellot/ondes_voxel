@@ -23,6 +23,7 @@
 
 #include "ov/base/types.hpp"
 #include "ov/math/vec.hpp"
+#include "ov/protocol/client_play.hpp"
 #include "ov/registry/block_states.hpp"
 #include "ov/world/chunk.hpp"
 
@@ -88,8 +89,37 @@ struct ClientEvents {
     /// The world's clock, when it was sent this poll.
     std::optional<i64> time_of_day;
 
+    // ── What an interface needs ─────────────────────────────────────────────
+    //
+    // Everything below is here because a client that draws a HUD has to be
+    // told these, and a client that only draws terrain never asked. The server
+    // has been sending them all along.
+
+    /// Set Health. The hearts, the haunches, and the death screen.
+    std::optional<net::HealthUpdate> health;
+
+    /// Set Experience. The bar and the level over the hotbar.
+    std::optional<net::ExperienceUpdate> experience;
+
+    /// Set Container Content, in arrival order. A vector rather than an
+    /// optional: opening a chest sends the chest's window and the player's in
+    /// the same breath, and keeping only the last loses the hotbar.
+    std::vector<net::ContainerContent> containers;
+
+    /// Set Container Slot, in arrival order. Order matters — two updates to
+    /// one slot must be applied in the order the server sent them.
+    std::vector<net::ContainerSlotUpdate> container_slots;
+
+    /// Open Screen: the server is putting a window in front of the player.
+    std::optional<net::OpenScreen> open_screen;
+
+    /// Close Container, clientbound: the server is taking it away.
+    std::optional<u8> close_window;
+
     [[nodiscard]] bool empty() const noexcept {
-        return loaded.empty() && unloaded.empty() && changed.empty() && !teleport && !time_of_day;
+        return loaded.empty() && unloaded.empty() && changed.empty() && !teleport &&
+               !time_of_day && !health && !experience && containers.empty() &&
+               container_slots.empty() && !open_screen && !close_window;
     }
     void clear();
 };
@@ -135,6 +165,23 @@ public:
     /// hotbar is slots 36 to 44 and not 0 to 8, which is the mistake this
     /// comment exists to stop.
     void send_creative_slot(i16 slot, i32 item_id, i8 count);
+
+    /// Click inside an open window, in the protocol's own terms.
+    ///
+    /// The server is authoritative: nothing moves here until it says so, and
+    /// what it says arrives as a Set Container Slot or a whole new content.
+    /// `carried` is what the client believes the cursor holds — the server
+    /// ignores it, but vanilla sends it and so do we.
+    ///
+    /// `state_id` must be the last one the server sent for this window. A
+    /// stale one makes a vanilla server resynchronise the whole window, which
+    /// is not an error but does undo the click.
+    void send_container_click(u8 window_id, i32 state_id, i16 slot, i8 button, i32 mode,
+                              const net::ItemStack& carried);
+
+    /// Tell the server the window is closed. Not optional: a server that still
+    /// believes a container is open refuses the next one.
+    void send_close_container(u8 window_id);
 
 private:
     struct Impl;

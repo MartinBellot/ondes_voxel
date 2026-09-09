@@ -30,14 +30,18 @@ ov_add_library(ov_render
         src/block_models.cpp
         src/camera.cpp
         src/environment.cpp
+        src/font.cpp
         src/chunk_mesher.cpp
         src/frustum.cpp
+        src/item_model.cpp
         src/block_state_model.cpp
         src/json.cpp
+        src/language.cpp
         src/mesher.cpp
         src/model.cpp
         src/png.cpp
         src/terrain_vertex.cpp
+        src/texture_image.cpp
         src/vertex_arena.cpp
     DEPS
         ov_io
@@ -60,6 +64,7 @@ ov_add_test(test_ov_render
         tests/test_block_state_model.cpp
         tests/test_camera.cpp
         tests/test_environment.cpp
+        tests/test_font.cpp
         tests/test_chunk_mesher.cpp
         tests/test_frustum.cpp
         tests/test_mesher.cpp

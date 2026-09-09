@@ -4,8 +4,10 @@
 
 #include "ov/base/log.hpp"
 #include "ov/io/byte_writer.hpp"
+#include "ov/protocol/client_play.hpp"
 #include "ov/protocol/framing.hpp"
 #include "ov/protocol/play.hpp"
+#include "ov/protocol/survival.hpp"
 #include "ov/protocol/types.hpp"
 #include "ov/protocol/varint.hpp"
 #include "ov/world/chunk_storage.hpp"
@@ -50,6 +52,12 @@ void ClientEvents::clear() {
     changed.clear();
     teleport.reset();
     time_of_day.reset();
+    health.reset();
+    experience.reset();
+    containers.clear();
+    container_slots.clear();
+    open_screen.reset();
+    close_window.reset();
 }
 
 struct Client::Impl {
@@ -269,6 +277,73 @@ void Client::Impl::handle_play(i32 packet_id, std::span<const u8> body) {
             break;
         }
 
+        // ── What the interface reads ────────────────────────────────────
+        //
+        // Five packets the server has been sending since survival landed and
+        // nothing on this side was listening to. Each is parsed by
+        // ov/protocol/client_play.hpp, which is round-trip tested against the
+        // encoder the server writes them with.
+
+        case net::clientbound::kSetHealth: {
+            const auto health = net::parse_set_health(body);
+            if (!health) {
+                return;
+            }
+            const std::lock_guard lock(mutex);
+            inbox.health = *health;
+            break;
+        }
+
+        case net::clientbound::kSetExperience: {
+            const auto experience = net::parse_set_experience(body);
+            if (!experience) {
+                return;
+            }
+            const std::lock_guard lock(mutex);
+            inbox.experience = *experience;
+            break;
+        }
+
+        case net::clientbound::kContainerContent: {
+            auto content = net::parse_container_content(body);
+            if (!content) {
+                return;
+            }
+            const std::lock_guard lock(mutex);
+            inbox.containers.push_back(std::move(*content));
+            break;
+        }
+
+        case net::clientbound::kContainerSlot: {
+            auto slot = net::parse_container_slot(body);
+            if (!slot) {
+                return;
+            }
+            const std::lock_guard lock(mutex);
+            inbox.container_slots.push_back(std::move(*slot));
+            break;
+        }
+
+        case net::clientbound::kOpenScreen: {
+            auto screen = net::parse_open_screen(body);
+            if (!screen) {
+                return;
+            }
+            const std::lock_guard lock(mutex);
+            inbox.open_screen = std::move(*screen);
+            break;
+        }
+
+        case net::clientbound::kCloseContainer: {
+            const auto window = net::parse_clientbound_close_container(body);
+            if (!window) {
+                return;
+            }
+            const std::lock_guard lock(mutex);
+            inbox.close_window = *window;
+            break;
+        }
+
         case net::clientbound::kDisconnect: {
             auto text = net::read_string(reader);
             fail(text ? *text : "disconnected");
@@ -404,6 +479,16 @@ void Client::poll(ClientEvents& out) {
     out.time_of_day = impl_->inbox.time_of_day;
     impl_->inbox.teleport.reset();
     impl_->inbox.time_of_day.reset();
+    out.containers.swap(impl_->inbox.containers);
+    out.container_slots.swap(impl_->inbox.container_slots);
+    out.health      = impl_->inbox.health;
+    out.experience  = impl_->inbox.experience;
+    out.open_screen = std::move(impl_->inbox.open_screen);
+    out.close_window = impl_->inbox.close_window;
+    impl_->inbox.health.reset();
+    impl_->inbox.experience.reset();
+    impl_->inbox.open_screen.reset();
+    impl_->inbox.close_window.reset();
 }
 
 bool Client::in_game() const noexcept {
@@ -463,6 +548,22 @@ void Client::send_creative_slot(i16 slot, i32 item_id, i8 count) {
         writer.write_u8(static_cast<u8>(count));
     }
     impl_->send_raw(net::serverbound::kSetCreativeSlot, writer.data());
+}
+
+void Client::send_container_click(u8 window_id, i32 state_id, i16 slot, i8 button, i32 mode,
+                                 const net::ItemStack& carried) {
+    // The changed-slot array is sent empty. A vanilla server reads it and
+    // ignores it, ours reads past it, and filling it would mean predicting the
+    // result of a click the server has not applied yet — which is the one
+    // thing an authoritative window must not do.
+    impl_->send_raw(net::serverbound::kClickContainer,
+                    net::encode_container_click(window_id, state_id, slot, button, mode, {},
+                                                carried));
+}
+
+void Client::send_close_container(u8 window_id) {
+    impl_->send_raw(net::serverbound::kCloseContainer,
+                    net::encode_serverbound_close_container(window_id));
 }
 
 void Client::send_held_slot(i16 slot) {
