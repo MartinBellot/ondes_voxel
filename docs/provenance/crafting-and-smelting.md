@@ -157,7 +157,7 @@ quoi que ce soit avec une poignée de bâtons donnés un par un.
 
 ---
 
-## 5. L'oracle d'appariement
+## 5. L'oracle d'appariement — 2885 grilles, 2885 identiques
 
 `scripts/measure_crafting.py` fait remplir des grilles à un vrai serveur et lit
 sa réponse. La technique :
@@ -182,6 +182,41 @@ La sortie est convertie par `scripts/check_crafting.py` en une table plate que
 lit `test_crafting_parity`, dans `ov_gameplay` : le test C++ n'a pas
 d'analyseur JSON et n'en a pas besoin.
 
+**Le chiffre : 2885 grilles posées sur le vrai serveur, 2885 verdicts
+identiques au nôtre.** 2533 grilles façonnées (chaque recette dans chaque
+position où son motif tient, et son miroir), 232 informes mélangées, 120
+aléatoires. 2766 donnent un résultat, 119 n'en donnent aucun — dont 119 des 120
+aléatoires, la cent-vingtième tombant par hasard sur une recette réelle.
+
+### Le piège du curseur
+
+Un clic ordinaire sur la case de sortie met le résultat **sur le curseur**. Le
+jeter n'est pas le mode 4 mais le **mode 0 sur la case -999** ; le mode 4 sur
+-999 ne fait rien, et ne le dit pas. La première campagne de restes a donc
+gardé le premier objet fabriqué en main, et le jeu a refusé toutes les
+fabrications suivantes — silencieusement. Résultat lu : « aucun objet ne laisse
+de reste ». La sonde emploie maintenant un shift-clic, qui envoie le résultat
+dans l'inventaire et ne touche pas au curseur.
+
+Deux corollaires, appris de la même façon : vider la barre d'action **avant**
+l'échange (sinon l'objet fabriqué y retourne dans la grille), et vider aussi
+l'inventaire du joueur entre deux recettes (un inventaire plein fait refuser le
+shift-clic, silencieusement encore).
+
+### Trois restes, et ce sont les trois
+
+`milk_bucket` et `lava_bucket` rendent un `bucket`, `honey_bottle` rend un
+`glass_bottle`. Rien d'autre, sur les 822 recettes de fabrication et les 248
+combustibles.
+
+### Le piège de la mémoire
+
+Sur une machine qui compile en même temps, macOS tue la JVM en cours de
+campagne et ne le dit nulle part : le journal du serveur s'arrête au milieu
+d'une ligne et la sonde reçoit une fin de flux. Trois passes ont été perdues
+ainsi avant que le banc n'apprenne à se remonter et à reprendre aux recettes
+qu'il n'avait pas faites. Le tas de la JVM est aussi descendu à 768 Mo.
+
 ### Le piège du NBT dans une case
 
 La sonde doit sauter le NBT d'une pile en entier. S'arrêter au premier octet
@@ -197,24 +232,63 @@ effectivement conclu que le seau de lave ne rendait rien.
 
 ---
 
-## 6. Les identifiants de paquets
+## 6. Les identifiants de paquets — relevés, pas recopiés
 
-Ils ne sont pas recopiés d'une table. `scripts/capture_recipe_packets.py` se
-connecte à un vrai serveur 1.20.1, ouvre un four et note ce qui arrive.
+`scripts/capture_recipe_packets.py` se connecte à un vrai serveur 1.20.1, ouvre
+un four, déverrouille les recettes, et note ce qui arrive.
 
-`Update Recipes` est identifié comme le plus gros paquet de la session, puis
-**relu champ par champ** : un ordre de champs faux ne rate pas doucement, il
-désynchronise à la première recette et le décodage n'atteint jamais la fin du
-paquet avec le bon compte. Terminer pile sur la fin après 1174 recettes est la
-preuve que la disposition écrite par `src/ov_protocol/src/recipe_packets.cpp`
-est la bonne.
+| Paquet | Identifiant | Comment il a été établi |
+|---|---|---|
+| Update Recipes | **0x6D** | le plus gros paquet de la session (136 056 octets), relu champ par champ |
+| Update Recipe Book | **0x3D** | provoqué par `recipe give`, puis relu |
+| Set Container Property | **0x13** | 161 exemplaires de cinq octets pendant qu'un four brûle |
+| Open Screen | 0x30 | confirme la constante déjà présente |
+
+`Update Recipes` est **relu champ par champ** : un ordre de champs faux ne rate
+pas doucement, il désynchronise à la première recette et le décodage n'atteint
+jamais la fin du paquet. Il s'est arrêté **pile sur l'octet 136 056 après 1174
+recettes**, ce qui est la preuve que la disposition écrite par
+`src/ov_protocol/src/recipe_packets.cpp` est la bonne.
 
 Un détail contre-intuitif de ce paquet : le **type** vient avant l'identifiant,
 et non l'inverse. Le client lit le type pour savoir quel lecteur employer.
 
+### Le piège de 0x3B
+
+`Update Recipe Book` avait d'abord été écrit à `0x3B`, de mémoire. Il vaut
+`0x3D`. Il n'arrive pas à la connexion d'un joueur neuf — son livre est vide et
+le serveur n'a rien à annoncer — donc il ne se trouve pas en écoutant une
+connexion : il faut le provoquer. Une fois provoqué, il se décode exactement,
+avec **1159 recettes déverrouillées sur 1174** : le vrai serveur en retient
+quinze, celles qu'un livre ne sait pas poser.
+
+Ce serveur en retient trente — les quatorze spéciales et les seize
+`smithing_trim` — c'est-à-dire un **sous-ensemble** de la liste vanilla et non
+un sur-ensemble. Dire à un client de ranger dans son livre une recette qu'il ne
+sait pas classer est une façon de le faire tomber ; lui en envoyer moins n'en
+est pas une.
+
 ---
 
-## 7. Ce qui n'est pas fait
+## 7. Le test de bout en bout
+
+`scripts/check_workbench_e2e.py` sert une copie du banc (`run/lab`, parcelle
+« workbenches », x 0 z 160) avec notre propre serveur, y connecte une sonde qui
+parle le protocole 763 et rien d'autre, puis :
+
+1. ouvre l'établi de la parcelle ;
+2. y fabrique une pioche en bois, et vérifie que la grille s'est consommée ;
+3. fabrique un four avec huit pavés ;
+4. **pose ce four**, l'ouvre, y met du minerai de fer et du charbon ;
+5. voit les deux barres bouger — `Set Container Property` — et le lingot sortir ;
+6. le récupère au shift-clic et vérifie que la case de sortie se vide.
+
+Tout passe. La réserve à énoncer : ce n'est pas le client graphique, qui ne
+s'automatise pas ici. C'est un client qui envoie exactement les mêmes paquets,
+dans le même ordre ; ce que le test prouve, c'est que le serveur y répond
+correctement.
+
+## 8. Ce qui n'est pas fait
 
 Nommé plutôt que caché :
 
@@ -229,10 +303,12 @@ Nommé plutôt que caché :
   sont ci-dessus.
 * **Le placement automatique depuis le livre de recettes** (`Place Recipe`)
   n'est pas implémenté ; le déverrouillage l'est.
-* **Un four ne tourne que pendant que quelqu'un le regarde.** Ticker tous les
-  fours du monde demande une liste de bloc-entités à ticker, qui est un autre
-  chantier — et un four que personne n'a ouvert finirait sinon en silence sans
-  prévenir personne.
+* **Un four ne tourne que pendant que quelqu'un le regarde.** La file de ticks
+  de blocs arrivée avec les fluides (`ov_world/block_ticks.hpp`) porte des
+  positions, pas des bloc-entités ; brancher les fours dessus demande de leur
+  donner un état persistant côté monde, et c'est un chantier à part. En
+  attendant, un four que personne n'a ouvert ne cuit pas — dit ici plutôt que
+  découvert au retour.
 * **L'expérience** est accumulée et remise à zéro à la récupération, mais rien
   ne la matérialise : les orbes appartiennent à un autre jalon.
 * Le code de clic générique vit dans `src/ov_server/src/workbench.cpp`. Le

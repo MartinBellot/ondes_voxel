@@ -32,7 +32,13 @@ inline constexpr i32 kUpdateRecipes = 0x6D;
 
 /// Update Recipe Book — which recipes this player has unlocked, and which of
 /// the book's tabs are open.
-inline constexpr i32 kUpdateRecipeBook = 0x3B;
+///
+/// A fresh player never receives this one, because their book is empty and the
+/// server has nothing to announce — which is why the capture has to provoke it
+/// with `recipe give` before it can read the id off the wire. It is 0x3D, and
+/// the first guess written here was 0x3B: two away, and a client sent 0x3B
+/// would have been handed a recipe book where its own player list belongs.
+inline constexpr i32 kUpdateRecipeBook = 0x3D;
 }  // namespace clientbound
 
 /// One property of a window: 0..3 on a furnace are fuel left, fuel at ignition,

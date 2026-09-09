@@ -126,6 +126,32 @@ def decode_update_recipes(payload: bytes) -> dict:
             "exact": i == len(payload), "kinds": dict(kinds)}
 
 
+def decode_recipe_book(payload: bytes) -> dict:
+    """Relit Update Recipe Book, jusqu'au dernier octet.
+
+    Même critère que pour Update Recipes : un identifiant ou un ordre de champs
+    faux ne rate pas doucement, il laisse le décodage loin de la fin. Terminer
+    pile dessus, avec deux listes de noms de recettes plausibles, c'est la
+    preuve qu'on a bien le bon paquet et la bonne disposition.
+    """
+    action, i = read_varint(payload, 0)
+    flags = [payload[i + k] for k in range(8)]
+    i += 8
+    count, i = read_varint(payload, i)
+    names = []
+    for _ in range(count):
+        name, i = read_string(payload, i)
+        names.append(name)
+    highlighted = 0
+    if action == 0:
+        highlighted, i = read_varint(payload, i)
+        for _ in range(highlighted):
+            _name, i = read_string(payload, i)
+    return {"action": action, "flags": flags, "recipes": count,
+            "highlighted": highlighted, "first": names[:2],
+            "consumed": i, "bytes": len(payload), "exact": i == len(payload)}
+
+
 def main() -> int:
     out_path = Path(sys.argv[1]) if len(sys.argv) > 1 else NORMALIZED / "recipe_packets.json"
     expected = len(list(RECIPES.glob("*.json")))
@@ -165,17 +191,18 @@ def main() -> int:
         # Le nombre annoncé, pour vérification.
         count = None
         holder: list[bytes] = []
+        holders: dict[int, bytes] = {}
 
         def grab(pid: int, payload: bytes):
+            holders.setdefault(pid, payload)
             if pid == biggest:
                 holder.append(payload)
-                return True
             return None
 
         # Une seconde sonde, pour relire le paquet depuis le début.
         second = Miner(PORT, "Capture1")
-        deadline = time.monotonic() + 12.0
-        while not holder and time.monotonic() < deadline:
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
             second.pump(until=grab, timeout=0.1)
         if holder:
             count, _ = read_varint(holder[0], 0)
@@ -225,6 +252,39 @@ def main() -> int:
         before = time.monotonic()
         while time.monotonic() - before < 4.0:
             probe.pump(until=watch_property, timeout=0.1)
+
+        # ── Update Recipe Book ──────────────────────────────────────────────
+        #
+        # Il n'arrive pas à la connexion d'un joueur neuf : son livre est vide
+        # et le serveur n'a rien à annoncer. On le provoque donc — `recipe give`
+        # déverrouille, et le paquet qui suit est celui qu'on cherche. Il est
+        # ensuite relu champ par champ : un identifiant faux ne se décoderait
+        # pas jusqu'au dernier octet avec des noms de ressources dedans.
+        fresh: dict[int, bytes] = {}
+
+        def catch(pid: int, payload: bytes):
+            fresh.setdefault(pid, payload)
+            return None
+
+        probe.pump(until=catch, timeout=0.2)
+        fresh.clear()
+        server.batch(["recipe give Capture0 *"])
+        before = time.monotonic()
+        while time.monotonic() - before < 6.0:
+            probe.pump(until=catch, timeout=0.1)
+
+        book = None
+        for pid, payload in sorted(fresh.items(), key=lambda kv: -len(kv[1])):
+            try:
+                decoded = decode_recipe_book(payload)
+            except (IndexError, UnicodeDecodeError):
+                continue
+            if (decoded["exact"] and decoded["action"] in (0, 1, 2)
+                    and decoded["recipes"] > 0
+                    and all(n.startswith("minecraft:") for n in decoded["first"])):
+                book = {"id": pid, **decoded}
+                break
+        findings["update_recipe_book"] = book
 
         findings["open_screen"] = opened.get("open_screen")
         findings["window_id"] = window[0]

@@ -784,10 +784,18 @@ void send_recipe_book(const WorkbenchContext&                          context,
 
     send(net::clientbound::kUpdateRecipes, net::encode_update_recipes(wire));
 
+    // Only what this server can actually match. A real server unlocks 1159 of
+    // the 1174 — it leaves out the ones a book cannot place — and the fifteen
+    // it holds back are the special ones. Ours holds back those and the
+    // smithing trims too, which is a subset of vanilla's list rather than a
+    // superset: telling a client to put a recipe in its book that it cannot
+    // sort into a category is a way to crash it, and sending fewer is not.
     std::vector<std::string_view> names;
     names.reserve(book.size());
     for (gameplay::RecipeIndex index = 0; index < book.size(); ++index) {
-        names.push_back(book.name(index));
+        if (!book.declaration_only(index)) {
+            names.push_back(book.name(index));
+        }
     }
     net::RecipeBookState state;
     state.action  = 0;
