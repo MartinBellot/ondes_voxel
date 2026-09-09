@@ -6,16 +6,25 @@
 
 #include "ov/base/log.hpp"
 #include "ov/worldgen/ore_feature.hpp"
+#include "ov/worldgen/tree_feature.hpp"
+#include "ov/worldgen/vegetation_feature.hpp"
 
 #include <algorithm>
 #include <array>
 #include <map>
 #include <optional>
+#include <set>
 #include <unordered_map>
 
 namespace ov::worldgen {
 
 Feature::~Feature() = default;
+
+StateProvider::~StateProvider() = default;
+
+std::vector<registry::BlockStateId> StateProvider::possible_states() const {
+    return {};
+}
 
 std::expected<registry::BlockStateId, FeatureError> parse_block_state(
     Json node, const registry::BlockRegistry& blocks) {
@@ -65,22 +74,6 @@ namespace {
 
 // ── Block state providers ───────────────────────────────────────────────────
 
-/// Which state to write at a position. Only the two forms the features
-/// implemented here use; the rest are refused by name.
-class StateProvider {
-public:
-    StateProvider()                                = default;
-    StateProvider(const StateProvider&)            = delete;
-    StateProvider& operator=(const StateProvider&) = delete;
-    virtual ~StateProvider()                       = default;
-
-    [[nodiscard]] virtual registry::BlockStateId state(const FeatureLevel& level,
-                                                       FeatureRandom& random,
-                                                       BlockPos at) const = 0;
-};
-
-using StateProviderRef = std::shared_ptr<const StateProvider>;
-
 class SimpleState final : public StateProvider {
 public:
     explicit SimpleState(registry::BlockStateId state) : state_(state) {}
@@ -90,8 +83,131 @@ public:
         return state_;
     }
 
+    [[nodiscard]] std::vector<registry::BlockStateId> possible_states() const override {
+        return {state_};
+    }
+
 private:
     registry::BlockStateId state_;
+};
+
+/// One of a weighted list, by a single `nextInt(total weight)`.
+///
+/// The draw happens whatever the world looks like, and it happens before any
+/// survival test: a flower patch that lands on stone still spends it.
+class WeightedState final : public StateProvider {
+public:
+    explicit WeightedState(std::vector<std::pair<registry::BlockStateId, i32>> entries)
+        : entries_(std::move(entries)) {
+        for (const auto& [state, weight] : entries_) {
+            (void)state;
+            total_ += weight;
+        }
+    }
+
+    [[nodiscard]] registry::BlockStateId state(const FeatureLevel&, FeatureRandom& random,
+                                               BlockPos) const override {
+        i32 roll = random.next_int(total_);
+        for (const auto& [state, weight] : entries_) {
+            roll -= weight;
+            if (roll < 0) {
+                return state;
+            }
+        }
+        return entries_.back().first;
+    }
+
+    [[nodiscard]] std::vector<registry::BlockStateId> possible_states() const override {
+        std::vector<registry::BlockStateId> out;
+        out.reserve(entries_.size());
+        for (const auto& [state, weight] : entries_) {
+            (void)weight;
+            out.push_back(state);
+        }
+        return out;
+    }
+
+private:
+    std::vector<std::pair<registry::BlockStateId, i32>> entries_;
+    i32                                                 total_{0};
+};
+
+/// A source provider with one integer property re-rolled.
+///
+/// Two draws, and in this order: the source first, then the value. Reversing
+/// them is invisible in the block that comes out and wrong in everything the
+/// feature does afterwards.
+class RandomizedIntState final : public StateProvider {
+public:
+    RandomizedIntState(StateProviderRef source, std::string property, IntProviderRef values,
+                       const registry::BlockRegistry& blocks)
+        : source_(std::move(source)),
+          property_(std::move(property)),
+          values_(std::move(values)),
+          blocks_(&blocks) {}
+
+    [[nodiscard]] registry::BlockStateId state(const FeatureLevel& level, FeatureRandom& random,
+                                               BlockPos at) const override {
+        const auto base  = source_->state(level, random, at);
+        const auto value = values_->sample(random);
+        const auto block = blocks_->block_of(base);
+        const auto found = blocks_->find_property(block, property_);
+        if (!found) {
+            return base;
+        }
+        const auto text = std::to_string(value);
+        for (usize index = 0; index < found->values.size(); ++index) {
+            if (found->values[index] == text) {
+                return blocks_->with_property(base, *found, static_cast<u16>(index));
+            }
+        }
+        return base;
+    }
+
+    [[nodiscard]] std::vector<registry::BlockStateId> possible_states() const override {
+        return source_->possible_states();
+    }
+
+private:
+    StateProviderRef               source_;
+    std::string                    property_;
+    IntProviderRef                 values_;
+    const registry::BlockRegistry* blocks_;
+};
+
+/// A block with its pillar axis drawn: `nextInt(3)` into x, y, z.
+///
+/// The order of the axes is the seed. `Direction.Axis.VALUES` is x, y, z, and
+/// listing them any other way turns two thirds of a hay pile sideways.
+class RotatedBlockState final : public StateProvider {
+public:
+    RotatedBlockState(registry::BlockStateId state, const registry::BlockRegistry& blocks)
+        : state_(state), blocks_(&blocks) {}
+
+    [[nodiscard]] registry::BlockStateId state(const FeatureLevel&, FeatureRandom& random,
+                                               BlockPos) const override {
+        static constexpr std::array<std::string_view, 3> kAxes{"x", "y", "z"};
+        const auto axis  = kAxes[static_cast<usize>(random.next_int(3))];
+        const auto block = blocks_->block_of(state_);
+        const auto found = blocks_->find_property(block, "axis");
+        if (!found) {
+            return state_;
+        }
+        for (usize index = 0; index < found->values.size(); ++index) {
+            if (found->values[index] == axis) {
+                return blocks_->with_property(state_, *found, static_cast<u16>(index));
+            }
+        }
+        return state_;
+    }
+
+    [[nodiscard]] std::vector<registry::BlockStateId> possible_states() const override {
+        return {state_};
+    }
+
+private:
+    registry::BlockStateId         state_;
+    const registry::BlockRegistry* blocks_;
 };
 
 /// The first rule whose predicate holds, else the fallback.
@@ -115,12 +231,25 @@ public:
         return fallback_->state(level, random, at);
     }
 
+    [[nodiscard]] std::vector<registry::BlockStateId> possible_states() const override {
+        std::vector<registry::BlockStateId> out = fallback_->possible_states();
+        for (const auto& [test, provider] : rules_) {
+            (void)test;
+            for (const auto state : provider->possible_states()) {
+                out.push_back(state);
+            }
+        }
+        return out;
+    }
+
 private:
     std::vector<std::pair<BlockPredicateRef, StateProviderRef>> rules_;
     StateProviderRef                                            fallback_;
 };
 
-[[nodiscard]] std::expected<StateProviderRef, FeatureError> parse_state_provider(
+}  // namespace
+
+std::expected<StateProviderRef, FeatureError> parse_state_provider(
     Json node, const registry::BlockRegistry& blocks, const BlockTags& tags) {
     std::string_view type;
     if (node.at_key("type").get(type) == simdjson::SUCCESS) {
@@ -137,9 +266,72 @@ private:
             return std::static_pointer_cast<const StateProvider>(
                 std::make_shared<const SimpleState>(*state));
         }
-        // `weighted_state_provider`, `noise_provider`, `randomized_int_state_provider`
-        // and the rest belong to the vegetation features, which are not built
-        // here. Named rather than approximated.
+        if (kind == "weighted_state_provider") {
+            simdjson::dom::array entries;
+            if (node.at_key("entries").get(entries) != simdjson::SUCCESS) {
+                return std::unexpected(FeatureError::Malformed);
+            }
+            std::vector<std::pair<registry::BlockStateId, i32>> parsed;
+            for (auto entry : entries) {
+                auto data = entry.at_key("data");
+                i64  weight = 1;
+                if (data.error() != simdjson::SUCCESS ||
+                    entry.at_key("weight").get(weight) != simdjson::SUCCESS) {
+                    return std::unexpected(FeatureError::Malformed);
+                }
+                auto state = parse_block_state(data.value(), blocks);
+                if (!state) {
+                    return std::unexpected(state.error());
+                }
+                parsed.emplace_back(*state, static_cast<i32>(weight));
+            }
+            if (parsed.empty()) {
+                return std::unexpected(FeatureError::Malformed);
+            }
+            return std::static_pointer_cast<const StateProvider>(
+                std::make_shared<const WeightedState>(std::move(parsed)));
+        }
+        if (kind == "randomized_int_state_provider") {
+            auto             source_field = node.at_key("source");
+            auto             values_field = node.at_key("values");
+            std::string_view property;
+            if (source_field.error() != simdjson::SUCCESS ||
+                values_field.error() != simdjson::SUCCESS ||
+                node.at_key("property").get(property) != simdjson::SUCCESS) {
+                return std::unexpected(FeatureError::Malformed);
+            }
+            auto source = parse_state_provider(source_field.value(), blocks, tags);
+            if (!source) {
+                return source;
+            }
+            auto values = parse_int_provider(values_field.value());
+            if (!values) {
+                return std::unexpected(values.error());
+            }
+            return std::static_pointer_cast<const StateProvider>(
+                std::make_shared<const RandomizedIntState>(*source, std::string(property),
+                                                           *values, blocks));
+        }
+        if (kind == "rotated_block_provider") {
+            auto field = node.at_key("state");
+            if (field.error() != simdjson::SUCCESS) {
+                return std::unexpected(FeatureError::Malformed);
+            }
+            auto state = parse_block_state(field.value(), blocks);
+            if (!state) {
+                return std::unexpected(state.error());
+            }
+            return std::static_pointer_cast<const StateProvider>(
+                std::make_shared<const RotatedBlockState>(*state, blocks));
+        }
+        // The three noise-driven providers read a `NormalNoise` built over a
+        // **legacy** random source, and noise.cpp only knows how to build one
+        // over Xoroshiro. Implementing the legacy positional factory belongs to
+        // that file rather than to this one, so they are refused by name; it
+        // costs the three flower patches that vary with a noise field.
+        //
+        // `rotated_block_provider` belongs to the huge fungi, which are not
+        // built here either.
         OV_LOG_ERROR("worldgen: block state provider '{}' is not implemented", kind);
         return std::unexpected(FeatureError::Unsupported);
     }
@@ -176,6 +368,8 @@ private:
     return std::static_pointer_cast<const StateProvider>(
         std::make_shared<const RuleBasedState>(std::move(rules), *fallback));
 }
+
+namespace {
 
 // ── spring_feature ──────────────────────────────────────────────────────────
 
@@ -374,8 +568,11 @@ private:
     return result;
 }
 
-[[nodiscard]] std::expected<FeatureRef, FeatureError> parse_feature(
-    Json node, const registry::BlockRegistry& blocks, const BlockTags& tags) {
+}  // namespace
+
+std::expected<FeatureRef, FeatureError> parse_feature(
+    Json node, const registry::BlockRegistry& blocks, const BlockTags& tags,
+    const FeatureResolver& resolve) {
     std::string_view type;
     if (node.at_key("type").get(type) != simdjson::SUCCESS) {
         return std::unexpected(FeatureError::Malformed);
@@ -453,21 +650,73 @@ private:
             *radius, static_cast<i32>(half_height), *target, *provider));
     }
 
-    // Everything else. Trees, vegetation, lakes, geodes, the end's islands:
-    // 49 more types, each with its own algorithm and its own draws. Refused by
-    // name, so that a world built on this framework is visibly missing them
-    // rather than quietly containing an approximation of them.
+    if (kind == "tree") {
+        return parse_tree_feature(config.value(), blocks, tags);
+    }
+    if (is_vegetation_feature(kind)) {
+        // Its own failures are already named by whatever refused them; saying
+        // "random_patch is not implemented" on top of "no survival rule for
+        // minecraft:fire" would be a second, false reason.
+        return parse_vegetation_feature(kind, config.value(), blocks, tags, resolve);
+    }
+
+    // Everything else. Lakes, geodes, the nether's vegetation, the end's
+    // islands: each with its own algorithm and its own draws. Refused by name,
+    // so that a world built on this framework is visibly missing them rather
+    // than quietly containing an approximation of them.
+    OV_LOG_ERROR("worldgen: feature type '{}' is not implemented", kind);
     return std::unexpected(FeatureError::Unsupported);
 }
 
-}  // namespace
+std::expected<std::shared_ptr<const PlacedFeature>, FeatureError> parse_inline_placed_feature(
+    Json node, const registry::BlockRegistry& blocks, const BlockTags& tags,
+    const FeatureResolver& resolve) {
+    // The whole thing may be one name: `trees_taiga`'s default is the string
+    // "minecraft:spruce_checked", which is a placed feature in its own file.
+    std::string_view whole;
+    if (node.get(whole) == simdjson::SUCCESS) {
+        return resolve.placed(whole);
+    }
+    auto feature_field = node.at_key("feature");
+    if (feature_field.error() != simdjson::SUCCESS) {
+        return std::unexpected(FeatureError::Malformed);
+    }
+    // The child may be held inline or named. `trees_plains` names both of its
+    // two candidates, so a parser that only understood the inline form would
+    // refuse every tree selector in the game.
+    std::expected<FeatureRef, FeatureError> feature =
+        std::unexpected(FeatureError::Malformed);
+    std::string_view named;
+    if (feature_field.get(named) == simdjson::SUCCESS) {
+        feature = resolve.configured(named);
+    } else {
+        feature = parse_feature(feature_field.value(), blocks, tags, resolve);
+    }
+    if (!feature) {
+        return std::unexpected(feature.error());
+    }
+
+    auto placed     = std::make_shared<PlacedFeature>();
+    placed->feature = *feature;
+    simdjson::dom::array modifiers;
+    if (node.at_key("placement").get(modifiers) == simdjson::SUCCESS) {
+        for (auto modifier : modifiers) {
+            auto parsed = parse_placement_modifier(modifier, blocks, tags);
+            if (!parsed) {
+                return std::unexpected(parsed.error());
+            }
+            placed->placement.push_back(*parsed);
+        }
+    }
+    return std::static_pointer_cast<const PlacedFeature>(placed);
+}
 
 // ── The registry ────────────────────────────────────────────────────────────
 
 struct FeatureRegistry::Impl {
     BlockTags                                             tags;
     std::unordered_map<std::string, FeatureRef>           configured;
-    std::unordered_map<std::string, PlacedFeature>        placed;
+    std::unordered_map<std::string, std::shared_ptr<const PlacedFeature>> placed;
     std::map<std::string, FeatureError>                   unavailable;
     usize                                                 configured_seen{0};
 };
@@ -511,86 +760,145 @@ std::expected<FeatureRegistry, FeatureError> FeatureRegistry::load(
     };
 
     // simdjson parses in place: a document points into the padded string it
-    // was read from, so the string has to outlive every use of the document.
-    // One parser is reused — each document is consumed before the next parse —
-    // but the strings are kept until the whole load is over.
-    simdjson::dom::parser                                 parser;
-    std::vector<std::unique_ptr<simdjson::padded_string>> sources;
-    const auto read = [&](const std::filesystem::path& path)
-        -> std::expected<Json, FeatureError> {
+    // was read from, so both have to outlive every use of the document. One
+    // parser *per file* rather than one reused, because the load is no longer a
+    // single pass: a selector names a feature whose file has not been read yet,
+    // so a document is opened while another is still being walked.
+    struct Source {
+        std::unique_ptr<simdjson::padded_string> text;
+        std::unique_ptr<simdjson::dom::parser>   parser;
+    };
+    std::vector<Source> sources;
+    const auto          read =
+        [&](const std::filesystem::path& path) -> std::expected<Json, FeatureError> {
         auto text = simdjson::padded_string::load(path.string());
         if (text.error() != simdjson::SUCCESS) {
             return std::unexpected(FeatureError::Missing);
         }
-        sources.push_back(std::make_unique<simdjson::padded_string>(std::move(text.value())));
-        auto document = parser.parse(*sources.back());
+        Source source;
+        source.text   = std::make_unique<simdjson::padded_string>(std::move(text.value()));
+        source.parser = std::make_unique<simdjson::dom::parser>();
+        auto document = source.parser->parse(*source.text);
         if (document.error() != simdjson::SUCCESS) {
             return std::unexpected(FeatureError::Malformed);
         }
-        return document.value();
+        const Json result = document.value();
+        sources.push_back(std::move(source));
+        return result;
     };
 
+    // The configured features, by name, read but not yet built.
+    std::map<std::string, std::filesystem::path> configured_files;
     for (const auto& path : sorted_files(configured_dir)) {
-        const std::string name = "minecraft:" + path.stem().string();
-        ++impl.configured_seen;
-        auto document = read(path);
-        if (!document) {
-            impl.unavailable.emplace(name, document.error());
-            continue;
-        }
-        auto feature = parse_feature(*document, blocks, impl.tags);
-        if (!feature) {
-            impl.unavailable.emplace(name, feature.error());
-            continue;
-        }
-        impl.configured.emplace(name, *feature);
+        configured_files.emplace("minecraft:" + path.stem().string(), path);
+    }
+    impl.configured_seen = configured_files.size();
+
+    // Building one may need another: `trees_plains` names `oak_bees_005` and
+    // `fancy_oak_bees_005`, and neither is guaranteed to have been built yet.
+    // So the walk is depth-first over the reference graph, with a set of names
+    // currently on the stack so that a cycle in a datapack is a refusal rather
+    // than a stack overflow.
+    std::map<std::string, std::filesystem::path> placed_files;
+    for (const auto& path : sorted_files(placed_dir)) {
+        placed_files.emplace("minecraft:" + path.stem().string(), path);
     }
 
-    for (const auto& path : sorted_files(placed_dir)) {
-        const std::string name = "minecraft:" + path.stem().string();
-        auto              document = read(path);
-        if (!document) {
-            impl.unavailable.emplace(name, document.error());
-            continue;
-        }
-        std::string_view feature_name;
-        if (document->at_key("feature").get(feature_name) != simdjson::SUCCESS) {
-            // An inline configured feature is legal in the format and does not
-            // occur in vanilla's own data; refused rather than half-read.
-            impl.unavailable.emplace(name, FeatureError::Unsupported);
-            continue;
-        }
-        const auto found = impl.configured.find(qualify(feature_name));
-        if (found == impl.configured.end()) {
-            // Its configured feature did not load. Not an error of its own —
-            // it is the same gap counted once more — but it must not become a
-            // placed feature that places nothing.
-            impl.unavailable.emplace(name, FeatureError::Unsupported);
-            continue;
-        }
+    // Two stacks, not one. `birch_tall` names `super_birch_bees_0002`, and
+    // there is both a configured feature and a placed feature by that name:
+    // resolving the placed one resolves the configured one, and a shared stack
+    // reads that as a cycle and refuses the whole selector.
+    std::set<std::string>               building_configured;
+    std::set<std::string>               building_placed;
+    std::map<std::string, FeatureError> failed_configured;
+    std::map<std::string, FeatureError> failed_placed;
+    FeatureResolver                     resolve;
 
-        PlacedFeature placed;
-        placed.name    = name;
-        placed.feature = found->second;
-        simdjson::dom::array modifiers;
-        if (document->at_key("placement").get(modifiers) != simdjson::SUCCESS) {
-            impl.unavailable.emplace(name, FeatureError::Malformed);
-            continue;
+    resolve.configured = [&](std::string_view raw) -> std::expected<FeatureRef, FeatureError> {
+        const std::string name = qualify(raw);
+        if (const auto found = impl.configured.find(name); found != impl.configured.end()) {
+            return found->second;
         }
-        std::optional<FeatureError> failure;
-        for (auto modifier : modifiers) {
-            auto parsed = parse_placement_modifier(modifier, blocks, impl.tags);
-            if (!parsed) {
-                failure = parsed.error();
-                break;
-            }
-            placed.placement.push_back(*parsed);
+        if (const auto bad = failed_configured.find(name); bad != failed_configured.end()) {
+            return std::unexpected(bad->second);
         }
-        if (failure) {
-            impl.unavailable.emplace(name, *failure);
-            continue;
+        const auto file = configured_files.find(name);
+        if (file == configured_files.end()) {
+            OV_LOG_ERROR("worldgen: {} is named by a feature and has no file", name);
+            failed_configured.emplace(name, FeatureError::Missing);
+            return std::unexpected(FeatureError::Missing);
         }
-        impl.placed.emplace(name, std::move(placed));
+        if (!building_configured.insert(name).second) {
+            OV_LOG_ERROR("worldgen: {} takes part in a cycle of feature references", name);
+            failed_configured.emplace(name, FeatureError::Malformed);
+            return std::unexpected(FeatureError::Malformed);
+        }
+        auto                                    document = read(file->second);
+        std::expected<FeatureRef, FeatureError> built =
+            document ? parse_feature(*document, blocks, impl.tags, resolve)
+                     : std::unexpected(document.error());
+        building_configured.erase(name);
+        if (!built) {
+            // Named here, not only counted: the reason is logged by whatever
+            // refused, and this line is what ties it to a file.
+            OV_LOG_INFO("worldgen: configured feature {} did not load ({})", name,
+                        to_string(built.error()));
+            failed_configured.emplace(name, built.error());
+            return built;
+        }
+        impl.configured.emplace(name, *built);
+        return built;
+    };
+
+    resolve.placed = [&](std::string_view raw)
+        -> std::expected<std::shared_ptr<const PlacedFeature>, FeatureError> {
+        const std::string name = qualify(raw);
+        if (const auto found = impl.placed.find(name); found != impl.placed.end()) {
+            return found->second;
+        }
+        if (const auto bad = failed_placed.find(name); bad != failed_placed.end()) {
+            return std::unexpected(bad->second);
+        }
+        const auto file = placed_files.find(name);
+        if (file == placed_files.end()) {
+            OV_LOG_ERROR("worldgen: placed feature {} is named and has no file", name);
+            failed_placed.emplace(name, FeatureError::Missing);
+            return std::unexpected(FeatureError::Missing);
+        }
+        if (!building_placed.insert(name).second) {
+            OV_LOG_ERROR("worldgen: {} takes part in a cycle of placed references", name);
+            failed_placed.emplace(name, FeatureError::Malformed);
+            return std::unexpected(FeatureError::Malformed);
+        }
+        auto document = read(file->second);
+        std::expected<std::shared_ptr<const PlacedFeature>, FeatureError> built =
+            document ? parse_inline_placed_feature(*document, blocks, impl.tags, resolve)
+                     : std::unexpected(document.error());
+        building_placed.erase(name);
+        if (!built) {
+            failed_placed.emplace(name, built.error());
+            return built;
+        }
+        // The name is what the `biome` modifier compares against, so it is set
+        // here and not by the parser, which does not know it.
+        const_cast<PlacedFeature&>(**built).name = name;
+        impl.placed.emplace(name, *built);
+        return built;
+    };
+
+    for (const auto& [name, path] : configured_files) {
+        (void)path;
+        (void)resolve.configured(name);
+    }
+    for (const auto& [name, path] : placed_files) {
+        (void)path;
+        (void)resolve.placed(name);
+    }
+    for (const auto& [name, error] : failed_configured) {
+        impl.unavailable.emplace(name, error);
+    }
+    for (const auto& [name, error] : failed_placed) {
+        impl.unavailable.emplace(name, error);
     }
 
     OV_LOG_INFO(
@@ -603,7 +911,7 @@ std::expected<FeatureRegistry, FeatureError> FeatureRegistry::load(
 
 const PlacedFeature* FeatureRegistry::placed(std::string_view name) const {
     const auto found = impl_->placed.find(qualify(name));
-    return found == impl_->placed.end() ? nullptr : &found->second;
+    return found == impl_->placed.end() ? nullptr : found->second.get();
 }
 
 usize FeatureRegistry::placed_count() const noexcept {

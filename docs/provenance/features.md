@@ -455,3 +455,325 @@ C++.
 * **`below_top` vaut `min_y + hauteur - 1 - n`**, pas `min_y + hauteur - n`.
 * **`ore_gold_nether`**, pas `ore_nether_gold` : le fichier ne s'appelle pas
   comme le bloc.
+
+---
+
+# Les arbres et la végétation
+
+Suite directe du travail sur l'ensemencement. La graine et l'index étant
+établis, le reste de la chaîne — quel arbre, où, et de quelle forme — devient
+mesurable. Ce qui suit est ce qui a été mesuré, et ce qui ne l'a pas été.
+
+| fichier | contenu |
+|---|---|
+| `tree_feature.{hpp,cpp}` | `tree` : 9 trunk placers, 11 foliage placers, le root placer de la mangrove, 6 décorateurs, les deux tailles, l'ordre `java.util.HashSet` |
+| `vegetation_feature.{hpp,cpp}` | `simple_block`, `random_patch`, `flower`, `no_bonemeal_flower`, `block_pile`, `block_column`, les trois sélecteurs, la table de survie, `would_survive` |
+| `feature.{hpp,cpp}` | le résolveur récursif de références, les fournisseurs pondérés et tournés |
+| `tools/ov_features --trees` | la mesure contre `run/reference-*` |
+
+## Le chargement : 39 → 113 des 194 features configurées
+
+| | avant | après |
+|---|---:|---:|
+| configured features construites | 39 | **113** de 194 |
+| placed features construites | 47 | **134** |
+| placed features nommées par une biome et non construites | 114 | **68** |
+
+Trois choses ont débloqué ce chiffre, et deux d'entre elles n'avaient rien à
+voir avec les arbres.
+
+### Le chargement n'est plus un passage sur un répertoire trié
+
+`trees_taiga` nomme `minecraft:spruce_checked`, qui est une **placed** feature,
+qui nomme `minecraft:spruce`, qui est une **configured** feature. Un
+sélecteur peut donc nommer n'importe quoi, dans les deux registres, avant que
+le fichier correspondant n'ait été lu. `FeatureRegistry::load` est désormais un
+parcours en profondeur du graphe de références, avec deux piles de noms en
+cours — une par registre.
+
+**Deux piles, et pas une.** `birch_tall` nomme `super_birch_bees_0002`, et ce
+nom existe *à la fois* comme configured feature et comme placed feature :
+résoudre la placed résout la configured, et une pile partagée y voit un cycle
+et refuse tout le sélecteur. Ça a coûté seize sélecteurs d'arbres — c'est-à-dire
+tous les arbres du jeu — jusqu'à ce que le message « takes part in a cycle »
+le nomme.
+
+Chaque document a maintenant son propre `simdjson::dom::parser` : un parseur
+réutilisé suppose qu'un document est consommé avant le suivant, ce qui n'est
+plus vrai quand la lecture est récursive.
+
+### `would_survive` : une table nommée, pas une devinette
+
+Les 36 placed features `*_checked` — c'est-à-dire **tous les arbres** — passent
+par `block_predicate_filter { would_survive: <sapling> }`. Sans lui, rien de ce
+mandat n'est mesurable.
+
+`would_survive` demande si un bloc *tiendrait* à une position, ce qui est une
+question de gameplay, et `ov_gameplay` est une couche au-dessus. La sortie prise
+ici est une **table nommée** : `plant_survival_rule()` donne la règle de
+`canSurvive` pour chacun des 47 blocs que les features de végétation de vanilla
+posent réellement, groupés par la famille dont ils l'héritent (dirt-ou-farmland,
+dirt-ou-argile, dead bush, nylium, cactus, canne à sucre, nénuphar, seagrass,
+tapis, fleur suspendue). Les huit états que `would_survive` interroge en 1.20.1
+sont tous des pousses, et la règle d'une pousse tient en une ligne.
+
+Un bloc absent de la table **refuse sa feature au chargement**, par son nom.
+C'est tout le périmètre de l'approximation, et il est visible : les quatre
+features que ça coûte sont `patch_brown_mushroom` et `patch_red_mushroom`, dont
+la règle lit le niveau de lumière, et `patch_fire` / `patch_soul_fire`, dont la
+règle demande ce qui est inflammable autour.
+
+Le fait qui rend cette table acceptable là où la même chose serait inacceptable
+pour un minerai : **le nombre de tirages d'un patch ne dépend pas du sol.**
+`random_patch` fait six tirages par essai, ses 64 essais, que le terrain soit de
+l'herbe ou de la pierre ; le fournisseur d'état est interrogé *avant* le test de
+survie. Une règle fausse coûte donc des blocs et jamais la graine. C'est
+vérifié par un test : la même graine sur deux mondes différents laisse le
+générateur dans le même état.
+
+`solid`, `replaceable` et `unobstructed` restent refusés — ils n'ont pas de
+table équivalente. C'est ce qui bloque encore `disk_grass`, `patch_melon` et
+`pointed_dripstone`.
+
+Le branchement dans `placement.cpp` est **trois lignes**, encadrées par un
+commentaire, pour que la fusion reste triviale.
+
+### L'ordre d'itération d'un `java.util.HashSet` fait partie de la graine
+
+`TreeDecorator.Context` reçoit les positions des bûches et des feuilles depuis
+des `HashSet<BlockPos>`, triées par y avec un tri **stable**. Ce qui survit au
+tri, à y égal, est l'ordre des seaux de la table de hachage — et les
+décorateurs tirent une fois par élément de ces listes. `trunk_vine` tire quatre
+fois par bûche, `leave_vine` quatre fois par feuille, `beehive` mélange une
+liste construite à partir de cet ordre.
+
+`java_hash_order()` reproduit `HashMap` : `hash = h ^ (h >>> 16)`, index
+`hash & (capacité - 1)`, ordre d'insertion dans un seau, et le découpage
+lo/hi qui préserve l'ordre relatif à chaque redimensionnement. `Vec3i.hashCode()`
+est `(y + z·31)·31 + x`. La seule chose non modélisée est la *treeification* —
+un seau de huit entrées dans une table d'au moins 64 — qui n'a jamais été
+observée sur un arbre et qui, si elle arrive, écrit une erreur dans le journal
+plutôt que de changer silencieusement la forme du monde.
+
+## La mesure : `ov_features --trees`
+
+Un minerai peut être remis en place : il a remplacé exactement un bloc de
+pierre, et la pierre est connue. Un arbre, non — il a poussé dans de l'air que
+le reste de la décoration a ensuite rempli d'herbe, de fleurs et de neige. Le
+protocole est donc l'inverse : **on retire**. Toute bûche, feuille, pousse,
+liane et petite plante des neuf chunks est mise à l'air, ce qui est très proche
+de ce à quoi ressemblait le monde quand le jeu est arrivé à l'étape végétale, et
+notre décoration est rejouée par-dessus. L'eau, les seagrass et le varech ne
+sont pas retirés : ce sont du terrain, et les retirer viderait chaque marais.
+
+Deux échecs sont comptés séparément parce qu'ils n'ont pas la même cause :
+
+* un tronc au mauvais **endroit** — le pipeline de placement ou la graine est
+  faux, et le code de l'arbre n'est même pas atteint ;
+* un tronc au bon endroit avec la mauvaise **forme** — le placement est juste
+  et un placer tire autrement.
+
+Un pourcentage sur tous les blocs de feuilles moyennerait les deux et ne dirait
+rien sur aucun. Un troisième chiffre est donné, plus dur que les deux autres :
+la forme du **premier essai** d'une feature dans son chunk. Le pipeline est
+consommé en profondeur d'abord, donc l'essai 1 commence là où la feature de
+l'essai 0 s'est arrêtée : seul l'essai 0 a un état de générateur dont on sait
+qu'il est juste, et une mauvaise forme là est un mauvais placer et rien d'autre.
+
+Chaque écriture est étiquetée par l'essai qui l'a faite. Sans ça une forêt est
+une mer indistincte de bûches et de feuilles, et il n'y a aucun moyen de dire
+que *cet* arbre-ci a la mauvaise forme.
+
+**Comparaison par bloc, pas par état.** Le jeu fait une dernière passe sur un
+arbre fini qui réécrit la propriété `distance` de chaque feuille depuis la
+bûche la plus proche. Cette passe ne tire rien et ne fait pas partie de la
+forme ; comparer les états appelait « différence » chaque feuille correcte et
+donnait 3,8 % là où la vraie valeur est 45 %. Cette passe n'est **pas**
+implémentée : nos feuilles sortent avec la `distance` du fournisseur.
+
+### Les chiffres — graine 1234567890
+
+200 chunks, un sur treize par région du monde de référence — les minerais sont
+partout et une région en est un échantillon honnête, les arbres non : la
+première région dans l'ordre des coordonnées est de l'océan, ce qui se lisait
+« aucun arbre nulle part » au lieu de « aucun arbre ici ».
+
+| | |
+|---|---:|
+| troncs dans le monde du jeu | **378** |
+| troncs chez nous | 395 |
+| **au même endroit** | **153** (40,476 %) |
+| arbres que nous avons fait pousser | 367 |
+| dont la forme est identique | 66 (17,984 %) |
+| arbres posés sur un vrai tronc du jeu | 153 |
+| dont la forme est identique | **66** (43,137 %) |
+| blocs de bûche et de feuille : jeu / nous / même bloc | 24 635 / 24 182 / **9 591** (38,932 %) |
+
+Par feature, parmi les arbres posés sur un vrai tronc :
+
+| placed feature | forme identique | ce qu'elle contient |
+|---|---:|---|
+| `trees_savanna` | 1 / 1 | forking trunk + acacia foliage |
+| `trees_birch` | 8 / 9 | straight trunk + blob foliage |
+| `birch_tall` | 7 / 12 | straight + blob + `beehive` |
+| `trees_birch_and_oak` | 49 / 111 | chêne et bouleau (justes) mêlés au **fancy oak** |
+| `trees_jungle` | 1 / 18 | jungle : bush, blob, mega jungle, trois décorateurs |
+| `bamboo_vegetation` | 0 / 1 | |
+
+Premier essai dans son chunk : **17 sur 57**, dont `birch_tall` 3/3,
+`trees_savanna` 1/1, `trees_birch` 1/2, `trees_birch_and_oak` 12/35,
+`trees_jungle` 0/14.
+
+### Hors échantillon : graine 987654321
+
+Rien n'a été retouché entre les deux mesures.
+
+| | |
+|---|---:|
+| troncs dans le monde du jeu | 364 |
+| **au même endroit** | 68 (18,681 %) |
+| arbres posés sur un vrai tronc, forme identique | 33 / 59 (55,932 %) |
+| premier essai, forme identique | 8 / 16 (50,0 %) |
+| blocs : jeu / nous / même bloc | 17 950 / 7 517 / 3 998 (22,273 %) |
+
+Ce 18,7 % demande son explication, et elle est nette : **242 des 296 troncs
+manquants sont dans `dark_forest`**, dont la feature `dark_forest_vegetation`
+ne se charge pas — elle a besoin de `huge_brown_mushroom` et
+`huge_red_mushroom`. Hors `dark_forest`, il reste 122 troncs et 68 trouvés, soit
+**55,7 %**. Les 46 autres sont dans `old_growth_spruce_taiga`, dont l'épicéa
+géant est faux (voir plus bas).
+
+Par feature à cette graine : `trees_birch` 25/32 (78,1 %),
+`trees_birch_and_oak` 7/8 (87,5 %), `trees_windswept_forest` 1/1,
+`trees_old_growth_spruce_taiga` **0/18**.
+
+### Ce qui est établi et ce qui ne l'est pas
+
+**Établi, mesuré :**
+
+* `straight_trunk_placer` + `blob_foliage_placer` — le chêne, le bouleau, la
+  jungle simple — sont **exacts au bloc près** : `trees_birch` fait 8/9 à une
+  graine et 25/32 à l'autre, et les échecs restants sont des feuilles d'un
+  voisin que nous n'avons pas fait pousser, pas la forme de l'arbre.
+* `forking_trunk_placer` + `acacia_foliage_placer` : 1/1 et 1/1. Deux
+  observations, ce n'est pas une preuve, et c'est dit tel quel.
+* L'**index à l'étape végétale** est le nôtre. C'est le seul point du mandat
+  qui a demandé un oracle en plus de la comparaison de formes, et il en valait
+  la peine : l'index n'avait été mesuré qu'à l'étape des minerais.
+  `ov_features --trees --calibrate=<feature> --step=9` balaie l'index et
+  compte, pour chacun, combien de fois la **première** position que le pipeline
+  produit tombe exactement dans une colonne où le jeu a fait pousser un tronc.
+
+  | feature | meilleur index | touches | plancher de bruit | notre trieur |
+  |---|---:|---:|---:|---:|
+  | `trees_birch_and_oak` | 20 | **31 / 37** | 1 à 3 | 20 |
+  | `trees_jungle` | 7 | **9 / 14** | 1 à 2 | 7 |
+
+  Un ordre de grandeur au-dessus du bruit, aux deux. La graine, la formule et
+  le tri partagé tiennent donc aussi à l'étape 9.
+
+**Pas établi, et nommé :**
+
+* **`fancy_trunk_placer` / `fancy_foliage_placer`.** Sur un cas où les bûches
+  sortent *identiques* — le tronc et sa branche, bloc pour bloc — le feuillage
+  est deux niveaux trop bas et centré sur la mauvaise attache. La liste de
+  `FoliageCoords` que le tronc rend n'est donc pas la bonne. Le compte de
+  grappes a été testé dans les deux sens : `Math.min(1, …)` — qui se lit comme
+  une faute et qui donne 1 partout — fait 39 troncs et 2355 blocs justes,
+  `Math.max` en fait 35 et 2346. C'est `min`, mesuré.
+* **La jungle.** 1/18. `jungle_tree` est pourtant `straight` + `blob`, donc
+  exacts : ce qui diffère est le choix du sélecteur (`fancy_oak_checked` 0,1,
+  `jungle_bush` 0,5, `mega_jungle_tree_checked` 1/3, défaut `jungle_tree`) ou
+  l'un des trois décorateurs. Sur un premier essai dont la position est juste,
+  nous faisons pousser un buisson là où le jeu ne met rien — donc notre tirage
+  de sélecteur diffère du sien alors que l'état du générateur devrait être le
+  même. Ce n'est pas résolu.
+* **`giant_trunk_placer` + `mega_pine_foliage_placer`** : 0/18 à la graine
+  987654321. L'épicéa géant est faux.
+* `cherry_trunk_placer` et `cherry_foliage_placer` sont écrits mais **n'ont
+  aucun oracle** : ni `run/reference-1234567890` ni `run/reference-987654321` ne
+  contient de `cherry_grove`. Ils se chargent, ils produisent un arbre, et rien
+  ne dit que c'est le bon. Les feuilles suspendues en particulier sont une
+  reconstruction plausible et non mesurée.
+* `mega_jungle_trunk_placer`, `dark_oak_*`, `bending_trunk_placer`,
+  `upwards_branching_trunk_placer` et `mangrove_root_placer` : aucun n'apparaît
+  dans l'échantillon mesuré. Ils se chargent ; leur exactitude n'est pas
+  démontrée.
+* La passe qui recalcule la propriété `distance` des feuilles n'est pas
+  implémentée. Elle ne tire rien, mais un monde sauvegardé par nous n'est pas
+  identique bloc-état pour bloc-état tant qu'elle manque.
+
+## Ce qui reste refusé, et pourquoi — les 81 features configurées
+
+`ov_features --missing`. Groupées par la cause **racine**, pas par le type de la
+feature : dire « `random_patch` n'est pas implémenté » quand la vraie raison est
+« pas de règle de survie pour `minecraft:fire` » est une seconde raison, fausse.
+
+| cause | features |
+|---|---|
+| `nether_forest_vegetation` | les 6 végétations du Nether |
+| `vegetation_patch` | `moss_patch`, `moss_patch_bonemeal`, `moss_patch_ceiling`, `clay_with_dripleaves` |
+| `huge_fungus` | les 4 champignons géants du Nether |
+| `seagrass` | les 4 seagrass |
+| `huge_brown_mushroom` / `huge_red_mushroom` | ces deux-là, plus `dark_forest_vegetation` et `mushroom_island_vegetation` qui les nomment |
+| `bamboo` | `bamboo_no_podzol`, `bamboo_some_podzol` |
+| `netherrack_replace_blobs`, `basalt_columns`, `basalt_pillar`, `delta_feature`, `glowstone_blob`, `twisting_vines`, `weeping_vines` | le Nether |
+| `end_gateway`, `end_island`, `end_spike`, `chorus_plant`, `void_start_platform` | l'End |
+| `fossil`, `geode`, `iceberg`, `ice_spike`, `lake`, `monster_room`, `desert_well`, `forest_rock`, `freeze_top_layer`, `blue_ice`, `bonus_chest` | features autonomes, hors mandat |
+| `multiface_growth`, `sculk_patch`, `root_system`, `sea_pickle`, `kelp`, `vines`, `underwater_magma`, `large_dripstone`, `dripstone_cluster`, `pointed_dripstone`, `coral_tree` | idem |
+| `waterlogged_vegetation_patch` | `clay_pool_with_dripleaves`, et `lush_caves_clay` qui le nomme |
+| **fournisseurs de bruit** (`noise_provider`, `dual_noise_provider`, `noise_threshold_provider`) | `flower_plain`, `flower_meadow`, `flower_flower_forest` |
+| **`solid`** | `disk_grass` |
+| **`replaceable`** | `patch_melon` |
+| **pas de règle de survie** | `patch_fire` (fire), `patch_soul_fire` (soul_fire), `patch_brown_mushroom`, `patch_red_mushroom`, `dripleaf` (small_dripleaf) |
+| `matching_fluids` nomme `minecraft:flowing_water`, qui n'est pas un bloc | `patch_sugar_cane` |
+| état de fluide du Nether | `spring_nether_open`, `spring_nether_closed` |
+
+Les trois fournisseurs de bruit lisent un `NormalNoise` construit sur une source
+**legacy**, et `noise.cpp` ne sait en construire un que sur Xoroshiro : la
+fabrique positionnelle legacy appartient à ce fichier-là, pas à celui-ci.
+
+## Reproduire
+
+```bash
+./build/macos-debug/bin/ov_features --missing
+./build/macos-debug/bin/ov_features --trees --chunks=200 --stride=13
+./build/macos-debug/bin/ov_features --trees --chunks=200 --stride=13 \
+    --world=run/reference-987654321/world --seed=987654321
+
+# la forme d'un arbre, la nôtre et la sienne, couche par couche
+./build/macos-debug/bin/ov_features --trees --chunks=200 --stride=13 \
+    --show=3 --first --only=trees_jungle
+
+# l'index à l'étape végétale, balayé
+./build/macos-debug/bin/ov_features --trees --chunks=200 --stride=13 \
+    --calibrate=minecraft:trees_birch_and_oak --step=9 --span=80
+```
+
+## Pièges pour les autres agents
+
+* **Un nom peut désigner deux choses.** `super_birch_bees_0002` est à la fois
+  une configured feature et une placed feature. Une pile de détection de cycles
+  partagée entre les deux registres voit un cycle qui n'existe pas et refuse
+  seize sélecteurs d'arbres d'un coup.
+* **Une table triée qui ne l'est plus ment en silence.** La table de survie est
+  lue par recherche binaire ; `birch_sapling` classé après `blue_orchid` a
+  répondu « pas de règle » pour la moitié des entrées et fait tomber tous les
+  arbres du jeu. Un test vérifie maintenant que les sondes se trouvent.
+* **La propriété `distance` d'une feuille n'est pas la forme de l'arbre.** Le
+  jeu la recalcule après coup. Comparer des états de bloc plutôt que des blocs
+  a divisé le score par douze avant qu'on comprenne pourquoi.
+* **Deux canopées se recouvrent tout le temps.** Un enregistrement d'écritures
+  « dernier écrivain gagne » attribue les feuilles partagées au mauvais arbre et
+  invente des trous. Il faut garder *toutes* les écritures avec l'essai qui les
+  a faites.
+* **La première région d'un monde de référence n'est pas un échantillon.** Les
+  minerais sont partout, les arbres non. Prendre les 44 premiers chunks dans
+  l'ordre des coordonnées donnait quatre blocs de feuilles en tout.
+* **`nextInt(1)` tire.** `base + nextInt(a+1) + nextInt(b+1)` fait toujours deux
+  tirages, même quand `b` vaut 0 et que le second vaut forcément zéro.
+* **`Math.min(1, …)` de `FancyTrunkPlacer` n'est pas une faute de lecture.**
+  Mesuré dans les deux sens ; `max` est moins bon.
+* **`Mth.sin`/`Mth.cos` pour le tronc mega jungle, `Math.sin`/`Math.cos` pour le
+  fancy.** Le premier est la table de 65536 flottants, le second est du double.
+  Ils ne sont pas interchangeables et l'erreur est invisible.

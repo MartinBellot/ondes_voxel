@@ -21,6 +21,8 @@ ov_add_library(ov_worldgen
         src/placement.cpp
         src/surface_rules.cpp
         src/surface_system.cpp
+        src/tree_feature.cpp
+        src/vegetation_feature.cpp
     DEPS
         ov_math
         ov_registry
@@ -42,6 +44,7 @@ ov_add_test(test_ov_worldgen
         tests/test_noise.cpp
         tests/test_pipeline.cpp
         tests/test_surface_rules.cpp
+        tests/test_tree_feature.cpp
     DEPS ov_worldgen
     LABELS unit
 )

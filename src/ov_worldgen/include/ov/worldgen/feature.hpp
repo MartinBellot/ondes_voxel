@@ -12,9 +12,13 @@
 //
 //   * `ore` and `scattered_ore`, complete, in ore_feature.cpp.
 //   * `spring_feature` and `disk`, complete, below.
-//   * Everything else — trees, vegetation, lakes, geodes, structures — is
-//     named and refused. `unavailable()` lists what did not load and why, so
-//     the gap is a number rather than a surprise.
+//   * `tree`, with its trunk placers, foliage placers, root placers and
+//     decorators, in tree_feature.cpp.
+//   * `simple_block`, the patches, the piles, the columns and the three
+//     selectors, in vegetation_feature.cpp.
+//   * Everything else — lakes, geodes, the nether's vegetation, structures —
+//     is named and refused. `unavailable()` lists what did not load and why,
+//     so the gap is a number rather than a surprise.
 #pragma once
 
 #include "ov/worldgen/placement.hpp"
@@ -27,6 +31,36 @@
 #include <vector>
 
 namespace ov::worldgen {
+
+/// Which block state to write at a position.
+///
+/// Public because it is shared: a tree's trunk, its leaves and the dirt it
+/// puts under itself each come from one of these, and so does every block a
+/// vegetation patch scatters. Some of them draw — a weighted list picks with
+/// one `nextInt` — so *when* a provider is asked is part of the seed and not
+/// an implementation detail.
+class StateProvider {
+public:
+    StateProvider()                                = default;
+    StateProvider(const StateProvider&)            = delete;
+    StateProvider& operator=(const StateProvider&) = delete;
+    virtual ~StateProvider();
+
+    [[nodiscard]] virtual registry::BlockStateId state(const FeatureLevel& level,
+                                                       FeatureRandom&      random,
+                                                       BlockPos            at) const = 0;
+
+    /// Every state this provider could ever return.
+    ///
+    /// For checks that must happen when the datapack is read rather than in
+    /// the world — the vegetation layer refuses a feature whose blocks it has
+    /// no survival rule for, and it can only do that if it can enumerate them.
+    /// An **empty** result means "cannot be enumerated" and must be treated as
+    /// a refusal, never as "places nothing".
+    [[nodiscard]] virtual std::vector<registry::BlockStateId> possible_states() const;
+};
+
+using StateProviderRef = std::shared_ptr<const StateProvider>;
 
 /// One configured feature: a thing that can happen at a position.
 class Feature {

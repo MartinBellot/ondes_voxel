@@ -36,6 +36,8 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <limits>
+#include <tuple>
 #include <cstdlib>
 #include <filesystem>
 #include <map>
@@ -81,6 +83,22 @@ struct Options {
     /// Only count the game's ores whose name contains this, so the score is
     /// about the feature under test rather than about how much ore is around.
     std::string ore;
+    /// Compare *trees* instead of ores: strip the vegetation the game grew,
+    /// grow ours over the same terrain, and compare trunk by trunk.
+    bool trees{false};
+    /// Print, for the first N trees that came out the wrong shape, our shape
+    /// and theirs layer by layer.
+    i32 show{0};
+    /// Only print the ones whose placed feature contains this.
+    std::string only;
+    /// Only print trees whose trunk landed where the game's did — a pure shape
+    /// difference, with the placement already known to be right.
+    bool matched{false};
+    /// Only print the first try of a feature in its chunk.
+    bool first{false};
+    /// One chunk in this many is taken from each region of the reference
+    /// world. Smaller means a bigger, slower sample.
+    i32 stride{97};
 };
 
 [[nodiscard]] Options parse(int argc, char** argv) {
@@ -116,6 +134,18 @@ struct Options {
             options.raw = true;
         } else if (argument.starts_with("--ore=")) {
             options.ore = value("--ore=");
+        } else if (argument == "--trees") {
+            options.trees = true;
+        } else if (argument.starts_with("--show=")) {
+            options.show = std::atoi(value("--show=").c_str());
+        } else if (argument.starts_with("--only=")) {
+            options.only = value("--only=");
+        } else if (argument == "--matched") {
+            options.matched = true;
+        } else if (argument == "--first") {
+            options.first = true;
+        } else if (argument.starts_with("--stride=")) {
+            options.stride = std::max(1, std::atoi(value("--stride=").c_str()));
         }
     }
     return options;
@@ -310,6 +340,13 @@ public:
                             static_cast<usize>(floor_mod(z, 16)) * 16 +
                             static_cast<usize>(floor_mod(x, 16));
         blocks[index] = state;
+        if (current_group_ >= 0) {
+            // Appended, not assigned. Two trees overlap constantly, and the
+            // world keeps the last writer — but for judging one tree's shape
+            // what matters is what *it* tried to write, so every write is kept
+            // with the attempt that made it.
+            group_writes_.emplace_back(current_group_, pack(x, y, z), state);
+        }
         // Assign, not emplace. Features overwrite each other constantly — a
         // granite blob lands on stone and an iron vein lands on the granite —
         // and `emplace` keeps the *first* write while the block array keeps the
@@ -375,6 +412,19 @@ public:
     /// Everything the decoration wrote, by packed position.
     [[nodiscard]] const std::map<i64, registry::BlockStateId>& written() const { return written_; }
 
+    /// Which attempt wrote each position.
+    ///
+    /// One "attempt" is one call of one placed feature at one position — one
+    /// tree. Without it a forest is a single sea of logs and leaves and there
+    /// is no way to say that *this* tree is the wrong shape.
+    void set_group(i32 group) { current_group_ = group; }
+
+    /// Every write, in order, with the attempt that made it.
+    [[nodiscard]] const std::vector<std::tuple<i32, i64, registry::BlockStateId>>&
+    group_writes() const {
+        return group_writes_;
+    }
+
     /// Rewrite one block without recording it as ours. Used to put the game's
     /// ores back to stone before anything is placed.
     void restore(i32 x, i32 y, i32 z, registry::BlockStateId state) {
@@ -424,6 +474,8 @@ private:
     i32                             centre_z_;
     std::array<StoredChunk, 9>      chunks_;
     std::map<i64, registry::BlockStateId> written_;
+    std::vector<std::tuple<i32, i64, registry::BlockStateId>> group_writes_;
+    i32                                                       current_group_{-1};
     /// Two heightmaps per column of the 48 by 48 block, memoised.
     mutable std::array<i32, 48 * 48 * 2> heights_{};
 };
@@ -655,9 +707,36 @@ int main(int argc, char** argv) {
         // Four times as many candidates as chunks wanted: a chunk on the edge
         // of the generated area has neighbours that were never finished and is
         // skipped.
-        if (candidates.size() >= static_cast<usize>(options.chunks) * 4) {
+        if (!options.trees && candidates.size() >= static_cast<usize>(options.chunks) * 4) {
             break;
         }
+    }
+
+    // Trees are measured across the whole reference world rather than out of
+    // its first region.
+    //
+    // The ores are everywhere and one region is a fair sample of them; trees
+    // are not. The reference world is a scatter of small patches, and the first
+    // one in coordinate order can easily be ocean — which is exactly what
+    // happened, and read as "no trees anywhere" rather than as "no trees here".
+    // So this takes a handful of interior chunks from every patch instead.
+    if (options.trees) {
+        std::vector<std::pair<i32, i32>> spread;
+        std::map<std::pair<i32, i32>, i32> per_region;
+        for (const auto& [chunk_x, chunk_z] : candidates) {
+            const std::pair<i32, i32> region{floor_div(chunk_x, 32), floor_div(chunk_z, 32)};
+            // Interior only: a chunk on a region's rim has neighbours in a
+            // region the reference world may not have generated.
+            if (floor_mod(chunk_x, 32) == 0 || floor_mod(chunk_x, 32) == 31 ||
+                floor_mod(chunk_z, 32) == 0 || floor_mod(chunk_z, 32) == 31) {
+                continue;
+            }
+            if (per_region[region]++ % options.stride != 0) {
+                continue;
+            }
+            spread.emplace_back(chunk_x, chunk_z);
+        }
+        candidates = std::move(spread);
     }
 
     // The 3x3 neighbourhoods, read once and reused: the sweep runs the same
@@ -717,6 +796,597 @@ int main(int argc, char** argv) {
         if (build_level(chunk_x, chunk_z) != nullptr) {
             usable.emplace_back(chunk_x, chunk_z);
         }
+    }
+
+    if (options.trees) {
+        // Trees, not ores, and the question is different enough to need its own
+        // protocol.
+        //
+        // An ore can be put back: it replaced exactly one stone block and the
+        // stone is known. A tree cannot — it grew into air that the rest of
+        // decoration then filled with grass, flowers and snow. So instead of
+        // restoring, this strips: every log, leaf, sapling, vine and small plant
+        // in the neighbourhood is set to air, which is very close to what the
+        // world looked like when the game reached the vegetal step, and our
+        // decoration is run over the result.
+        //
+        // Two failures are counted apart because they have different causes:
+        //
+        //   * a trunk in the wrong *place* means the placement pipeline or the
+        //     seed is wrong, and the tree code is not even reached;
+        //   * a trunk in the right place with the wrong *shape* means the
+        //     placement is right and a placer draws differently.
+        //
+        // A percentage over all leaf blocks would average the two together and
+        // say nothing about either.
+        const auto& tags = features->tags();
+
+        const auto in_tag = [&](std::string_view tag, registry::BlockStateId state) {
+            return tags.contains(tag, pack->block_of(state));
+        };
+        const auto is_log = [&](registry::BlockStateId state) {
+            return in_tag("minecraft:logs", state);
+        };
+        const auto is_leaf = [&](registry::BlockStateId state) {
+            return in_tag("minecraft:leaves", state);
+        };
+        const auto is_dirt = [&](registry::BlockStateId state) {
+            return in_tag("minecraft:dirt", state);
+        };
+
+        // What a tree or the vegetation around it may have left behind. Water,
+        // seagrass and kelp are deliberately *not* here: they are terrain, and
+        // stripping them would drain every swamp.
+        static constexpr std::array<std::string_view, 30> kStrippedNames{
+            "minecraft:vine",          "minecraft:cocoa",
+            "minecraft:bee_nest",      "minecraft:mangrove_propagule",
+            "minecraft:moss_carpet",   "minecraft:snow",
+            "minecraft:sweet_berry_bush", "minecraft:pumpkin",
+            "minecraft:melon",         "minecraft:cactus",
+            "minecraft:sugar_cane",    "minecraft:lily_pad",
+            "minecraft:brown_mushroom", "minecraft:red_mushroom",
+            "minecraft:pink_petals",   "minecraft:azalea",
+            "minecraft:flowering_azalea", "minecraft:spore_blossom",
+            "minecraft:cave_vines",    "minecraft:cave_vines_plant",
+            "minecraft:glow_lichen",   "minecraft:hanging_roots",
+            "minecraft:grass",         "minecraft:tall_grass",
+            "minecraft:fern",          "minecraft:large_fern",
+            "minecraft:dead_bush",     "minecraft:mangrove_roots",
+            "minecraft:muddy_mangrove_roots", "minecraft:fire",
+        };
+        std::set<u16> stripped;
+        for (const std::string_view name : kStrippedNames) {
+            if (const auto block = pack->find_block(name)) {
+                stripped.insert(block->value());
+            }
+        }
+        for (usize index = 0; index < pack->block_count(); ++index) {
+            const registry::BlockId block{static_cast<u16>(index)};
+            if (tags.contains("minecraft:logs", block) ||
+                tags.contains("minecraft:leaves", block) ||
+                tags.contains("minecraft:saplings", block) ||
+                tags.contains("minecraft:flowers", block)) {
+                stripped.insert(block.value());
+            }
+        }
+
+        const auto air = pack->find_block("minecraft:air");
+        if (!air) {
+            return 1;
+        }
+        const auto air_state = pack->default_state(*air);
+
+        i64 their_trunks   = 0;
+        i64 matched_trunks = 0;
+        i64 our_trunks     = 0;
+        i64 our_groups     = 0;
+        i64 same_shape     = 0;
+        i64 groups_at_real_trunk     = 0;
+        i64 same_shape_at_real_trunk = 0;
+        i64 wrong_shape_at_real_trunk = 0;
+        i64 first_tries       = 0;
+        i64 first_tries_exact = 0;
+        std::map<std::string, std::pair<i64, i64>> first_by_feature;
+        i64 their_blocks   = 0;
+        i64 our_blocks     = 0;
+        i64 agreed_blocks  = 0;
+        std::map<std::string, i64> wrong_shape_by_feature;
+        std::map<std::string, std::pair<i64, i64>> shape_at_trunk_by_feature;
+        std::map<std::string, i64> missing_by_feature;
+        i32                        shown       = 0;
+        usize                      done        = 0;
+        std::map<i32, i64>         sweep_hits;
+        std::map<i32, i64>         sweep_seen;
+
+        for (const auto& [chunk_x, chunk_z] : usable) {
+            if (done >= static_cast<usize>(options.chunks)) {
+                break;
+            }
+            auto held = build_level(chunk_x, chunk_z);
+            if (held == nullptr) {
+                continue;
+            }
+            ReferenceLevel& level = *held;
+
+            // What the game grew, over the whole neighbourhood: the middle
+            // chunk is what is scored, the ring is what stops a tree that
+            // leans over the border from reading as a difference.
+            std::map<i64, registry::BlockStateId> their_wood;
+            std::vector<BlockPos>                 their_bases;
+            for (i32 dz = -1; dz <= 1; ++dz) {
+                for (i32 dx = -1; dx <= 1; ++dx) {
+                    for (i32 y = level.min_y(); y <= level.max_y(); ++y) {
+                        for (i32 z = 0; z < 16; ++z) {
+                            for (i32 x = 0; x < 16; ++x) {
+                                const i32  wx    = (chunk_x + dx) * 16 + x;
+                                const i32  wz    = (chunk_z + dz) * 16 + z;
+                                const auto state = level.block_at(wx, y, wz);
+                                if (!is_log(state) && !is_leaf(state)) {
+                                    continue;
+                                }
+                                their_wood.emplace(ReferenceLevel::pack(wx, y, wz), state);
+                                if (dx != 0 || dz != 0 || !is_log(state)) {
+                                    continue;
+                                }
+                                const auto below = level.block_at(wx, y - 1, wz);
+                                if (!is_log(below) && is_dirt(below)) {
+                                    their_bases.push_back({wx, y, wz});
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Strip. Air, not the original terrain: a tree grew into air.
+            for (i32 dz = -1; dz <= 1; ++dz) {
+                for (i32 dx = -1; dx <= 1; ++dx) {
+                    for (i32 y = level.min_y(); y <= level.max_y(); ++y) {
+                        for (i32 z = 0; z < 16; ++z) {
+                            for (i32 x = 0; x < 16; ++x) {
+                                const i32  wx    = (chunk_x + dx) * 16 + x;
+                                const i32  wz    = (chunk_z + dz) * 16 + z;
+                                const auto state = level.block_at(wx, y, wz);
+                                if (stripped.contains(pack->block_of(state).value())) {
+                                    level.restore(wx, y, wz, air_state);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // The index sweep, when one was asked for.
+            //
+            // A feature's seed is `decoration + index + 10000 * step`, and the
+            // index is its rank in the shared per-step ordering. That ordering
+            // was measured at the ores' step and only there. This asks the same
+            // question at the vegetal step, with a far better probe than the
+            // ores had: a trunk is one column, the world has a handful of them
+            // per chunk, and the *first* position a pipeline produces is the
+            // one whose generator state cannot have drifted.
+            if (!options.calibrate.empty()) {
+                const auto* feature = features->placed(options.calibrate);
+                if (feature == nullptr) {
+                    fmt::print("{} was not built; --missing says why\n", options.calibrate);
+                    return 1;
+                }
+                std::set<std::pair<i32, i32>> trunk_columns;
+                for (const BlockPos& base : their_bases) {
+                    trunk_columns.emplace(base.x, base.z);
+                }
+                for (i32 dz = -1; dz <= 1; ++dz) {
+                    for (i32 dx = -1; dx <= 1; ++dx) {
+                        const i32 origin_x = (chunk_x + dx) * 16;
+                        const i32 origin_z = (chunk_z + dz) * 16;
+                        if (dx != 0 || dz != 0) {
+                            continue;
+                        }
+                        const auto kind = worldgen::configured_feature_random();
+                        const i64  seed =
+                            worldgen::decoration_seed(options.seed, origin_x, origin_z, kind);
+                        for (i32 index = 0; index < options.span; ++index) {
+                            worldgen::FeatureRandom random{
+                                kind, worldgen::feature_seed(seed, index, options.step)};
+                            worldgen::FeatureContext context;
+                            context.blocks       = &*pack;
+                            context.feature_name = feature->name;
+                            context.biomes       = &decorator->biome_features();
+                            bool first = true;
+                            worldgen::expand(feature->placement, context, level, random,
+                                             {origin_x, level.min_y(), origin_z},
+                                             [&](BlockPos at) {
+                                                 if (!first) {
+                                                     return;
+                                                 }
+                                                 first = false;
+                                                 sweep_seen[index] += 1;
+                                                 if (trunk_columns.contains({at.x, at.z})) {
+                                                     sweep_hits[index] += 1;
+                                                 }
+                                             });
+                        }
+                    }
+                }
+                ++done;
+                continue;
+            }
+
+            // Our decoration, one attempt at a time. This walks the same order
+            // Decorator::decorate does — nearby biomes, then each step's shared
+            // index in ascending order — but marks the level before every
+            // attempt so that each tree's blocks can be told from its
+            // neighbour's.
+            struct Attempt {
+                std::string name;
+                BlockPos    origin;
+                /// Which try of this feature in this chunk. Zero is the only
+                /// one whose generator state is known-good: the pipeline is
+                /// consumed depth-first, so try one begins where try zero's
+                /// feature left off, and a feature that draws the wrong number
+                /// of times moves every later try.
+                i32 ordinal{0};
+            };
+            std::vector<Attempt> attempts;
+
+            for (i32 dz = -1; dz <= 1; ++dz) {
+                for (i32 dx = -1; dx <= 1; ++dx) {
+                    const i32 cx = chunk_x + dx;
+                    const i32 cz = chunk_z + dz;
+                    const i32 origin_x = cx * 16;
+                    const i32 origin_z = cz * 16;
+
+                    std::set<std::string_view> nearby;
+                    for (i32 nz = -1; nz <= 1; ++nz) {
+                        for (i32 nx = -1; nx <= 1; ++nx) {
+                            for (i32 y = level.min_y(); y <= level.max_y(); y += 4) {
+                                for (i32 z = 0; z < 16; z += 4) {
+                                    for (i32 x = 0; x < 16; x += 4) {
+                                        nearby.insert(level.biome_at(origin_x + nx * 16 + x, y,
+                                                                     origin_z + nz * 16 + z));
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    const auto kind = worldgen::configured_feature_random();
+                    const i64  seed =
+                        worldgen::decoration_seed(options.seed, origin_x, origin_z, kind);
+                    for (usize step = 0; step < worldgen::kDecorationStepCount; ++step) {
+                        const auto which = static_cast<worldgen::DecorationStep>(step);
+                        const auto order = decorator->order_at(which);
+                        for (usize index = 0; index < order.size(); ++index) {
+                            const std::string_view name = order[index];
+                            const bool listed = std::ranges::any_of(
+                                nearby, [&](std::string_view biome) {
+                                    return decorator->biome_features().lists(biome, name);
+                                });
+                            if (!listed) {
+                                continue;
+                            }
+                            const auto* feature = features->placed(name);
+                            if (feature == nullptr) {
+                                continue;
+                            }
+                            worldgen::FeatureRandom random{
+                                kind, worldgen::feature_seed(seed, static_cast<i32>(index),
+                                                             static_cast<i32>(step))};
+                            worldgen::FeatureContext context;
+                            context.blocks       = &*pack;
+                            context.feature_name = feature->name;
+                            context.biomes       = &decorator->biome_features();
+                            i32 ordinal_in_chunk = 0;
+                            worldgen::expand(
+                                feature->placement, context, level, random,
+                                {origin_x, level.min_y(), origin_z}, [&](BlockPos at) {
+                                    level.set_group(static_cast<i32>(attempts.size()));
+                                    attempts.push_back(
+                                        {std::string(name), at, ordinal_in_chunk++});
+                                    (void)feature->feature->place(context, level, random, at);
+                                });
+                        }
+                    }
+                }
+            }
+
+            // Our writes, grouped by attempt, keeping only wood.
+            std::map<i32, std::map<i64, registry::BlockStateId>> ours;
+            for (const auto& [group, where, state] : level.group_writes()) {
+                if (!is_log(state) && !is_leaf(state)) {
+                    continue;
+                }
+                ours[group][where] = state;
+            }
+
+            // Block-level agreement, middle chunk only.
+            for (const auto& [where, state] : their_wood) {
+                if (!inside_chunk(where, chunk_x, chunk_z)) {
+                    continue;
+                }
+                ++their_blocks;
+            }
+            std::map<i64, registry::BlockStateId> our_wood;
+            for (const auto& [group, cells] : ours) {
+                (void)group;
+                for (const auto& [where, state] : cells) {
+                    our_wood[where] = state;
+                }
+            }
+            for (const auto& [where, state] : our_wood) {
+                if (!inside_chunk(where, chunk_x, chunk_z)) {
+                    continue;
+                }
+                ++our_blocks;
+                const auto theirs = their_wood.find(where);
+                // Compared by *block*, not by state. The game runs one last
+                // pass over a finished tree that rewrites every leaf's
+                // `distance` from its nearest log; that pass draws nothing and
+                // is not part of the shape, and comparing states would call
+                // every correct leaf a difference.
+                if (theirs != their_wood.end() &&
+                    pack->block_of(theirs->second) == pack->block_of(state)) {
+                    ++agreed_blocks;
+                }
+            }
+
+            // Trunk bases: same rule on both sides.
+            std::set<i64> their_base_keys;
+            for (const BlockPos& base : their_bases) {
+                their_base_keys.insert(ReferenceLevel::pack(base.x, base.y, base.z));
+            }
+            their_trunks += static_cast<i64>(their_bases.size());
+
+            std::set<i64> our_base_keys;
+            for (const auto& [where, state] : our_wood) {
+                if (!is_log(state) || !inside_chunk(where, chunk_x, chunk_z)) {
+                    continue;
+                }
+                const i32  x     = unpack_x(where);
+                const i32  y     = unpack_y(where);
+                const i32  z     = unpack_z(where);
+                const auto below = level.block_at(x, y - 1, z);
+                if (!is_log(below) && is_dirt(below)) {
+                    our_base_keys.insert(where);
+                }
+            }
+            our_trunks += static_cast<i64>(our_base_keys.size());
+            for (const i64 key : their_base_keys) {
+                if (our_base_keys.contains(key)) {
+                    ++matched_trunks;
+                }
+            }
+
+            // Shape, per attempt: every wood block we wrote must be the same
+            // block the game has there, and the game must have nothing extra
+            // inside the box we filled.
+            for (const auto& [group, cells] : ours) {
+                if (group < 0 || cells.empty()) {
+                    continue;
+                }
+                const Attempt& attempt = attempts[static_cast<usize>(group)];
+                if (!inside_chunk(ReferenceLevel::pack(attempt.origin.x, attempt.origin.y,
+                                                       attempt.origin.z),
+                                  chunk_x, chunk_z)) {
+                    continue;
+                }
+                const bool has_log = std::ranges::any_of(
+                    cells, [&](const auto& cell) { return is_log(cell.second); });
+                if (!has_log) {
+                    continue;
+                }
+                ++our_groups;
+
+                // Whether this tree's own trunk landed where one of the
+                // game's did. A wrong shape here is a wrong *placer*; a wrong
+                // shape anywhere else may only be this tree standing somewhere
+                // the game never grew one.
+                bool at_a_real_trunk = false;
+                for (const auto& [where, state] : cells) {
+                    if (is_log(state) && their_base_keys.contains(where)) {
+                        at_a_real_trunk = true;
+                        break;
+                    }
+                }
+
+                i32 low_x = std::numeric_limits<i32>::max();
+                i32 low_y = low_x;
+                i32 low_z = low_x;
+                i32 high_x = std::numeric_limits<i32>::min();
+                i32 high_y = high_x;
+                i32 high_z = high_x;
+                bool exact = true;
+                for (const auto& [where, state] : cells) {
+                    const i32 x = unpack_x(where);
+                    const i32 y = unpack_y(where);
+                    const i32 z = unpack_z(where);
+                    low_x = std::min(low_x, x); high_x = std::max(high_x, x);
+                    low_y = std::min(low_y, y); high_y = std::max(high_y, y);
+                    low_z = std::min(low_z, z); high_z = std::max(high_z, z);
+                    const auto theirs = their_wood.find(where);
+                    if (theirs == their_wood.end() ||
+                        pack->block_of(theirs->second) != pack->block_of(state)) {
+                        exact = false;
+                    }
+                }
+                if (exact) {
+                    // And nothing of theirs left over inside the box we filled
+                    // — except where another of our own trees produced it. Two
+                    // canopies overlap constantly, and a neighbour's leaves
+                    // reaching into this tree's box are not this tree's shape
+                    // being wrong.
+                    for (i32 y = low_y; y <= high_y && exact; ++y) {
+                        for (i32 z = low_z; z <= high_z && exact; ++z) {
+                            for (i32 x = low_x; x <= high_x && exact; ++x) {
+                                const i64 where = ReferenceLevel::pack(x, y, z);
+                                if (their_wood.contains(where) && !cells.contains(where) &&
+                                    !our_wood.contains(where)) {
+                                    exact = false;
+                                }
+                            }
+                        }
+                    }
+                }
+                if (at_a_real_trunk) {
+                    ++groups_at_real_trunk;
+                    shape_at_trunk_by_feature[attempt.name].second += 1;
+                    if (exact) {
+                        shape_at_trunk_by_feature[attempt.name].first += 1;
+                    }
+                }
+                if (attempt.ordinal == 0) {
+                    ++first_tries;
+                    first_by_feature[attempt.name].second += 1;
+                    if (exact) {
+                        ++first_tries_exact;
+                        first_by_feature[attempt.name].first += 1;
+                    }
+                }
+                if (exact) {
+                    ++same_shape;
+                    if (at_a_real_trunk) {
+                        ++same_shape_at_real_trunk;
+                    }
+                    continue;
+                }
+                wrong_shape_by_feature[attempt.name] += 1;
+                if (at_a_real_trunk) {
+                    ++wrong_shape_at_real_trunk;
+                }
+                if (shown < options.show && (!options.first || attempt.ordinal == 0) &&
+                    (!options.matched || at_a_real_trunk) &&
+                    (options.only.empty() ||
+                     attempt.name.find(options.only) != std::string::npos)) {
+                    ++shown;
+                    fmt::print("\n{} at {},{},{} — ours then theirs, layer by layer\n",
+                               attempt.name, attempt.origin.x, attempt.origin.y,
+                               attempt.origin.z);
+                    for (i32 y = high_y; y >= low_y; --y) {
+                        fmt::print("  y {:>4}\n", y);
+                        for (i32 z = low_z; z <= high_z; ++z) {
+                            std::string mine;
+                            std::string theirs;
+                            for (i32 x = low_x; x <= high_x; ++x) {
+                                const i64  where = ReferenceLevel::pack(x, y, z);
+                                const auto our   = cells.find(where);
+                                mine += our == cells.end() ? '.'
+                                        : is_log(our->second) ? '#'
+                                                              : 'o';
+                                const auto them = their_wood.find(where);
+                                theirs += them == their_wood.end() ? '.'
+                                          : is_log(them->second)   ? '#'
+                                                                   : 'o';
+                            }
+                            fmt::print("    {}   {}\n", mine, theirs);
+                        }
+                    }
+                }
+            }
+
+            // Their trunks that nothing of ours reached, by the feature that
+            // should have made them — read off the biome rather than guessed.
+            for (const i64 key : their_base_keys) {
+                if (!our_base_keys.contains(key)) {
+                    missing_by_feature[std::string(
+                        level.biome_at(unpack_x(key), unpack_y(key), unpack_z(key)))] += 1;
+                }
+            }
+            ++done;
+        }
+
+        if (!options.calibrate.empty()) {
+            fmt::print("\n{} at step {}, {} chunks: the first position the pipeline makes,\n"
+                       "against the columns the game actually grew a trunk in\n",
+                       options.calibrate, options.step, done);
+            fmt::print("{:>6} {:>8} {:>8}\n", "index", "tries", "on a trunk");
+            i32 best  = -1;
+            i64 top   = -1;
+            for (const auto& [index, seen] : sweep_seen) {
+                const i64 hits = sweep_hits.contains(index) ? sweep_hits.at(index) : 0;
+                if (hits > top) {
+                    top  = hits;
+                    best = index;
+                }
+                if (hits > 0) {
+                    fmt::print("{:>6} {:>8} {:>8}\n", index, seen, hits);
+                }
+            }
+            fmt::print("\nbest index {} with {} hits; our sorter says {}\n", best, top,
+                       decorator->index_of(static_cast<worldgen::DecorationStep>(options.step),
+                                           options.calibrate));
+            return 0;
+        }
+
+        fmt::print("\nseed {}, {} chunks compared\n", options.seed, done);
+        fmt::print("{} of {} configured features built, {} placed features\n",
+                   features->configured_count(), 194, features->placed_count());
+        fmt::print("\ntrunk bases in the game's world   {}\n", their_trunks);
+        fmt::print("trunk bases in ours                {}\n", our_trunks);
+        fmt::print("in the same place                  {}  ({:.3f} %)\n", matched_trunks,
+                   their_trunks == 0 ? 0.0
+                                     : 100.0 * static_cast<f64>(matched_trunks) /
+                                           static_cast<f64>(their_trunks));
+        fmt::print("\ntrees we grew (attempts with a log) {}\n", our_groups);
+        fmt::print("of those, identical shape           {}  ({:.3f} %)\n", same_shape,
+                   our_groups == 0 ? 0.0
+                                   : 100.0 * static_cast<f64>(same_shape) /
+                                         static_cast<f64>(our_groups));
+        fmt::print("\nof the trees standing on one of the game's trunks   {}\n",
+                   groups_at_real_trunk);
+        fmt::print("of those, identical shape                          {}  ({:.3f} %)\n",
+                   same_shape_at_real_trunk,
+                   groups_at_real_trunk == 0
+                       ? 0.0
+                       : 100.0 * static_cast<f64>(same_shape_at_real_trunk) /
+                             static_cast<f64>(groups_at_real_trunk));
+        (void)wrong_shape_at_real_trunk;
+        fmt::print("\nlog and leaf blocks: theirs {}, ours {}, same block {}  ({:.3f} %)\n",
+                   their_blocks, our_blocks, agreed_blocks,
+                   their_blocks == 0 ? 0.0
+                                     : 100.0 * static_cast<f64>(agreed_blocks) /
+                                           static_cast<f64>(their_blocks));
+
+        fmt::print(
+            "\nfirst try of a feature in its chunk — the one whose generator state is\n"
+            "known-good, so a wrong shape here is a wrong placer and nothing else:\n");
+        fmt::print("  {} of {} identical  ({:.3f} %)\n", first_tries_exact, first_tries,
+                   first_tries == 0 ? 0.0
+                                    : 100.0 * static_cast<f64>(first_tries_exact) /
+                                          static_cast<f64>(first_tries));
+        for (const auto& [name, counts] : first_by_feature) {
+            fmt::print("  {:<44} {:>4} / {:<4}\n", name, counts.first, counts.second);
+        }
+        if (!shape_at_trunk_by_feature.empty()) {
+            fmt::print("\nshape, among the trees standing on one of the game's trunks:\n");
+            for (const auto& [name, counts] : shape_at_trunk_by_feature) {
+                fmt::print("  {:<44} {:>4} / {:<4}  {:.1f} %\n", name, counts.first,
+                           counts.second,
+                           counts.second == 0 ? 0.0
+                                              : 100.0 * static_cast<f64>(counts.first) /
+                                                    static_cast<f64>(counts.second));
+            }
+        }
+        if (!wrong_shape_by_feature.empty()) {
+            fmt::print("\nwrong shape, by the placed feature that grew it:\n");
+            std::vector<std::pair<std::string, i64>> ranked(wrong_shape_by_feature.begin(),
+                                                            wrong_shape_by_feature.end());
+            std::ranges::sort(ranked,
+                              [](const auto& a, const auto& b) { return a.second > b.second; });
+            for (const auto& [name, count] : ranked) {
+                fmt::print("  {:<44} {:>7}\n", name, count);
+            }
+        }
+        if (!missing_by_feature.empty()) {
+            fmt::print("\ntheir trunks with nothing of ours there, by biome:\n");
+            std::vector<std::pair<std::string, i64>> ranked(missing_by_feature.begin(),
+                                                            missing_by_feature.end());
+            std::ranges::sort(ranked,
+                              [](const auto& a, const auto& b) { return a.second > b.second; });
+            for (const auto& [name, count] : ranked) {
+                fmt::print("  {:<44} {:>7}\n", name, count);
+            }
+        }
+        return 0;
     }
 
     if (!options.calibrate.empty()) {
