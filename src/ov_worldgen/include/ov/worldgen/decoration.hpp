@@ -80,11 +80,23 @@ inline constexpr usize kDecorationStepCount = 11;
 /// The features of every biome, ordered, and the machinery to run them.
 class Decorator {
 public:
-    /// Read every biome's feature lists from `worldgen/biome/` and build the
-    /// shared per-step ordering over them.
+    /// Read the dimension's biomes from `worldgen/biome/` and build the shared
+    /// per-step ordering over them.
+    ///
+    /// The biome source is not a convenience here, it is half the answer. The
+    /// ordering is a topological sort, and where the constraints leave two
+    /// features unordered the tie falls to whichever was *seen* first — so
+    /// which biomes exist, and in which order they are walked, moves features
+    /// in the index and therefore moves them in the world. The game walks
+    /// exactly the biomes its own biome source can produce, in that source's
+    /// order, which is why this takes one rather than reading the directory.
+    ///
+    /// Measured: with the whole directory read alphabetically, `ore_copper`
+    /// lands at index 23 and the game seeds it with 24. See
+    /// docs/provenance/features.md.
     [[nodiscard]] static std::expected<Decorator, FeatureError> load(
         const std::filesystem::path& data_root, const registry::BlockRegistry& blocks,
-        const FeatureRegistry& features);
+        const FeatureRegistry& features, const BiomeSource& source);
 
     /// Decorate one chunk.
     ///

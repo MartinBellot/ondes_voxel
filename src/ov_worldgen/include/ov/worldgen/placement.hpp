@@ -89,17 +89,36 @@ public:
     [[nodiscard]] bool outside_build_height(i32 y) const { return y < min_y() || y > max_y(); }
 };
 
-/// The generator a feature draws from.
+/// The generator a feature draws from — `WorldgenRandom`, not either family on
+/// its own.
 ///
-/// Either family, chosen at construction. That is not future-proofing: the
-/// noise settings carry a `legacy_random_source` flag, so a datapack really can
-/// ask for the old generator, and the two are not interchangeable — they
-/// consume different amounts of state and their bounded draws use different
-/// algorithms, so the same seed gives two different worlds. Which one the
-/// features use is a fact about the game that has to be measured rather than
-/// assumed, and this is what makes measuring it one flag instead of a rewrite.
+/// This is the single fact that decides where every ore, tree and spring in the
+/// world lands, and it is a hybrid that neither family's name suggests.
+/// `WorldgenRandom` **wraps** a source and overrides only the primitive
+/// `next(bits)`; every draw built on top of that primitive — the bounded draw,
+/// the float, the double, the long — stays the one `java.util.Random` defines.
+/// So the state advances as Xoroshiro128++ while the bits are taken out of it
+/// the legacy way:
+///
+///   * `next(bits)` is the **top** `bits` bits of one 64-bit Xoroshiro draw;
+///   * `next_int(16)` is therefore `(16 * next(31)) >> 31`, not Lemire's
+///     multiply-and-reject over the **low** thirty-two bits;
+///   * `next_long()` is two `next(32)` draws assembled, not one 64-bit draw.
+///
+/// Measured, not reasoned: `scripts/probe_decoration.py` reads the draws
+/// straight off a probe world's disk, and the hybrid reproduces 9712 of 9712
+/// exact marker positions across four world seeds while pure Xoroshiro and pure
+/// legacy each reproduce none. See docs/provenance/features.md.
+///
+/// The core is still chosen at construction, because the noise settings carry a
+/// `legacy_random_source` flag and a datapack really can ask for the old one.
+/// With a legacy core the wrapper is transparent — `java.util.Random` wrapping
+/// itself — which is why the carvers, which wrap a legacy source, were never
+/// affected by this.
 class FeatureRandom {
 public:
+    /// Which source `WorldgenRandom` wraps. Not which algorithm the draws use:
+    /// the draws are always the legacy ones.
     enum class Kind : u8 { Xoroshiro, Legacy };
 
     FeatureRandom(Kind kind, i64 seed) noexcept
@@ -107,32 +126,73 @@ public:
 
     [[nodiscard]] Kind kind() const noexcept { return kind_; }
 
+    /// The primitive. Everything below is defined in terms of it, in the order
+    /// the specification fixes.
+    [[nodiscard]] i32 next(int bits) noexcept {
+        if (kind_ == Kind::Legacy) {
+            return legacy_.next(bits);
+        }
+        // The *top* bits. Taking the low ones would still look random and
+        // would share nothing with the game.
+        return static_cast<i32>(static_cast<u64>(xoroshiro_.next_long()) >> (64 - bits));
+    }
+
     [[nodiscard]] i64 next_long() noexcept {
-        return kind_ == Kind::Xoroshiro ? xoroshiro_.next_long() : legacy_.next_long();
+        // Two draws, high half first. Named because C++ does not sequence the
+        // operands of `+` and would happily take them the other way round.
+        const i32 high = next(32);
+        const i32 low  = next(32);
+        return static_cast<i64>((static_cast<u64>(static_cast<i64>(high)) << 32) +
+                                static_cast<u64>(static_cast<i64>(low)));
     }
-    [[nodiscard]] i32 next_int() noexcept {
-        return kind_ == Kind::Xoroshiro ? xoroshiro_.next_int() : legacy_.next_int();
-    }
+
+    [[nodiscard]] i32 next_int() noexcept { return next(32); }
+
+    /// Uniform in `[0, bound)`, by the legacy rejection.
+    ///
+    /// A bound of zero or less yields 0 rather than trapping: this is reached
+    /// from datapack values.
     [[nodiscard]] i32 next_int(i32 bound) noexcept {
-        return kind_ == Kind::Xoroshiro ? xoroshiro_.next_int(bound) : legacy_.next_int(bound);
+        if (bound <= 0) {
+            return 0;
+        }
+        if ((bound & (bound - 1)) == 0) {
+            return static_cast<i32>((static_cast<i64>(bound) * static_cast<i64>(next(31))) >> 31);
+        }
+        i32 bits = 0;
+        i32 value = 0;
+        do {
+            bits  = next(31);
+            value = bits % bound;
+            // The overflow test is the specification's, and it must wrap.
+        } while (static_cast<i32>(static_cast<u32>(bits) - static_cast<u32>(value) +
+                                  static_cast<u32>(bound - 1)) < 0);
+        return value;
     }
-    [[nodiscard]] bool next_boolean() noexcept {
-        return kind_ == Kind::Xoroshiro ? xoroshiro_.next_boolean() : legacy_.next_boolean();
-    }
+
+    [[nodiscard]] bool next_boolean() noexcept { return next(1) != 0; }
+
     [[nodiscard]] f32 next_float() noexcept {
-        return kind_ == Kind::Xoroshiro ? xoroshiro_.next_float() : legacy_.next_float();
+        return static_cast<f32>(next(24)) / static_cast<f32>(1 << 24);
     }
+
     [[nodiscard]] f64 next_double() noexcept {
-        return kind_ == Kind::Xoroshiro ? xoroshiro_.next_double() : legacy_.next_double();
+        const i32 high = next(26);
+        const i32 low  = next(27);
+        return static_cast<f64>((static_cast<i64>(high) << 27) + static_cast<i64>(low)) *
+               0x1.0p-53;
     }
-    [[nodiscard]] f64 next_gaussian() noexcept {
-        return kind_ == Kind::Xoroshiro ? xoroshiro_.next_gaussian() : legacy_.next_gaussian();
-    }
+
+    /// Standard normal, by the polar method with a cached second value. Carries
+    /// the same fdlibm caveat as `math::LegacyRandomSource::next_gaussian`.
+    [[nodiscard]] f64 next_gaussian() noexcept;
 
 private:
     Kind                        kind_;
     math::XoroshiroRandomSource xoroshiro_;
     math::LegacyRandomSource    legacy_;
+    f64                         next_gaussian_{0.0};
+    bool                        have_next_gaussian_{false};
 };
 
 /// Which family the features use, from OV_FEATURE_RANDOM.

@@ -195,10 +195,17 @@ TEST_CASE("the shared feature order agrees with every biome's own order",
     REQUIRE(blocks.has_value());
     auto features = FeatureRegistry::load(data_root(), *blocks);
     REQUIRE(features.has_value());
-    auto decorator = Decorator::load(data_root(), *blocks, *features);
+    // The climate table is a data-generator *report*, one level up from
+    // the datapack root.
+    auto biomes = BiomeSource::load(data_root().parent_path().parent_path(), "overworld");
+    REQUIRE(biomes.has_value());
+    auto decorator = Decorator::load(data_root(), *blocks, *features, *biomes);
     REQUIRE(decorator.has_value());
 
-    CHECK(decorator->biome_count() == 64);
+    // The fifty-three the overworld's climate table can name, not the
+    // sixty-four files on disk. The nether's biomes are another dimension's
+    // and another ordering's.
+    CHECK(decorator->biome_count() == 53);
 
     // The order the ores are seeded in. Every overworld biome lists them in
     // this relative order, so the shared order has to contain it: if it did
@@ -215,6 +222,19 @@ TEST_CASE("the shared feature order agrees with every biome's own order",
         CHECK(index > previous);
         previous = index;
     }
+
+    // Measured, not derived. `ore_copper` and `ore_copper_large` never share
+    // a biome, so nothing in the data orders them and the sort's own tie-break
+    // decides — and the two plausible tie-breaks give opposite answers. The
+    // game seeds ore_copper with 24: a datapack that replaced it with a marker
+    // block said so in 528 of 529 chunks. See docs/provenance/features.md.
+    CHECK(decorator->index_of(DecorationStep::UndergroundOres,
+                              "minecraft:ore_copper_large") == 23);
+    CHECK(decorator->index_of(DecorationStep::UndergroundOres, "minecraft:ore_copper") == 24);
+    CHECK(decorator->index_of(DecorationStep::UndergroundOres, "minecraft:ore_lapis") == 21);
+    CHECK(decorator->index_of(DecorationStep::UndergroundOres,
+                              "minecraft:ore_iron_middle") == 12);
+    CHECK(decorator->index_of(DecorationStep::UndergroundOres, "minecraft:ore_coal_upper") == 9);
 
     // A feature that belongs to another step has no index at this one. The
     // index is per step, so asking the wrong step must not quietly answer.
@@ -422,4 +442,64 @@ TEST_CASE("a feature runs between the positions, not after them",
     FeatureRandom expected{FeatureRandom::Kind::Xoroshiro, 11};
     CHECK(order[0] == expected.next_int(1000));
     CHECK(order[1] == expected.next_int(1000));
+}
+
+TEST_CASE("the feature generator draws what the game drew", "[worldgen][feature]") {
+    // Vectors read off a probe world's disk, not derived from anything here.
+    //
+    // A datapack emptied the plains biome and gave it markers whose position is
+    // three nextInt(16) draws taken from the feature seed; every chunk was
+    // plains, so the index and the step were fixed by construction. What the
+    // game wrote is therefore the draws themselves. See
+    // scripts/probe_decoration.py and docs/provenance/features.md.
+    //
+    // At chunk (0, 0) both multipliers are multiplied by zero, so the
+    // decoration seed is the world seed whatever the multipliers are — which is
+    // what makes these four lines a test of the *generator* and not of the
+    // chunk mixing.
+    struct Probe {
+        i64                 level_seed;
+        i32                 index;
+        i32                 step;
+        std::array<i32, 3>  draws;
+    };
+    constexpr std::array<Probe, 8> kProbes{{
+        {0, 0, 6, {10, 9, 4}},
+        {0, 1, 6, {3, 13, 10}},
+        {0, 2, 6, {9, 14, 3}},
+        {0, 0, 8, {5, 10, 12}},
+        {1234567890, 0, 6, {1, 3, 2}},
+        {1234567890, 1, 6, {6, 0, 1}},
+        {1234567890, 2, 6, {4, 11, 3}},
+        {1234567890, 0, 8, {14, 14, 12}},
+    }};
+
+    for (const Probe& probe : kProbes) {
+        // Chunk (0, 0): the decoration seed collapses to the world seed.
+        const i64 decoration =
+            decoration_seed(probe.level_seed, 0, 0, FeatureRandom::Kind::Xoroshiro);
+        INFO(probe.level_seed << " index " << probe.index << " step " << probe.step);
+        CHECK(decoration == probe.level_seed);
+
+        FeatureRandom random{FeatureRandom::Kind::Xoroshiro,
+                             feature_seed(decoration, probe.index, probe.step)};
+        CHECK(random.next_int(16) == probe.draws[0]);
+        CHECK(random.next_int(16) == probe.draws[1]);
+        CHECK(random.next_int(16) == probe.draws[2]);
+    }
+}
+
+TEST_CASE("the two multipliers come out of the hybrid, not out of Xoroshiro",
+          "[worldgen][feature]") {
+    // Chunk (0, 0) says nothing about the multipliers, so this is a chunk far
+    // enough out that both of them matter. The expected draws come from the
+    // same probe world, chunk (625, -625) — block (10000, -10000).
+    const i64 decoration =
+        decoration_seed(1234567890, 10000, -10000, FeatureRandom::Kind::Xoroshiro);
+    FeatureRandom random{FeatureRandom::Kind::Xoroshiro, feature_seed(decoration, 0, 6)};
+    // A pure Xoroshiro nextLong for the multipliers gives a different seed and
+    // therefore different draws; these three numbers are the game's.
+    CHECK(random.next_int(16) == 6);
+    CHECK(random.next_int(16) == 12);
+    CHECK(random.next_int(16) == 0);
 }

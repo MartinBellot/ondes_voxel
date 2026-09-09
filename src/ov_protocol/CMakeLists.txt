@@ -13,6 +13,7 @@ ov_add_library(ov_protocol
         src/play.cpp
         src/recipe_packets.cpp
         src/status.cpp
+        src/survival.cpp
         src/types.cpp
         src/varint.cpp
     DEPS
@@ -34,6 +35,7 @@ ov_add_test(test_ov_protocol
         tests/test_framing.cpp
         tests/test_login.cpp
         tests/test_status.cpp
+        tests/test_survival.cpp
         tests/test_types.cpp
         tests/test_uuid_offline.cpp
         tests/test_varint.cpp

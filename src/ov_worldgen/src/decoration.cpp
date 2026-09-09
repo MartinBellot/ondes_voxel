@@ -150,7 +150,7 @@ Decorator::~Decorator()                                = default;
 
 std::expected<Decorator, FeatureError> Decorator::load(
     const std::filesystem::path& data_root, const registry::BlockRegistry& blocks,
-    const FeatureRegistry& features) {
+    const FeatureRegistry& features, const BiomeSource& source) {
     const auto directory = data_root / "worldgen" / "biome";
     if (!std::filesystem::is_directory(directory)) {
         OV_LOG_ERROR("worldgen: {} is missing", directory.string());
@@ -162,19 +162,39 @@ std::expected<Decorator, FeatureError> Decorator::load(
     impl.blocks    = &blocks;
     impl.features  = &features;
 
-    // Sorted, and that is load-bearing rather than tidy: two features that
-    // never share a biome are unordered by the sorter's constraints, and the
-    // tie falls to whichever biome was read first.
-    std::vector<std::filesystem::path> files;
-    for (const auto& entry : std::filesystem::directory_iterator(directory)) {
-        if (entry.path().extension() == ".json") {
-            files.push_back(entry.path());
+    // The biomes this dimension can produce, in the order the biome source
+    // yields them — first occurrence in the climate table, duplicates dropped.
+    // That order is the sorter's tie-break, so it is not presentation: reading
+    // the directory alphabetically instead puts `ore_copper` one index early
+    // and moves every copper vein in the world.
+    std::vector<std::string> biome_order;
+    std::set<std::string>    already;
+    for (usize entry = 0; entry < source.entry_count(); ++entry) {
+        std::string name{source.entry_biome(entry)};
+        if (already.insert(name).second) {
+            biome_order.push_back(std::move(name));
         }
     }
-    std::ranges::sort(files);
+
+    std::vector<std::filesystem::path> files;
+    files.reserve(biome_order.size());
+    for (const std::string& biome : biome_order) {
+        const auto bare = biome.find(':') == std::string::npos
+                              ? biome
+                              : biome.substr(biome.find(':') + 1);
+        auto       path = directory / (bare + ".json");
+        if (!std::filesystem::is_regular_file(path)) {
+            OV_LOG_ERROR("worldgen: the biome source names {}, which has no file at {}", biome,
+                         path.string());
+            return std::unexpected(FeatureError::Missing);
+        }
+        files.push_back(std::move(path));
+    }
 
     simdjson::dom::parser                                 parser;
     std::vector<std::unique_ptr<simdjson::padded_string>> sources;
+    // In biome_order, not sorted: `read_order` below records it.
+    std::vector<std::string> read_order;
     for (const auto& path : files) {
         auto text = simdjson::padded_string::load(path.string());
         if (text.error() != simdjson::SUCCESS) {
@@ -191,8 +211,9 @@ std::expected<Decorator, FeatureError> Decorator::load(
         }
 
         const std::string biome = "minecraft:" + path.stem().string();
-        auto&             lists = impl.biomes[biome];
-        usize             step  = 0;
+        read_order.push_back(biome);
+        auto& lists = impl.biomes[biome];
+        usize step  = 0;
         for (auto list : steps) {
             simdjson::dom::array members;
             if (list.get(members) != simdjson::SUCCESS) {
@@ -225,75 +246,119 @@ std::expected<Decorator, FeatureError> Decorator::load(
 
     // ── The shared ordering ─────────────────────────────────────────────────
     //
-    // One graph per step. Each biome's list is a chain: the feature at position
-    // i must come before the one at i + 1. A topological sort of the union of
-    // those chains is an order every biome agrees with, and the index into it
-    // is what seeds the feature.
+    // A node is one placed feature at one step. Two numbers order the nodes:
+    // the step, then the position at which the *feature* was first met while
+    // walking the biomes in the source's order — a single counter shared by
+    // every step, not one per step.
     //
-    // Kahn's algorithm rather than a depth-first walk, because the queue makes
-    // the tie-break explicit: among the features that are ready, the one that
-    // was seen first wins. "Seen first" is the sorted biome order above.
+    // Each biome contributes a chain over its whole feature list flattened
+    // across steps, so the last feature of a step points at the first of the
+    // next. The chain says "here, this comes before that"; the union of every
+    // biome's chains is the constraint the ordering has to satisfy.
+    //
+    // The sort is a depth-first walk whose **reverse post-order** is the
+    // answer, not Kahn's algorithm — and the two disagree exactly where the
+    // constraints do not decide. A depth-first walk pushes the successor it
+    // enters first *deepest*, so that successor is appended to the post-order
+    // first and therefore ends up *last* once it is reversed. Kahn's queue does
+    // the opposite. `ore_copper` and `ore_copper_large` never share a biome, so
+    // nothing orders them; the game seeds `ore_copper` with 24 and Kahn gives
+    // it 23. That one index was worth 0.3 % of the copper in the world.
+    struct SortNode {
+        usize       step{0};
+        usize       seen{0};
+        std::string name;
+    };
+    using SortKey = std::pair<usize, usize>;  // (step, first-seen number)
+
+    std::unordered_map<std::string, usize> first_seen;
+    std::map<SortKey, usize>               node_of;
+    std::vector<SortNode>                  nodes;
+    std::vector<std::set<SortKey>>         after;
+
+    const auto node_id = [&](usize step, const std::string& name) {
+        auto seen = first_seen.find(name);
+        if (seen == first_seen.end()) {
+            const usize next = first_seen.size();
+            seen             = first_seen.emplace(name, next).first;
+        }
+        const SortKey key{step, seen->second};
+        const auto    found = node_of.find(key);
+        if (found != node_of.end()) {
+            return found->second;
+        }
+        const usize id = nodes.size();
+        nodes.push_back({step, seen->second, name});
+        after.emplace_back();
+        node_of.emplace(key, id);
+        return id;
+    };
+
+    for (const std::string& biome : read_order) {
+        const auto&        lists = impl.biomes.at(biome);
+        std::vector<usize> chain;
+        for (usize step = 0; step < kDecorationStepCount; ++step) {
+            for (const std::string& name : lists[step]) {
+                chain.push_back(node_id(step, name));
+            }
+        }
+        for (usize position = 0; position + 1 < chain.size(); ++position) {
+            const SortNode& to = nodes[chain[position + 1]];
+            after[chain[position]].insert(SortKey{to.step, to.seen});
+        }
+    }
+
+    enum class Mark : u8 { None, OnStack, Done };
+    struct Frame {
+        usize                          node{0};
+        std::set<SortKey>::const_iterator next;
+    };
+
+    std::vector<Mark>  mark(nodes.size(), Mark::None);
+    std::vector<usize> post_order;
+    post_order.reserve(nodes.size());
+    // Roots in (step, first-seen) order: node_of is keyed by exactly that.
+    for (const auto& [key, root] : node_of) {
+        if (mark[root] != Mark::None) {
+            continue;
+        }
+        std::vector<Frame> stack;
+        mark[root] = Mark::OnStack;
+        stack.push_back({root, after[root].begin()});
+        while (!stack.empty()) {
+            const usize here = stack.back().node;
+            if (stack.back().next == after[here].end()) {
+                mark[here] = Mark::Done;
+                post_order.push_back(here);
+                stack.pop_back();
+                continue;
+            }
+            const usize child = node_of.at(*stack.back().next);
+            ++stack.back().next;
+            if (mark[child] == Mark::OnStack) {
+                // Two biomes disagree about the order of two features. Vanilla
+                // logs and falls back; here it is fatal, because a partial
+                // order would seed everything after the cycle wrongly and
+                // nothing downstream could tell.
+                OV_LOG_ERROR("worldgen: the feature order has a cycle at {} (step {})",
+                             nodes[child].name,
+                             to_string(static_cast<DecorationStep>(nodes[child].step)));
+                return std::unexpected(FeatureError::Malformed);
+            }
+            if (mark[child] != Mark::None) {
+                continue;
+            }
+            mark[child] = Mark::OnStack;
+            stack.push_back({child, after[child].begin()});
+        }
+    }
+
+    for (auto position = post_order.rbegin(); position != post_order.rend(); ++position) {
+        const SortNode& node = nodes[*position];
+        impl.order[node.step].push_back(node.name);
+    }
     for (usize step = 0; step < kDecorationStepCount; ++step) {
-        std::vector<std::string>                      seen;
-        std::unordered_map<std::string, usize>        rank;
-        std::unordered_map<usize, std::set<usize>>    after;
-        std::unordered_map<usize, usize>              incoming;
-
-        const auto intern = [&](const std::string& name) {
-            const auto found = rank.find(name);
-            if (found != rank.end()) {
-                return found->second;
-            }
-            const usize id = seen.size();
-            seen.push_back(name);
-            rank.emplace(name, id);
-            incoming.emplace(id, 0);
-            return id;
-        };
-
-        for (const auto& [biome, lists] : impl.biomes) {
-            const auto& list = lists[step];
-            for (usize position = 0; position + 1 < list.size(); ++position) {
-                const usize from = intern(list[position]);
-                const usize to   = intern(list[position + 1]);
-                if (from != to && after[from].insert(to).second) {
-                    ++incoming[to];
-                }
-            }
-            if (list.size() == 1) {
-                (void)intern(list.front());
-            }
-        }
-
-        std::vector<usize> ready;
-        for (usize id = 0; id < seen.size(); ++id) {
-            if (incoming[id] == 0) {
-                ready.push_back(id);
-            }
-        }
-        std::vector<std::string>& order = impl.order[step];
-        // A stable front-of-queue pick, kept sorted by first-seen id so that
-        // the tie-break is the biome reading order and not a hash order.
-        while (!ready.empty()) {
-            std::ranges::sort(ready);
-            const usize chosen = ready.front();
-            ready.erase(ready.begin());
-            order.push_back(seen[chosen]);
-            for (const usize next : after[chosen]) {
-                if (--incoming[next] == 0) {
-                    ready.push_back(next);
-                }
-            }
-        }
-        if (order.size() != seen.size()) {
-            // A cycle: two biomes disagree about the order of two features.
-            // Vanilla logs and gives up on the step; here it is fatal, because
-            // a partial order would seed every feature after the cycle wrongly
-            // and nothing downstream could tell.
-            OV_LOG_ERROR("worldgen: the feature order at step {} has a cycle ({} of {} placed)",
-                         to_string(static_cast<DecorationStep>(step)), order.size(), seen.size());
-            return std::unexpected(FeatureError::Malformed);
-        }
+        const auto& order = impl.order[step];
         for (usize position = 0; position < order.size(); ++position) {
             impl.index[step].emplace(order[position], static_cast<i32>(position));
         }
