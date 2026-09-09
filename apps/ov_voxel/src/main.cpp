@@ -12,6 +12,7 @@
 
 #define OV_LOG_CATEGORY "voxel"
 
+#include "interface.hpp"
 #include "session.hpp"
 #include "world_source.hpp"
 
@@ -28,6 +29,8 @@
 #include "ov/render/camera.hpp"
 #include "ov/render/environment.hpp"
 #include "ov/render/chunk_mesher.hpp"
+#include "ov/render/font.hpp"
+#include "ov/render/item_model.hpp"
 #include "ov/gameplay/physics.hpp"
 #include "ov/math/raycast.hpp"
 #include "ov/netclient/client.hpp"
@@ -121,6 +124,49 @@ struct Options {
     /// same bytes, and nothing above the transport changes when it does.
     bool singleplayer{false};
     u16  singleplayer_port{25599};
+    // ── The interface ───────────────────────────────────────────────────
+    /// Draw the HUD. --no-hud is a measuring instrument: the frame cost of the
+    /// interface is the difference between the two on the same scene.
+    bool hud{true};
+    /// 0 is vanilla's automatic rule: the largest integer leaving 320x240.
+    u32 gui_scale{0};
+    std::string language{"en_us"};
+    /// Put the player's own inventory up after this many frames. A diagnostic,
+    /// so a screenshot of it can be taken without a hand on the keyboard.
+    u32 open_inventory{0};
+    /// x,y,z of a block to right-click once the world has settled — a chest,
+    /// to open it.
+    ///
+    /// ⚠️ The lab bench's own chests cannot be opened: ov_lab writes the chest
+    /// *block* and no block entity, and the server only opens a window when it
+    /// finds one. So a scripted round trip places its own chest first; see
+    /// --place-at and docs/provenance/interface.md.
+    std::string use_block;
+    /// x,y,z to place what is held at, by clicking the block below it.
+    std::string place_at;
+    /// from,to: two clicks in the window that opens, a pickup and a place.
+    /// The scripted half of the round trip the mandate asks for.
+    std::string move_slots;
+    /// from,a,b,c…: pick the stack up from `from`, then spread it over the
+    /// rest with a left drag. Sixty-four stone over three slots is 21/21/21
+    /// with one left on the cursor, which is what the server was measured
+    /// doing and what this checks we ask it for.
+    std::string drag_slots;
+    /// Print the open window's contents and the player's inventory at the end.
+    bool dump_window{false};
+    /// x,y,z[,yaw,pitch] to stand at once the server has spawned the player.
+    ///
+    /// The server believes what a client reports about its own position — a
+    /// stated gap in server.cpp, not a hole this opens — so this is how a
+    /// scripted run reaches a plot of the lab bench without walking there for
+    /// forty seconds.
+    std::string stand_at;
+    /// Close the open window at this frame, so a run can prove the server kept
+    /// what was put in it.
+    u32 close_at{0};
+    /// Dump the font's advances and exit, for scripts/measure_font_widths.py.
+    std::string font_widths;
+
     /// x,y,z,yaw,pitch. Exists so a face can be put in front of the camera and
     /// looked at, which is how the questions a unit test cannot answer — is
     /// this texture mirrored? — actually get settled.
@@ -188,6 +234,31 @@ struct Options {
             options.dig = true;
         } else if (argument.starts_with("--hold=")) {
             options.hold = value("--hold=");
+        } else if (argument == "--no-hud") {
+            options.hud = false;
+        } else if (argument.starts_with("--gui-scale=")) {
+            options.gui_scale = static_cast<u32>(std::atoi(value("--gui-scale=").c_str()));
+        } else if (argument.starts_with("--lang=")) {
+            options.language = value("--lang=");
+        } else if (argument.starts_with("--open-inventory=")) {
+            options.open_inventory =
+                static_cast<u32>(std::atoi(value("--open-inventory=").c_str()));
+        } else if (argument.starts_with("--use-block=")) {
+            options.use_block = value("--use-block=");
+        } else if (argument.starts_with("--place-at=")) {
+            options.place_at = value("--place-at=");
+        } else if (argument.starts_with("--move-slots=")) {
+            options.move_slots = value("--move-slots=");
+        } else if (argument.starts_with("--stand-at=")) {
+            options.stand_at = value("--stand-at=");
+        } else if (argument.starts_with("--close-at=")) {
+            options.close_at = static_cast<u32>(std::atoi(value("--close-at=").c_str()));
+        } else if (argument.starts_with("--drag-slots=")) {
+            options.drag_slots = value("--drag-slots=");
+        } else if (argument == "--dump-window") {
+            options.dump_window = true;
+        } else if (argument.starts_with("--font-widths=")) {
+            options.font_widths = value("--font-widths=");
         } else if (argument == "--singleplayer") {
             options.singleplayer = true;
         } else if (argument.starts_with("--singleplayer-port=")) {
@@ -267,6 +338,29 @@ int main(int argc, char** argv) {
     const std::span<char*> args(argv, static_cast<usize>(argc));
     Options                options = parse_arguments(args);
     const auto             base    = executable_directory(argv[0]);
+
+    // The font's advances, and nothing else. Before the registry and before
+    // any Vulkan, so scripts/measure_font_widths.py can compare our table with
+    // its own walk of the pack without starting a graphics device.
+    if (!options.font_widths.empty()) {
+        const render::DirectoryAssetSource font_source{std::filesystem::path(options.assets)};
+        auto                               font = render::Font::load_default(font_source);
+        if (!font) {
+            OV_LOG_ERROR("font: {}", render::to_string(font.error()));
+            return 1;
+        }
+        std::ofstream out(options.font_widths);
+        if (!out) {
+            OV_LOG_ERROR("could not write {}", options.font_widths);
+            return 1;
+        }
+        for (const char32_t codepoint : font->codepoints()) {
+            out << static_cast<u32>(codepoint) << '\t'
+                << static_cast<i32>(font->advance(codepoint)) << '\n';
+        }
+        fmt::print("wrote {} ({} glyphs)\n", options.font_widths, font->glyph_count());
+        return 0;
+    }
 
     // ── Registry, world, models, atlas, mesh: all before any Vulkan ─────────
     auto blocks = registry::BlockRegistry::load(options.registry);
@@ -351,8 +445,27 @@ int main(int argc, char** argv) {
     OV_LOG_INFO("models: {} states resolved, {} with no geometry, {} sprites",
                 models.resolved_count(), models.missing_count(), models.sprites().size());
 
+    // Item models, resolved before the atlas is stitched for the same reason
+    // the block models are: an item's sprite has to be in the sheet before a
+    // hotbar can draw it, and there is exactly one sheet. A separate item atlas
+    // would be a second texture to bind in the middle of the interface's one
+    // batch.
+    render::ItemModelCache item_models(source);
+    if (registries != nullptr) {
+        if (const auto items = registries->find("minecraft:item")) {
+            for (const std::string_view name : registries->entries(*items)) {
+                item_models.resolve(name);
+            }
+        }
+    }
+    OV_LOG_INFO("items: {} models resolved, {} sprites", item_models.resolved_count(),
+                item_models.sprites().size());
+
     render::AtlasBuilder builder(source);
     for (const auto& sprite : models.sprites()) {
+        builder.add(sprite);
+    }
+    for (const auto& sprite : item_models.sprites()) {
         builder.add(sprite);
     }
     auto atlas = builder.build();
@@ -361,6 +474,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     models.classify_layers(*atlas);
+    item_models.bake(*atlas);
 
     // The biome colours, resolved once against the pack's colormaps. The world
     // was loaded with the registry's own biome names, so a chunk's numeric
@@ -570,6 +684,30 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // The interface: the HUD, the screens, and the mirror of the server's
+    // windows. Built after the atlas image, because an item is drawn from the
+    // same texture the terrain is.
+    demo::InterfaceOptions interface_options;
+    interface_options.hud       = options.hud;
+    interface_options.gui_scale = options.gui_scale;
+    interface_options.language  = options.language;
+
+    // The tint a grass or leaf face takes in a GUI cell. Vanilla samples the
+    // colormap at (0.5, 1.0) for an item, which is not any biome's point; this
+    // is plains, which is a different green by a few levels. Named rather than
+    // dressed up as the same thing.
+    const u32 item_tint =
+        blocks->biome_count() > 0 ? biome_colours->grass(0) : 0x91BD59U;
+
+    auto interface = demo::Interface::create(device, device.swapchain_format(), source,
+                                             item_models, *atlas_image, atlas->width(),
+                                             atlas->height(), registries, item_tint,
+                                             interface_options);
+    if (!interface) {
+        OV_LOG_ERROR("interface: {}", interface.error());
+        return 1;
+    }
+
     // ── The server ──────────────────────────────────────────────────────────
     std::atomic<bool> stop_server{false};
     std::thread       server_thread;
@@ -684,6 +822,98 @@ int main(int argc, char** argv) {
         readback = *buffer;
     }
 
+    // The scripted half of the round trip: right-click a block, then make two
+    // clicks in the window that opens. Every one of them goes through the same
+    // path a hand on the mouse takes, so what it proves is what a player gets.
+    const auto parse_block = [](const std::string& text) {
+        std::array<i32, 3> parts{0, 0, 0};
+        usize              index = 0;
+        usize              start = 0;
+        while (index < parts.size() && start <= text.size()) {
+            const auto end = text.find(',', start);
+            parts[index++] = std::atoi(
+                text.substr(start, end == std::string::npos ? std::string::npos : end - start)
+                    .c_str());
+            if (end == std::string::npos) {
+                break;
+            }
+            start = end + 1;
+        }
+        return BlockPos{parts[0], parts[1], parts[2]};
+    };
+
+    BlockPos use_target{};
+    bool     use_wanted = false;
+    if (!options.use_block.empty()) {
+        use_target = parse_block(options.use_block);
+        use_wanted = true;
+    }
+    BlockPos place_target_scripted{};
+    bool     place_wanted = false;
+    if (!options.place_at.empty()) {
+        place_target_scripted = parse_block(options.place_at);
+        place_wanted          = true;
+    }
+    bool scripted_place_sent = false;
+    Vec3d stand_position{};
+    f32   stand_yaw   = 0.0F;
+    f32   stand_pitch = 0.0F;
+    bool  stand_wanted = false;
+    if (!options.stand_at.empty()) {
+        std::array<f64, 5> parts{0.0, 0.0, 0.0, 0.0, 0.0};
+        usize              index = 0;
+        usize              start = 0;
+        while (index < parts.size() && start <= options.stand_at.size()) {
+            const auto end = options.stand_at.find(',', start);
+            parts[index++] = std::atof(
+                options.stand_at
+                    .substr(start, end == std::string::npos ? std::string::npos : end - start)
+                    .c_str());
+            if (end == std::string::npos) {
+                break;
+            }
+            start = end + 1;
+        }
+        stand_position = Vec3d{parts[0], parts[1], parts[2]};
+        stand_yaw      = static_cast<f32>(parts[3]);
+        stand_pitch    = static_cast<f32>(parts[4]);
+        stand_wanted   = true;
+    }
+    bool stand_done = false;
+    std::string window_dump;
+
+    bool use_sent   = false;
+    i16  move_from  = -1;
+    i16  move_to    = -1;
+    if (!options.move_slots.empty()) {
+        const auto comma = options.move_slots.find(',');
+        move_from = static_cast<i16>(std::atoi(options.move_slots.substr(0, comma).c_str()));
+        if (comma != std::string::npos) {
+            move_to = static_cast<i16>(std::atoi(options.move_slots.substr(comma + 1).c_str()));
+        }
+    }
+    std::vector<i16> drag_sequence;
+    if (!options.drag_slots.empty()) {
+        usize start = 0;
+        while (start <= options.drag_slots.size()) {
+            const auto end = options.drag_slots.find(',', start);
+            drag_sequence.push_back(static_cast<i16>(std::atoi(
+                options.drag_slots
+                    .substr(start, end == std::string::npos ? std::string::npos : end - start)
+                    .c_str())));
+            if (end == std::string::npos) {
+                break;
+            }
+            start = end + 1;
+        }
+    }
+    bool drag_pick_sent = false;
+    bool drag_sent      = false;
+
+    bool move_pick_sent  = false;
+    bool move_place_sent = false;
+    bool inventory_opened = false;
+
     std::optional<RayHit> aimed;
     bool                  dig_sent   = false;
     bool     place_sent = false;
@@ -715,7 +945,24 @@ int main(int argc, char** argv) {
             continue;
         }
 
-        camera.turn(static_cast<f32>(input.mouse_delta_x), static_cast<f32>(input.mouse_delta_y));
+        // The interface gets the input first. When a screen is open it takes
+        // all of it: a click that moves a stack must not also break the block
+        // behind the window, and the camera must not turn while the pointer is
+        // choosing a slot.
+        const auto  now_for_ui = std::chrono::steady_clock::now();
+        static auto last_ui    = now_for_ui;
+        const f64   ui_delta   = std::chrono::duration<f64>(now_for_ui - last_ui).count();
+        last_ui                = now_for_ui;
+
+        bool ui_took_input = false;
+        if (online) {
+            ui_took_input = (*interface)->update(input, *client, **window, ui_delta);
+        }
+
+        if (!ui_took_input && !(*interface)->screen_open()) {
+            camera.turn(static_cast<f32>(input.mouse_delta_x),
+                        static_cast<f32>(input.mouse_delta_y));
+        }
 
         if (online) {
             if (!client->connected()) {
@@ -726,6 +973,11 @@ int main(int argc, char** argv) {
             }
 
             client->poll(events);
+            // The interface first: Login (play) carries the game mode, and the
+            // creative-slot branch below reads it. Applying it after would make
+            // the first frame's decision on a default rather than on what the
+            // server said.
+            (*interface)->apply(events);
             if (events.teleport && !spawned) {
                 // The first teleport is the spawn. Ask for something in hand
                 // once, here: the server has just accepted the login and the
@@ -737,9 +989,25 @@ int main(int argc, char** argv) {
                     }
                 }
                 if (item) {
-                    client->send_creative_slot(36, *item, 1);
+                    client->send_creative_slot(36, *item, 64);
                     client->send_held_slot(0);
-                    OV_LOG_INFO("holding {} (item {})", options.hold, *item);
+                    // The server accepts a creative slot and sends nothing
+                    // back — it is client-authoritative by design, in vanilla
+                    // too — so this is the one place the mirror is written
+                    // from this side rather than from a packet.
+                    //
+                    // Only in creative. A survival server *ignores* the packet,
+                    // and mirroring it anyway would draw an item in the hotbar
+                    // that the player does not have — a HUD lying about the
+                    // server, which is the one thing it must never do. The
+                    // first survival screenshot showed exactly that.
+                    if ((*interface)->hud().creative) {
+                        (*interface)->note_creative(36, *item, 64);
+                        OV_LOG_INFO("holding {} (item {})", options.hold, *item);
+                    } else {
+                        OV_LOG_INFO(
+                            "survival: the server owns the inventory, so --hold does nothing");
+                    }
                 } else {
                     OV_LOG_WARN("{} is not an item; the hand stays empty", options.hold);
                 }
@@ -754,6 +1022,12 @@ int main(int argc, char** argv) {
                 camera.yaw_degrees   = events.teleport->yaw;
                 camera.pitch_degrees = events.teleport->pitch;
                 spawned              = true;
+                if (stand_wanted && !stand_done) {
+                    player.position      = stand_position;
+                    camera.yaw_degrees   = stand_yaw;
+                    camera.pitch_degrees = stand_pitch;
+                    stand_done           = true;
+                }
             }
             if (events.time_of_day) {
                 // The world's clock comes from the server, so the sun is in the
@@ -794,6 +1068,18 @@ int main(int argc, char** argv) {
                                nullptr;
             if (spawned && !ground_ready) {
                 tick_accumulator = 0.0;
+                // ...but the server still has to be told where we are, or a
+                // --stand-at run deadlocks: no tick means no position report,
+                // no position report means the server keeps sending the chunks
+                // around the *spawn*, and the ground under the player never
+                // arrives so the tick never runs. Reporting outside the tick
+                // costs one packet a frame while the world catches up.
+                netclient::PlayerInput settling;
+                settling.position  = player.position;
+                settling.yaw       = camera.yaw_degrees;
+                settling.pitch     = camera.pitch_degrees;
+                settling.on_ground = false;
+                client->send_position(settling);
             }
 
             while (ground_ready && tick_accumulator >= kTickSeconds) {
@@ -854,6 +1140,54 @@ int main(int argc, char** argv) {
                 place_sent = true;
             }
 
+            // Right-click a named block once the world has settled, and then
+            // make two clicks in whatever window it opened.
+            if (place_wanted && ground_ready && !scripted_place_sent && rendered > 120) {
+                // Click the *top face of the block below*, which is how a
+                // player places one: the target of a placement is the block you
+                // are pointing at, not the space the block ends up in.
+                client->send_place(place_target_scripted.x, place_target_scripted.y - 1,
+                                   place_target_scripted.z, 1, 0.5F, 1.0F, 0.5F);
+                scripted_place_sent = true;
+            }
+            if (use_wanted && ground_ready && !use_sent && rendered > 160) {
+                client->send_place(use_target.x, use_target.y, use_target.z, 1, 0.5F, 1.0F,
+                                   0.5F);
+                use_sent = true;
+            }
+            if (use_sent && (*interface)->screen_open() && move_from >= 0 && !move_pick_sent &&
+                rendered > 200) {
+                (*interface)->click_slot(*client, move_from, 0, false, -1);
+                move_pick_sent = true;
+            }
+            if (move_pick_sent && !move_place_sent && move_to >= 0 && rendered > 240) {
+                (*interface)->click_slot(*client, move_to, 0, false, -1);
+                move_place_sent = true;
+            }
+            if (drag_sequence.size() >= 2 && (*interface)->screen_open() && !drag_pick_sent &&
+                rendered > 200) {
+                (*interface)->click_slot(*client, drag_sequence.front(), 0, false, -1);
+                drag_pick_sent = true;
+            }
+            if (drag_pick_sent && !drag_sent && rendered > 240) {
+                (*interface)->drag_over(
+                    *client, std::span<const i16>(drag_sequence).subspan(1), false);
+                drag_sent = true;
+            }
+            if (options.dump_window && (*interface)->screen_open() && window_dump.empty() &&
+                rendered > 280) {
+                window_dump = (*interface)->describe_window();
+            }
+            if (options.close_at != 0 && rendered >= options.close_at &&
+                (*interface)->screen_open()) {
+                (*interface)->close(**window, *client);
+            }
+            if (options.open_inventory != 0 && rendered >= options.open_inventory &&
+                !inventory_opened && !(*interface)->screen_open()) {
+                (*interface)->toggle_inventory(**window, *client);
+                inventory_opened = true;
+            }
+
             // Where the player is looking, every frame rather than only on a
             // click: the outline has to follow the aim, and the click then uses
             // the same answer the player was shown.
@@ -867,8 +1201,9 @@ int main(int argc, char** argv) {
                 });
             }
 
-            // Breaking and placing use exactly what the outline showed.
-            if (input.attack_pressed || input.use_pressed) {
+            // Breaking and placing use exactly what the outline showed — and
+            // only when no screen swallowed the click.
+            if (!ui_took_input && (input.attack_pressed || input.use_pressed)) {
                 const auto& hit = aimed;
                 if (hit) {
                     const i32 face = static_cast<i32>(hit->face);
@@ -1039,11 +1374,28 @@ int main(int argc, char** argv) {
                                                  static_cast<f64>(camera.position.z)},
                                            aimed->block.x, aimed->block.y, aimed->block.z);
         }
-        if (online) {
+        // The line crosshair only when the HUD is off: the HUD draws vanilla's
+        // own crosshair sprite, and two crosshairs is one too many.
+        if (online && !options.hud) {
             (*overlay)->draw_crosshair(cmd, width, height);
         }
 
         cmd.end_rendering();
+
+        // The interface, in a pass of its own with no depth attachment at all.
+        // It is on top of everything by definition, and sharing the terrain's
+        // pass would mean either testing the hotbar against the world or
+        // clearing a depth buffer nothing reads.
+        if (online) {
+            rhi::ColourAttachment ui_colour;
+            ui_colour.clear = false;
+            const std::array<rhi::ColourAttachment, 1> ui_attachments{ui_colour};
+            cmd.begin_rendering(ui_attachments, nullptr, width, height);
+            cmd.set_viewport(0.0F, 0.0F, static_cast<f32>(width), static_cast<f32>(height));
+            cmd.set_scissor(0, 0, width, height);
+            (*interface)->draw(cmd, width, height);
+            cmd.end_rendering();
+        }
 
         const bool last_frame = options.frames != 0 && rendered + 1 >= options.frames;
         if (readback.valid() && last_frame) {
@@ -1146,6 +1498,18 @@ int main(int argc, char** argv) {
                percentile(gpu, 0.99), percentile(gpu, 1.0));
 
     if (online) {
+        const auto& gui_stats = (*interface)->stats();
+        fmt::print("gui  {} quads in {} draw(s), {} vertices (peak {}), scale {}\n",
+                   gui_stats.quads, gui_stats.draws, gui_stats.vertices, gui_stats.peak_vertices,
+                   options.gui_scale != 0
+                       ? options.gui_scale
+                       : client::auto_gui_scale(device.swapchain_width(),
+                                                device.swapchain_height(), 0));
+        if (options.dump_window) {
+            fmt::print("{}\n",
+                       window_dump.empty() ? (*interface)->describe_window() : window_dump);
+            fmt::print("{}\n", (*interface)->describe_inventory());
+        }
         if (dig_sent) {
             const auto after = session->block_at(dig_target.x, dig_target.y, dig_target.z);
             fmt::print("dug ({}, {}, {}): {} -> {}  {}\n", dig_target.x, dig_target.y,

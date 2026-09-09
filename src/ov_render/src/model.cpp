@@ -3,6 +3,7 @@
 #include "json.hpp"
 
 #include <algorithm>
+#include <string>
 #include <unordered_map>
 #include <utility>
 
@@ -19,6 +20,12 @@ struct RawModel {
     std::optional<std::vector<Element>>              elements;
     std::vector<std::pair<std::string, std::string>> textures;
     std::optional<bool>                              ambient_occlusion;
+    /// `display.gui` as written. Merged down the chain like a texture, because
+    /// vanilla's own item models rely on it: `item/handheld` overrides two of
+    /// `item/generated`'s positions and inherits the rest.
+    std::optional<DisplayTransform> gui_display;
+    /// `gui_light`, when the file states it.
+    std::optional<bool> gui_light_front;
 };
 
 [[nodiscard]] std::optional<Vec3f> read_vec3(const json::Value& value) {
@@ -144,6 +151,27 @@ struct RawModel {
             model.textures.emplace_back(std::string(textures.key_at(i)),
                                         std::string(value.as_string()));
         }
+    }
+
+    if (const auto light = root["gui_light"]; light.is_string()) {
+        model.gui_light_front = light.as_string() == "front";
+    }
+
+    if (const auto gui = root["display"]["gui"]; gui.is_object()) {
+        DisplayTransform transform;
+        if (const auto rotation = read_vec3(gui["rotation"])) {
+            transform.rotation = *rotation;
+        }
+        if (const auto translation = read_vec3(gui["translation"])) {
+            // The file writes translation in sixteenths of a block, the same
+            // unit an element's from/to uses; everything downstream works in
+            // blocks.
+            transform.translation = *translation * (1.0F / 16.0F);
+        }
+        if (const auto scale = read_vec3(gui["scale"])) {
+            transform.scale = *scale;
+        }
+        model.gui_display = transform;
     }
 
     if (const auto elements = root["elements"]; elements.is_array()) {
@@ -273,7 +301,8 @@ std::expected<const Model*, ModelError> ModelLoader::load(const ResourceLocation
     // and a pack that makes it a loop hits the depth limit instead of the
     // stack.
     std::vector<const RawModel*> chain;
-    ResourceLocation             current = location;
+    ResourceLocation             current    = location;
+    bool                         generated  = false;
     for (u32 depth = 0;; ++depth) {
         if (depth >= kMaxParentDepth) {
             return std::unexpected(ModelError::ParentChainTooLong);
@@ -288,7 +317,15 @@ std::expected<const Model*, ModelError> ModelLoader::load(const ResourceLocation
         // builtin/generated and builtin/entity have no file behind them: they
         // tell the game to build geometry in code. For a block model the chain
         // simply ends there.
-        if (!parent || is_builtin_model(*parent)) {
+        if (!parent) {
+            break;
+        }
+        if (is_builtin_model(*parent)) {
+            // *Which* builtin matters for an item: `builtin/generated` means
+            // "extrude layer0 into an icon", and an item whose chain ends there
+            // has no elements at all. Losing that distinction is how every
+            // flat item ends up drawn as nothing.
+            generated = parent->path() == "builtin/generated";
             break;
         }
         current = *parent;
@@ -333,6 +370,30 @@ std::expected<const Model*, ModelError> ModelLoader::load(const ResourceLocation
 
     if (const auto particle = textures.find("particle"); particle != textures.end()) {
         model->particle_sprite = resolve_sprite(particle->second, textures);
+    }
+
+    // The GUI transform and the light mode come from the nearest file in the
+    // chain that states them, leaf first — the same rule as elements, and not
+    // the same rule as textures.
+    model->generated = generated;
+    for (const auto* raw : chain) {
+        if (raw->gui_display && !model->gui_display) {
+            model->gui_display = raw->gui_display;
+        }
+        if (raw->gui_light_front && !model->gui_light_front) {
+            model->gui_light_front = *raw->gui_light_front;
+        }
+    }
+
+    // `layer0`, `layer1`, … in order, stopping at the first gap. Vanilla's own
+    // item models never skip a number, and stopping rather than scanning to a
+    // limit keeps a pack from making this quadratic.
+    for (u32 layer = 0;; ++layer) {
+        const auto found = textures.find("layer" + std::to_string(layer));
+        if (found == textures.end()) {
+            break;
+        }
+        model->layers.push_back(resolve_sprite(found->second, textures));
     }
 
     const auto [it, _] = impl_->resolved.insert_or_assign(key, std::move(model));

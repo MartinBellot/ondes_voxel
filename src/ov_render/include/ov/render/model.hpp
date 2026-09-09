@@ -97,6 +97,22 @@ struct Element {
     std::array<std::optional<FaceDefinition>, kDirectionCount> faces{};
 };
 
+/// One entry of a model's `display` block: where the model sits in a given
+/// context — the hand, the head, the ground, a GUI cell.
+///
+/// Only `gui` is read today, and it is what makes a block appear in a hotbar
+/// slot as a three-quarter cube rather than as a flat square: `block/block`
+/// declares `rotation: [30, 225, 0]` and `scale: 0.625`, and every block model
+/// in the game inherits it.
+///
+/// Translation is in blocks, already divided by the sixteen the file writes it
+/// in. Rotation is in degrees, applied X then Y then Z.
+struct DisplayTransform {
+    Vec3f rotation{};
+    Vec3f translation{};
+    Vec3f scale{1.0F, 1.0F, 1.0F};
+};
+
 /// A model after its parent chain has been walked and every `#variable` has
 /// been resolved. Nothing here refers to another file.
 struct Model {
@@ -106,6 +122,22 @@ struct Model {
     bool ambient_occlusion{true};
     /// The sprite break particles take, or empty when the model declares none.
     std::string particle_sprite;
+
+    /// `display.gui`, merged down the chain. Absent when nothing declared it,
+    /// which for an item model means the identity — a flat icon.
+    std::optional<DisplayTransform> gui_display;
+
+    /// `gui_light: front`. The item is lit flat rather than as a solid, which
+    /// is what every generated icon asks for.
+    bool gui_light_front{false};
+
+    /// The chain ended at `builtin/generated`: this model has no elements of
+    /// its own and is drawn from `layers` instead.
+    bool generated{false};
+
+    /// `layer0`, `layer1`, … resolved to sprite names, in order. Only a
+    /// generated model has them; a block model's textures are on its faces.
+    std::vector<std::string> layers;
 };
 
 /// Loads models and resolves them. Caches by resource location, because a

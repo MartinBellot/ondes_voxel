@@ -35,6 +35,10 @@ enum class Key : u8 {
     Sprint,
     Escape,
     Reload,
+    /// E. Opens and closes the player's own inventory.
+    Inventory,
+    /// Q. Throws what is held.
+    Drop,
     Count,
 };
 
@@ -53,6 +57,30 @@ struct InputState {
     bool use_held{false};
     bool attack_pressed{false};
     bool use_pressed{false};
+    /// Middle mouse: pick block in the world, clone a stack in a screen.
+    bool middle_pressed{false};
+
+    /// Where the pointer is, in framebuffer pixels from the top-left.
+    ///
+    /// Meaningless while the cursor is captured — GLFW keeps it in the middle
+    /// and reports movement as a delta — which is exactly right: the pointer
+    /// only matters when a screen is open, and a screen releases the cursor.
+    f64 mouse_x{0.0};
+    f64 mouse_y{0.0};
+
+    /// Wheel movement since the last poll, in notches. Positive is away from
+    /// the player, which vanilla maps to the *previous* hotbar slot.
+    f64 scroll{0.0};
+
+    /// 0..8 when a number key went down this poll, −1 otherwise. One value
+    /// rather than nine booleans: two number keys in one frame is not a thing
+    /// the game has a meaning for, and the last one wins.
+    i32 hotbar_pressed{-1};
+
+    /// Either shift, held. Not a Key: it is a modifier on other input rather
+    /// than an action, and Key::Down is already bound to left shift for
+    /// sneaking.
+    bool shift_held{false};
 
     [[nodiscard]] bool held(Key key) const noexcept { return keys[static_cast<usize>(key)]; }
 
@@ -93,9 +121,15 @@ public:
     /// swapchain.
     [[nodiscard]] bool minimised() const;
 
-private:
+    /// Forward-declared here and defined in the .cpp.
+    ///
+    /// Public only because GLFW's callbacks are C function pointers: a
+    /// captureless free function has to name this type to reach the window's
+    /// state, and a free function cannot be a friend of a private nested type.
+    /// Nothing outside window.cpp can do anything with an incomplete type.
     struct Impl;
 
+private:
     Window();
 
     std::unique_ptr<Impl> impl_;
