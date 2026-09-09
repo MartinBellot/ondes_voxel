@@ -663,12 +663,19 @@ std::expected<BlockPredicateRef, FeatureError> parse_block_predicate(
         return wrap(std::make_shared<const Combined>(how, std::move(parts)));
     }
 
-    // `would_survive`, `solid`, `replaceable` and `unobstructed` are the
-    // remaining vanilla predicates. They ask whether a block could stand at a
-    // position, which is a *gameplay* question — ov_gameplay is a layer above
-    // this one and a feature must not reach up into it. So they are named and
-    // refused, and the placed features that use them (saplings, flowers,
-    // mushrooms) do not load. That is the honest outcome: a predicate quietly
+    // ── the tree and vegetation work hooks in here, and only here ──────────
+    if (kind == "would_survive") {
+        return parse_survival_predicate(node, blocks, tags);
+    }
+    // ── end of that hook ───────────────────────────────────────────────────
+
+    // `solid`, `replaceable` and `unobstructed` are the remaining vanilla
+    // predicates. They ask whether a block could stand at a position, which is
+    // a *gameplay* question — ov_gameplay is a layer above this one and a
+    // feature must not reach up into it. `would_survive` above is answered
+    // from a named table of the rules the vegetation features actually need,
+    // in vegetation_feature.cpp; the other three have no such table and are
+    // named and refused. That is the honest outcome: a predicate quietly
     // answered "yes" would scatter saplings across bare stone.
     OV_LOG_ERROR("worldgen: block predicate '{}' is not implemented", kind);
     return std::unexpected(FeatureError::Unsupported);
