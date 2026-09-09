@@ -37,7 +37,9 @@ ROOT = Path(__file__).resolve().parent.parent
 NORMALIZED = Path(os.environ.get("OV_NORMALIZED", ROOT / "data/vanilla/1.20.1/normalized"))
 RECIPES = NORMALIZED.parent / "generated" / "data" / "minecraft" / "recipes"
 RUN = ROOT / "run" / "capture-recipes"
-PORT = 25599
+# Un port à part : la campagne de grilles occupe le 25599, et deux serveurs
+# vanilla sur le même port se terminent par une trace de pile, pas par un refus.
+PORT = 25601
 
 FURNACE = (4, -60, 0)
 STAND = (4.5, -59.0, 2.5)

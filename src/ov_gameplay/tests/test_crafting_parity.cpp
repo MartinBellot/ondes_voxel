@@ -132,6 +132,11 @@ TEST_CASE("every grid the real server was asked about", "[crafting][parity]") {
     for (const std::string& one : disagreements) {
         UNSCOPED_INFO(one);
     }
-    CHECK(checked > 3000);
+    // A guard against a table that was truncated rather than measured: the
+    // full campaign lays out every shaped recipe in every position it fits and
+    // in its mirror, every shapeless one, and 120 grids that must make nothing
+    // — a little under three thousand. A table with a few hundred lines in it
+    // would pass the comparison and prove nothing.
+    CHECK(checked > 2500);
     CHECK(agreed == checked);
 }

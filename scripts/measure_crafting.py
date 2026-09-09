@@ -31,7 +31,12 @@ Trois familles de grilles sont posées :
   * des grilles qui ne doivent rien donner, pour que « rien » soit vérifié
     aussi — une implémentation trop généreuse ne se voit que là.
 
-Usage : python3 scripts/measure_crafting.py [sortie.json] [--limit N]
+Les deux passes — les grilles et les restes — se lancent séparément avec
+`--phase=grids` ou `--phase=remainders`, parce qu'elles durent chacune assez
+longtemps pour qu'une interruption coûte cher. La passe des restes relit le
+JSON existant et n'en remplace que sa part.
+
+Usage : python3 scripts/measure_crafting.py [sortie.json] [--limit=N] [--phase=…]
 """
 from __future__ import annotations
 
@@ -44,7 +49,18 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from measure_entities import Server  # noqa: E402
+from measure_entities import Server as BaseServer  # noqa: E402
+
+
+class Server(BaseServer):
+    """Le serveur de la campagne, avec un tas plus modeste.
+
+    Une campagne dure près d'une heure et la machine compile en même temps.
+    Deux passes ont déjà été perdues à mi-parcours parce que la JVM a été tuée
+    pour mémoire — et une passe perdue, c'est une heure et zéro chiffre.
+    """
+
+    HEAP = "-Xmx768M"
 from vanilla_miner import Miner, read_varint, varint, block_pos  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -294,12 +310,110 @@ def lay_out(cells: list[int | None], width: int, height: int, dx: int, dy: int,
     return grid
 
 
+def measure_remainders(probe: Probe, pending, done: set, remainder: dict,
+                       lost: list, item_index: dict, items: list) -> None:
+    """Fabrique chaque recette pour de vrai et relit la grille.
+
+    Ce qui subsiste dans une case est le `craftingRemainingItem` de
+    l'ingrédient — le seau vide qui revient — et il n'est nulle part dans les
+    données. `done` est tenu à jour au fur et à mesure pour qu'un redémarrage
+    du serveur ne refasse pas ce qui est déjà mesuré.
+    """
+    for recipe_id, width, height, cells in pending:
+        if recipe_id in done:
+            continue
+        ids = [item_index[n] if n else None
+               for n in lay_out(cells, width, height, 0, 0, False)]
+        try:
+            got = fill(probe, ids)
+        except TimeoutError as error:
+            lost.append(f"{recipe_id} (restes): {error}")
+            done.add(recipe_id)
+            continue
+        if got is None:
+            empty(probe)
+            done.add(recipe_id)
+            continue
+        before = grid_now(probe)
+        # Shift-clic plutôt que clic ordinaire : le résultat part droit dans
+        # l'inventaire et le curseur reste vide. Un clic ordinaire le laisse
+        # sur le curseur, et jeter un curseur n'est **pas** le mode 4 mais le
+        # mode 0 sur la case -999 — l'erreur ne dit rien, elle laisse
+        # simplement l'objet en main, et le jeu refuse alors toutes les
+        # fabrications suivantes. Toute la première campagne de restes est
+        # tombée là-dedans.
+        probe.click(0, 0, 1)
+        # Attendre que la grille change, et non un délai : sous charge, une
+        # réponse en retard fait lire deux fois le même état et conclure
+        # qu'aucun objet ne laisse de reste. C'est exactement ce qui est
+        # arrivé à la première campagne, où le seau de lait n'a rien rendu.
+        deadline = time.monotonic() + 6.0
+        while grid_now(probe) == before and time.monotonic() < deadline:
+            probe.settle(0.05)
+        probe.settle(0.15)
+        after = grid_now(probe)
+        for was, now in zip(before, after):
+            if was is None or now is None or now == was:
+                continue
+            remainder[items[was]] = items[now]
+        probe.click(-999, 0, 0)       # jette ce que le curseur tiendrait
+        probe.settle(0.1)
+        empty(probe)
+        empty_inventory(probe)
+        done.add(recipe_id)
+
+
+def open_rig() -> tuple[Server, Probe]:
+    """Un serveur vanilla, une sonde créative, et l'établi ouvert.
+
+    Extrait pour être **rejouable** : sur une machine qui compile en même temps,
+    macOS tue la JVM en cours de campagne, et trois passes d'affilée ont été
+    perdues ainsi. Pouvoir remonter le banc et reprendre où l'on en était vaut
+    mieux que de relancer une heure de mesure.
+    """
+    server = Server(RUN, port=PORT)
+    server.batch([
+        "gamerule doMobSpawning false", "gamerule randomTickSpeed 0",
+        "gamerule doDaylightCycle false", "gamerule doWeatherCycle false",
+        "gamerule sendCommandFeedback true", "difficulty peaceful", "time set noon",
+        "forceload add -32 -32 32 32",
+    ])
+    time.sleep(3.0)
+    server.batch([f"setblock {TABLE[0]} {TABLE[1]} {TABLE[2]} minecraft:crafting_table",
+                  f"setblock {TABLE[0]} {TABLE[1] - 1} {TABLE[2]} minecraft:stone",
+                  f"setblock {TABLE[0]} {TABLE[1]} {TABLE[2] + 2} minecraft:stone"])
+
+    probe = Probe(PORT, "Craft0")
+    # Attendre que le serveur ait le joueur, pas attendre tout court : une
+    # commande envoyée avant la fin de la connexion répond « No entity was
+    # found » et la sonde reste en survie, à l'autre bout du monde, sans que
+    # rien ne le dise.
+    for _ in range(40):
+        probe.settle(0.5)
+        if any("players online" in line and "Craft0" in line
+               for line in server.batch(["list"])):
+            break
+    else:
+        raise RuntimeError("la sonde ne s'est jamais annoncée au serveur")
+    server.batch(["gamemode creative Craft0", "gamerule doImmediateRespawn true",
+                  f"tp Craft0 {STAND[0]} {STAND[1]} {STAND[2]}"])
+    probe.settle(1.0)
+    probe.open_table()
+    print(f"établi ouvert, fenêtre {probe.window}")
+    return server, probe
+
+
 def main() -> int:
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     limit = None
+    phase = "all"
     for a in sys.argv[1:]:
         if a.startswith("--limit="):
             limit = int(a.split("=", 1)[1])
+        if a.startswith("--phase="):
+            phase = a.split("=", 1)[1]
+    if phase not in ("all", "grids", "remainders"):
+        sys.exit(f"error: --phase={phase} inconnu (all, grids, remainders)")
     out_path = Path(args[0]) if args else NORMALIZED / "crafting.json"
 
     with open(NORMALIZED / "registries.json") as f:
@@ -343,40 +457,11 @@ def main() -> int:
     print(f"{len(shaped)} façonnées, {len(shapeless)} informes")
 
     rng = random.Random(1234567890)
-    server = Server(RUN, port=PORT)
     grids = []
     remainder: dict[str, str] = {}
+    lost: list[str] = []
+    server, probe = open_rig()
     try:
-        server.batch([
-            "gamerule doMobSpawning false", "gamerule randomTickSpeed 0",
-            "gamerule doDaylightCycle false", "gamerule doWeatherCycle false",
-            "gamerule sendCommandFeedback true", "difficulty peaceful", "time set noon",
-            "forceload add -32 -32 32 32",
-        ])
-        time.sleep(3.0)
-        server.batch([f"setblock {TABLE[0]} {TABLE[1]} {TABLE[2]} minecraft:crafting_table",
-                      f"setblock {TABLE[0]} {TABLE[1] - 1} {TABLE[2]} minecraft:stone",
-                      f"setblock {TABLE[0]} {TABLE[1]} {TABLE[2] + 2} minecraft:stone"])
-
-        probe = Probe(PORT, "Craft0")
-        # Attendre que le serveur ait le joueur, pas attendre tout court : une
-        # commande envoyée avant la fin de la connexion répond « No entity was
-        # found » et la sonde reste en survie, à l'autre bout du monde, sans
-        # que rien ne le dise.
-        for _ in range(40):
-            probe.settle(0.5)
-            if any("players online" in line and "Craft0" in line
-                   for line in server.batch(["list"])):
-                break
-        else:
-            raise RuntimeError("la sonde ne s'est jamais annoncée au serveur")
-        server.batch(["gamemode creative Craft0", "gamerule doImmediateRespawn true",
-                      f"tp Craft0 {STAND[0]} {STAND[1]} {STAND[2]}"])
-        probe.settle(1.0)
-        probe.open_table()
-        print(f"établi ouvert, fenêtre {probe.window}")
-
-        lost: list[str] = []
 
         def ask(label: str, grid: list[str | None], expect_kind: str) -> None:
             ids = [item_index[n] if n else None for n in grid]
@@ -401,7 +486,7 @@ def main() -> int:
             })
             empty(probe)
 
-        for recipe_id, width, height, cells in shaped:
+        for recipe_id, width, height, cells in (shaped if phase != "remainders" else []):
             for dx, dy in positions(width, height):
                 for mirrored in (False, True):
                     if mirrored and width == 1:
@@ -409,7 +494,7 @@ def main() -> int:
                     ask(f"{recipe_id}@{dx},{dy}{'m' if mirrored else ''}",
                         lay_out(cells, width, height, dx, dy, mirrored), "shaped")
 
-        for recipe_id, ingredients in shapeless:
+        for recipe_id, ingredients in (shapeless if phase != "remainders" else []):
             order = list(ingredients)
             rng.shuffle(order)
             grid: list[str | None] = [None] * 9
@@ -423,7 +508,7 @@ def main() -> int:
         pool = [n for n in ("minecraft:stick", "minecraft:oak_planks", "minecraft:cobblestone",
                             "minecraft:iron_ingot", "minecraft:diamond", "minecraft:string",
                             "minecraft:coal", "minecraft:redstone") if n in item_index]
-        for trial in range(120):
+        for trial in range(120 if phase != "remainders" else 0):
             grid = [rng.choice(pool) if rng.random() < 0.5 else None for _ in range(9)]
             ask(f"random#{trial}", grid, "random")
 
@@ -433,58 +518,52 @@ def main() -> int:
         # `craftingRemainingItem` de l'ingrédient, et il n'est nulle part dans
         # les données.
         print("restes de fabrication")
-        for recipe_id, width, height, cells in shaped + [
-                (rid, len(ings), 1, ings) for rid, ings in shapeless]:
-            if not any(cells):
-                continue
-            ids = [item_index[n] if n else None for n in
-                   lay_out(cells, width, height, 0, 0, False)] if width <= 3 and height <= 3 \
-                else None
-            if ids is None:
-                continue
+        pending = [entry for entry in ([] if phase == "grids" else shaped + [
+            (rid, len(ings), 1, ings) for rid, ings in shapeless])
+            if any(entry[3]) and entry[1] <= 3 and entry[2] <= 3]
+        done: set[str] = set()
+        restarts = 0
+        while True:
             try:
-                got = fill(probe, ids)
-            except TimeoutError as error:
-                lost.append(f"{recipe_id} (restes): {error}")
-                continue
-            if got is None:
-                empty(probe)
-                continue
-            before = grid_now(probe)
-            # Shift-clic plutôt que clic ordinaire : le résultat part droit dans
-            # l'inventaire et le curseur reste vide. Un clic ordinaire le laisse
-            # sur le curseur, et jeter un curseur n'est **pas** le mode 4 mais le
-            # mode 0 sur la case -999 — l'erreur ne dit rien, elle laisse
-            # simplement l'objet en main, et le jeu refuse alors toutes les
-            # fabrications suivantes. Toute la première campagne de restes est
-            # tombée là-dedans.
-            probe.click(0, 0, 1)
-            # Attendre que la grille change, et non un délai : sous charge, une
-            # réponse en retard fait lire deux fois le même état et conclure
-            # qu'aucun objet ne laisse de reste. C'est exactement ce qui est
-            # arrivé à la première campagne, où le seau de lait n'a rien rendu.
-            deadline = time.monotonic() + 6.0
-            while grid_now(probe) == before and time.monotonic() < deadline:
-                probe.settle(0.05)
-            probe.settle(0.15)
-            after = grid_now(probe)
-            for was, now in zip(before, after):
-                if was is None or now is None or now == was:
-                    continue
-                remainder[items[was]] = items[now]
-            probe.click(-999, 0, 0)       # jette ce que le curseur tiendrait
-            probe.settle(0.1)
-            empty(probe)
-            empty_inventory(probe)
+                measure_remainders(probe, pending, done, remainder, lost,
+                                   item_index, items)
+                break
+            except (EOFError, ConnectionError, OSError) as error:
+                # macOS tue la JVM quand la machine manque de mémoire, et rien
+                # ne le dit : le serveur cesse simplement d'écrire dans son
+                # journal et la sonde reçoit une fin de flux. Remonter le banc
+                # et reprendre là où on en était vaut mieux que de rejeter une
+                # heure de mesure — et les recettes déjà faites ne sont pas
+                # refaites.
+                restarts += 1
+                if restarts > 12:
+                    raise
+                print(f"! le serveur est tombé ({error!r}) après {len(done)} recettes ; "
+                      f"redémarrage {restarts}")
+                try:
+                    server.stop()
+                except Exception:
+                    pass
+                time.sleep(5.0)
+                server, probe = open_rig()
+
+        # Une passe partielle ne jette pas ce que l'autre a mesuré.
+        previous = {}
+        if out_path.is_file():
+            previous = json.loads(out_path.read_text(encoding="utf-8"))
+        if phase == "remainders":
+            grids = previous.get("cases", grids)
+        elif phase == "grids":
+            remainder = previous.get("crafting_remainder", remainder)
 
         matched = sum(1 for g in grids if g["result"])
-        print(f"{len(grids)} grilles posées, {matched} avec un résultat, "
+        print(f"{len(grids)} grilles, {matched} avec un résultat, "
               f"{len(grids) - matched} sans")
+        print(f"{len(remainder)} objets à reste : {remainder}")
         if lost:
             print(f"! {len(lost)} grilles perdues (non comptées) :")
             for one in lost[:10]:
                 print(f"      {one}")
-        print(f"{len(remainder)} objets à reste : {remainder}")
 
         doc = {
             "$comment": "Ce qu'un vrai serveur 1.20.1 met dans la case résultat pour "

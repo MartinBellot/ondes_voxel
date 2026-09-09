@@ -99,6 +99,11 @@ class Server:
     #: that wants another one has to say which.
     EXTRA_PROPERTIES = ""
 
+    #: The JVM heap. On a machine that is also compiling, a campaign that runs
+    #: for an hour can be killed for memory in the middle and take its whole
+    #: measurement with it — so a long run is allowed to ask for less.
+    HEAP = "-Xmx2G"
+
     def __init__(self, directory: Path, port: int = 25599) -> None:
         directory.mkdir(parents=True, exist_ok=True)
         shutil.copy(JAR, directory / "server.jar")
@@ -130,7 +135,7 @@ class Server:
             + self.EXTRA_PROPERTIES
         )
         self.process = subprocess.Popen(
-            ["java", "-Xmx2G", "-jar", "server.jar", "nogui"],
+            ["java", self.HEAP, "-jar", "server.jar", "nogui"],
             cwd=directory, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, text=True, bufsize=1)
         self.lines: queue.Queue[str] = queue.Queue()
