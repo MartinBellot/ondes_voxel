@@ -13,6 +13,8 @@ ov_add_library(ov_server
         src/player_inventory.cpp
         src/server.cpp
         src/combat_session.cpp
+        src/mob_combat.cpp
+        src/player_level.cpp
         src/survival_session.cpp
         src/workbench.cpp
         src/world_ticks.cpp
@@ -41,6 +43,7 @@ ov_add_library(ov_server
 ov_add_test(test_ov_server
     SOURCES
         tests/test_player_inventory.cpp
+        tests/test_player_level.cpp
     DEPS ov_server
     LABELS unit
 )

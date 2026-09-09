@@ -93,6 +93,28 @@ std::expected<Registries, RegistryError> Registries::from_bytes(std::vector<u8> 
                                            static_cast<ProtocolId>(record.first_id)});
     }
 
+    // ── name → id, once ─────────────────────────────────────────────────────
+    //
+    // See the note on `entry_index_`: `protocol_id` used to be a linear scan
+    // and its own comment said that was fine because nothing hot called it.
+    // The natural spawner calls it once per spawn attempt, a couple of thousand
+    // times a tick, and a profile put 19 of the 50 samples in the spawn pass
+    // inside `memcmp` under it.
+    //
+    // The first entry wins on a duplicate name, which is what the linear scan
+    // did — `std::ranges::find` returns the first match — so the two agree on a
+    // malformed pack as well as on a good one.
+    result.entry_index_.resize(result.registries_.size());
+    for (usize i = 0; i < result.registries_.size(); ++i) {
+        const Entry& entry = result.registries_[i];
+        auto&        index = result.entry_index_[i];
+        index.reserve(entry.entry_count);
+        for (u32 offset = 0; offset < entry.entry_count; ++offset) {
+            index.try_emplace(result.entry_names_[entry.entry_first + offset],
+                              entry.first_id + static_cast<ProtocolId>(offset));
+        }
+    }
+
     // ── Tags ────────────────────────────────────────────────────────────────
     const auto* tag_records = pack_at<TagRecord>(data_view, header.tags_offset, header.tag_count);
     const auto* members =
@@ -359,14 +381,19 @@ std::span<const std::string_view> Registries::entries(RegistryId registry) const
 
 std::optional<ProtocolId> Registries::protocol_id(RegistryId       registry,
                                                   std::string_view entry) const noexcept {
-    const auto names = entries(registry);
-    // Linear: registry order is id order and cannot be sorted for searching,
-    // and this is a load-time path — resolving a datapack, not a hot loop.
-    const auto it = std::ranges::find(names, entry);
-    if (it == names.end()) {
+    // Was a linear scan, on the stated grounds that this is "a load-time path —
+    // resolving a datapack, not a hot loop". It stopped being one when the
+    // natural spawner started resolving a mob type by name once per spawn
+    // attempt; see the note on `entry_index_`.
+    if (registry.value() >= entry_index_.size()) {
         return std::nullopt;
     }
-    return first_id(registry) + static_cast<ProtocolId>(std::distance(names.begin(), it));
+    const auto& index = entry_index_[registry.value()];
+    const auto  found = index.find(entry);
+    if (found == index.end()) {
+        return std::nullopt;
+    }
+    return found->second;
 }
 
 std::string_view Registries::entry_of(RegistryId registry, ProtocolId id) const noexcept {

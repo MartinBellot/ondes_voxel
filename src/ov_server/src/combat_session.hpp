@@ -120,6 +120,15 @@ struct CombatPlayer {
 
 /// What one swing or one use asked the server to do beyond the packets.
 struct CombatOutcome {
+    /// How the interaction ended, for the caller that has a chain to continue.
+    ///
+    /// `hit` is not enough for that: Pass, Fail and Consume are all "did not
+    /// hit" and only the first of them may fall through to the placement path.
+    /// A caller that treated a Fail as a Pass would place a block *through* a
+    /// locked iron door, which is the exact case the four-valued result exists
+    /// for. Always Pass for the packets that are not Use Item On.
+    gameplay::UseResult result{gameplay::UseResult::Pass};
+
     bool             hit{false};
     bool             critical{false};
     bool             swept{false};
