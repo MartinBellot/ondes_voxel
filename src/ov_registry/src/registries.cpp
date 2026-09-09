@@ -160,6 +160,58 @@ std::expected<Registries, RegistryError> Registries::from_bytes(std::vector<u8> 
                                                     record.attribute_count, record.measured});
     }
 
+    // ── Recipes ─────────────────────────────────────────────────────────────
+    const auto* recipe_records =
+        pack_at<RecipeRecord>(data_view, header.recipes_offset, header.recipe_count);
+    const auto* recipe_ingredients = pack_at<RecipeIngredientRecord>(
+        data_view, header.recipe_ingredients_offset, header.recipe_ingredient_count);
+    const auto* recipe_choices =
+        pack_at<i32>(data_view, header.recipe_choices_offset, header.recipe_choice_count);
+    const auto* fuel =
+        pack_at<u16>(data_view, header.fuel_offset, kFuelKinds * header.item_count);
+    const auto* remainder = pack_at<i32>(data_view, header.remainder_offset, header.item_count);
+    if (recipe_records == nullptr || recipe_ingredients == nullptr ||
+        recipe_choices == nullptr || fuel == nullptr || remainder == nullptr) {
+        return std::unexpected{RegistryError::Corrupt};
+    }
+
+    // Every span a record points into is checked once, here. Checking at each
+    // lookup would put the same three comparisons inside the matching loop,
+    // which runs once per grid cell per candidate recipe.
+    for (u32 i = 0; i < header.recipe_count; ++i) {
+        const RecipeRecord& record = recipe_records[i];
+        if (static_cast<usize>(record.ingredient_first) + record.ingredient_count >
+            header.recipe_ingredient_count) {
+            return std::unexpected{RegistryError::Corrupt};
+        }
+        if (record.kind > static_cast<u8>(RecipeKind::Special)) {
+            return std::unexpected{RegistryError::Corrupt};
+        }
+        // A shaped recipe whose cells do not fill its rectangle would read the
+        // neighbouring recipe's ingredients as its own.
+        if (record.kind == static_cast<u8>(RecipeKind::CraftingShaped) &&
+            static_cast<u32>(record.width) * record.height != record.ingredient_count) {
+            return std::unexpected{RegistryError::Corrupt};
+        }
+    }
+    for (u32 i = 0; i < header.recipe_ingredient_count; ++i) {
+        if (static_cast<usize>(recipe_ingredients[i].choice_first) +
+                recipe_ingredients[i].choice_count >
+            header.recipe_choice_count) {
+            return std::unexpected{RegistryError::Corrupt};
+        }
+    }
+
+    result.recipes_ = RecipeData{
+        std::span{recipe_records, header.recipe_count},
+        std::span{recipe_ingredients, header.recipe_ingredient_count},
+        std::span{recipe_choices, header.recipe_choice_count},
+        std::span{fuel, kFuelKinds * header.item_count},
+        std::span{remainder, header.item_count},
+    };
+    result.strings_offset_ = header.strings_offset;
+    result.strings_bytes_  = header.string_bytes;
+
     return result;
 }
 
@@ -324,6 +376,55 @@ std::string_view Registries::entry_of(RegistryId registry, ProtocolId id) const 
         return {};
     }
     return names[static_cast<usize>(index)];
+}
+
+// ── Recipes ─────────────────────────────────────────────────────────────────
+
+std::string_view Registries::recipe_name(usize index) const noexcept {
+    if (index >= recipes_.recipes.size()) {
+        return {};
+    }
+    return string_at(data_, strings_offset_, strings_bytes_,
+                     recipes_.recipes[index].name_offset);
+}
+
+std::string_view Registries::recipe_group(usize index) const noexcept {
+    if (index >= recipes_.recipes.size()) {
+        return {};
+    }
+    return string_at(data_, strings_offset_, strings_bytes_,
+                     recipes_.recipes[index].group_offset);
+}
+
+std::string_view Registries::recipe_type(usize index) const noexcept {
+    if (index >= recipes_.recipes.size()) {
+        return {};
+    }
+    return string_at(data_, strings_offset_, strings_bytes_,
+                     recipes_.recipes[index].type_offset);
+}
+
+u16 Registries::burn_ticks(ProtocolId item, FuelKind kind) const noexcept {
+    const usize items = recipes_.remainder.size();
+    if (item < 0 || static_cast<usize>(item) >= items) {
+        return 0;
+    }
+    const usize offset = static_cast<usize>(kind) * items + static_cast<usize>(item);
+    if (offset >= recipes_.fuel.size()) {
+        return 0;
+    }
+    return recipes_.fuel[offset];
+}
+
+std::optional<ProtocolId> Registries::crafting_remainder(ProtocolId item) const noexcept {
+    if (item < 0 || static_cast<usize>(item) >= recipes_.remainder.size()) {
+        return std::nullopt;
+    }
+    const i32 left = recipes_.remainder[static_cast<usize>(item)];
+    if (left < 0) {
+        return std::nullopt;
+    }
+    return left;
 }
 
 }  // namespace ov::registry

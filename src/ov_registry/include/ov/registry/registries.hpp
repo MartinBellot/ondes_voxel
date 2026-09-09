@@ -17,6 +17,7 @@
 
 #include "ov/base/types.hpp"
 #include "ov/registry/block_states.hpp"
+#include "ov/registry/recipe_data.hpp"
 
 #include <expected>
 #include <filesystem>
@@ -172,6 +173,38 @@ public:
     [[nodiscard]] std::optional<f64> attribute_base(ProtocolId type,
                                                     ProtocolId attribute) const noexcept;
 
+    // ── Recipes ─────────────────────────────────────────────────────────────
+
+    /// The compiled recipes, as plain arrays rather than as a matcher.
+    ///
+    /// Same split as the loot tables: reading them is gameplay, and gameplay
+    /// lives above this module. What is here is the file and the bounds checks.
+    [[nodiscard]] RecipeData recipes() const noexcept { return recipes_; }
+
+    /// The recipe's identifier, e.g. "minecraft:wooden_pickaxe".
+    [[nodiscard]] std::string_view recipe_name(usize index) const noexcept;
+
+    /// The recipe's group, or empty. Groups are what makes the client's recipe
+    /// book show one entry for six colours of bed.
+    [[nodiscard]] std::string_view recipe_group(usize index) const noexcept;
+
+    /// The recipe's type as it travels on the wire, e.g.
+    /// "minecraft:crafting_shaped".
+    [[nodiscard]] std::string_view recipe_type(usize index) const noexcept;
+
+    /// How long one unit of this item keeps a furnace of that kind alight, in
+    /// ticks. Zero means it is not a fuel — measured, not assumed: every item
+    /// in the registry was put in a furnace and watched.
+    [[nodiscard]] u16 burn_ticks(ProtocolId item, FuelKind kind) const noexcept;
+
+    /// What a recipe leaves in the slot when it consumes this item — the empty
+    /// bucket, the glass bottle — or nullopt when it leaves nothing.
+    ///
+    /// Nullopt rather than the item itself: "nothing comes back" and "the same
+    /// item comes back" are different, and only one of them empties the slot.
+    [[nodiscard]] std::optional<ProtocolId> crafting_remainder(
+        ProtocolId item) const noexcept;
+
 private:
     Registries() = default;
 
@@ -209,6 +242,13 @@ private:
     std::span<const ProtocolId>    members_;
     std::vector<EntityRecord>      entity_types_;
     std::vector<EntityAttribute>   entity_attributes_;
+    RecipeData                     recipes_;
+    /// The pack's string blob, for the three recipe name accessors. Held as
+    /// offset and length rather than as resolved views: 1174 recipes carry
+    /// three names each, and resolving them all at load would cost more than
+    /// the lookups ever will.
+    u32 strings_offset_{0};
+    u32 strings_bytes_{0};
 };
 
 }  // namespace ov::registry

@@ -36,6 +36,8 @@
 #include "ov/gameplay/mob_logic.hpp"
 #include "ov/protocol/entity.hpp"
 #include "ov/registry/registries.hpp"
+// ── crafting and smelting ───────────────────────────────────────────────────
+#include "workbench.hpp"
 #include "ov/world/chunk.hpp"
 #include "ov/world/chunk_storage.hpp"
 #include "ov/world/level_dat.hpp"
@@ -71,6 +73,8 @@
 namespace {
 
 using namespace ov;
+// ── crafting and smelting ───────────────────────────────────────────────────
+using namespace ov::server;
 
 std::atomic<bool> g_stop_requested{false};
 
@@ -958,6 +962,12 @@ struct Player {
     std::vector<i16> drag_slots;
     i8               drag_button{-1};
 
+    // ── crafting and smelting ───────────────────────────────────────────────
+    /// The crafting table or furnace screen this player has open. Separate from
+    /// `window_open` below, which is the chest's: the two screens obey
+    /// different rules and sharing one flag would make a click land in both.
+    std::optional<Workbench> bench;
+
     /// The container this player has open, if any.
     u8             window_id{0};
     bool           window_open{false};
@@ -1203,6 +1213,24 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         break_rules.emplace(*blocks, *registries);
         loot_tables.emplace(*blocks, *registries);
         connections.emplace(*blocks, *registries);
+    }
+
+    // ── crafting and smelting ───────────────────────────────────────────────
+    // The recipe book, and the handful of registry ids the crafting screens
+    // need. Built once for the same reason the break rules are: matching a grid
+    // otherwise walks the whole pack every time a player moves an item.
+    std::optional<gameplay::RecipeBook> recipe_book;
+    WorkbenchContext                    workbench_context;
+    if (registries) {
+        recipe_book.emplace(*registries);
+        workbench_context.registries = &*registries;
+        workbench_context.book       = &*recipe_book;
+        if (const auto items = registries->find("minecraft:item")) {
+            workbench_context.item_registry = *items;
+        }
+        if (const auto menus = registries->find("minecraft:menu")) {
+            workbench_context.menu_registry = *menus;
+        }
     }
 
     Superflat superflat = world_available ? Superflat::from(*blocks) : Superflat{};
@@ -1921,6 +1949,77 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         }
     };
 
+    // ── crafting and smelting ───────────────────────────────────────────────
+    // What a crafting or furnace screen reaches outside itself for. The screen
+    // itself is in workbench.cpp and knows nothing about connections, chunks or
+    // players; this is the only place the two meet.
+    //
+    // Caller holds players_mutex. `chunk_mutex` is taken here rather than by
+    // the caller, so that no path can take the two in the other order.
+    const auto workbench_host = [&](Player& who, const auto& send) {
+        WorkbenchHost host;
+        host.send = [&send](i32 id, std::vector<u8> payload) { send(id, payload); };
+        host.drop = [&](const net::ItemStack& stack) {
+            ItemEntity item;
+            item.entity_id = next_entity_id.fetch_add(1);
+            item.uuid      = net::Uuid{0x4f564954454d0000ULL | static_cast<u64>(item.entity_id),
+                                       static_cast<u64>(item.entity_id) * 0x9E3779B97F4A7C15ULL};
+            item.x         = who.x;
+            item.y         = who.y + 1.0;
+            item.z         = who.z;
+            item.stack     = stack;
+            item.born      = server_tick.load(std::memory_order_relaxed);
+            item.pickup_delay        = 40;
+            std::vector<ItemEntity> one;
+            one.push_back(std::move(item));
+            publish_items(one);
+        };
+        host.block_entity = [&](i32 x, i32 y, i32 z) -> nbt::Tag* {
+            world::BlockEntity* entity =
+                chunk_at(x >> 4, z >> 4)
+                    .block_entity_at(static_cast<usize>(x & 15), y, static_cast<usize>(z & 15));
+            return entity != nullptr ? &entity->data : nullptr;
+        };
+        host.block_name = [&](i32 x, i32 y, i32 z) -> std::string_view {
+            if (!blocks) {
+                return {};
+            }
+            const registry::BlockStateId state = block_at({x, y, z});
+            return blocks->block_name(blocks->block_of(state));
+        };
+        host.set_lit = [&](i32 x, i32 y, i32 z, bool lit) {
+            if (!blocks) {
+                return;
+            }
+            const registry::BlockStateId state = block_at({x, y, z});
+            const registry::BlockId      block = blocks->block_of(state);
+            // `lit` is a property, so the new state is the same block with one
+            // value changed — not a different block. Looking the block up by
+            // name would find `minecraft:furnace` either way and lose the
+            // facing the player placed it with.
+            const auto property = blocks->find_property(block, "lit");
+            if (!property) {
+                return;
+            }
+            const auto wanted = lit ? std::string_view{"true"} : std::string_view{"false"};
+            for (u16 index = 0; index < property->values.size(); ++index) {
+                if (property->values[index] == wanted) {
+                    set_block_and_broadcast({x, y, z},
+                                            blocks->with_property(state, *property, index));
+                    return;
+                }
+            }
+        };
+        host.mark_dirty = [&](i32 x, i32 z) { dirty_chunks.insert(chunk_key(x >> 4, z >> 4)); };
+        host.award_experience = [](f32) {
+            // Experience orbs are another agent's milestone. The furnace stops
+            // holding what it has handed over either way, so the amount is not
+            // lost twice — but nothing shows it yet, and saying so is better
+            // than a silent zero.
+        };
+        return host;
+    };
+
     // Per-connection protocol state. A packet id means different things in
     // different states, so this cannot be global.
     std::unordered_map<const net::Connection*, ConnectionState> states;
@@ -2170,6 +2269,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
 
                     players[connection.get()] = player;
                 }
+                // ── crafting and smelting ───────────────────────────────────
+                // Every recipe, once, after the join sequence — which is when
+                // vanilla sends it. Without it the client plays fine and its
+                // recipe book stays empty.
+                send_recipe_book(workbench_context,
+                                 [&](i32 id, std::vector<u8> payload) { send_packet(id, payload); });
                 OV_LOG_INFO("{} joined at ({:.1f}, {:.1f}, {:.1f})", login->name, player.x,
                             player.y, player.z);
                 return true;
@@ -2388,6 +2493,20 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         }
                         acknowledge(connection, place->sequence);
 
+                        // ── crafting and smelting ───────────────────────────
+                        // A crafting table or a furnace opens instead of being
+                        // built against, the same way a chest does below.
+                        {
+                            const std::scoped_lock chunk_lock{chunk_mutex};
+                            if (open_workbench(workbench_context,
+                                               workbench_host(player, send_packet), place->position.x,
+                                               place->position.y, place->position.z, 2,
+                                               player.inventory, player.bench)) {
+                                player.window_open = false;
+                                return true;
+                            }
+                        }
+
                         // Clicking a chest opens it rather than placing against
                         // it. Vanilla only places when the player is sneaking,
                         // which is not tracked yet, so the chest always wins —
@@ -2599,11 +2718,30 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     }
 
                     case net::serverbound::kCloseContainer: {
+                        // ── crafting and smelting ───────────────────────────
+                        if (player.bench) {
+                            const std::scoped_lock chunk_lock{chunk_mutex};
+                            close_workbench(workbench_host(player, send_packet), *player.bench);
+                            player.bench.reset();
+                        }
                         player.window_open = false;
                         return true;
                     }
 
                     case net::serverbound::kClickContainer: {
+                        // ── crafting and smelting ───────────────────────────
+                        if (player.bench) {
+                            const auto crafted = net::parse_container_click(body);
+                            if (crafted && crafted->window_id == player.bench->window_id) {
+                                const std::scoped_lock chunk_lock{chunk_mutex};
+                                handle_click(workbench_context,
+                                             workbench_host(player, send_packet), *player.bench,
+                                             *crafted, player.inventory, player.carried,
+                                             player.bench);
+                                return true;
+                            }
+                        }
+
                         const auto click = net::parse_container_click(body);
                         if (!click || !player.window_open || click->window_id != player.window_id) {
                             return true;
@@ -3285,6 +3423,26 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         }
                         player.loaded_chunks.insert(chunk);
                     }
+                }
+
+                // ── crafting and smelting ───────────────────────────────────
+                // A furnace only runs while someone is watching it. That is a
+                // stated gap, not an oversight: ticking every furnace in the
+                // world needs a block-entity tick list, which is a different
+                // piece of work — and a furnace nobody has open would otherwise
+                // finish silently and never tell anyone.
+                for (auto& [key, player] : players) {
+                    if (!player.bench || !player.connection) {
+                        continue;
+                    }
+                    auto send = [&](i32 id, std::span<const u8> payload) {
+                        if (const auto framed = net::encode_packet(id, payload)) {
+                            player.connection->send(*framed);
+                        }
+                    };
+                    const std::scoped_lock chunk_lock{chunk_mutex};
+                    tick_open_workbench(workbench_context, workbench_host(player, send),
+                                        *player.bench, player.inventory);
                 }
 
                 for (auto& [key, player] : players) {

@@ -13,6 +13,9 @@ ov_add_library(ov_gameplay
         src/physics.cpp
         src/connections.cpp
         src/loot.cpp
+        src/recipe.cpp
+        src/crafting.cpp
+        src/smelting.cpp
     DEPS
         ov_entity
         ov_registry
@@ -29,6 +32,9 @@ ov_add_test(test_ov_gameplay
         tests/test_physics.cpp
         tests/test_connections.cpp
         tests/test_loot.cpp
+        tests/test_crafting.cpp
+        tests/test_crafting_parity.cpp
+        tests/test_smelting.cpp
     DEPS ov_gameplay
     LABELS unit
 )

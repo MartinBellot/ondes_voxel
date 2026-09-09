@@ -7,6 +7,7 @@ ov_add_library(ov_server
     LAYER 12
     SOURCES
         src/server.cpp
+        src/workbench.cpp
     DEPS
         ov_gameplay
         ov_io

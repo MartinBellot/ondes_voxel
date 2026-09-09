@@ -11,6 +11,7 @@ ov_add_library(ov_protocol
         src/listener.cpp
         src/login.cpp
         src/play.cpp
+        src/recipe_packets.cpp
         src/status.cpp
         src/types.cpp
         src/varint.cpp

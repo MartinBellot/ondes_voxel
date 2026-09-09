@@ -94,6 +94,11 @@ MARKER_NBT = "[Server] ovnbt "
 class Server:
     """The vanilla server, driven through its console."""
 
+    #: Extra server.properties lines a measurement needs. Empty here on
+    #: purpose: every default above was chosen for a reason, and a subclass
+    #: that wants another one has to say which.
+    EXTRA_PROPERTIES = ""
+
     def __init__(self, directory: Path, port: int = 25599) -> None:
         directory.mkdir(parents=True, exist_ok=True)
         shutil.copy(JAR, directory / "server.jar")
@@ -119,6 +124,10 @@ class Server:
             "spawn-animals=true\n"
             "spawn-monsters=true\n"
             "enable-command-block=false\n"
+            # Une mesure qui a besoin d'autre chose l'ajoute en surchargeant cet
+            # attribut. Les lignes ajoutées sont écrites après, donc elles
+            # remplacent celles d'au-dessus : c'est la règle de server.properties.
+            + self.EXTRA_PROPERTIES
         )
         self.process = subprocess.Popen(
             ["java", "-Xmx2G", "-jar", "server.jar", "nogui"],
