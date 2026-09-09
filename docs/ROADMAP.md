@@ -353,11 +353,13 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       *(`ImprovedNoise` → `PerlinNoise` → `NormalNoise`. Une amplitude nulle
       **saute** une octave sans décaler les autres, parce que chacune est
       ensemencée par le hash de son nom et non en séquence)*
-- [~] **Interpréteur de `density_function`** — jamais un générateur ad hoc 🔒
-      *(23 types implémentés ; **14 des 15 entrées du routeur overworld se
-      construisent**. `final_density` manque — il atteint `old_blended_noise`,
-      le bruit de terrain de la 1.17. Un type non implémenté est **refusé et
-      nommé**, jamais traité comme zéro)*
+- [x] **Interpréteur de `density_function`** — jamais un générateur ad hoc 🔒
+      *(les **25 types atteignables** depuis les 15 entrées du routeur overworld
+      sont implémentés et les 15 se construisent, `final_density` compris. Un
+      type non implémenté est **refusé et nommé**, jamais traité comme zéro.
+      L'amplitude de `old_blended_noise` a été mise en cause puis **disculpée
+      par le Nether**, où la densité finale se réduit à ce seul bruit — voir
+      `docs/provenance/amplitude-old-blended-noise.md`)*
 - [~] `noise_router`, `noise_settings`, splines
       *(le routeur et les réglages sont lus depuis les JSON vanilla ; les
       splines sont évaluées **en float**, comme le jeu, parce que c'est d'elles
@@ -383,12 +385,31 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       exactes** : deux boîtes à la même distance, départagées chez vanilla par
       l'ordre de parcours d'un R-tree et par un cache du résultat précédent.
       Le calcul du climat, lui, est identique)*
-- [ ] Départage des égalités : ordre de construction du R-tree et cache
-      `lastResult` *(les 0,088 % restants)*
-- [ ] `surface_rules`
-- [ ] Carvers : grottes, ravins, cheese / spaghetti / noodle
+- [x] Départage des égalités : ordre de construction du R-tree et cache
+      `lastResult` ⭐
+      *(**7 821 312 / 7 821 312 cellules — 100,000 %**. Le R-tree seul ne
+      récupère que 16 des 2197 écarts ; les 2181 autres viennent du cache, et
+      seulement s'il est alimenté dans l'ordre de **remplissage** et non de
+      stockage — c'est cette mesure qui a nommé l'imbrication des boucles)*
+- [x] `surface_rules` — interpréteur des JSON vanilla, 4 types de règles et
+      11 types de conditions, un type inconnu refusé et nommé
+      *(colonnes dont les 8 couches du sommet correspondent : **4,07 % → 91,22 %** ;
+      blocs individuels 64,92 % → **97,67 %** ; plancher de bedrock **320000/320000**.
+      Restent les icebergs des océans gelés et les piliers des badlands érodées,
+      qui sont des passes séparées et non des règles)*
+- [x] Carvers : grottes et ravins
+      *(**masques bit-exacts : 1200/1200 chunks, 1 615 858 cellules**, aucune
+      chez nous seule, aucune chez le jeu seul. L'oracle est un chunk que le
+      jeu n'a pas fini : il conserve ses `CarvingMasks`. Accord solide/air
+      97,97 → 98,79 %. Cheese, spaghetti et noodle ne sont pas des carvers mais
+      des termes de densité, et ils sont dans `final_density`)*
 - [ ] Aquifères, lave, niveaux d'eau
-- [ ] Minerais par couche, distributions triangulaires
+- [~] Minerais par couche, distributions triangulaires
+      *(la **distribution par altitude est juste** — fer au pic 16-31, diamant
+      écrasé contre le plancher, deepslate seulement sous y=0 — mais les
+      **positions exactes échouent** : 30 blocs sur 13 249, le bruit de fond.
+      La formule d'ensemencement de la décoration n'est pas trouvée, et
+      l'étage est **exposé et non câblé** plutôt qu'allumé faux)*
 - [ ] **Les ~65 biomes** — plains, sunflower_plains, snowy_plains, ice_spikes,
       desert, swamp, mangrove_swamp, forest, flower_forest, birch_forest,
       old_growth_birch_forest, dark_forest, old_growth_pine_taiga,
@@ -403,8 +424,13 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       dripstone_caves, lush_caves, deep_dark, nether_wastes, warped_forest,
       crimson_forest, soul_sand_valley, basalt_deltas, the_end, end_highlands,
       end_midlands, small_end_islands, end_barrens
-- [ ] Features : arbres par essence, végétation, geodes d'améthyste, dripstone,
+- [~] Features : arbres par essence, végétation, geodes d'améthyste, dripstone,
       lush caves, blocs sculk du deep dark, sources, disques, lacs
+      *(le **cadre** est là : 12 des 15 modificateurs de placement, providers,
+      ancres, prédicats, les 11 étapes de décoration et leur trieur
+      inter-biomes ; 39 des 194 features configurées se chargent, le reste est
+      refusé par son nom. `ore`, `scattered_ore`, `spring_feature` et `disk`
+      seulement — les arbres attendent la graine de décoration)*
 - [ ] **Structures** : villages ×5 (plains, desert, savanna, taiga, snowy),
       avant-poste pillard, mine abandonnée (+ mesa), forteresse (stronghold),
       pyramide du désert, temple de la jungle, igloo, cabane de sorcière,
@@ -516,7 +542,7 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [ ] **20 pottery sherds** · brush · **8 cornes de chèvre**
 
 ### Systèmes de jeu
-- [ ] **Redstone** : poussière et propagation, torches, blocs, leviers, boutons,
+- [~] **Redstone** : poussière et propagation, torches, blocs, leviers, boutons,
       plaques ×4, fil de détente, crochet, répéteur (+ verrouillage),
       comparateur (comparaison et soustraction, mesure de conteneur),
       observateur, pistons (+ quasi-connectivité, limite de 12, moving piston),
@@ -525,8 +551,22 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       paratonnerre, **famille sculk** (capteur, calibré, shrieker, catalyst,
       veine), portes / trappes / portillons, lampe, TNT, ordre de mise à jour
       et block ticks
-- [ ] **Fluides** : écoulement, sources, mélanges (pierre / cobble / obsidienne),
+      *(le **modèle de puissance** est mesuré circuit par circuit : 19/19
+      niveaux de fil, 4/4 délais et le verrouillage, 72/72 cellules de
+      comparateur, 28/28 remplissages de conteneur, pistons 0-12 contre 13-14,
+      quasi-connectivité confirmée réelle et **pistons seulement**. 830 blocs
+      sondés pour la conductivité, **36 exceptions nommées** ; 979 pour la
+      réaction au piston, **101 déclarés non lus**. Les **effets** des
+      consommateurs — transferts, tir, sons, allumage, rails — ne sont pas
+      faits, et rien n'est câblé dans le serveur)*
+- [~] **Fluides** : écoulement, sources, mélanges (pierre / cobble / obsidienne),
       poussée d'entités, waterlogging, colonnes de bulles, éponge
+      *(**3172/3172 positions** identiques au vrai serveur, dont 1444 sur
+      quatre labyrinthes à graine fixe jamais regardés pendant l'écriture des
+      règles. La lave perd **2 niveaux par bloc** dans l'overworld et 1 dans le
+      Nether ; le rayon de recherche du trou est exactement 5 ; l'eau qui coule
+      ne waterlogue jamais. Restent les colonnes de bulles et la **magnitude**
+      de la poussée, non mesurée — la direction l'est)*
 - [ ] **Agriculture et élevage** : toutes les cultures, terre labourée,
       hydratation, os, composteur, abeilles et pollinisation, mode amour,
       croissance, croisement de chevaux et lamas, apprivoisement, tonte, traite,
@@ -547,6 +587,16 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       cartes, chevalet, métier à tisser et motifs de bannière, pierre de taille,
       lutrin, coffre de l'Ender, shulker box, compostage, chaudrons, feux de
       camp, ruches
+- [~] **Survie** : vie et dégâts, invulnérabilité, faim et épuisement,
+      40 aliments, mort et réapparition, expérience, oxygène
+      *(un chiffre par campagne, mesuré : 30/30 hauteurs de chute — les dégâts
+      sont un **`ceil`** et non un `floor`, et le tick d'atterrissage ne compte
+      pas —, 15/15 fenêtres d'invulnérabilité, 41/41 coûts de niveau, 12/12
+      lâchers d'XP, 44/44 dans l'ordre du codec `damage_type`. Deux corrections
+      de protocole : Combat Death **ne porte pas** l'id du tueur en 1.20.1, et
+      il n'y a **pas** de Hurt Animation. Restent les sources de dégâts au
+      corps à corps, projectile et feu, la réapparition au lit, l'armure, et
+      l'XP de minage dont la sonde est intermittente)*
 - [ ] **Divers** : explosions et résistance des blocs, feu et propagation,
       foudre et conversions, météo, cycle jour / nuit, sommeil et phantoms,
       gel (poudreuse), noyade, gravité, **archéologie** (brosse, sable et

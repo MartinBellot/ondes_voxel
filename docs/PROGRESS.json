@@ -9,9 +9,9 @@
     "pack_format": 15,
     "auth_mode": "offline only — no Mojang authentication (product decision)"
   },
-  "last_updated": "2026-09-08",
-  "current_milestone": "M3",
-  "current_task": "m3-authoritative-movement",
+  "last_updated": "2026-09-09",
+  "current_milestone": "M6",
+  "current_task": "m6-decoration-seed",
   "milestones": {
     "M0": {
       "name": "Fondations",
@@ -67,10 +67,11 @@
     "M6": {
       "name": "Contenu complet",
       "status": "in_progress",
-      "done": 6,
-      "total": 73,
+      "done": 10,
+      "total": 74,
       "exit_criterion": "Une batterie world_test par sous-système ; parité statistique worldgen sur 1000 seeds ; matrice protocole à 100 %.",
-      "blocked": []
+      "blocked": [],
+      "notes": "Vague d'agents parallèles du 2026-09-09 : carvers, règles de surface, départage des biomes (100,000 %), ordre des étages, fluides, redstone, survie, et le cadre des features. Le blocage unique de l'étage des features est la formule d'ensemencement de la décoration : tout le reste est mesuré et en place, et l'étage est exposé sans être câblé plutôt qu'allumé faux."
     },
     "M7": {
       "name": "Distribution",
@@ -168,7 +169,19 @@
     "attribute_cross_check": "les deux mesures independantes coincident bit pour bit : attribute base get imprime 0.23000000417232513 pour la vitesse d'un zombie, et le paquet 0x6A porte le f64 3fcd70a3e0000000 — la meme valeur, le double le plus proche du float 0.23f",
     "entity_gravity": "mesuree dans le tag Motion du jeu, pas empruntee au joueur : zombie, vache et support d'armure donnent g=0.08000 d=0.98000 (residu 1.6e-06, vitesse limite -3.92) ; une pile au sol donne g=0.04000, la moitie, avec un residu de 1.2e-15 — exact, pas un arrondi. Une fleche ne suit pas ce modele (residu 2.6e-03) et n'est pas implementee. Piege : NoAI coupe la physique d'un Mob et pas seulement son cerveau — la premiere campagne a rendu zero echantillon pour tous les mobs vivants",
     "mobs_online": "huit types poses par --mobs vus par le meme client sonde qui lit le jar vanilla : ids de type de Mojang, vies et valeurs d'attribut identiques a la campagne de mesure, 72 deltas de deplacement, chute de 9 ticks jusqu'a y=-60.0000 exactement",
-    "delta_drift": "le verificateur a d'abord rendu y=-59.999756, soit exactement un quantum de 1/4096 : le serveur calculait chaque delta depuis la vraie position et jetait le reste a chaque tick. Corrige en tenant la position que le client a effectivement et en l'avancant de ce qui a ete envoye ; l'erreur est desormais bornee a un quantum au lieu de s'accumuler"
+    "delta_drift": "le verificateur a d'abord rendu y=-59.999756, soit exactement un quantum de 1/4096 : le serveur calculait chaque delta depuis la vraie position et jetait le reste a chaque tick. Corrige en tenant la position que le client a effectivement et en l'avancant de ce qui a ete envoye ; l'erreur est desormais bornee a un quantum au lieu de s'accumuler",
+    "carving_masks": "1200/1200 chunks et 1 615 858 cellules identiques au vrai jeu, aucune chez nous seule, aucune chez lui seul. L'oracle est un chunk que le jeu n'a pas fini : il conserve son tag CarvingMasks, que les chunks 'full' ont jete",
+    "surface_rules": "colonnes dont les 8 couches du sommet correspondent : 4,07 % -> 91,22 % ; blocs individuels 64,92 % -> 97,67 % ; plancher de bedrock 320000/320000. La comparaison a du etre concue avant les regles : notre etage de bruit place sa surface 1 a 8 blocs trop bas, donc comparer des chunks entiers aurait mesure cela",
+    "biome_parity_closed": "7821312/7821312 cellules — 100,000 %. Le R-tree seul recupere 16 des 2197 ecarts, le cache lastResult les 2181 autres, et seulement alimente dans l'ordre de remplissage (x, y, z) et non de stockage (y, z, x)",
+    "stage_order": "bruit -> biomes -> surface -> carvers -> heightmaps. Les trois harnais existants ne pouvaient pas voir le changement : ov_parity n'appelle jamais generate(), ov_carveparity compare un masque independant de l'ordre, ov_surfparity ne croise jamais un carver. ov_caveedge, ecrit pour cela : parois 87,27 -> 88,67 %, interieurs 78,35 -> 80,63 %, et 8,8 contre 1 en faveur du nouvel ordre sur les 2414 cellules qu'il change",
+    "old_blended_noise_amplitude": "disculpee. Les deux arithmetiques candidates sont fausses d'un facteur 4 ; l'amplitude implementee est juste a environ 20 %. L'ancien critere etait degenere — correlation 0,25 pour chaque candidat et 0,29 pour le meme bruit echantillonne 10 007 blocs plus loin. Tranche par le Nether, ou la densite finale se reduit a ce seul bruit",
+    "fluids": "3172/3172 positions identiques au vrai serveur 1.20.1, dont 1444 sur quatre labyrinthes a graine fixe jamais regardes pendant l'ecriture des regles. La lave perd 2 niveaux par bloc dans l'overworld et 1 dans le Nether ; le rayon de recherche du trou est exactement 5 ; l'eau qui coule ne waterlogue jamais, elle contourne",
+    "redstone": "19/19 niveaux de fil, 4/4 delais de repeteur et le verrouillage, 72/72 cellules de comparateur avec les entrees relues, 28/28 remplissages de conteneur = floor(14n/27)+1, torche grillee a 48 et 32 bascules rapides et pas a 8 lentes, pistons 0-12 contre 13 et 14 qui refusent, quasi-connectivite reelle et pistons seulement. 830 blocs sondes pour la conductivite dont 36 exceptions nommees ; 979 pour la reaction au piston dont 101 declares non lus",
+    "survival": "30/30 hauteurs de chute — les degats sont un ceil et non un floor, et le tick d'atterrissage ne compte pas —, 15/15 fenetres d'invulnerabilite, 41/41 couts de niveau de 0 a 40, 12/12 lachers d'XP, 40 aliments, 4/4 planchers de famine, 44/44 dans l'ordre du codec damage_type, et de bout en bout contre notre serveur : 15/15 hauteurs, mort, reapparition, 289 chunks",
+    "protocol_corrections_1201": "Combat Death (0x38) ne porte pas l'id du tueur en 1.20.1 — la capture de 315 octets ne laisse pas la place — et il n'y a pas de Hurt Animation : deux coups de types differents produisent un Damage Event chacun et rien d'autre",
+    "ore_positions": "distribution par altitude juste (fer au pic 16-31 : 847 chez eux / 797 chez nous ; diamant ecrase contre le plancher ; deepslate seulement sous y=0) mais positions exactes a 30 blocs sur 13 249, soit le bruit de fond. La formule d'ensemencement de la decoration n'est pas trouvee",
+    "test_bench": "run/lab : 31 parcelles, 441 chunks, 460 494 blocs, ecrites depuis un catalogue par tools/ov_lab. Zero refus sur les 24 135 etats. Servi par notre serveur, rendu par notre client, et ouvert par le vrai serveur 1.20.1 sans une erreur, qui a reecrit les quatre regions sans abimer nos blocs",
+    "vanilla_redstone_on_load": "vanilla ne reevalue pas la redstone au chargement : un fil pose contre un bloc de redstone se relit power=0, east=none apres un cycle complet de chargement et de sauvegarde par le vrai serveur. Un circuit doit etre pousse avant de vouloir dire quoi que ce soit"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",
