@@ -28,7 +28,15 @@ struct GeneratedWorld::Impl {
     worldgen::BiomeSource   biomes;
     worldgen::SurfaceSystem surface;
     worldgen::FeatureRegistry features;
-    worldgen::Decorator     decorator;
+
+    /// Built *after* `features` is in its final home, never before.
+    ///
+    /// A Decorator keeps a raw pointer to the FeatureRegistry it was loaded
+    /// from. Loading one from a local and then moving that local in here
+    /// leaves the pointer aimed at a destroyed object — and it does not crash
+    /// on the way in, it crashes the first time a chunk reaches the feature
+    /// stage, which is on the first join and nowhere in the unit tests.
+    std::optional<worldgen::Decorator> decorator;
 
     worldgen::CarvingContext carving;
     worldgen::CarverStage    carvers;
@@ -42,13 +50,12 @@ struct GeneratedWorld::Impl {
     std::vector<u16> to_codec;
 
     Impl(i64 world_seed, worldgen::NoiseRouter&& r, worldgen::BiomeSource&& b,
-         worldgen::SurfaceSystem&& s, worldgen::FeatureRegistry&& f, worldgen::Decorator&& d)
+         worldgen::SurfaceSystem&& s, worldgen::FeatureRegistry&& f)
         : seed(world_seed),
           router(std::move(r)),
           biomes(std::move(b)),
           surface(std::move(s)),
           features(std::move(f)),
-          decorator(std::move(d)),
           carving{router.min_y(), router.height()},
           carvers{world_seed, carving} {}
 };
@@ -85,15 +92,17 @@ std::unique_ptr<GeneratedWorld> GeneratedWorld::load(
         OV_LOG_ERROR("worldgen: features: {}", worldgen::to_string(features.error()));
         return nullptr;
     }
-    auto decorator = worldgen::Decorator::load(data, blocks, *features, *biomes);
+    auto impl = std::make_unique<Impl>(seed, std::move(*router), std::move(*biomes),
+                                       std::move(*surface), std::move(*features));
+
+    // From `impl->features` and `impl->biomes`, not from the locals that were
+    // just moved out of them: see the comment on Impl::decorator.
+    auto decorator = worldgen::Decorator::load(data, blocks, impl->features, impl->biomes);
     if (!decorator) {
         OV_LOG_ERROR("worldgen: decorator: {}", worldgen::to_string(decorator.error()));
         return nullptr;
     }
-
-    auto impl = std::make_unique<Impl>(seed, std::move(*router), std::move(*biomes),
-                                       std::move(*surface), std::move(*features),
-                                       std::move(*decorator));
+    impl->decorator = std::move(*decorator);
 
     impl->generator.emplace(impl->router, impl->biomes, blocks);
     impl->generator->set_surface_system(&impl->surface);
@@ -105,7 +114,7 @@ std::unique_ptr<GeneratedWorld> GeneratedWorld::load(
         return nullptr;
     }
 
-    impl->pipeline.emplace(*impl->generator, &impl->decorator, blocks,
+    impl->pipeline.emplace(*impl->generator, &*impl->decorator, blocks,
                            world::WorldShape::overworld(), seed);
 
     // The two numberings, reconciled by name rather than assumed equal.
