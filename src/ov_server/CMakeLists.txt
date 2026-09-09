@@ -33,6 +33,17 @@ ov_add_library(ov_server
         simdjson::simdjson
 )
 
+# The units that can be tested without a socket. The server itself is a loop
+# around a world and cannot be unit-tested; the pieces this wave added to it —
+# the player's own window and the day's clock — can be, and both of them were
+# bugs found the hard way.
+ov_add_test(test_ov_server
+    SOURCES
+        tests/test_player_inventory.cpp
+    DEPS ov_server
+    LABELS unit
+)
+
 # Where the locally generated vanilla data lives. Passed in rather than searched
 # for at runtime: the server must fail loudly with a path in the message, not
 # quietly with an empty world.

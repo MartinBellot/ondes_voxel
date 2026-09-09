@@ -3797,6 +3797,48 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     /// outlive every request, which is why it is not a local of the loader.
     std::vector<std::string>          spawner_names;
     bool                              spawning_ready = false;
+    /// The light the spawn rule reads, built **once**.
+    ///
+    /// Three `std::function`s over capturing lambdas: constructing one of these
+    /// allocates, and constructing it inside the tick body is straight through
+    /// the rule that forbids allocating there — the `NoAllocScope` guard exists
+    /// to catch exactly this. It is also simply wasted work, three heap
+    /// allocations twenty times a second for an object that never changes.
+    ///
+    /// The tick it reports is read through `server_tick` rather than captured,
+    /// so the object can outlive any one tick without going stale.
+    const ChunkLight spawn_light{[&] {
+        LightHooks hooks;
+        hooks.block_light = [&](BlockPos pos) -> u8 {
+            const world::Chunk* chunk = chunk_if_resident(pos.x >> 4, pos.z >> 4);
+            if (chunk == nullptr) {
+                return 0;
+            }
+            const world::ChunkSection* section = chunk->section_for_y(pos.y);
+            return section == nullptr ? u8{0}
+                                      : section->block_light().get(world::section_index(
+                                            static_cast<usize>(pos.x & 15),
+                                            static_cast<usize>(pos.y & 15),
+                                            static_cast<usize>(pos.z & 15)));
+        };
+        hooks.sky_light = [&](BlockPos pos) -> u8 {
+            const world::Chunk* chunk = chunk_if_resident(pos.x >> 4, pos.z >> 4);
+            if (chunk == nullptr) {
+                return 0;
+            }
+            const world::ChunkSection* section = chunk->section_for_y(pos.y);
+            return section == nullptr ? u8{0}
+                                      : section->sky_light().get(world::section_index(
+                                            static_cast<usize>(pos.x & 15),
+                                            static_cast<usize>(pos.y & 15),
+                                            static_cast<usize>(pos.z & 15)));
+        };
+        hooks.sky_darken = [&] {
+            return sky_darken_for(server_tick.load(std::memory_order_relaxed));
+        };
+        return hooks;
+    }()};
+
     std::vector<gameplay::SpawnRequest> spawn_requests;
     std::vector<Vec3d>                  spawn_players;
     std::vector<ChunkPos>               spawn_ticking;
@@ -4091,62 +4133,65 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     }
                 }
 
-                spawn_ticking.clear();
                 spawn_requests.clear();
                 {
                     const std::scoped_lock chunk_lock{chunk_mutex};
-                    chunks.for_each([&](ChunkPos pos, const world::Chunk&) {
-                        if (chunks.is_ticking(pos)) {
-                            spawn_ticking.push_back(pos);
-                        }
-                    });
 
-                    // Sorted, because `for_each` walks a hash map: the order
-                    // decides which chunk the spawner offers a position in
-                    // first, and a hash order is neither stable across runs nor
-                    // across a rebuild of the map. Determinism is principle 5.
-                    std::ranges::sort(spawn_ticking, [](ChunkPos a, ChunkPos b) {
-                        return a.z != b.z ? a.z < b.z : a.x < b.x;
-                    });
+                    // The ticking set, rebuilt once a second and not once a
+                    // tick.
+                    //
+                    // Measured, and the reason this is written down: rebuilding
+                    // it every tick walked the whole resident map and sorted the
+                    // result, and it took an idle tick on the lab world from
+                    // **4 us to 2599 us** — six hundred times, for a list that
+                    // only changes when somebody walks across a chunk border.
+                    // A second of latency on that is invisible against a spawn
+                    // cycle; two and a half milliseconds a tick is not.
+                    if (clock.tick_count() % 20 == 0 || spawn_ticking.empty()) {
+                        spawn_ticking.clear();
+                        // The **spawn square**: the 17x17 of chunks around each
+                        // player, not every ticking chunk in the world.
+                        //
+                        // Not a cost cut but the rule. `effective_cap` scales a
+                        // category's cap by `eligible_chunks / 289`, and 289 is
+                        // 17x17 — the square around one player. Handing it every
+                        // ticking chunk instead inflates the denominator, so a
+                        // world with plenty loaded would allow several times the
+                        // real cap, and each extra chunk is also three spawn
+                        // attempts a tick spent nowhere near anybody.
+                        //
+                        // Walked out from each player rather than filtered from
+                        // the resident set: with two players the square is a few
+                        // hundred lookups, while the resident set grows with the
+                        // world.
+                        for (const Vec3d& who : spawn_players) {
+                            const i32 centre_x = static_cast<i32>(std::floor(who.x)) >> 4;
+                            const i32 centre_z = static_cast<i32>(std::floor(who.z)) >> 4;
+                            for (i32 dz = -8; dz <= 8; ++dz) {
+                                for (i32 dx = -8; dx <= 8; ++dx) {
+                                    const ChunkPos pos{centre_x + dx, centre_z + dz};
+                                    if (chunks.is_ticking(pos) &&
+                                        std::ranges::find(spawn_ticking, pos) ==
+                                            spawn_ticking.end()) {
+                                        spawn_ticking.push_back(pos);
+                                    }
+                                }
+                            }
+                        }
 
-                    // The light, read straight out of the sections. The server
-                    // already computes both arrays; this is an adapter over
-                    // storage that is right, not a second light engine.
-                    LightHooks light_hooks;
-                    light_hooks.block_light = [&](BlockPos pos) -> u8 {
-                        const world::Chunk* chunk = chunk_if_resident(pos.x >> 4, pos.z >> 4);
-                        if (chunk == nullptr) {
-                            return 0;
-                        }
-                        const world::ChunkSection* section = chunk->section_for_y(pos.y);
-                        return section == nullptr
-                                   ? u8{0}
-                                   : section->block_light().get(world::section_index(
-                                         static_cast<usize>(pos.x & 15),
-                                         static_cast<usize>(pos.y & 15),
-                                         static_cast<usize>(pos.z & 15)));
-                    };
-                    light_hooks.sky_light = [&](BlockPos pos) -> u8 {
-                        const world::Chunk* chunk = chunk_if_resident(pos.x >> 4, pos.z >> 4);
-                        if (chunk == nullptr) {
-                            return 0;
-                        }
-                        const world::ChunkSection* section = chunk->section_for_y(pos.y);
-                        return section == nullptr
-                                   ? u8{0}
-                                   : section->sky_light().get(world::section_index(
-                                         static_cast<usize>(pos.x & 15),
-                                         static_cast<usize>(pos.y & 15),
-                                         static_cast<usize>(pos.z & 15)));
-                    };
-                    light_hooks.sky_darken = [&] {
-                        return sky_darken_for(clock.tick_count());
-                    };
-                    const ChunkLight light{std::move(light_hooks)};
+                        // Sorted, because `for_each` walks a hash map: the order
+                        // decides which chunk the spawner offers a position in
+                        // first, and a hash order is neither stable across runs
+                        // nor across a rebuild of the map. Determinism is
+                        // principle 5.
+                        std::ranges::sort(spawn_ticking, [](ChunkPos a, ChunkPos b) {
+                            return a.z != b.z ? a.z < b.z : a.x < b.x;
+                        });
+                    }
 
                     gameplay::SpawnEnvironment environment;
                     environment.level             = &*level;
-                    environment.light             = &light;
+                    environment.light             = &spawn_light;
                     environment.players           = spawn_players;
                     environment.ticking_chunks    = spawn_ticking;
                     environment.live_per_category = spawn_live;

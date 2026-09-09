@@ -46,16 +46,31 @@ u8 ChunkLight::sky_light(BlockPos pos) const {
 u8 ChunkLight::sky_darken() const { return hooks_.sky_darken ? hooks_.sky_darken() : u8{0}; }
 
 u8 sky_darken_for(i64 day_time) noexcept {
-    // Vanilla's shape: the day fraction offset by a quarter turn, run through a
-    // cosine, clamped to [0, 1] and scaled by eleven. Written out in the order
-    // the game applies it rather than simplified, because the offset and the
-    // clamp are what make the number sit at 0 through the whole day and reach
-    // 11 only around midnight.
-    const auto  fraction = static_cast<f64>(((day_time % 24000) + 24000) % 24000) / 24000.0;
-    const f64   angle    = (fraction - 0.25) * 2.0 * std::numbers::pi;
-    const f64   raw      = 0.5 - std::cos(angle) * 0.5;
-    const f64   clamped  = std::clamp(1.0 - (raw * 1.1 - 0.05), 0.0, 1.0);
-    return static_cast<u8>(clamped * 11.0);
+    // Two stages, and the first one is the surprise.
+    //
+    // `time of day` is **not** the day fraction. The overworld runs its sun
+    // through a shaping curve first, which is what makes dawn and dusk quick
+    // and noon and midnight long:
+    //
+    //     d0 = frac(time / 24000 - 0.25)
+    //     d1 = 0.5 - cos(d0 * pi) / 2
+    //     timeOfDay = (d0 * 2 + d1) / 3
+    //
+    // Only then does the darkening come out of a second cosine, clamped and
+    // scaled by eleven. The first version of this function used the raw
+    // fraction and one cosine, which reads plausibly and is wrong at every hour
+    // except the two it happens to cross: it gave **5 at time 0**, where the
+    // game gives 0, so a freshly started server spawned monsters on lit grass
+    // at dawn. Checked against the three hours the shape is pinned by:
+    // 0 -> 0 (sunrise), 6000 -> 0 (noon), 18000 -> 11 (midnight).
+    const auto  ticks    = static_cast<f64>(((day_time % 24000) + 24000) % 24000);
+    const f64   fraction = ticks / 24000.0 - 0.25;
+    const f64   d0       = fraction - std::floor(fraction);
+    const f64   d1       = 0.5 - std::cos(d0 * std::numbers::pi) / 2.0;
+    const f64   time_of_day = (d0 * 2.0 + d1) / 3.0;
+
+    const f64 raw = 1.0 - (std::cos(time_of_day * 2.0 * std::numbers::pi) * 2.0 + 0.5);
+    return static_cast<u8>(std::clamp(raw, 0.0, 1.0) * 11.0);
 }
 
 // ── The biome's lists ───────────────────────────────────────────────────────
