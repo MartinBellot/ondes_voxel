@@ -138,9 +138,11 @@ TEST_CASE("a whole smelt, tick by tick", "[smelting]") {
     CHECK(state.stored_experience > 0.69F);
     CHECK(state.stored_experience < 0.71F);
 
-    // 1600 ticks of coal, 200 spent. The rest burns away with nothing to cook.
-    CHECK(state.lit_time == 1600 - 200);
-    for (int tick = 0; tick < 1400; ++tick) {
+    // 199 ticks of fuel spent, not 200: the tick the furnace lights is a tick
+    // it also cooks, and its counter is set rather than spent. That is the
+    // measured behaviour, and it is what makes one coal smelt exactly eight.
+    CHECK(state.lit_time == 1600 - 199);
+    for (int tick = 0; tick < 1401; ++tick) {
         (void)furnace_tick(book, FurnaceKind::Furnace, slots, state);
     }
     CHECK(state.lit_time == 0);
@@ -209,16 +211,24 @@ TEST_CASE("progress falls back when the fire goes out", "[smelting]") {
     slots.fuel  = RecipeStack{item_of("minecraft:bamboo"), 1};  // 50 ticks
     FurnaceState state;
 
+    // Fifty lit ticks, and the first of them is the tick that lights it: the
+    // counter is set there, not spent, so fifty ticks of bamboo buy fifty
+    // ticks of cooking and not forty-nine.
     for (int tick = 0; tick < 50; ++tick) {
         (void)furnace_tick(book, FurnaceKind::Furnace, slots, state);
     }
     CHECK(state.cook_time == 50);
-    CHECK_FALSE(state.lit());
+    CHECK(state.lit_time == 1);
+    CHECK(state.lit());
 
-    // Two ticks lost per dark tick, so fifty ticks of progress are gone in
-    // twenty-five. Without this a player could cook anything on a handful of
-    // sticks fed in one at a time.
-    for (int tick = 0; tick < 25; ++tick) {
+    (void)furnace_tick(book, FurnaceKind::Furnace, slots, state);
+    CHECK_FALSE(state.lit());
+    // Two ticks of progress lost per dark tick, so the first dark tick already
+    // takes it from fifty to forty-eight. Without this a player could cook
+    // anything on a handful of sticks fed in one at a time.
+    CHECK(state.cook_time == 48);
+
+    for (int tick = 0; tick < 24; ++tick) {
         (void)furnace_tick(book, FurnaceKind::Furnace, slots, state);
     }
     CHECK(state.cook_time == 0);
@@ -232,6 +242,13 @@ TEST_CASE("a blast furnace is twice as fast and burns twice as much", "[smelting
     slots.fuel  = RecipeStack{item_of("minecraft:coal"), 1};
     FurnaceState state;
 
+    // Iron ore takes 100 ticks in a blast furnace, which the recipe file says.
+    // Read on the first tick: once the input runs out there is no recipe left
+    // to ask, and the total goes back to zero rather than lying.
+    (void)furnace_tick(book, FurnaceKind::BlastFurnace, slots, state);
+    CHECK(state.cook_total == 100);
+    CHECK(state.lit_time == 800);
+
     int produced = 0;
     for (int tick = 0; tick < 2000; ++tick) {
         if (furnace_tick(book, FurnaceKind::BlastFurnace, slots, state).produced) {
@@ -240,17 +257,17 @@ TEST_CASE("a blast furnace is twice as fast and burns twice as much", "[smelting
     }
     // 800 ticks of coal over 100 ticks an item: eight again, in half the time.
     CHECK(produced == 8);
-    CHECK(state.cook_total == 100);
 }
 
 TEST_CASE("a stonecutter offers every cut of a block", "[smelting]") {
     const RecipeBook& book = *loaded().book;
 
     const auto options = stonecutting_options(book, item_of("minecraft:stone"));
-    // Stone cuts into slabs, stairs, bricks and their families. The count is
-    // what the datapack says; naming it here makes a version bump visible.
-    CHECK(options.size() == 15);
-    CHECK_FALSE(stonecutting_options(book, item_of("minecraft:stick")).size() > 0);
+    // Stone cuts seven ways in 1.20.1: slab, stairs, bricks, and the brick
+    // slab, stairs, wall and chiselled form. The count is what the datapack
+    // says, and naming it here makes a version bump visible instead of silent.
+    CHECK(options.size() == 7);
+    CHECK(stonecutting_options(book, item_of("minecraft:stick")).empty());
 }
 
 TEST_CASE("smithing upgrades a diamond pickaxe", "[smelting]") {

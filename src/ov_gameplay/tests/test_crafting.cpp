@@ -249,17 +249,30 @@ TEST_CASE("a shift-click crafts until the grid runs out", "[crafting]") {
     REQUIRE(made.has_value());
     CHECK(max_crafts(book, grid, *made) == 5);
 
+    // The loop stops when the grid stops making *this* result, not when it
+    // stops making anything. Two planks left side by side are a pressure plate,
+    // so a loop that only asks "does something still match" runs on and hands
+    // the player two items they never asked for — which is what this loop did
+    // the first time it was written.
     int  crafted = 0;
     auto current = grid;
     while (const auto again = match_crafting(book, current)) {
+        if (again->result.item != made->result.item) {
+            break;
+        }
         current = consume_craft(book, current, *again).grid;
         ++crafted;
         REQUIRE(crafted < 64);
     }
     CHECK(crafted == 5);
-    // Two planks each are left in the top row, and the recipe no longer fits.
+    // Two planks each are left in the top row, and the table no longer fits.
     CHECK(current.at(0, 0).count == 2);
     CHECK(current.at(0, 1).empty());
+    // And what is left is a pressure plate, which is exactly why the guard
+    // above is not decoration.
+    const auto leftover = match_crafting(book, current);
+    REQUIRE(leftover.has_value());
+    CHECK(item_name(leftover->result.item) == "minecraft:oak_pressure_plate");
 }
 
 TEST_CASE("a 2x2 grid can only make what fits in it", "[crafting]") {

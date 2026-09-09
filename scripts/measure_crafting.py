@@ -246,7 +246,16 @@ def fill(probe: Probe, grid: list[int | None]) -> tuple[int, int] | None:
 
 
 def empty(probe: Probe) -> None:
-    """Vide la grille et la barre d'action, sans rien laisser derrière."""
+    """Vide la grille et la barre d'action, sans rien laisser derrière.
+
+    La barre d'action est vidée **avant** l'échange, pas après. Un shift-clic
+    sur la case de sortie envoie l'objet fabriqué dans la barre d'action ; si
+    l'échange vient d'abord, il le remet dans la grille, et la grille suivante
+    est un mélange de deux recettes.
+    """
+    for index in range(9):
+        probe.creative_set(36 + index, None)
+    probe.settle(0.08)
     for index in range(9):
         probe.click(GRID_FIRST + index, index, 2)
     if not wait_for(probe, [None] * 9):
@@ -256,6 +265,19 @@ def empty(probe: Probe) -> None:
     for index in range(9):
         probe.creative_set(36 + index, None)
     probe.settle(0.08)
+
+
+def empty_inventory(probe: Probe) -> None:
+    """Vide les 36 cases du joueur.
+
+    Nécessaire dans la passe des restes : chaque fabrication y verse son
+    résultat, et un inventaire plein fait refuser le shift-clic suivant. Le
+    refus est silencieux — la grille ne bouge pas — et se lit comme « cet objet
+    ne laisse pas de reste ».
+    """
+    for index in range(9, 45):
+        probe.creative_set(index, None)
+    probe.settle(0.12)
 
 
 def positions(width: int, height: int) -> list[tuple[int, int]]:
@@ -429,7 +451,14 @@ def main() -> int:
                 empty(probe)
                 continue
             before = grid_now(probe)
-            probe.click(0, 0, 0)          # ramasse le résultat : la grille se consomme
+            # Shift-clic plutôt que clic ordinaire : le résultat part droit dans
+            # l'inventaire et le curseur reste vide. Un clic ordinaire le laisse
+            # sur le curseur, et jeter un curseur n'est **pas** le mode 4 mais le
+            # mode 0 sur la case -999 — l'erreur ne dit rien, elle laisse
+            # simplement l'objet en main, et le jeu refuse alors toutes les
+            # fabrications suivantes. Toute la première campagne de restes est
+            # tombée là-dedans.
+            probe.click(0, 0, 1)
             # Attendre que la grille change, et non un délai : sous charge, une
             # réponse en retard fait lire deux fois le même état et conclure
             # qu'aucun objet ne laisse de reste. C'est exactement ce qui est
@@ -443,9 +472,10 @@ def main() -> int:
                 if was is None or now is None or now == was:
                     continue
                 remainder[items[was]] = items[now]
-            probe.click(-999, 0, 4)       # jette ce que le curseur tient
+            probe.click(-999, 0, 0)       # jette ce que le curseur tiendrait
             probe.settle(0.1)
             empty(probe)
+            empty_inventory(probe)
 
         matched = sum(1 for g in grids if g["result"])
         print(f"{len(grids)} grilles posées, {matched} avec un résultat, "
