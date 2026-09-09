@@ -4,6 +4,8 @@
 #include <array>
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
+#include <chrono>
+#include <thread>
 #include <vector>
 
 using namespace ov;
@@ -76,9 +78,44 @@ TEST_CASE("a worker index is never used by two jobs at once", "[job_pool]") {
     pool.wait_idle();
 
     REQUIRE(overlaps.load() == 0);
-    // Every worker got something: a pool that quietly ran everything on thread
-    // zero would pass the overlap check and be useless.
-    REQUIRE(seen_mask.load() == (1U << kWorkers) - 1U);
+    // Which workers happened to be used is deliberately *not* asserted here.
+    // Four hundred short jobs can legitimately be drained by one thread on a
+    // loaded machine, and this test failed exactly that way once — reporting
+    // "1 == 15" while the property it exists to check, that no index is ever
+    // held twice at once, was never in doubt. The next test asks the same
+    // question in a way the scheduler cannot answer wrongly.
+    (void)seen_mask;
+}
+
+TEST_CASE("every worker index belongs to a thread that really runs", "[job_pool]") {
+    // The claim the overlap test used to make as a side effect, made properly:
+    // a pool that quietly ran everything on thread zero would pass the overlap
+    // check and be useless.
+    //
+    // Each job holds its worker until every other one has arrived, so the only
+    // way to see all four indices is for all four threads to be running at the
+    // same time. No amount of load changes the answer — it only changes how
+    // long it takes — and the deadline is there so a broken pool fails instead
+    // of hanging the suite.
+    constexpr usize kWorkers = 4;
+
+    base::JobPool      pool{kWorkers};
+    std::atomic<usize> arrived{0};
+    std::atomic<u32>   seen{0};
+
+    for (usize i = 0; i < kWorkers; ++i) {
+        pool.submit([&](usize worker) {
+            seen.fetch_or(1U << worker);
+            arrived.fetch_add(1);
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (arrived.load() < kWorkers && std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::yield();
+            }
+        });
+    }
+    pool.wait_idle();
+
+    REQUIRE(seen.load() == (1U << kWorkers) - 1U);
 }
 
 TEST_CASE("destroying a pool with a backlog does not hang", "[job_pool]") {
