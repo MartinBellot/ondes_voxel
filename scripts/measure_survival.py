@@ -1136,30 +1136,62 @@ def campaign_death_xp(server: Server, bot: Bot) -> dict:
 
 
 def campaign_mining_xp(server: Server, bot: Bot) -> dict:
-    """The experience a broken ore is worth, thirty draws at a time."""
+    """The experience a broken ore is worth, twenty draws at a time.
+
+    Twenty rather than one, because most ores roll a range: the answer wanted is
+    a distribution, and a single draw of "1" is indistinguishable from a
+    constant. The count of blocks the server agrees were broken is recorded
+    beside it, so "no experience" and "nothing happened" cannot be confused —
+    the first three runs of this reported zero for diamond, which is impossible,
+    and the reason was that no block was ever broken at all.
+    """
     if bot.dead:
         bot.respawn()
         bot.pump(1.5)
     heal(server, bot)
     fill_food(server, bot)
-    server.batch([f"gamemode survival {BOT}", f"clear {BOT}",
-                  f"give {BOT} minecraft:diamond_pickaxe 1"])
-    bot.pump(0.5)
-    bot.hold(0)
     if bot.position is None:
         raise RuntimeError("the bot was never told where it is")
     x0, y0, z0 = bot.position
+    # Put the player back where the server thinks it is, and wait for the
+    # teleport to be confirmed. Movement sent before that confirmation is
+    # discarded, and so is a dig aimed from a position the server has not
+    # accepted — which is the difference between this campaign and the block
+    # breaking in `exhaustion`, the one that works.
+    server.batch([f"gamemode survival {BOT}", f"clear {BOT}",
+                  f"tp {BOT} {x0} {y0} {z0}",
+                  f"forceload add {int(x0) - 32} {int(z0) - 32} "
+                  f"{int(x0) + 32} {int(z0) + 32}",
+                  f"give {BOT} minecraft:diamond_pickaxe 1"])
+    bot.pump(2.5)
+    bot.hold(0)
+    bot.move_to(x0, y0, z0)
+    bot.pump(0.5)
     bx, by, bz = int(x0) + 2, int(y0), int(z0)
+
+    # Say out loud what the campaign is holding and where it is aiming. Three
+    # runs of this reported zero experience for every ore including diamond,
+    # which is impossible, and each time the reason turned out to be that no
+    # block was ever broken — once because the position packing overflowed, once
+    # because nothing checked. A campaign that cannot break a block should say
+    # so in its first line, not in its results.
+    held = scalar(server.batch([f"data get entity {BOT} SelectedItem"]))
+    where = scalar(server.batch([f"data get entity {BOT} Pos"]))
+    print(f"  holding {held}, standing at {where}, aiming at {bx} {by} {bz}")
     out = {}
     sequence = 20000
-    for ore in ("coal_ore", "iron_ore", "copper_ore", "gold_ore", "diamond_ore",
+    for ore in ("stone", "coal_ore", "iron_ore", "copper_ore", "gold_ore", "diamond_ore",
                 "emerald_ore", "lapis_ore", "redstone_ore", "nether_quartz_ore",
                 "nether_gold_ore", "deepslate_coal_ore", "deepslate_diamond_ore",
-                "ancient_debris", "spawner", "stone"):
+                "ancient_debris", "spawner"):
         draws: list[int] = []
         broken: list[bool] = []
-        for _ in range(30):
+        for _ in range(20):
+            # Cleared first. `setblock … replace` reports failure when the new
+            # state equals the old one, so a block that was never broken makes
+            # every later setblock look like an error about the wrong thing.
             server.batch(["kill @e[type=minecraft:experience_orb]",
+                          f"setblock {bx} {by} {bz} minecraft:air replace",
                           f"setblock {bx} {by} {bz} minecraft:{ore} replace"])
             bot.dig(bx, by, bz, 0, sequence)
             sequence += 1

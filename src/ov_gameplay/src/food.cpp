@@ -27,8 +27,8 @@ constexpr std::array<FoodValue, 40> kFoods{{
     {"minecraft:bread",                   5, 0.6F, false},
     {"minecraft:porkchop",                3, 0.3F, false},
     {"minecraft:cooked_porkchop",         8, 0.8F, false},
-    {"minecraft:golden_apple",            4, 1.2F, false},
-    {"minecraft:enchanted_golden_apple",  4, 1.2F, false},
+    {"minecraft:golden_apple",            4, 1.2F, true},
+    {"minecraft:enchanted_golden_apple",  4, 1.2F, true},
     {"minecraft:cod",                     2, 0.1F, false},
     {"minecraft:salmon",                  2, 0.1F, false},
     {"minecraft:tropical_fish",           1, 0.1F, false},
@@ -55,13 +55,13 @@ constexpr std::array<FoodValue, 40> kFoods{{
     {"minecraft:rabbit_stew",            10, 0.6F, false},
     {"minecraft:mutton",                  2, 0.3F, false},
     {"minecraft:cooked_mutton",           6, 0.8F, false},
-    {"minecraft:chorus_fruit",            4, 0.3F, false},
+    {"minecraft:chorus_fruit",            4, 0.3F, true},
     {"minecraft:beetroot",                1, 0.6F, false},
     {"minecraft:beetroot_soup",           6, 0.6F, false},
-    {"minecraft:suspicious_stew",         6, 0.6F, false},
+    {"minecraft:suspicious_stew",         6, 0.6F, true},
     {"minecraft:sweet_berries",           2, 0.1F, false},
     {"minecraft:glow_berries",            2, 0.1F, false},
-    {"minecraft:honey_bottle",            6, 0.1F, false},
+    {"minecraft:honey_bottle",            6, 0.1F, true},
 }};
 
 }  // namespace

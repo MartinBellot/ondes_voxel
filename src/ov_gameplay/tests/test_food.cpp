@@ -11,6 +11,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <filesystem>
@@ -281,4 +282,117 @@ TEST_CASE("every food in the table is the one the server fed the probe",
         REQUIRE(measured[entry.name].error() == simdjson::SUCCESS);
     }
     REQUIRE(checked + missing == food_table().size());
+}
+
+TEST_CASE("the food table is the forty items the sweep found, and no others",
+          "[food][parity]") {
+    // Three hundred and ninety-nine candidates were fed to a real player one at
+    // a time; forty of them moved the bar. The count is worth asserting on its
+    // own: an item quietly added to this table would be an item the server
+    // never confirmed is food.
+    REQUIRE(food_table().size() == 40);
+
+    // Five saturation modifiers occur, and only five. Every food in 1.20.1 uses
+    // one of them, which is a fact about the game rather than about the table —
+    // and a sixth value appearing here would mean a measurement went wrong.
+    std::array<f32, 5> known{0.1F, 0.3F, 0.6F, 0.8F, 1.2F};
+    for (const FoodValue& entry : food_table()) {
+        INFO(entry.name);
+        const bool recognised =
+            std::any_of(known.begin(), known.end(), [&](f32 value) {
+                return std::abs(entry.saturation_modifier - value) < 1e-3F;
+            });
+        REQUIRE(recognised);
+        REQUIRE(entry.nutrition >= 1);
+        REQUIRE(entry.nutrition <= 10);
+    }
+}
+
+TEST_CASE("the foods that can be eaten on a full bar are the five measured ones",
+          "[food][parity]") {
+    // Measured by a second pass: the player is put at twenty food with a pool
+    // that still has room, and handed each of the forty foods. An item that is
+    // refused adds nothing; an always-edible one adds saturation. Forty of forty
+    // came back conclusive, and five of them were eaten.
+    const std::array<std::string_view, 5> expected{
+        "minecraft:golden_apple", "minecraft:enchanted_golden_apple",
+        "minecraft:chorus_fruit", "minecraft:suspicious_stew", "minecraft:honey_bottle"};
+    usize found = 0;
+    for (const FoodValue& entry : food_table()) {
+        if (!entry.always_edible) {
+            continue;
+        }
+        ++found;
+        INFO(entry.name << " is marked always edible");
+        REQUIRE(std::find(expected.begin(), expected.end(), entry.name) != expected.end());
+    }
+    REQUIRE(found == expected.size());
+
+    // And the rule they exist for: a full bar refuses everything else.
+    const FoodState full{.food = 20, .saturation = 5.0F};
+    REQUIRE(can_eat(full, *food_for("minecraft:golden_apple")));
+    REQUIRE_FALSE(can_eat(full, *food_for("minecraft:apple")));
+}
+
+TEST_CASE("the foods a player remembers are the ones the server gave back",
+          "[food][parity]") {
+    // Spelled out rather than left to the count, because a reader wants to see
+    // them: bread is five and 0.6, a cooked porkchop is eight and 0.8, rotten
+    // flesh is four points of food for almost no saturation, and a golden
+    // carrot has the best saturation in the game.
+    struct Expected {
+        std::string_view name;
+        i32              nutrition;
+        f32              modifier;
+    };
+    const std::array<Expected, 8> measured{{
+        {"minecraft:bread", 5, 0.6F},
+        {"minecraft:cooked_porkchop", 8, 0.8F},
+        {"minecraft:cooked_beef", 8, 0.8F},
+        {"minecraft:golden_carrot", 6, 1.2F},
+        {"minecraft:rotten_flesh", 4, 0.1F},
+        {"minecraft:rabbit_stew", 10, 0.6F},
+        {"minecraft:pufferfish", 1, 0.1F},
+        {"minecraft:honey_bottle", 6, 0.1F},
+    }};
+    for (const Expected& want : measured) {
+        const auto entry = food_for(want.name);
+        INFO(want.name);
+        REQUIRE(entry.has_value());
+        REQUIRE(entry->nutrition == want.nutrition);
+        REQUIRE(std::abs(entry->saturation_modifier - want.modifier) < 1e-3F);
+    }
+    // Rabbit stew is the largest nutrition in the game, which is what makes ten
+    // the right baseline for the measurement: from there nothing can reach the
+    // ceiling of twenty and be recorded short.
+    i32 largest = 0;
+    for (const FoodValue& entry : food_table()) {
+        largest = std::max(largest, entry.nutrition);
+    }
+    REQUIRE(largest == 10);
+}
+
+TEST_CASE("the exhaustion an action costs is the one that was counted",
+          "[food][parity]") {
+    // Normalised by the server's own statistics rather than by packets sent:
+    // sprint_one_cm, mined:stone and custom:jump. A probe driven from Python
+    // does not get every position packet processed, and dividing by what was
+    // *sent* gave 0.065 a block for sprinting — a number the game does not have.
+    //
+    //   sprinting   5.45081 exhaustion over 52.15 counted blocks -> 0.1045
+    //   breaking    0.125   over 25 blocks the server agreed were mined -> 0.005
+    //   jumping     1.0     over 20 jumps the server counted -> 0.05
+    //
+    // The two exact ones are pinned. Sprinting is within five per cent of a
+    // tenth and is not pinned tighter than that: the counter it is divided by
+    // is itself rounded to the centimetre.
+    //
+    // The block-breaking figure rests on a *single* successful run. Digging
+    // from the probe is intermittent — twenty-five of twenty-five once, zero of
+    // twenty-five twice afterwards, with the pickaxe held and the block
+    // present. See docs/provenance/survie.md § 12; the number is a measurement
+    // and not a guess, but it has been taken once.
+    REQUIRE(kFood.break_block == Catch::Approx(0.005F));
+    REQUIRE(kFood.jump == Catch::Approx(0.05F));
+    REQUIRE(std::abs(kFood.sprint_per_block - 0.1045F) < 0.006F);
 }

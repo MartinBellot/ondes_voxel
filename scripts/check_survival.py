@@ -19,12 +19,23 @@ What it asserts:
     in it than before;
   * the damage matches what ov_gameplay's own table says for that fall — the
     same number the vanilla server gave for the same drop;
+  * **fifteen successive fall heights** cost exactly what the vanilla server
+    charged for the same drops — the table in docs/provenance/survie.md, which
+    is not a straight line and is the whole point of measuring it;
   * a fall big enough to kill produces a Set Health of zero and a **Combat
     Death** whose message is a chat component naming death.attack.fall;
   * a Client Command asking to respawn is answered with a **Respawn** packet,
-    a Synchronize Player Position, and a Set Health back at twenty.
+    a Synchronize Player Position, a Set Health back at twenty, and the chunks
+    again — a vanilla client throws its world away when it respawns.
 
-Usage: python3 scripts/check_survival.py [path/to/ov_dedicated]
+Usage: python3 scripts/check_survival.py [path/to/ov_dedicated] [--world=DIR]
+
+  --world=run/lab   serve the persistent test bench instead of a fresh
+                    superflat. Its "fall heights" plot at x 0, z 64 is fifteen
+                    pillars and a forty-block tower, built for exactly this
+                    curve; the probe does not need them — movement is still
+                    client-authoritative, so it flies — but a human watching
+                    through a real client does.
 """
 from __future__ import annotations
 
@@ -60,6 +71,12 @@ SB_POSITION = 0x14
 # order, which is the order a datapack registry loads in and therefore the order
 # of the codec we send.
 FALL_DAMAGE_TYPE = 8
+
+# What the vanilla server charged for a drop of n blocks, n = 1..15. Measured by
+# scripts/measure_survival.py; see docs/provenance/survie.md § 2. Note the
+# repeat at 11 and 12: the tick that lands is never counted, and at that speed
+# it is worth more than a block.
+MEASURED_FALL = [0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 8.0, 10.0, 11.0, 12.0]
 
 GRAVITY, DRAG = 0.08, 0.98
 
@@ -184,15 +201,19 @@ class Faller(Probe):
 
 
 def main() -> int:
-    binary = Path(sys.argv[1]) if len(sys.argv) > 1 else (
+    arguments = [a for a in sys.argv[1:] if not a.startswith("--")]
+    world = next((a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--world=")), None)
+    binary = Path(arguments[0]) if arguments else (
         ROOT / "build" / "macos-debug" / "bin" / "ov_dedicated")
     if not binary.exists():
         print(f"error: {binary} not found; build ov_dedicated first")
         return 1
 
+    command = [str(binary), f"--port={PORT}", "--survival", "--ticks=4000"]
+    if world:
+        command.append(f"--world={world}")
     server = subprocess.Popen(
-        [str(binary), f"--port={PORT}", "--survival", "--ticks=1200"],
-        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     failures: list[str] = []
     try:
         time.sleep(2.5)
@@ -214,31 +235,63 @@ def main() -> int:
         print(f"joined: {bot.health} health, {bot.food} food, "
               f"{bot.saturation} saturation, experience {bot.experience}")
 
-        # ── a survivable fall ───────────────────────────────────────────────
-        bot.damage_events.clear()
-        bot.health_updates.clear()
-        before = bot.health
-        bot.fall(9.0)
-        expected = fall_damage_for(9.0)
-        if not bot.damage_events:
-            failures.append("a nine-block fall produced no Damage Event")
-        else:
-            entity, kind = bot.damage_events[0]
-            if entity != bot.entity_id:
-                failures.append(f"Damage Event named entity {entity}, we are {bot.entity_id}")
-            if kind != FALL_DAMAGE_TYPE:
-                failures.append(f"Damage Event carried damage type {kind}, "
-                                f"minecraft:fall is {FALL_DAMAGE_TYPE}")
-        # The *lowest* health seen, not the last: a fed player starts healing
-        # again within half a second of landing, and comparing the final value
-        # measures the fall minus one tick of regeneration. Five and a sixth
-        # rather than six, which is a real number and the wrong question.
-        taken = (before or 0.0) - min(bot.health_updates or [before or 0.0])
-        if abs(taken - expected) > 1e-4:
-            failures.append(f"a nine-block fall took {taken} health, "
-                            f"the measured table says {expected}")
-        print(f"fell 9 blocks: {taken} health taken (expected {expected}), "
-              f"{len(bot.damage_events)} damage events")
+        # ── fifteen fall heights, against what vanilla charged ───────────────
+        #
+        # One drop would prove the packets arrive. Fifteen prove the *curve*,
+        # and the curve is not a straight line: eleven and twelve blocks cost
+        # the same eight points, because the tick that lands is never counted
+        # and at that speed it is worth more than a block. A server with
+        # ceil(height - 3) in it passes at every height except those.
+        matched = 0
+        for height in range(1, 16):
+            expected = MEASURED_FALL[height - 1]
+            # A fresh connection per height. The fifteen drops cost seventy-two
+            # points between them and a player has twenty, so one session cannot
+            # measure them all; and natural regeneration is far too slow to wait
+            # out. Rejoining is the cheap reset — a new session starts at twenty
+            # health, twenty food and the position the server remembered.
+            if bot.health is None or bot.health < 20.0:
+                try:
+                    bot.socket.close()
+                except OSError:
+                    pass
+                bot = Faller(PORT)
+                bot.pump(3.0)
+            bot.damage_events.clear()
+            bot.health_updates.clear()
+            before = bot.health
+            bot.fall(float(height))
+            # The *lowest* health seen, not the last: a fed player starts
+            # healing again within half a second of landing, and the final value
+            # would measure the fall minus one tick of regeneration.
+            taken = (before or 0.0) - min(bot.health_updates or [before or 0.0])
+            if abs(taken - expected) <= 1e-4:
+                matched += 1
+            else:
+                failures.append(f"a {height}-block fall took {taken} health, "
+                                f"vanilla charged {expected}")
+            if expected > 0.0:
+                if not bot.damage_events:
+                    failures.append(f"a {height}-block fall produced no Damage Event")
+                else:
+                    entity, kind = bot.damage_events[0]
+                    if entity != bot.entity_id:
+                        failures.append(
+                            f"Damage Event named entity {entity}, we are {bot.entity_id}")
+                    if kind != FALL_DAMAGE_TYPE:
+                        failures.append(f"Damage Event carried damage type {kind}, "
+                                        f"minecraft:fall is {FALL_DAMAGE_TYPE}")
+            elif bot.damage_events:
+                failures.append(f"a {height}-block fall hurt, and vanilla charges nothing")
+        print(f"fall curve: {matched}/15 heights match the vanilla measurement")
+
+        # A fresh player for the death, so it starts from a full bar.
+        try:
+            bot.socket.close()
+        except OSError:
+            pass
+        bot = Faller(PORT)
+        bot.pump(3.0)
 
         # ── a fatal one, with experience to lose ────────────────────────────
         #

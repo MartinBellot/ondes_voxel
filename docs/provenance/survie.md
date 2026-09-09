@@ -283,7 +283,7 @@ Trace : `200 → 198 → 196 → 194 …`, à une seconde d'intervalle exactemen
 
 ---
 
-## 8. Épuisement
+## 8. Épuisement — trois valeurs exactes, une approchée
 
 Les coûts d'épuisement des **types de dégâts** ne sont pas mesurés à la main :
 ils sont déclarés par le datapack (`exhaustion` dans chaque
@@ -302,27 +302,42 @@ position traités, et ceux envoyés pendant que le serveur attend la confirmatio
 d'une téléportation sont jetés en silence.
 
 **Ce qui a marché.** Le dénominateur vient du serveur. Minecraft tient une
-statistique pour chacune de ces actions — centimètres sprintés, centimètres
-marchés, sauts, blocs minés — et un objectif de tableau d'affichage l'expose à
+statistique par action — centimètres sprintés, centimètres marchés, sauts, blocs
+minés — et un objectif de tableau d'affichage l'expose à
 `scoreboard players get`. Diviser l'épuisement par le travail que le serveur dit
 avoir vu rend la réponse indépendante du nombre de paquets survivants.
 
-Un résultat propre est sorti de la première version malgré tout :
+| action | épuisement | compté par le serveur | par action |
+|---|---|---|---|
+| sprint | 5,45081 | 52,15 blocs | **0,1045** |
+| casser un bloc | 0,125 | 25 blocs minés | **0,005** exact — une seule exécution réussie, voir § 12 |
+| sauter | 1,0 | 20 sauts | **0,05** exact |
+| marcher | 0,247 | 14,70 blocs | 0,0168 — voir plus bas |
 
-| action | mesure | par action |
-|---|---|---|
-| dix sauts | 0,5 d'épuisement | **0,05 par saut** |
+Deux valeurs tombent exactement. Le sprint est à cinq pour cent d'un dixième et
+n'est pas épinglé plus serré que ça : le compteur qui sert de dénominateur est
+lui-même arrondi au centimètre, et la statistique de sprint ne compte que les
+paquets où le joueur était au sol *et* déjà en train de sprinter.
 
-Et il apprend au passage quelque chose sur le protocole : un client ne dit
-jamais « je saute ». Le serveur le *déduit* d'un paquet de position qui quitte
-le sol en montant, et facture l'épuisement là. C'est pour ça que la mesure
-fonctionne du tout.
+La marche à 0,0168 par bloc n'est pas un coût de la marche : c'est ce qui reste
+quand la moitié des blocs envoyés n'est pas créditée dans le compteur qu'on
+divise. Marcher ne coûte rien en 1.20.1, et `FoodConstants::walk_per_block` vaut
+zéro — **par défaut, pas par mesure**, et c'est dit ici parce que la mesure ne
+tranche pas.
 
-La marche a donné 0,217 d'épuisement sur 26 blocs envoyés, soit un huitième du
-sprint : compatible avec zéro plus du bruit, pas avec un coût réel. Les valeurs
-retenues dans `FoodConstants` — 0,1 par bloc sprinté, 0,005 par bloc cassé,
-0,01 par bloc nagé, 0,2 pour un saut en sprint, 6,0 par demi-cœur régénéré —
-**ne sont pas toutes mesurées**, et le fichier le dit. Seul le saut simple l'est.
+**Le saut apprend quelque chose sur le protocole au passage.** Un client ne dit
+jamais « je saute ». Le serveur le déduit d'un paquet de position qui quitte le
+sol en montant, et facture l'épuisement là — c'est pour ça que la mesure est
+possible du tout, et pourquoi elle donne 20 sauts comptés sur 20 tentés.
+
+**Ce qui reste non mesuré** dans `FoodConstants` : `swim_per_block` (0,01),
+`sprint_jump` (0,2) et `regeneration` (6,0). Le fichier le dit.
+
+**La croix par type de dégât n'a rien donné.** Six `damage <bot> 1 <type>`
+successifs ont rapporté 0,0 d'épuisement et 0 sur le compteur `damage_taken` —
+donc aucun dégât n'a été infligé, pas « aucun épuisement facturé ». La cause
+n'est pas identifiée ; les valeurs viennent du datapack, qui est une source
+autorisée et pas une supposition, et ce contre-test reste à refaire.
 
 ---
 
@@ -346,26 +361,28 @@ l'état demandé.
 
 ---
 
-## 10. Aliments
+## 10. Aliments — 40 trouvés sur 399 candidats, 40/40 classés
 
 **Protocole.** Chaque objet du registre `minecraft:item` qui n'est **pas** aussi
 dans `minecraft:block` — un filtre sur les registres, pas une liste devinée :
 aucun objet comestible de 1.20.1 n'est un objet-bloc. Cela ramène 1319 objets à
 399. Le bot est amené à 10 de faim et 0 de saturation, reçoit l'objet, l'utilise,
-et les deux compteurs sont relus.
+et les deux compteurs sont relus. **Quarante** objets ont bougé la barre.
 
-Dix, parce que la plus grande valeur nutritive du jeu vaut dix : depuis là rien
-ne peut heurter le plafond de vingt et être noté trop bas. La première version
-partait de quinze et rapportait 6 pour la côtelette de porc cuite au lieu de 8.
+Dix, parce que la plus grande valeur nutritive du jeu vaut dix (le ragoût de
+lapin) : depuis là rien ne peut heurter le plafond de vingt et être noté trop
+bas. La première version partait de quinze et rapportait 6 pour la côtelette de
+porc cuite au lieu de 8.
 
 La saturation, elle, a un plafond atteignable — le **nouveau** niveau de faim —
 et c'est ce qui fait qu'un steak mangé le ventre vide vaut moins qu'un steak
-mangé à moitié rassasié. Le cas est détecté et signalé par objet.
+mangé à moitié rassasié. Le cas est détecté et signalé par objet : **aucun des
+quarante n'a été écrêté** depuis une base de dix.
 
 Le modificateur est reconstruit comme `saturation / (2 × nutrition)`, ce qui est
-la définition du jeu.
-
-Exemples relevés :
+la définition du jeu. Les quarante donnent **exactement cinq** valeurs
+distinctes : 0,1 · 0,3 · 0,6 · 0,8 · 1,2. Une sixième aurait voulu dire qu'une
+mesure avait dérapé.
 
 | objet | faim | saturation | modificateur |
 |---|---|---|---|
@@ -374,35 +391,91 @@ Exemples relevés :
 | `minecraft:mushroom_stew` | +6 | +7,2 | 0,6 |
 | `minecraft:porkchop` | +3 | +1,8 | 0,3 |
 | `minecraft:cooked_porkchop` | +8 | +12,8 | 0,8 |
+| `minecraft:golden_carrot` | +6 | +14,4 | 1,2 |
+| `minecraft:rabbit_stew` | +10 | +12,0 | 0,6 |
+| `minecraft:rotten_flesh` | +4 | +0,8 | 0,1 |
+| `minecraft:pufferfish` | +1 | +0,2 | 0,1 |
 | `minecraft:golden_apple` | +4 | +9,6 | 1,2 |
-| `minecraft:enchanted_golden_apple` | +4 | +9,6 | 1,2 |
+| `minecraft:honey_bottle` | +6 | +1,2 | 0,1 |
 
-**Comestible à ventre plein.** Une seconde passe, sur les seuls objets trouvés
-comestibles : le bot est amené à 20 de faim et **0** de saturation — l'effet
-`hunger` vide la réserve avant la barre, ce qui donne exactement cet état — puis
-on lui donne l'objet. Ce qui ajoute de la saturation depuis là est
-`always_edible` ; ce qui ne fait rien a été refusé.
+**Comestible à ventre plein — 5 sur 40.** Une seconde passe, sur les seuls
+objets trouvés comestibles. Le bot est amené à 20 de faim avec une réserve
+**partiellement** remplie, puis reçoit l'objet : ce qui ajoute de la saturation
+depuis là est `always_edible`, ce qui ne fait rien a été refusé.
 
-**Un piège de plus, et il a coûté quarante-cinq minutes.** Quelque part vers le
-125ᵉ objet, un objet déconnecte la sonde — une téléportation que le serveur lit
-comme un déplacement illégal, très probablement. `EOFError` n'hérite pas de
-`OSError` ; il traversait tous les gestionnaires et emportait la campagne entière
-avec lui, sans qu'aucun résultat n'ait été écrit. La campagne écrit maintenant
-après **chaque** objet, retient la liste de ceux déjà essayés, et reconnecte la
-sonde plutôt que de mourir.
+Réponse : `golden_apple`, `enchanted_golden_apple`, `chorus_fruit`,
+`suspicious_stew`, `honey_bottle`. **40 concluants sur 40.**
+
+> Piège, et il a coûté trois heures et demie. La première version de cette passe
+> demandait 20 de faim et **0** de saturation. Cet état n'existe pas : l'effet
+> `hunger` ne retire de la saturation qu'en faisant déborder l'épuisement, et le
+> débordement qui prend le dernier point de saturation est immédiatement suivi
+> d'un qui prend un point de faim. Elle a réessayé quarante fois, échoué quarante
+> fois, et rapporté « 0 comestible sur 40 ». Une réserve partiellement remplie
+> répond à la même question et est atteignable.
+
+**Un piège de plus, celui-là à quarante-cinq minutes.** Quelque part vers le
+125ᵉ objet, un objet déconnecte la sonde — le fruit chorus téléporte celui qui
+le mange, et le serveur lit la téléportation comme un déplacement illégal.
+`EOFError` n'hérite pas de `OSError` ; il traversait tous les gestionnaires et
+emportait la campagne entière, sans qu'aucun résultat n'ait été écrit. La
+campagne écrit maintenant après **chaque** objet, retient la liste de ceux déjà
+essayés, et reconnecte la sonde plutôt que de mourir.
 
 ---
 
-## 11. Ce qui n'a pas pu être mesuré
+## 11. De bout en bout, contre notre propre serveur
+
+`scripts/check_survival.py` fait ce que les tests unitaires ne peuvent pas :
+il branche une sonde sur `ov_dedicated --survival` et regarde ce qui sort du
+socket. Il rejoue **les quinze premières hauteurs de chute** de la table
+vanilla, une connexion neuve par hauteur — soixante-douze points de dégâts pour
+un joueur qui en a vingt, une session ne peut pas toutes les porter.
+
+Résultat : **15/15**, y compris la paire 11 et 12 qui coûte huit points des deux
+côtés. Un serveur qui aurait `ceil(hauteur − 3)` dedans passerait partout sauf
+là, ce qui est précisément l'intérêt de faire quinze hauteurs et pas une.
+
+Il vérifie ensuite qu'une chute de quarante blocs produit un Set Health à zéro
+et un Combat Death portant `death.attack.fall`, que le respawn demandé renvoie
+un paquet Respawn, une position, une santé à vingt — et **289 chunks**, parce
+qu'un client vanilla jette son monde en respawnant et que le streaming par
+différence ne renvoyait rien du tout.
+
+Il tourne aussi contre le banc persistant : `--world=run/lab`, dont la parcelle
+« fall heights » (x 0, z 64) est quinze piliers et une tour de quarante blocs
+bâtis pour cette courbe. Même résultat, 15/15.
+
+---
+
+## 12. Ce qui n'a pas pu être mesuré
 
 Nommé plutôt que passé sous silence, comme le veut la règle du dépôt.
 
-* **XP du minage.** La campagne est écrite et tourne, mais les quinze minerais
-  testés rapportent 0, y compris le diamant, ce qui est impossible. La cause la
-  plus probable est que le bloc n'est jamais cassé : la campagne vérifie
-  désormais avec `execute if block … minecraft:air` si le bloc a réellement
-  disparu, ce qui distinguera « rien cassé » de « cassé sans orbe ». Le coût de
-  l'épuisement par bloc cassé est bloqué derrière le même problème.
+* **XP du minage — non mesurée, et la sonde est en cause.** Deux bugs ont été
+  trouvés et corrigés, et un troisième reste ouvert.
+
+  Le premier était réel et net : `struct.pack(">q", …)` refuse le mot de
+  position assemblé dès que son bit de poids fort est mis, ce qui arrive pour
+  toute coordonnée x négative. Le bot n'envoyait **aucun** paquet de creusement,
+  et la campagne rapportait consciencieusement zéro d'expérience pour le
+  diamant. Corrigé en `">Q"`.
+
+  Le second était de méthode : rien ne vérifiait que le bloc avait disparu. La
+  campagne compte maintenant les blocs que le serveur reconnaît avoir vu miner,
+  ce qui sépare « pas d'expérience » de « rien cassé » — deux résultats
+  identiques à l'affichage et opposés au fond. Elle imprime aussi, en première
+  ligne, l'objet tenu et la position visée.
+
+  Le troisième est ouvert. **Le creusement depuis la sonde est intermittent** :
+  une exécution a cassé 25 blocs sur 25 (d'où le 0,005 du § 8), les deux
+  suivantes zéro sur vingt-cinq et zéro sur vingt — avec, vérifié dans la même
+  seconde, la pioche en diamant tenue en main, la position acceptée par le
+  serveur (le sprint de la même session compte 52 blocs, donc les paquets de
+  mouvement passent), le bloc bien présent et à 2,3 blocs de portée. La
+  différence entre l'exécution qui marche et celles qui échouent n'est pas
+  identifiée. Le coût d'épuisement par bloc cassé repose donc sur une seule
+  mesure réussie, et l'XP du minage sur aucune.
 * **XP de la fonte.** Pas besoin de mesure : le champ `experience` est dans les
   recettes du data generator (`minecraft:smelting`, 0,7 pour le lingot de fer).
   Non intégré, faute d'un module de recettes ici.
@@ -417,3 +490,5 @@ Nommé plutôt que passé sous silence, comme le veut la règle du dépôt.
   mort ; ce qui manque est ce qui les déclenche — une flèche, un creeper, un
   bloc de lave. Le chemin qui va d'une source à une barre de vie est mesuré et
   testé une fois pour toutes, quelle que soit la source.
+* **L'épuisement par type de dégât, vérifié sur le serveur.** Voir § 8 : les
+  valeurs viennent du datapack, le contre-test n'a rien infligé.
