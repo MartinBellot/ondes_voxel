@@ -69,6 +69,14 @@ struct Options {
     /// Dump one column: what the game has, and every term we compute.
     std::string column;
     std::filesystem::path pack{"data/vanilla/1.20.1/registry.ovpack"};
+    /// Carry the climate search's one-entry cache across the biome cells of a
+    /// chunk, in the given order. The cache decides ties, so the order the
+    /// questions are asked in is part of the answer; "none" asks each cell
+    /// independently. See BiomeSearchCache.
+    /// "xyz" is what the game does and what measures 100 %; "yzx" is the
+    /// order the cells are *stored* in, which is not the order they were asked
+    /// about; "none" asks each cell independently and measures 99.972 %.
+    std::string cache{"xyz"};
 };
 
 [[nodiscard]] Options parse(int argc, char** argv) {
@@ -102,6 +110,8 @@ struct Options {
             options.column = value("--column=");
         } else if (argument.starts_with("--pack=")) {
             options.pack = value("--pack=");
+        } else if (argument.starts_with("--cache=")) {
+            options.cache = value("--cache=");
         }
     }
     return options;
@@ -633,6 +643,11 @@ int main(int argc, char** argv) {
                 continue;
             }
 
+            // One cache per chunk. Vanilla's lives in a thread local and so
+            // carries between chunks in whatever order the generation pool
+            // ran them; within a chunk the order is fixed, and after the first
+            // few cells the earlier state has washed out.
+            worldgen::BiomeSearchCache cache;
             for (const nbt::Tag& section : *list->list()) {
                 const nbt::Tag* y_tag  = section.find("Y");
                 const nbt::Tag* biomes_tag = section.find("biomes");
@@ -666,7 +681,16 @@ int main(int argc, char** argv) {
                     }
                 }
 
-                for (u32 cell = 0; cell < 64; ++cell) {
+                for (u32 slot = 0; slot < 64; ++slot) {
+                    // The order the cells are *asked about*, which is not the
+                    // order they are stored in. Storage is y, z, x; the fill
+                    // loop that produced them may not be, and the cache makes
+                    // the difference visible.
+                    // slot = x * 16 + y * 4 + z when the loop nests x, y, z;
+                    // storage is cell = y * 16 + z * 4 + x.
+                    const u32 cell = options.cache == "xyz"
+                                         ? (((slot / 4) % 4) * 16 + (slot % 4) * 4 + (slot / 16))
+                                         : slot;
                     usize palette_index = 0;
                     if (bits != 0) {
                         if (words.empty()) {
@@ -725,7 +749,9 @@ int main(int argc, char** argv) {
                         ++cells;
                         continue;
                     }
-                    const auto ours = biomes->biome_at(climate);
+                    const auto ours = options.cache == "none"
+                                          ? biomes->biome_at(climate)
+                                          : biomes->biome_at(climate, cache);
 
                     ++cells;
                     for (usize axis = 0; axis < 7; ++axis) {

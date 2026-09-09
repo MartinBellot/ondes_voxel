@@ -13,10 +13,13 @@ ov_add_library(ov_gameplay
         src/mob_logic.cpp
         src/physics.cpp
         src/connections.cpp
+        src/signal.cpp
+        src/redstone.cpp
+        src/piston.cpp
         src/loot.cpp
     DEPS
-        ov_entity
         ov_world
+        ov_entity
         ov_registry
         ov_math
 )
@@ -31,6 +34,8 @@ ov_add_test(test_ov_gameplay
         tests/test_fluid_physics.cpp
         tests/test_physics.cpp
         tests/test_connections.cpp
+        tests/test_redstone.cpp
+        tests/test_piston.cpp
         tests/test_loot.cpp
     DEPS ov_gameplay
     LABELS unit

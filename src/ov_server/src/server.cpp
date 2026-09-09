@@ -43,6 +43,7 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <ranges>
 #include <array>
 #include <atomic>
 #include <charconv>
@@ -107,6 +108,14 @@ struct Options {
     /// the time the real game takes, which is the only mode where the break
     /// rules are exercised at all.
     bool survival = false;
+
+    /// The world directory to serve, holding level.dat and region/.
+    ///
+    /// A flag rather than a constant because the test world is a *second*
+    /// world: the bench in run/lab has to be servable without moving the
+    /// player's own save out of the way first, and a bench nobody can open is
+    /// a bench nobody uses.
+    std::string world_dir = "run/world";
 
     /// Mobs to place near the spawn point, by registry name.
     ///
@@ -1074,6 +1083,8 @@ Options parse_args(int argc, char** argv) {
             } else {
                 OV_LOG_WARN("invalid --port value '{}', ignoring", value);
             }
+        } else if (arg.starts_with("--world=")) {
+            options.world_dir = std::string{arg.substr(8)};
         } else if (arg.starts_with("--motd=")) {
             options.motd = arg.substr(7);
         } else if (arg.starts_with("--log-level=")) {
@@ -1103,6 +1114,7 @@ void print_help() {
         "Ondes VOXEL dedicated server\n"
         "\n"
         "  --port=<n>                                      listen port (default: 25565)\n"
+        "  --world=<dir>                                   world to serve (default: run/world)\n"
         "  --motd=<text>                                   server list description\n"
         "  --log-level=<trace|debug|info|warn|error|off>   verbosity (default: info)\n"
         "  --ticks=<n>                                     stop after n ticks\n"
@@ -1246,7 +1258,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     // tirages, pas le même.
     math::XoroshiroRandomSource loot_random{0x243F6A8885A308D3ULL, 0x13198A2E03707344ULL};
 
-    const std::filesystem::path level_dir = std::filesystem::path{"run"} / "world";
+    const std::filesystem::path level_dir{options.world_dir};
     const std::filesystem::path world_dir = level_dir / "region";
     std::error_code             directory_error;
     std::filesystem::create_directories(world_dir, directory_error);
@@ -1255,6 +1267,18 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     // upgrades old worlds through a converter this project does not have, and a
     // newer one may use shapes it does not know — so opening either would mean
     // reading a file we do not understand and, worse, writing it back.
+    // What the world says about itself. The defaults describe the superflat this
+    // server generates; a level.dat on disk overrides them and is written back
+    // unchanged, so that opening a world never silently moves its spawn. A test
+    // world is only a bench if it is still the same world tomorrow.
+    world::LevelSettings level_settings;
+    level_settings.spawn_y = Superflat::kSurfaceY + 1;
+    level_settings.layers  = {
+        {"minecraft:bedrock", 1},
+        {"minecraft:dirt", 2},
+        {"minecraft:grass_block", 1},
+    };
+
     if (const auto level_bytes = io::read_file(level_dir / "level.dat")) {
         i32 stored = -1;
         // level.dat is gzipped, and nbt::read takes plain NBT. Handing it the
@@ -1266,6 +1290,17 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 if (const nbt::Tag* version = data->find("DataVersion")) {
                     stored = static_cast<i32>(version->as_i64());
                 }
+                if (const nbt::Tag* name = data->find("LevelName")) {
+                    level_settings.name = std::string{name->as_string()};
+                }
+                const auto spawn_of = [&](std::string_view key, i32& into) {
+                    if (const nbt::Tag* value = data->find(key)) {
+                        into = static_cast<i32>(value->as_i64());
+                    }
+                };
+                spawn_of("SpawnX", level_settings.spawn_x);
+                spawn_of("SpawnY", level_settings.spawn_y);
+                spawn_of("SpawnZ", level_settings.spawn_z);
             }
         }
         if (stored != world::kDataVersion1201) {
@@ -1388,6 +1423,21 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                             if (blocks) {
                                 relight_blocks(placed, *blocks);
                             }
+                            // Sky light is recomputed only when the file
+                            // carries none. A world written by a tool that has
+                            // no light engine — ov-lab, for one — would
+                            // otherwise be served pitch dark, while a world
+                            // vanilla wrote keeps the light vanilla computed
+                            // across chunk borders, which a per-chunk pass
+                            // here could only make worse.
+                            const bool has_sky_light =
+                                std::ranges::any_of(placed.sections(),
+                                                    [](const world::ChunkSection& section) {
+                                                        return !section.sky_light().is_absent();
+                                                    });
+                            if (!has_sky_light) {
+                                relight_chunk(placed);
+                            }
                             return placed;
                         }
                     } else {
@@ -1445,15 +1495,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // level.dat every time, not once at creation: it is small, and a world
         // whose regions are newer than its level.dat is the state a crash
         // leaves behind.
-        world::LevelSettings settings;
-        settings.name    = "Ondes VOXEL";
-        settings.spawn_y = Superflat::kSurfaceY + 1;
-        settings.layers  = {
-            {"minecraft:bedrock", 1},
-            {"minecraft:dirt", 2},
-            {"minecraft:grass_block", 1},
-        };
-        if (!io::write_file_atomic(level_dir / "level.dat", world::encode_level_dat(settings))) {
+        if (!io::write_file_atomic(level_dir / "level.dat",
+                                   world::encode_level_dat(level_settings))) {
             OV_LOG_WARN("could not write level.dat");
         }
 
@@ -2070,13 +2113,20 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 }
                 if (!remembered) {
                     // A first arrival stands on whatever the world's surface
-                    // happens to be. The superflat's height is a constant, a
-                    // real save's is not, and spawning at the flat world's y in
-                    // a generated one buries the player in stone.
+                    // happens to be, at the spawn the world declares. The
+                    // superflat's height is a constant, a real save's is not,
+                    // and spawning at the flat world's y in a generated one
+                    // buries the player in stone.
+                    player.x = static_cast<f64>(level_settings.spawn_x) + 0.5;
+                    player.z = static_cast<f64>(level_settings.spawn_z) + 0.5;
                     const std::scoped_lock chunk_lock{chunk_mutex};
-                    world::Chunk&          home = chunk_at(0, 0);
-                    player.y                    = static_cast<f64>(
-                        home.heightmap(world::HeightmapType::WorldSurface).first_free(0, 0));
+                    world::Chunk&          home =
+                        chunk_at(level_settings.spawn_x >> 4, level_settings.spawn_z >> 4);
+                    const auto local_x = static_cast<usize>(level_settings.spawn_x & 15);
+                    const auto local_z = static_cast<usize>(level_settings.spawn_z & 15);
+                    player.y           = static_cast<f64>(
+                        home.heightmap(world::HeightmapType::WorldSurface)
+                            .first_free(local_x, local_z));
                 }
                 {
                     const std::scoped_lock lock{states_mutex};

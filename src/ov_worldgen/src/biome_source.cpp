@@ -6,8 +6,13 @@
 
 #include <simdjson.h>
 
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdlib>
 #include <limits>
 #include <set>
+#include <utility>
 
 namespace ov::worldgen {
 
@@ -104,8 +109,14 @@ std::expected<BiomeSource, DensityError> BiomeSource::load(const std::filesystem
         source.entries_.push_back(std::move(entry));
     }
 
-    OV_LOG_INFO("worldgen: {} biome boxes, {} distinct biomes", source.entries_.size(),
-                source.biome_count());
+    source.build_tree();
+    source.scan_only_ = std::getenv("OV_BIOME_SCAN") != nullptr;
+    if (source.scan_only_) {
+        OV_LOG_WARN("worldgen: OV_BIOME_SCAN is set, the climate tree is bypassed");
+    }
+
+    OV_LOG_INFO("worldgen: {} biome boxes, {} distinct biomes, {} tree nodes",
+                source.entries_.size(), source.biome_count(), source.nodes_.size());
     return source;
 }
 
@@ -211,24 +222,354 @@ i64 BiomeSource::distance_to(const ClimatePoint& climate, std::string_view biome
     return best;
 }
 
-std::string_view BiomeSource::biome_at(const ClimatePoint& climate) const {
-    i64          best     = std::numeric_limits<i64>::max();
-    const Entry* nearest  = nullptr;
+namespace {
 
-    for (const Entry& entry : entries_) {
-        i64 total = 0;
-        for (usize axis = 0; axis < entry.box.size(); ++axis) {
-            const i64 gap = entry.box[axis].distance(climate.coordinates[axis]);
-            total += gap * gap;
+/// Distance from a box to a point: zero on every axis the point is inside, the
+/// sum of the squared gaps otherwise.
+///
+/// The whole search is integers. Twenty thousand is the widest a quantised
+/// climate axis gets, so one squared gap is at most 1.6e9 and a sum of seven
+/// of them at most 1.2e10 — well inside an i64, and never a double, so two
+/// builds cannot round a boundary differently.
+[[nodiscard]] i64 squared_distance(const std::array<i64, 7>& gaps) noexcept {
+    i64 total = 0;
+    for (const i64 gap : gaps) {
+        total += gap * gap;
+    }
+    return total;
+}
+
+}  // namespace
+
+i32 BiomeSource::scan(const ClimatePoint& climate) const {
+    i64 best      = std::numeric_limits<i64>::max();
+    i32 nearest   = -1;
+    for (usize index = 0; index < entries_.size(); ++index) {
+        std::array<i64, 7> gaps{};
+        for (usize axis = 0; axis < 7; ++axis) {
+            gaps[axis] = entries_[index].box[axis].distance(climate.coordinates[axis]);
         }
+        const i64 total = squared_distance(gaps);
         // Strictly less, so the first of several equally distant boxes wins —
-        // which is the order the table itself is in.
+        // and the order here is the file's, which is exactly where this
+        // disagrees with the tree.
         if (total < best) {
             best    = total;
-            nearest = &entry;
+            nearest = static_cast<i32>(index);
         }
     }
-    return nearest == nullptr ? std::string_view{} : std::string_view{nearest->biome};
+    return nearest;
+}
+
+i32 BiomeSource::search(const ClimatePoint& climate, i32 start) const {
+    if (scan_only_) {
+        return scan(climate);
+    }
+    if (root_ < 0) {
+        return -1;
+    }
+
+    const auto distance_to_box = [&](const std::array<Range, 7>& box) {
+        std::array<i64, 7> gaps{};
+        for (usize axis = 0; axis < 7; ++axis) {
+            gaps[axis] = box[axis].distance(climate.coordinates[axis]);
+        }
+        return squared_distance(gaps);
+    };
+
+    // The cached answer seeds the running best, as it does in the game. Being
+    // the running best it wins any tie it takes part in, and it also prunes: a
+    // subtree no nearer than the cached box is never opened, so a box inside
+    // it that would have tied is never even reached.
+    i32 best      = start;
+    i64 best_dist = std::numeric_limits<i64>::max();
+    if (best >= 0 && best < static_cast<i32>(entries_.size())) {
+        best_dist = distance_to_box(entries_[static_cast<usize>(best)].box);
+    } else {
+        best = -1;
+    }
+
+    // An explicit stack rather than recursion. The tree is six levels deep at
+    // 7593 boxes, but nothing in the data promises that, and worldgen has no
+    // budget for a stack overflow on someone's datapack.
+    struct Frame {
+        u32 node{0};
+        u32 next{0};
+    };
+    std::array<Frame, 40> stack{};
+    usize                 depth = 0;
+    stack[depth++]              = Frame{static_cast<u32>(root_), 0};
+
+    while (depth != 0) {
+        Frame&      frame = stack[depth - 1];
+        const Node& node  = nodes_[frame.node];
+        if (frame.next >= node.child_count) {
+            --depth;
+            continue;
+        }
+        const u32 child_index = node.first_child + frame.next;
+        ++frame.next;
+
+        const Node& child    = nodes_[child_index];
+        const i64   distance = distance_to_box(child.box);
+        // Strictly nearer, never merely as near. This single comparison is
+        // what makes a tie depend on the shape of the tree rather than on the
+        // climate, and it is the whole of what a plain scan got wrong.
+        if (best_dist <= distance) {
+            continue;
+        }
+        if (child.entry >= 0) {
+            best_dist = distance;
+            best      = child.entry;
+            continue;
+        }
+        if (depth < stack.size()) {
+            stack[depth++] = Frame{child_index, 0};
+        } else {
+            OV_LOG_ERROR("worldgen: the climate tree is deeper than {} levels", stack.size());
+        }
+    }
+    return best;
+}
+
+i32 BiomeSource::entry_at(const ClimatePoint& climate, BiomeSearchCache& cache) const {
+    const i32 found = search(climate, cache.last);
+    cache.last      = found;
+    return found;
+}
+
+std::string_view BiomeSource::biome_at(const ClimatePoint& climate) const {
+    const i32 found = search(climate, -1);
+    return found < 0 ? std::string_view{}
+                     : std::string_view{entries_[static_cast<usize>(found)].biome};
+}
+
+std::string_view BiomeSource::biome_at(const ClimatePoint& climate,
+                                       BiomeSearchCache&   cache) const {
+    const i32 found = entry_at(climate, cache);
+    return found < 0 ? std::string_view{}
+                     : std::string_view{entries_[static_cast<usize>(found)].biome};
+}
+
+// ── Building the tree ───────────────────────────────────────────────────────
+//
+// Bottom-up, and every step of the shape matters to the answer rather than
+// only to the speed, because the search's traversal order decides ties:
+//
+//   * leaves start in the order of the exported table;
+//   * a group of six or fewer is ordered by the sum of the absolute midpoints
+//     of its seven axes;
+//   * a larger group is split by trying all seven axes in turn — order by that
+//     axis, ties broken by the axes after it wrapping round, cut into buckets
+//     of the largest power of six below the count, and keep whichever axis
+//     gives the smallest total bounding box;
+//   * the buckets are then reordered by absolute midpoint on the winning axis,
+//     and each is built the same way.
+//
+// The bucket size is computed from `count - 0.01` rather than from `count`, so
+// that an exact power of six splits into six full buckets instead of one
+// bucket holding everything.
+
+void BiomeSource::build_tree() {
+    nodes_.clear();
+    root_ = -1;
+    if (entries_.empty()) {
+        return;
+    }
+
+    // Built as a tree of index vectors first and flattened afterwards. The
+    // extra pass costs one traversal at load time and buys a query that walks
+    // a single array and allocates nothing.
+    struct Builder {
+        struct Item {
+            std::array<Range, 7> box{};
+            i32                  entry{-1};
+            std::vector<usize>   children;
+        };
+
+        std::vector<Item> pool;
+
+        [[nodiscard]] i64 midpoint(usize node, usize axis) const noexcept {
+            // Truncating division, which is what an integer divide is in both
+            // languages. Rounding it the other way would reorder boxes whose
+            // midpoints straddle zero.
+            return (pool[node].box[axis].low + pool[node].box[axis].high) / 2;
+        }
+
+        [[nodiscard]] i64 absolute_key(usize node) const noexcept {
+            i64 total = 0;
+            for (usize axis = 0; axis < 7; ++axis) {
+                total += std::abs(midpoint(node, axis));
+            }
+            return total;
+        }
+
+        [[nodiscard]] std::array<Range, 7> bounding(const std::vector<usize>& members) const {
+            std::array<Range, 7> box{};
+            for (usize axis = 0; axis < 7; ++axis) {
+                box[axis].low  = std::numeric_limits<i64>::max();
+                box[axis].high = std::numeric_limits<i64>::min();
+            }
+            for (const usize member : members) {
+                for (usize axis = 0; axis < 7; ++axis) {
+                    box[axis].low  = std::min(box[axis].low, pool[member].box[axis].low);
+                    box[axis].high = std::max(box[axis].high, pool[member].box[axis].high);
+                }
+            }
+            return box;
+        }
+
+        /// Order by one axis, ties broken by the axes after it, wrapping round.
+        /// Stable, because where all seven keys agree the source order is the
+        /// answer.
+        void sort_by_axis(std::vector<usize>& members, usize first_axis, bool absolute) const {
+            std::stable_sort(members.begin(), members.end(), [&](usize a, usize b) {
+                for (usize step = 0; step < 7; ++step) {
+                    const usize axis = (first_axis + step) % 7;
+                    const i64   ka   = midpoint(a, axis);
+                    const i64   kb   = midpoint(b, axis);
+                    const i64   va   = absolute ? std::abs(ka) : ka;
+                    const i64   vb   = absolute ? std::abs(kb) : kb;
+                    if (va != vb) {
+                        return va < vb;
+                    }
+                }
+                return false;
+            });
+        }
+
+        /// Cut an ordered list into buckets of the largest power of six below
+        /// its size.
+        [[nodiscard]] static std::vector<std::vector<usize>> bucketize(
+            const std::vector<usize>& members) {
+            const f64   span = static_cast<f64>(members.size()) - 0.01;
+            const usize per  = std::max<usize>(
+                1, static_cast<usize>(std::pow(6.0, std::floor(std::log(span) / std::log(6.0)))));
+            std::vector<std::vector<usize>> buckets;
+            std::vector<usize>              current;
+            for (const usize member : members) {
+                current.push_back(member);
+                if (current.size() >= per) {
+                    buckets.push_back(std::move(current));
+                    current.clear();
+                }
+            }
+            if (!current.empty()) {
+                buckets.push_back(std::move(current));
+            }
+            return buckets;
+        }
+
+        /// The cost of a bucket: the total width of its bounding box. The axis
+        /// that makes the boxes tightest is the one that keeps the search from
+        /// opening subtrees it does not need.
+        [[nodiscard]] static i64 cost(const std::array<Range, 7>& box) noexcept {
+            i64 total = 0;
+            for (usize axis = 0; axis < 7; ++axis) {
+                total += std::abs(box[axis].high - box[axis].low);
+            }
+            return total;
+        }
+
+        [[nodiscard]] usize add_branch(std::vector<usize> members) {
+            Item branch;
+            branch.box      = bounding(members);
+            branch.children = std::move(members);
+            pool.push_back(std::move(branch));
+            return pool.size() - 1;
+        }
+
+        usize build(std::vector<usize> members) {
+            if (members.size() == 1) {
+                return members.front();
+            }
+            if (members.size() <= 6) {
+                std::stable_sort(members.begin(), members.end(), [&](usize a, usize b) {
+                    return absolute_key(a) < absolute_key(b);
+                });
+                return add_branch(std::move(members));
+            }
+
+            i64                             best_cost = std::numeric_limits<i64>::max();
+            usize                           best_axis = 0;
+            std::vector<std::vector<usize>> best_buckets;
+            for (usize axis = 0; axis < 7; ++axis) {
+                std::vector<usize> ordered = members;
+                sort_by_axis(ordered, axis, false);
+                auto buckets = bucketize(ordered);
+                i64  total   = 0;
+                for (const auto& bucket : buckets) {
+                    total += cost(bounding(bucket));
+                }
+                // Strictly better, so the earliest axis wins a tie — the same
+                // rule the search itself follows.
+                if (total < best_cost) {
+                    best_cost    = total;
+                    best_axis    = axis;
+                    best_buckets = std::move(buckets);
+                }
+            }
+
+            // Each bucket becomes a node so that it can be ordered by its own
+            // bounding box, and only then is it built out.
+            std::vector<usize> groups;
+            groups.reserve(best_buckets.size());
+            for (auto& bucket : best_buckets) {
+                groups.push_back(add_branch(std::move(bucket)));
+            }
+            sort_by_axis(groups, best_axis, true);
+
+            std::vector<usize> children;
+            children.reserve(groups.size());
+            for (const usize group : groups) {
+                children.push_back(build(pool[group].children));
+            }
+            return add_branch(std::move(children));
+        }
+    };
+
+    Builder builder;
+    builder.pool.reserve(entries_.size() * 2);
+    std::vector<usize> leaves;
+    leaves.reserve(entries_.size());
+    for (usize index = 0; index < entries_.size(); ++index) {
+        Builder::Item leaf;
+        leaf.box   = entries_[index].box;
+        leaf.entry = static_cast<i32>(index);
+        builder.pool.push_back(std::move(leaf));
+        leaves.push_back(builder.pool.size() - 1);
+    }
+    const usize root = builder.build(std::move(leaves));
+
+    // Flatten, so that a node's children are one contiguous run and the search
+    // visits them in the order they were built in. A worklist rather than
+    // recursion, for the same reason the search uses one.
+    nodes_.clear();
+    const auto copy_of = [&](usize item) {
+        return Node{builder.pool[item].box, builder.pool[item].entry, 0, 0};
+    };
+    nodes_.push_back(copy_of(root));
+    std::vector<std::pair<usize, u32>> pending{{root, 0}};
+    while (!pending.empty()) {
+        const auto [item, slot] = pending.back();
+        pending.pop_back();
+        const usize count = builder.pool[item].children.size();
+        if (count == 0) {
+            continue;
+        }
+        const auto first          = static_cast<u32>(nodes_.size());
+        nodes_[slot].first_child  = first;
+        nodes_[slot].child_count  = static_cast<u32>(count);
+        for (usize index = 0; index < count; ++index) {
+            nodes_.push_back(copy_of(builder.pool[item].children[index]));
+        }
+        for (usize index = 0; index < count; ++index) {
+            pending.emplace_back(builder.pool[item].children[index],
+                                 first + static_cast<u32>(index));
+        }
+    }
+    root_ = 0;
 }
 
 }  // namespace ov::worldgen
+

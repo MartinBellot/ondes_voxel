@@ -280,7 +280,22 @@ oracle ; le premier est le § 3, où trois sondes ne mesuraient pas ce qu'on cro
    1 535 cellules `air -> water` sur 40 chunks, identiques au bloc près dans les deux ordres,
    soit 4,9 points sur les murs de grotte. Tant qu'elle manque, le remplissage d'une cellule
    creusée reste « air, ou lave sous `min_y + 8` ».
-2. **Les features.** L'étage 5 du jeu n'existe pas encore ici. Les minerais, les variantes de
+2. **L'étage de décoration n'est pas câblé dans `generate()`, et ce n'est pas un oubli.**
+   `Decorator::decorate()` prend un `FeatureLevel`, et `placement.hpp` dit explicitement
+   pourquoi ce n'est pas un `world::Chunk` : une veine de minerai commencée dans la dernière
+   colonne d'un chunk se termine dans le suivant, donc l'étage a besoin du **voisinage 3×3**.
+   `ChunkGenerator::generate(world::Chunk&)` ne voit qu'un chunk et ne peut pas le fournir.
+
+   Écrire ici un adaptateur `Chunk` → `FeatureLevel` **paraîtrait** marcher et jetterait
+   silencieusement toute écriture franchissant un bord — précisément le bug contre lequel
+   `FeatureLevel` a été conçu. La décoration appartient donc à l'étage au-dessus, celui qui
+   possède plusieurs chunks (le gestionnaire de chunks du serveur), pas au générateur de
+   chunk. C'est refusé et nommé plutôt que câblé de travers.
+
+   L'ordre lui-même, en revanche, est acquis et c'est l'objet de ce document : quand la
+   décoration sera câblée, sa place est **après les carvers**, en étage 5.
+
+3. **Les features.** L'étage 5 du jeu n'existe pas encore ici. Les minerais, les variantes de
    pierre, les disques de gravier et les amas `ore_dirt` / `ore_gravel` sont posés *après* les
    carvers et expliquent une part des désaccords restants ; `ov_caveedge` les compte à part
    plutôt que de les fondre dans le total, comme `ov_surfparity` le fait déjà. **C'est une
