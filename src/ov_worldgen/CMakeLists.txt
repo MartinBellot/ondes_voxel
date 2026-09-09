@@ -30,6 +30,7 @@ ov_add_test(test_ov_worldgen
     SOURCES
         tests/test_biome_source.cpp
         tests/test_carver.cpp
+        tests/test_chunk_generator.cpp
         tests/test_density.cpp
         tests/test_noise.cpp
         tests/test_surface_rules.cpp
