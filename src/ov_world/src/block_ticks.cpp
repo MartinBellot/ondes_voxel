@@ -1,173 +1,165 @@
 #include "ov/world/block_ticks.hpp"
 
 #include <algorithm>
-#include <string>
 
 namespace ov::world {
 
-usize BlockTickScheduler::KeyHash::operator()(const Key& key) const noexcept {
-    // Coordinates are small and correlated, so a plain xor collides on whole
-    // planes. Multiply each by a distinct odd 64-bit constant first.
-    u64 h = static_cast<u64>(static_cast<u32>(key.pos.x)) * 0x9E3779B97F4A7C15ull;
-    h ^= static_cast<u64>(static_cast<u32>(key.pos.y)) * 0xC2B2AE3D27D4EB4Full;
-    h ^= static_cast<u64>(static_cast<u32>(key.pos.z)) * 0x165667B19E3779F9ull;
-    h ^= static_cast<u64>(key.block) * 0x27D4EB2F165667C5ull;
-    h ^= h >> 29;
-    return static_cast<usize>(h);
+bool ScheduledTick::runs_before(const ScheduledTick& other) const noexcept {
+    if (when != other.when) {
+        return when < other.when;
+    }
+    if (priority != other.priority) {
+        // Lower priority value runs earlier: vanilla's ExtremelyHigh is -3.
+        return static_cast<i8>(priority) < static_cast<i8>(other.priority);
+    }
+    return sequence < other.sequence;
 }
 
-bool BlockTickScheduler::schedule(BlockPos pos, registry::BlockId block, i64 now, i32 delay,
+std::string_view BlockTickScheduler::intern(std::string_view name) {
+    for (const std::string& known : names_) {
+        if (known == name) {
+            return known;
+        }
+    }
+    // Linear, because there are a few dozen distinct names in a whole world and
+    // a hash map would cost more than the scan it replaces.
+    names_.emplace_back(name);
+    return names_.back();
+}
+
+void BlockTickScheduler::schedule(BlockPos pos, std::string_view what, i64 delay, i64 now,
                                   TickPriority priority) {
-    // A negative delay is a caller bug, not a request to run in the past.
-    const i32 clamped = delay < 0 ? 0 : delay;
-    return schedule_at(pos, block, now + clamped, priority);
-}
-
-bool BlockTickScheduler::schedule_at(BlockPos pos, registry::BlockId block, i64 trigger_tick,
-                                     TickPriority priority) {
-    const Key key{pos, block.value()};
-    if (!pending_.insert(key).second) {
-        return false;
+    if (is_scheduled(pos, what)) {
+        return;
     }
-    entries_.push_back(ScheduledTick{pos, block, trigger_tick, priority, next_order_++});
-    return true;
+    // A negative delay would mean "already due", which the drain would then run
+    // inside the tick that scheduled it. Vanilla clamps rather than refuses.
+    const i64 when = now + (delay < 0 ? 0 : delay);
+    pending_.push_back(ScheduledTick{pos, intern(what), when, priority, next_sequence_++});
 }
 
-bool BlockTickScheduler::is_scheduled(BlockPos pos, registry::BlockId block) const noexcept {
-    return pending_.contains(Key{pos, block.value()});
-}
-
-bool BlockTickScheduler::cancel(BlockPos pos, registry::BlockId block) {
-    const Key key{pos, block.value()};
-    if (pending_.erase(key) == 0) {
-        return false;
-    }
-    const auto it = std::ranges::find_if(entries_, [&](const ScheduledTick& t) {
-        return t.pos == pos && t.block == block;
+bool BlockTickScheduler::is_scheduled(BlockPos pos, std::string_view what) const noexcept {
+    return std::any_of(pending_.begin(), pending_.end(), [&](const ScheduledTick& tick) {
+        return tick.pos == pos && tick.what == what;
     });
-    if (it != entries_.end()) {
-        *it = entries_.back();
-        entries_.pop_back();
-    }
-    return true;
 }
 
-usize BlockTickScheduler::cancel_all_at(BlockPos pos) {
-    const usize before = entries_.size();
-    std::erase_if(entries_, [&](const ScheduledTick& t) {
-        if (t.pos != pos) {
-            return false;
-        }
-        pending_.erase(Key{pos, t.block.value()});
-        return true;
+void BlockTickScheduler::collect_due(i64 now, std::vector<ScheduledTick>& out) {
+    out.clear();
+
+    // Partition rather than erase-per-element: the due ticks move to `out` and
+    // the rest keep their order, so this is one pass and one shuffle instead of
+    // a quadratic sequence of vector erases.
+    auto first_kept = std::stable_partition(
+        pending_.begin(), pending_.end(),
+        [now](const ScheduledTick& tick) { return tick.when <= now; });
+
+    out.assign(std::make_move_iterator(pending_.begin()), std::make_move_iterator(first_kept));
+    pending_.erase(pending_.begin(), first_kept);
+
+    std::sort(out.begin(), out.end(),
+              [](const ScheduledTick& a, const ScheduledTick& b) { return a.runs_before(b); });
+}
+
+std::vector<ScheduledTick> BlockTickScheduler::snapshot() const {
+    std::vector<ScheduledTick> copy = pending_;
+    std::sort(copy.begin(), copy.end(),
+              [](const ScheduledTick& a, const ScheduledTick& b) { return a.runs_before(b); });
+    return copy;
+}
+
+void BlockTickScheduler::forget_chunk(i32 chunk_x, i32 chunk_z) {
+    std::erase_if(pending_, [chunk_x, chunk_z](const ScheduledTick& tick) {
+        return floor_div(tick.pos.x, kSectionSize) == chunk_x &&
+               floor_div(tick.pos.z, kSectionSize) == chunk_z;
     });
-    return before - entries_.size();
-}
-
-void BlockTickScheduler::drain_due(i64 now, std::vector<ScheduledTick>& out, usize limit) {
-    // Partition rather than sort the whole queue: the pending set is the whole
-    // loaded world's worth of fluids, and only a handful of them are due.
-    std::vector<ScheduledTick> due;
-    for (const ScheduledTick& tick : entries_) {
-        if (tick.trigger_tick <= now) {
-            due.push_back(tick);
-        }
-    }
-    std::ranges::sort(due, tick_order);
-    if (due.size() > limit) {
-        due.resize(limit);
-    }
-
-    for (const ScheduledTick& tick : due) {
-        pending_.erase(Key{tick.pos, tick.block.value()});
-    }
-    // Remove exactly the drained ones. Matching on the order number rather than
-    // on the position keeps a tick that was re-scheduled during the same drain
-    // — impossible here, since nothing runs yet, but the invariant is cheap.
-    std::vector<u64> drained;
-    drained.reserve(due.size());
-    for (const ScheduledTick& tick : due) {
-        drained.push_back(tick.order);
-    }
-    std::ranges::sort(drained);
-    std::erase_if(entries_, [&](const ScheduledTick& t) {
-        return std::ranges::binary_search(drained, t.order);
-    });
-
-    out.insert(out.end(), due.begin(), due.end());
-}
-
-void BlockTickScheduler::snapshot(std::vector<ScheduledTick>& out) const {
-    out.insert(out.end(), entries_.begin(), entries_.end());
-    std::ranges::sort(out, tick_order);
 }
 
 void BlockTickScheduler::clear() noexcept {
     pending_.clear();
-    entries_.clear();
+    // The interned names stay: they cost nothing, and dropping them would
+    // dangle any view a caller still holds from an earlier snapshot.
+    // The sequence counter is deliberately *not* reset: it only ever has to be
+    // increasing, and restarting it after a partial clear would let a new tick
+    // sort ahead of an old one that is still queued.
 }
 
-nbt::Tag BlockTickScheduler::save_chunk(ChunkPos chunk, i64 game_time,
-                                        const registry::BlockRegistry& blocks) const {
-    std::vector<ScheduledTick> mine;
-    for (const ScheduledTick& tick : entries_) {
-        if (floor_div(tick.pos.x, 16) == chunk.x && floor_div(tick.pos.z, 16) == chunk.z) {
-            mine.push_back(tick);
-        }
-    }
-    std::ranges::sort(mine, tick_order);
-
+nbt::Tag ticks_to_nbt(std::span<const ScheduledTick> ticks, i32 chunk_x, i32 chunk_z, i64 now) {
     nbt::Tag list = nbt::Tag::make_list(nbt::TagType::Compound);
-    for (const ScheduledTick& tick : mine) {
+    for (const ScheduledTick& tick : ticks) {
+        if (floor_div(tick.pos.x, kSectionSize) != chunk_x ||
+            floor_div(tick.pos.z, kSectionSize) != chunk_z) {
+            continue;
+        }
         nbt::Tag entry = nbt::Tag::make_compound();
-        auto*    body  = entry.compound();
-        body->push_back(nbt::CompoundEntry{"i", nbt::Tag{std::string{blocks.block_name(tick.block)}}});
-        body->push_back(nbt::CompoundEntry{"p", nbt::Tag{static_cast<i32>(tick.priority)}});
-        body->push_back(
-            nbt::CompoundEntry{"t", nbt::Tag{static_cast<i32>(tick.trigger_tick - game_time)}});
-        body->push_back(nbt::CompoundEntry{"x", nbt::Tag{tick.pos.x}});
-        body->push_back(nbt::CompoundEntry{"y", nbt::Tag{tick.pos.y}});
-        body->push_back(nbt::CompoundEntry{"z", nbt::Tag{tick.pos.z}});
-        list.list()->push_back(std::move(entry));
+        entry.put("i", nbt::Tag{std::string{tick.what}});
+        entry.put("p", nbt::Tag{static_cast<i32>(tick.priority)});
+        // Relative to the chunk's game time, which is what the format stores.
+        entry.put("t", nbt::Tag{static_cast<i32>(tick.when - now)});
+        entry.put("x", nbt::Tag{tick.pos.x});
+        entry.put("y", nbt::Tag{tick.pos.y});
+        entry.put("z", nbt::Tag{tick.pos.z});
+        list.push(std::move(entry));
     }
     return list;
 }
 
-usize BlockTickScheduler::load_chunk(const nbt::Tag& list, i64 game_time,
-                                     const registry::BlockRegistry& blocks, usize& skipped) {
-    skipped = 0;
-    if (list.list() == nullptr) {
-        return 0;
+bool ticks_from_nbt(const nbt::Tag& list, i64 now, BlockTickScheduler& into) {
+    const std::vector<nbt::Tag>* entries = list.list();
+    if (entries == nullptr) {
+        return false;
     }
-    usize loaded = 0;
-    for (const nbt::Tag& entry : *list.list()) {
+    // An empty list is written by vanilla with element type End, so the element
+    // type is only checked when there is something to read.
+    if (!entries->empty() && list.list_element_type() != nbt::TagType::Compound) {
+        return false;
+    }
+
+    // Read everything before scheduling anything: a malformed entry halfway
+    // down has to leave the scheduler exactly as it was, not half-loaded with
+    // the chunk's first few ticks.
+    struct Pending {
+        BlockPos     pos;
+        std::string  what;
+        i64          delay;
+        TickPriority priority;
+    };
+    std::vector<Pending> loaded;
+    loaded.reserve(entries->size());
+
+    for (const nbt::Tag& entry : *entries) {
         const nbt::Tag* name = entry.find("i");
         const nbt::Tag* x    = entry.find("x");
         const nbt::Tag* y    = entry.find("y");
         const nbt::Tag* z    = entry.find("z");
-        if (name == nullptr || x == nullptr || y == nullptr || z == nullptr) {
-            ++skipped;
-            continue;
+        const nbt::Tag* t    = entry.find("t");
+        if (name == nullptr || x == nullptr || y == nullptr || z == nullptr || t == nullptr) {
+            return false;
         }
-        const auto block = blocks.find_block(name->as_string());
-        if (!block.has_value()) {
-            // Named, not swallowed: a tick for a block we do not have is a
-            // world from another version or another implementation.
-            ++skipped;
-            continue;
+        if (name->type() != nbt::TagType::String) {
+            return false;
         }
-        const nbt::Tag* p     = entry.find("p");
-        const nbt::Tag* t     = entry.find("t");
-        const auto      raw_p = p != nullptr ? p->as_i64() : 0;
-        const auto      delay = t != nullptr ? t->as_i64() : 0;
-        const auto      clamped_p =
-            static_cast<i8>(std::clamp<i64>(raw_p, kMinTickPriority, kMaxTickPriority));
-        schedule_at(BlockPos{static_cast<i32>(x->as_i64()), static_cast<i32>(y->as_i64()),
-                             static_cast<i32>(z->as_i64())},
-                    *block, game_time + delay, static_cast<TickPriority>(clamped_p));
-        ++loaded;
+
+        // `p` is genuinely optional: vanilla omits it on chunks whose ticks are
+        // all at normal priority in some versions, and a missing field there
+        // means Normal rather than "unreadable".
+        const nbt::Tag* p        = entry.find("p");
+        const i64       priority = p == nullptr ? 0 : p->as_i64(0);
+        if (priority < -3 || priority > 3) {
+            return false;
+        }
+
+        loaded.push_back(Pending{
+            BlockPos{static_cast<i32>(x->as_i64()), static_cast<i32>(y->as_i64()),
+                     static_cast<i32>(z->as_i64())},
+            std::string{name->as_string()}, t->as_i64(),
+            static_cast<TickPriority>(priority)});
     }
-    return loaded;
+
+    for (const Pending& entry : loaded) {
+        into.schedule(entry.pos, entry.what, entry.delay, now, entry.priority);
+    }
+    return true;
 }
 
 }  // namespace ov::world

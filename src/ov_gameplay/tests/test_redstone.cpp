@@ -54,26 +54,37 @@ public:
         return it == cells_.end() ? registry::kAirState : it->second;
     }
 
+    [[nodiscard]] bool is_loaded(BlockPos) const override { return true; }
+
+    [[nodiscard]] world::WorldShape shape() const override {
+        return world::WorldShape::overworld();
+    }
+
+    [[nodiscard]] world::DimensionTraits traits() const override { return {}; }
+
+    [[nodiscard]] const registry::BlockRegistry& blocks() const override { return *blocks_; }
+
     void set_block(BlockPos pos, registry::BlockStateId state) override {
         cells_[key(pos)] = state;
-        ++writes;
     }
 
-    void schedule_tick(BlockPos pos, registry::BlockId block, i32 delay,
+    void schedule_tick(BlockPos pos, std::string_view what, i64 delay, world::TickQueue queue,
                        world::TickPriority priority) override {
-        queue.schedule(pos, block, now, delay, priority);
+        REQUIRE(queue == world::TickQueue::Block);
+        queue_.schedule(pos, what, delay, now, priority);
     }
 
-    [[nodiscard]] bool tick_scheduled(BlockPos pos, registry::BlockId block) const override {
-        return queue.is_scheduled(pos, block);
+    [[nodiscard]] bool has_scheduled_tick(BlockPos pos, std::string_view what,
+                                          world::TickQueue queue) const override {
+        return queue == world::TickQueue::Block && queue_.is_scheduled(pos, what);
     }
+
+    [[nodiscard]] i64 game_time() const override { return now; }
 
     [[nodiscard]] i32 container_signal(BlockPos pos) const override {
         const auto it = containers_.find(key(pos));
         return it == containers_.end() ? -1 : it->second;
     }
-
-    [[nodiscard]] i64 game_time() const override { return now; }
 
     void put(BlockPos pos, std::string_view name,
              std::initializer_list<std::pair<std::string_view, std::string_view>> props = {}) {
@@ -107,7 +118,9 @@ public:
         return signals.power_of(block_at(pos));
     }
 
-    world::BlockTickScheduler queue;
+    /// The scheduler the delivered ov_world provides, driven by hand so a test
+    /// can say what happened on which tick.
+    world::BlockTickScheduler queue_;
     i64                       now{0};
     usize                     writes{0};
 
@@ -129,9 +142,9 @@ void settle(Redstone& redstone, TestWorld& world, i64 ticks = 64) {
     for (i64 i = 0; i < ticks; ++i) {
         ++world.now;
         std::vector<world::ScheduledTick> due;
-        world.queue.drain_due(world.now, due);
+        world.queue_.collect_due(world.now, due);
         for (const world::ScheduledTick& tick : due) {
-            redstone.scheduled_tick(world, tick.pos, tick.block);
+            redstone.scheduled_tick(world, tick.pos, tick.what);
         }
     }
 }
@@ -324,7 +337,7 @@ TEST_CASE("a locked repeater does not even schedule", "[redstone][repeater]") {
               {{"facing", "north"}, {"delay", "1"}, {"powered", "true"}, {"locked", "false"}});
 
     REQUIRE_FALSE(redstone.neighbour_changed(world, BlockPos{1, 0, 0}, BlockPos{0, 0, 0}));
-    REQUIRE(world.queue.pending_count() == 0);
+    REQUIRE(world.queue_.pending() == 0);
     settle(redstone, world);
     REQUIRE_FALSE(signals.flag_of(world.block_at(BlockPos{1, 0, 0}), "powered"));
 }
@@ -341,11 +354,10 @@ TEST_CASE("a repeater's delay is twice its setting, in ticks", "[redstone][repea
                  {"locked", "false"}});
         REQUIRE(redstone.neighbour_changed(one, BlockPos{1, 0, 0}, BlockPos{0, 0, 0}));
 
-        std::vector<world::ScheduledTick> pending;
-        one.queue.snapshot(pending);
+        std::vector<world::ScheduledTick> pending = one.queue_.snapshot();
         REQUIRE(pending.size() == 1);
         INFO("delay = " << d);
-        REQUIRE(pending[0].trigger_tick == 2 * d);
+        REQUIRE(pending[0].when == 2 * d);
         // Turning on, fed by something that is not a diode: high, not extreme.
         REQUIRE(pending[0].priority == world::TickPriority::High);
     }
@@ -360,8 +372,7 @@ TEST_CASE("a diode fed by a diode jumps the queue", "[redstone][repeater]") {
     world.put(BlockPos{1, 0, 0}, "minecraft:repeater",
               {{"facing", "west"}, {"delay", "1"}, {"powered", "false"}, {"locked", "false"}});
     REQUIRE(redstone.neighbour_changed(world, BlockPos{1, 0, 0}, BlockPos{0, 0, 0}));
-    std::vector<world::ScheduledTick> pending;
-    world.queue.snapshot(pending);
+    std::vector<world::ScheduledTick> pending = world.queue_.snapshot();
     REQUIRE(pending.size() == 1);
     REQUIRE(pending[0].priority == world::TickPriority::ExtremelyHigh);
 }
@@ -472,10 +483,9 @@ TEST_CASE("a torch goes out when its own block is powered, and comes back",
 
     REQUIRE(redstone.neighbour_changed(world, BlockPos{0, 1, 0}, BlockPos{0, 0, 0}));
     // Two ticks, and then it is out.
-    std::vector<world::ScheduledTick> pending;
-    world.queue.snapshot(pending);
+    std::vector<world::ScheduledTick> pending = world.queue_.snapshot();
     REQUIRE(pending.size() == 1);
-    REQUIRE(pending[0].trigger_tick == 2);
+    REQUIRE(pending[0].when == 2);
     settle(redstone, world, 4);
     REQUIRE_FALSE(signals.flag_of(world.block_at(BlockPos{0, 1, 0}), "lit"));
 

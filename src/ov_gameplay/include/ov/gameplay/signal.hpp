@@ -39,6 +39,7 @@
 #include "ov/registry/block_states.hpp"
 #include "ov/registry/registries.hpp"
 #include "ov/world/block_ticks.hpp"
+#include "ov/world/level.hpp"
 
 #include <span>
 #include <string_view>
@@ -46,41 +47,23 @@
 
 namespace ov::gameplay {
 
-/// How redstone reads and writes the world.
+/// The world as redstone sees it: a `LevelWriter`, plus one question.
 ///
-/// An interface rather than a concrete level: this module is below the server
-/// and below the client, and both drive the same code. A behaviour that reached
-/// for a `ServerLevel` would make client-side prediction impossible.
-class RedstoneWorld {
+/// Everything redstone needs — reading a state, writing one, asking to be woken
+/// later, the game clock — is already on `world::LevelWriter`, and using it is
+/// what lets a client replica run the same rules against its own storage.
+///
+/// The one addition is the **comparator's container reading**. A comparator
+/// behind a chest outputs a level derived from how full it is, and a
+/// `LevelWriter` cannot answer that: inventories live above this module, and a
+/// comparator that had to know what a shulker box is would drag the whole item
+/// system down into the gameplay layer. So it is asked for, as a number between
+/// 0 and 15, with -1 meaning "there is no container there" — which a comparator
+/// has to tell apart from "there is an empty one", since an empty container
+/// gives 0 and a missing one lets the ordinary signal through.
+class RedstoneWorld : public world::LevelWriter {
 public:
-    RedstoneWorld()                                = default;
-    RedstoneWorld(const RedstoneWorld&)            = default;
-    RedstoneWorld(RedstoneWorld&&)                 = default;
-    RedstoneWorld& operator=(const RedstoneWorld&) = default;
-    RedstoneWorld& operator=(RedstoneWorld&&)      = default;
-    virtual ~RedstoneWorld()                       = default;
-
-    /// The state at a position. Outside the loaded world, return air: redstone
-    /// at a chunk border must not stall waiting for a chunk.
-    [[nodiscard]] virtual registry::BlockStateId block_at(BlockPos pos) const = 0;
-
-    virtual void set_block(BlockPos pos, registry::BlockStateId state) = 0;
-
-    virtual void schedule_tick(BlockPos pos, registry::BlockId block, i32 delay,
-                               world::TickPriority priority) = 0;
-
-    [[nodiscard]] virtual bool tick_scheduled(BlockPos pos, registry::BlockId block) const = 0;
-
-    /// The comparator reading of a container at this position, 0 to 15, or -1
-    /// when there is no container there.
-    ///
-    /// Asked rather than computed: inventories live above this module, and a
-    /// comparator that had to know what a shulker box is would drag the whole
-    /// item system into the gameplay layer.
     [[nodiscard]] virtual i32 container_signal(BlockPos pos) const = 0;
-
-    /// The current game tick. Needed by the torch's burn-out window.
-    [[nodiscard]] virtual i64 game_time() const = 0;
 };
 
 /// What a block does when asked for a signal.

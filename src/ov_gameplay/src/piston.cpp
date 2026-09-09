@@ -726,6 +726,14 @@ PushPlan Pistons::plan_pull(const RedstoneWorld& world, BlockPos piston, Directi
     return plan;
 }
 
+bool Pistons::scheduled_tick(RedstoneWorld& world, BlockPos pos, std::string_view what) {
+    const auto block = blocks_->find_block(what);
+    if (!block.has_value()) {
+        return false;
+    }
+    return scheduled_tick(world, pos, *block);
+}
+
 bool Pistons::neighbour_changed(RedstoneWorld& world, BlockPos pos) {
     const registry::BlockStateId state = world.block_at(pos);
     const registry::BlockId      block = blocks_->block_of(state);
@@ -740,12 +748,14 @@ bool Pistons::neighbour_changed(RedstoneWorld& world, BlockPos pos) {
     }
     const bool extended = signals.flag_of(state, "extended");
     const bool wanted    = wants_extended(world, pos, *facing);
-    if (extended == wanted || world.tick_scheduled(pos, block)) {
+    const std::string_view name = blocks_->block_name(block);
+    if (extended == wanted ||
+        world.has_scheduled_tick(pos, name, world::TickQueue::Block)) {
         return false;
     }
     // A piston takes a tick to make up its mind, which is what makes a piston
     // fed by a one-tick pulse do nothing at all.
-    world.schedule_tick(pos, block, 1, world::TickPriority::Normal);
+    world.schedule_tick(pos, name, 1, world::TickQueue::Block, world::TickPriority::Normal);
     return true;
 }
 

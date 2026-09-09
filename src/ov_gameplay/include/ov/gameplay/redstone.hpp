@@ -142,6 +142,12 @@ public:
     /// A scheduled tick came due at `pos` for `block`.
     bool scheduled_tick(RedstoneWorld& world, BlockPos pos, registry::BlockId block);
 
+    /// The same, taking the name the scheduler hands back.
+    ///
+    /// Returns false for a name this version does not have, rather than
+    /// applying the tick to whatever happens to be there.
+    bool scheduled_tick(RedstoneWorld& world, BlockPos pos, std::string_view what);
+
     /// The signal a repeater or comparator sees on its input face.
     [[nodiscard]] i32 diode_input(const RedstoneWorld& world, BlockPos pos,
                                   registry::BlockStateId state) const;
@@ -205,6 +211,18 @@ public:
     };
 
     [[nodiscard]] const Ids& ids() const noexcept { return ids_; }
+
+    /// Ask the scheduler to wake a block, and ask whether it already will.
+    ///
+    /// The scheduler names blocks by their registry name so that one queue can
+    /// hold a repeater and a fluid without a number having to say which
+    /// registry it came from. These two wrap that translation so the rules go
+    /// on speaking in block ids.
+    void wake(RedstoneWorld& world, BlockPos pos, registry::BlockId block, i32 delay,
+              world::TickPriority priority) const;
+
+    [[nodiscard]] bool waking(const RedstoneWorld& world, BlockPos pos,
+                              registry::BlockId block) const;
 
 private:
     [[nodiscard]] bool wire_connects_to(const RedstoneWorld& world, BlockPos neighbour,

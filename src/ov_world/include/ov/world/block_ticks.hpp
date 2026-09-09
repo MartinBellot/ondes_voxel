@@ -1,45 +1,60 @@
-// Blocks that asked to be woken up later.
+// Scheduled block and fluid ticks: the world's alarm clock.
 //
-// A redstone repeater with a delay of two, a piston finishing its push, a fluid
-// deciding where to go next — none of them can act in the tick that changed
-// them. They schedule themselves, and something has to keep the queue.
+// Most of the game does not run every tick. Water waits 5 ticks before it
+// spreads, lava 30 in the Overworld and 10 in the Nether, a repeater 2 per
+// setting, leaves an unpredictable while before they decay. Vanilla does not
+// scan for these — it keeps a queue of "wake this position up later", and the
+// order that queue is drained in is observable: two updates landing on the same
+// tick resolve in a defined sequence, and a redstone circuit that resolves them
+// in the other order latches the wrong way.
 //
-// Three things about that queue are load-bearing, and none is obvious:
+// So the ordering rule is part of the format, not an implementation detail.
+// Ticks come out sorted by
 //
-//   * **Priority decides the order inside a single tick.** Vanilla runs from -3
-//     to 2, and the numbers are not decoration: a repeater turning off asks for
-//     -3 so it lands before the one turning on at -2, and swapping them changes
-//     what a real circuit does. Ordering by position, or by insertion alone,
-//     builds a machine that works until someone puts two repeaters side by side.
+//     (when, priority, insertion order)
 //
-//   * **A tie is broken by insertion order, not by position.** Two ticks with
-//     the same target tick and the same priority run in the order they were
-//     asked for. That is why a sequence number is stored rather than derived.
+// — the target tick first, then vanilla's TickPriority (a signed value where
+// **lower runs earlier**; 0 is normal), and finally the order they were
+// scheduled in, which is what makes the whole thing deterministic. Every one of
+// the three is needed: without the priority a piston and its block break tie
+// arbitrarily, without the sequence two ticks at the same priority do.
 //
-//   * **One tick per position per block.** Asking twice for the same block at
-//     the same position is a no-op, which is what keeps a wire that sees six
-//     neighbour updates from scheduling six ticks. Vanilla keys on both, so a
-//     water tick and a repeater tick at the same position coexist.
+// ── Two queues, not one ────────────────────────────────────────────────────
 //
-// This type knows nothing about redstone, fluids, or what a tick *does*. It is
-// a queue with a save format. The behaviour lives above, in ov_gameplay.
+// Anvil stores `block_ticks` and `fluid_ticks` as separate lists on the chunk,
+// and vanilla drains them separately, so they are kept apart here too. They
+// differ in what the `i` field names, and that difference is measured rather
+// than assumed — a save from a real 1.20.1 server carries
+//
+//     block_ticks: {i: "minecraft:oak_leaves", p: 0, t: 0, x: 176, y: -57, z: 189}
+//     fluid_ticks: {i: "minecraft:flowing_lava", p: 0, t: 8, x: 719, y: -60, z: -3}
+//
+// A block tick names the **block**; a fluid tick names the **fluid**, and the
+// fluid registry distinguishes `water` from `flowing_water` and `lava` from
+// `flowing_lava`. Writing the block name into a fluid tick produces a file
+// vanilla loads with every pending flow silently dropped.
+//
+// `t` is a **delay relative to the chunk's game time**, not an absolute tick.
+// That is what lets a chunk sit unloaded for an hour and resume where it left
+// off, and it is why loading has to be told what "now" is.
 #pragma once
 
+#include "ov/base/types.hpp"
 #include "ov/math/block_pos.hpp"
 #include "ov/nbt/tag.hpp"
-#include "ov/registry/block_states.hpp"
 
-#include <cstddef>
-#include <unordered_map>
-#include <unordered_set>
+#include <deque>
+#include <span>
+#include <string>
+#include <string_view>
 #include <vector>
 
 namespace ov::world {
 
-/// Vanilla's tick priorities, which run from -3 to 2 inclusive.
+/// Vanilla's TickPriority, as the `p` field stores it.
 ///
-/// Named because the raw numbers appear in circuits' behaviour and a bare `-3`
-/// at a call site says nothing. The values are the ones written to disk.
+/// Lower runs first. The names are vanilla's own; the numbers are what appear
+/// on disk, so they are fixed rather than ours to choose.
 enum class TickPriority : i8 {
     ExtremelyHigh = -3,
     VeryHigh      = -2,
@@ -47,144 +62,123 @@ enum class TickPriority : i8 {
     Normal        = 0,
     Low           = 1,
     VeryLow       = 2,
+    ExtremelyLow  = 3,
 };
 
-inline constexpr i8 kMinTickPriority = -3;
-inline constexpr i8 kMaxTickPriority = 2;
-
-/// One entry of the queue.
+/// One pending wake-up.
+///
+/// `what` is a registry name rather than an id because that is what the disk
+/// format carries, and because the two queues name things from two different
+/// registries — a numeric id here would have to say which registry it came
+/// from, and the string already does.
+///
+/// It is a **view**, not a string, and it is owned by the scheduler that handed
+/// it out. A `std::string` here would allocate on every schedule, and a pool
+/// under load schedules thousands per tick — straight through the no-allocation
+/// rule the tick body is guarded by. The scheduler interns the handful of names
+/// that ever appear and every tick borrows one.
 struct ScheduledTick {
-    BlockPos          pos{};
-    registry::BlockId block{0};
-    /// The absolute game tick this fires on. Absolute rather than a countdown:
-    /// a countdown has to be decremented on every entry every tick, which is
-    /// the whole queue every tick for no reason.
-    i64          trigger_tick{0};
-    TickPriority priority{TickPriority::Normal};
-    /// Insertion sequence, the tie-break. Never reused, never wraps in any
-    /// realistic run: at a million schedules a second it lasts half a million
-    /// years.
-    u64 order{0};
+    BlockPos         pos{};
+    std::string_view what;
+    i64              when{0};
+    TickPriority     priority{TickPriority::Normal};
 
+    /// Insertion order, the final tiebreak. Assigned by the scheduler; a caller
+    /// never sets it.
+    u64 sequence{0};
+
+    /// The ordering vanilla drains the queue in.
+    [[nodiscard]] bool runs_before(const ScheduledTick& other) const noexcept;
 };
 
-/// The order vanilla runs them in: soonest first, then by priority, then by the
-/// order they were asked for.
-///
-/// A named comparator rather than `operator<`: these are not values with a
-/// natural ordering, and giving them one invites a sort somewhere that means
-/// something else.
-[[nodiscard]] inline bool tick_order(const ScheduledTick& a, const ScheduledTick& b) noexcept {
-    if (a.trigger_tick != b.trigger_tick) {
-        return a.trigger_tick < b.trigger_tick;
-    }
-    if (a.priority != b.priority) {
-        return static_cast<i8>(a.priority) < static_cast<i8>(b.priority);
-    }
-    return a.order < b.order;
-}
+/// The two queues a level keeps.
+enum class TickQueue : u8 { Block, Fluid };
 
-/// How many ticks vanilla is willing to run in one game tick before it gives up
-/// and leaves the rest for later. Exceeding it is how an infinite circuit stays
-/// merely laggy instead of hanging the server.
-inline constexpr usize kMaxTicksPerGameTick = 65536;
-
-/// The queue of pending block ticks for one dimension.
+/// A queue of scheduled ticks, ordered the way vanilla drains it.
 ///
-/// Not per chunk, unlike the save format. A single writer owns the world, so a
-/// single queue is both simpler and faster; `save_chunk` and `load_chunk`
-/// bridge to the per-chunk layout on disk.
+/// Deliberately not a `priority_queue`: draining needs to happen in bulk once
+/// per tick, duplicates have to be recognised (scheduling the same position
+/// twice is extremely common and vanilla keeps only the first), and the whole
+/// thing has to be enumerable for saving. A sorted drain of a flat vector does
+/// all three and never allocates in the steady state, because the storage is
+/// reused.
 class BlockTickScheduler {
 public:
-    /// Ask for a tick `delay` ticks from `now`. A delay of zero fires on the
-    /// next drain, not this one.
+    /// Ask for `what` at `pos` to be ticked `delay` ticks from `now`.
     ///
-    /// Returns false when this position already has a tick pending for this
-    /// block, in which case nothing changes — the first request wins, which is
-    /// what vanilla does and what keeps a repeater's delay from being reset by
-    /// a neighbour twitching.
-    bool schedule(BlockPos pos, registry::BlockId block, i64 now, i32 delay,
+    /// Ignored if that exact position and name is already queued, whatever its
+    /// delay — vanilla's `hasScheduledTick` check. Without it a block whose
+    /// neighbours all change on one tick schedules itself six times and runs
+    /// six times, which for a fluid means a flow that advances six blocks in
+    /// one step.
+    void schedule(BlockPos pos, std::string_view what, i64 delay, i64 now,
                   TickPriority priority = TickPriority::Normal);
 
-    /// Schedule at an absolute tick, for loading a save.
-    bool schedule_at(BlockPos pos, registry::BlockId block, i64 trigger_tick,
-                     TickPriority priority = TickPriority::Normal);
+    [[nodiscard]] bool is_scheduled(BlockPos pos, std::string_view what) const noexcept;
 
-    [[nodiscard]] bool is_scheduled(BlockPos pos, registry::BlockId block) const noexcept;
 
-    /// Drop the pending tick for this position and block, if there is one.
+    [[nodiscard]] usize pending() const noexcept { return pending_.size(); }
+
+    /// Move every tick due at or before `now` into `out`, in drain order.
     ///
-    /// What breaking the block has to do. A tick surviving its block fires on
-    /// whatever replaced it.
-    bool cancel(BlockPos pos, registry::BlockId block);
-
-    /// Drop every pending tick at this position, whatever the block.
-    usize cancel_all_at(BlockPos pos);
-
-    [[nodiscard]] usize pending_count() const noexcept { return entries_.size(); }
-
-    /// Take every tick due at or before `now`, sorted, and remove them from the
-    /// queue. Appends to `out`.
+    /// `out` is cleared first and kept between calls by the caller, which is
+    /// what keeps this allocation-free once the world has warmed up.
     ///
-    /// Taking them all out first — rather than running them off the queue one
-    /// at a time — is deliberate: a tick that reschedules itself for the same
-    /// game tick would otherwise run again inside the same drain and a lamp
-    /// would flicker forever without the game advancing.
-    void drain_due(i64 now, std::vector<ScheduledTick>& out, usize limit = kMaxTicksPerGameTick);
+    /// Ticks scheduled *during* a drain land in the queue for a later tick and
+    /// are not returned by this call, even if their delay is zero. That is
+    /// vanilla's behaviour and it is what stops a water source and its own
+    /// flow from resolving inside one another.
+    void collect_due(i64 now, std::vector<ScheduledTick>& out);
 
-    /// Every pending tick, sorted. For tests and for saving.
-    void snapshot(std::vector<ScheduledTick>& out) const;
+    /// Everything still queued, in drain order. For saving.
+    [[nodiscard]] std::vector<ScheduledTick> snapshot() const;
+
+    /// Drop everything for one chunk column, for unloading.
+    void forget_chunk(i32 chunk_x, i32 chunk_z);
 
     void clear() noexcept;
 
-    // ── The Anvil save format ───────────────────────────────────────────────
-    //
-    // On disk each chunk carries its own `block_ticks` list, and each entry is
-    //
-    //     {i: "minecraft:repeater", p: 0, t: 3, x: 12, y: 65, z: -40}
-    //
-    // `i` is the block's registry **name** — the same reason the palette is
-    // name-based, so a save survives a version whose numeric ids moved. `t` is
-    // a **delay relative to the level's gameTime at the moment of saving**, not
-    // an absolute tick; a world reloaded a month later must not fire a month of
-    // backlog at once. Both facts were checked against a real 1.20.1 save, see
-    // docs/provenance/redstone.md.
-
-    /// The ticks belonging to one chunk, as the Anvil list, relative to
-    /// `game_time`. Returns an empty TAG_List of compounds when there are none,
-    /// which is what vanilla writes.
-    [[nodiscard]] nbt::Tag save_chunk(ChunkPos chunk, i64 game_time,
-                                      const registry::BlockRegistry& blocks) const;
-
-    /// Read one chunk's `block_ticks` list back, resolving `t` against
-    /// `game_time`.
-    ///
-    /// Returns the number of entries loaded. An entry naming a block this
-    /// version does not have is **refused and counted** rather than dropped
-    /// silently: `skipped` receives it, and a caller that ignores a non-zero
-    /// skip count is loading a world it cannot run.
-    usize load_chunk(const nbt::Tag& list, i64 game_time, const registry::BlockRegistry& blocks,
-                     usize& skipped);
-
 private:
-    /// Key of the "one tick per position per block" rule.
-    struct Key {
-        BlockPos pos;
-        u16      block;
+    /// Intern a name, returning a view that outlives every tick holding it.
+    [[nodiscard]] std::string_view intern(std::string_view name);
 
-        [[nodiscard]] friend bool operator==(const Key&, const Key&) noexcept = default;
-    };
+    std::vector<ScheduledTick> pending_;
+    u64                        next_sequence_{0};
 
-    struct KeyHash {
-        [[nodiscard]] usize operator()(const Key& key) const noexcept;
-    };
-
-    std::unordered_set<Key, KeyHash> pending_;
-    /// Unsorted; sorted on drain. A heap would keep it ordered at every insert,
-    /// but a tick that is cancelled has to come out of the middle, and the
-    /// number due in one game tick is small next to the number pending.
-    std::vector<ScheduledTick> entries_;
-    u64                        next_order_{0};
+    /// The names ever seen, kept for the life of the scheduler.
+    ///
+    /// A deque and not a vector: a vector reallocating would move its strings,
+    /// and short ones live inside the string object rather than on the heap, so
+    /// every view handed out so far would dangle. There are a few dozen of
+    /// these in a whole world.
+    std::deque<std::string> names_;
 };
+
+// ── Anvil ──────────────────────────────────────────────────────────────────
+//
+// The two lists live at the top level of the chunk compound, named
+// `block_ticks` and `fluid_ticks`. Both are lists of
+// `{i: String, p: Int, t: Int, x: Int, y: Int, z: Int}` with `t` relative to
+// the chunk's own game time.
+
+/// Serialise the ticks falling inside one chunk column.
+///
+/// `now` turns absolute tick numbers back into the relative delays the format
+/// wants. An empty list is still returned rather than nothing; the caller
+/// decides whether to write it, since vanilla omits empty lists.
+[[nodiscard]] nbt::Tag ticks_to_nbt(std::span<const ScheduledTick> ticks, i32 chunk_x,
+                                    i32 chunk_z, i64 now);
+
+/// Read one of the two lists back into a scheduler.
+///
+/// Loads rather than returns, because a tick's name is interned by the
+/// scheduler that holds it — there is nowhere for a free-standing one to live.
+/// The order of the list is kept as the tiebreak, which is what vanilla saved.
+///
+/// Returns false, having loaded nothing, if the tag is not a list of compounds
+/// shaped the way the format says. A malformed entry is refused rather than
+/// defaulted: a tick with a guessed position is a block that updates somewhere
+/// else, and nothing about the world would say where the mistake came from.
+[[nodiscard]] bool ticks_from_nbt(const nbt::Tag& list, i64 now, BlockTickScheduler& into);
 
 }  // namespace ov::world

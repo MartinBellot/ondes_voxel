@@ -159,6 +159,21 @@ Redstone::Redstone(const registry::BlockRegistry& blocks, const registry::Regist
     }
 }
 
+
+/// The scheduler names blocks by their registry name rather than by an id, so
+/// that one queue can hold both a repeater and a fluid without saying which
+/// registry a number came from. These two wrap that translation, so the rules
+/// below go on speaking in block ids.
+void Redstone::wake(RedstoneWorld& world, BlockPos pos, registry::BlockId block, i32 delay,
+                    world::TickPriority priority) const {
+    world.schedule_tick(pos, blocks_->block_name(block), delay, world::TickQueue::Block, priority);
+}
+
+bool Redstone::waking(const RedstoneWorld& world, BlockPos pos,
+                      registry::BlockId block) const {
+    return world.has_scheduled_tick(pos, blocks_->block_name(block), world::TickQueue::Block);
+}
+
 const Redstone::ConsumerRule* Redstone::consumer_rule(registry::BlockId block) const noexcept {
     if (block.value() >= consumer_index_.size()) {
         return nullptr;
@@ -505,7 +520,7 @@ bool Redstone::torch_tick(RedstoneWorld& world, BlockPos pos, registry::BlockSta
         if (torches_.record_and_check(pos, world.game_time())) {
             // Burnt out: it stays dark for a hundred and sixty ticks whatever
             // happens around it.
-            world.schedule_tick(pos, block, 160, world::TickPriority::Normal);
+            wake(world, pos, block, 160, world::TickPriority::Normal);
         }
         return true;
     }
@@ -540,7 +555,7 @@ bool Redstone::repeater_tick(RedstoneWorld& world, BlockPos pos, registry::Block
             const auto delay = blocks_->find_property(ids_.repeater, "delay");
             const i32  ticks =
                 delay.has_value() ? 2 * (blocks_->property_index(state, *delay) + 1) : 2;
-            world.schedule_tick(pos, ids_.repeater, ticks, world::TickPriority::VeryHigh);
+            wake(world, pos, ids_.repeater, ticks, world::TickPriority::VeryHigh);
         }
         return true;
     }
@@ -563,7 +578,7 @@ bool Redstone::observer_tick(RedstoneWorld& world, BlockPos pos, registry::Block
     if (!powered) {
         // Two ticks on, then off again: the pulse an observer emits is fixed
         // and does not follow whatever it saw.
-        world.schedule_tick(pos, ids_.observer, 2, world::TickPriority::Normal);
+        wake(world, pos, ids_.observer, 2, world::TickPriority::Normal);
     }
     return true;
 }
@@ -598,6 +613,14 @@ bool Redstone::scheduled_tick(RedstoneWorld& world, BlockPos pos, registry::Bloc
     return false;
 }
 
+bool Redstone::scheduled_tick(RedstoneWorld& world, BlockPos pos, std::string_view what) {
+    const auto block = blocks_->find_block(what);
+    if (!block.has_value()) {
+        return false;
+    }
+    return scheduled_tick(world, pos, *block);
+}
+
 bool Redstone::neighbour_changed(RedstoneWorld& world, BlockPos pos, BlockPos from) {
     (void)from;
     const registry::BlockStateId state = world.block_at(pos);
@@ -615,8 +638,8 @@ bool Redstone::neighbour_changed(RedstoneWorld& world, BlockPos pos, BlockPos fr
         }
         const BlockPos support = pos.offset(opposite(face));
         const bool     held    = signals_.signal_at(world, support, opposite(face)) > 0;
-        if (signals_.flag_of(state, "lit") == held && !world.tick_scheduled(pos, block)) {
-            world.schedule_tick(pos, block, 2, world::TickPriority::Normal);
+        if (signals_.flag_of(state, "lit") == held && !waking(world, pos, block)) {
+            wake(world, pos, block, 2, world::TickPriority::Normal);
             return true;
         }
         return false;
@@ -633,7 +656,7 @@ bool Redstone::neighbour_changed(RedstoneWorld& world, BlockPos pos, BlockPos fr
         const bool powered = signals_.flag_of(state, "powered");
         const bool want =
             comparator ? comparator_output(world, pos, state) > 0 : diode_input(world, pos, state) > 0;
-        if (powered == want || world.tick_scheduled(pos, block)) {
+        if (powered == want || waking(world, pos, block)) {
             return false;
         }
         i32 ticks = 2;
@@ -667,7 +690,7 @@ bool Redstone::neighbour_changed(RedstoneWorld& world, BlockPos pos, BlockPos fr
         } else {
             priority = world::TickPriority::High;
         }
-        world.schedule_tick(pos, block, ticks, priority);
+        wake(world, pos, block, ticks, priority);
         return true;
     }
 
@@ -680,8 +703,8 @@ bool Redstone::neighbour_changed(RedstoneWorld& world, BlockPos pos, BlockPos fr
         // The lamp is the one consumer with hysteresis: on at once, off four
         // ticks later, so a short pulse still leaves it visibly lit.
         if (rule->delay > 0 && (!rule->delay_off_only || have)) {
-            if (!world.tick_scheduled(pos, block)) {
-                world.schedule_tick(pos, block, rule->delay, world::TickPriority::Normal);
+            if (!waking(world, pos, block)) {
+                wake(world, pos, block, rule->delay, world::TickPriority::Normal);
             }
             return true;
         }

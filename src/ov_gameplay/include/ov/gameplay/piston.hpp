@@ -100,6 +100,9 @@ public:
     /// A piston's scheduled tick came due: finish the extension or retraction.
     bool scheduled_tick(RedstoneWorld& world, BlockPos pos, registry::BlockId block);
 
+    /// The same, taking the name the scheduler hands back.
+    bool scheduled_tick(RedstoneWorld& world, BlockPos pos, std::string_view what);
+
     /// Does this state stick to its neighbours?
     [[nodiscard]] bool is_sticky_block(registry::BlockStateId state) const noexcept;
 

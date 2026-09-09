@@ -48,22 +48,35 @@ public:
         return it == cells_.end() ? registry::kAirState : it->second;
     }
 
+    [[nodiscard]] bool is_loaded(BlockPos) const override { return true; }
+
+    [[nodiscard]] world::WorldShape shape() const override {
+        return world::WorldShape::overworld();
+    }
+
+    [[nodiscard]] world::DimensionTraits traits() const override { return {}; }
+
+    [[nodiscard]] const registry::BlockRegistry& blocks() const override { return *blocks_; }
+
     void set_block(BlockPos pos, registry::BlockStateId state) override {
         cells_[key(pos)] = state;
     }
 
-    void schedule_tick(BlockPos pos, registry::BlockId block, i32 delay,
+    void schedule_tick(BlockPos pos, std::string_view what, i64 delay, world::TickQueue queue,
                        world::TickPriority priority) override {
-        queue.schedule(pos, block, now, delay, priority);
+        REQUIRE(queue == world::TickQueue::Block);
+        queue_.schedule(pos, what, delay, now, priority);
     }
 
-    [[nodiscard]] bool tick_scheduled(BlockPos pos, registry::BlockId block) const override {
-        return queue.is_scheduled(pos, block);
+    [[nodiscard]] bool has_scheduled_tick(BlockPos pos, std::string_view what,
+                                          world::TickQueue queue) const override {
+        return queue == world::TickQueue::Block && queue_.is_scheduled(pos, what);
     }
-
-    [[nodiscard]] i32 container_signal(BlockPos) const override { return -1; }
 
     [[nodiscard]] i64 game_time() const override { return now; }
+
+    /// No pistons test involves a container.
+    [[nodiscard]] i32 container_signal(BlockPos) const override { return -1; }
 
     void put(BlockPos pos, std::string_view name,
              std::initializer_list<std::pair<std::string_view, std::string_view>> props = {}) {
@@ -87,7 +100,9 @@ public:
         return std::string{blocks_->block_name(blocks_->block_of(block_at(pos)))};
     }
 
-    world::BlockTickScheduler queue;
+    /// The scheduler the delivered ov_world provides, driven by hand so a test
+    /// can say what happened on which tick.
+    world::BlockTickScheduler queue_;
     i64                       now{0};
 
 private:
@@ -104,9 +119,9 @@ void settle(Redstone&, Pistons& pistons, TestWorld& world, i64 ticks = 8) {
     for (i64 i = 0; i < ticks; ++i) {
         ++world.now;
         std::vector<world::ScheduledTick> due;
-        world.queue.drain_due(world.now, due);
+        world.queue_.collect_due(world.now, due);
         for (const world::ScheduledTick& tick : due) {
-            pistons.scheduled_tick(world, tick.pos, tick.block);
+            pistons.scheduled_tick(world, tick.pos, tick.what);
         }
     }
 }
@@ -153,26 +168,28 @@ TEST_CASE("push reactions come from the game, not from a shape", "[piston]") {
 
 TEST_CASE("a piston pushes twelve and refuses thirteen", "[piston]") {
     REQUIRE_REGISTRY();
-    const auto build = [&](usize n) {
-        TestWorld one{*loaded().blocks};
+    // A level is deliberately neither copyable nor movable, so each length gets
+    // its own world built in place rather than one returned by value.
+    const auto build = [&](TestWorld& one, usize n) {
         one.put(BlockPos{0, 0, 0}, "minecraft:piston",
                 {{"facing", "east"}, {"extended", "false"}});
         for (usize i = 1; i <= n; ++i) {
             one.put(BlockPos{static_cast<i32>(i), 0, 0}, "minecraft:iron_block");
         }
-        return one;
     };
 
     for (usize n = 0; n <= 12; ++n) {
-        TestWorld one  = build(n);
+        TestWorld one{*loaded().blocks};
+        build(one, n);
         const auto plan = pistons.plan_push(one, BlockPos{0, 0, 0}, Direction::East, true);
         INFO("length " << n);
         REQUIRE(plan.possible);
         REQUIRE(plan.moved.size() == n);
     }
     // Thirteen is not "push twelve of them": the whole push fails.
-    TestWorld thirteen = build(13);
-    const auto plan     = pistons.plan_push(thirteen, BlockPos{0, 0, 0}, Direction::East, true);
+    TestWorld thirteen{*loaded().blocks};
+    build(thirteen, 13);
+    const auto plan = pistons.plan_push(thirteen, BlockPos{0, 0, 0}, Direction::East, true);
     REQUIRE_FALSE(plan.possible);
     REQUIRE(plan.refusal == PushPlan::Refusal::TooMany);
     REQUIRE(plan.moved.empty());

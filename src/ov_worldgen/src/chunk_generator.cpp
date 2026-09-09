@@ -4,6 +4,8 @@
 
 #include "ov/base/log.hpp"
 
+#include <optional>
+
 namespace ov::worldgen {
 
 namespace {
@@ -59,12 +61,33 @@ void ChunkGenerator::generate(world::Chunk& chunk) const {
     const i32  origin_x = chunk.position().x * 16;
     const i32  origin_z = chunk.position().z * 16;
 
+    // ── carvers ─────────────────────────────────────────────────────────────
+    // The caves and ravines, cut out of what the noise made. The mask is built
+    // for the whole chunk before any block is written, because that is what it
+    // is: a record of what the carvers considered, taken once and then applied.
+    // What a cut cell becomes is a separate decision — lava below the carvers'
+    // own lava level, air above it, and one day the aquifer's water in between.
+    std::optional<CarvingMask> carved;
+    if (carvers_ != nullptr) {
+        carved = carvers_->carve(chunk.position().x, chunk.position().z);
+    }
+    const i32 carver_lava_level = carvers_ != nullptr ? carvers_->context().lava_level() : 0;
+    // ── end carvers ─────────────────────────────────────────────────────────
+
     for (usize local_z = 0; local_z < 16; ++local_z) {
         for (usize local_x = 0; local_x < 16; ++local_x) {
             const i32 world_x = origin_x + static_cast<i32>(local_x);
             const i32 world_z = origin_z + static_cast<i32>(local_z);
             for (i32 y = shape.min_y; y <= shape.max_y(); ++y) {
-                const auto state = is_solid(world_x, y, world_z) ? stone_ : fluid_at(y);
+                auto state = is_solid(world_x, y, world_z) ? stone_ : fluid_at(y);
+                // Only stone is carved away. The carvers replace what the
+                // overworld_carver_replaceables tag lists, and of the three
+                // things the noise stage puts down that is stone and water —
+                // and replacing water with water changes nothing.
+                if (state == stone_ && carved.has_value() &&
+                    carved->get(static_cast<i32>(local_x), y, static_cast<i32>(local_z))) {
+                    state = y <= carver_lava_level ? lava_ : registry::kAirState;
+                }
                 if (state != registry::kAirState) {
                     chunk.set_block(local_x, y, local_z, state);
                 }
@@ -88,6 +111,12 @@ void ChunkGenerator::generate(world::Chunk& chunk) const {
     }
 
     chunk.recompute_heightmaps();
+
+    // The surface rules, after the biomes and never before: they ask which
+    // biome a block is in on almost every line.
+    if (surface_ != nullptr) {
+        surface_->build(chunk, *router_, *biomes_, *blocks_);
+    }
 }
 
 }  // namespace ov::worldgen

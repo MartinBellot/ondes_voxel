@@ -9,9 +9,13 @@ ov_add_library(ov_worldgen
     LAYER 10
     SOURCES
         src/biome_source.cpp
+        src/carver.cpp
+        src/carving_mask.cpp
         src/chunk_generator.cpp
         src/density.cpp
         src/noise.cpp
+        src/surface_rules.cpp
+        src/surface_system.cpp
     DEPS
         ov_math
         ov_registry
@@ -25,8 +29,10 @@ ov_add_library(ov_worldgen
 ov_add_test(test_ov_worldgen
     SOURCES
         tests/test_biome_source.cpp
+        tests/test_carver.cpp
         tests/test_density.cpp
         tests/test_noise.cpp
+        tests/test_surface_rules.cpp
     DEPS ov_worldgen
     LABELS unit
 )
