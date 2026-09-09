@@ -57,12 +57,15 @@ echo "generating with seed $SEED …"
 #
 # force-load has a 256-chunk limit per command and it fails *silently*, so each
 # patch is small and asked for on its own.
-PATCHES="0,0 48000,0 -37000,15000 22000,-41000 -19000,-28000 61000,33000
+# Overridable so that a second seed can be generated small: the parity
+# harness needs another world it has never been tuned on, not another
+# world of the same size.
+PATCHES="${PATCHES:-0,0 48000,0 -37000,15000 22000,-41000 -19000,-28000 61000,33000
          -55000,-51000 8000,72000 -70000,4000 35000,58000 -12000,-64000
          44000,44000 -44000,44000 67000,-17000 -26000,39000 15000,26000
          -83000,29000 52000,-68000 -31000,77000 90000,21000 -95000,-38000
          73000,63000 -63000,-83000 27000,95000 -105000,7000 41000,-95000
-         -17000,-105000 110000,-45000"
+         -17000,-105000 110000,-45000}"
 
 (
     sleep 20
