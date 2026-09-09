@@ -243,12 +243,9 @@ WorkbenchOutcome apply_click(const WorkbenchContext& context, Workbench& bench,
             }
             return nullptr;  // the result slot is not storage
         }
-        switch (index) {
-            case kFurnaceInput:
-                return nullptr;  // handled through the recipe stacks below
-            default:
-                break;
-        }
+        // A furnace's own three slots are not here: they live in ov_gameplay's
+        // stack type and get their own view below, so that a click does not
+        // copy them in and out on every path.
         return nullptr;
     };
 
@@ -421,6 +418,11 @@ WorkbenchOutcome apply_click(const WorkbenchContext& context, Workbench& bench,
 
     // ── The five ordinary modes ─────────────────────────────────────────────
     if (click.mode == 2 && click.button >= 0 && click.button < 9) {
+        // A number key must not push anything into a furnace's output: it is a
+        // slot the game fills and the player only empties.
+        if (furnace_output) {
+            return outcome;
+        }
         net::ItemStack* slot   = any_ref(click.slot);
         net::ItemStack* hotbar = &player_inventory[36 + static_cast<usize>(click.button)];
         if (slot != nullptr && slot != hotbar) {

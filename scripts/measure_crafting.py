@@ -185,18 +185,26 @@ class Probe(Miner):
                    + struct.pack(">b", button) + varint(mode) + varint(0) + write_slot(None))
         self.send(SB_CLICK_CONTAINER, payload)
 
-    def open_table(self) -> None:
-        self.stand(*STAND)
-        # Face du dessus, coordonnées au centre du bloc : un clic hors du bloc
-        # ne l'ouvre pas et ne dit rien.
-        payload = (varint(0) + block_pos(*TABLE) + varint(1)
-                   + struct.pack(">fff", 0.5, 1.0, 0.5) + bytes([0]) + varint(0))
-        self.send(SB_USE_ITEM_ON, payload)
-        deadline = time.monotonic() + 5.0
-        while self.window is None and time.monotonic() < deadline:
-            self.settle(0.1)
-        if self.window is None:
-            raise RuntimeError("l'établi ne s'est pas ouvert")
+    def open_table(self, tries: int = 8) -> None:
+        # Un clic n'ouvre rien tant que le serveur n'a pas encore appliqué la
+        # téléportation : il juge la distance au bloc et rejette en silence. On
+        # réessaie donc, en réaffirmant la position à chaque tour, plutôt que
+        # de faire dépendre la campagne d'une temporisation qui tient un jour
+        # sur deux.
+        for _ in range(tries):
+            self.stand(*STAND)
+            self.settle(0.3)
+            # Face du dessus, coordonnées au centre du bloc : un clic hors du
+            # bloc ne l'ouvre pas et ne dit rien.
+            payload = (varint(0) + block_pos(*TABLE) + varint(1)
+                       + struct.pack(">fff", 0.5, 1.0, 0.5) + bytes([0]) + varint(0))
+            self.send(SB_USE_ITEM_ON, payload)
+            deadline = time.monotonic() + 2.0
+            while self.window is None and time.monotonic() < deadline:
+                self.settle(0.1)
+            if self.window is not None:
+                return
+        raise RuntimeError("l'établi ne s'est pas ouvert")
 
 
 def grid_now(probe: Probe) -> list[int | None]:
@@ -329,16 +337,39 @@ def main() -> int:
                       f"setblock {TABLE[0]} {TABLE[1]} {TABLE[2] + 2} minecraft:stone"])
 
         probe = Probe(PORT, "Craft0")
-        probe.settle(2.0)
+        # Attendre que le serveur ait le joueur, pas attendre tout court : une
+        # commande envoyée avant la fin de la connexion répond « No entity was
+        # found » et la sonde reste en survie, à l'autre bout du monde, sans
+        # que rien ne le dise.
+        for _ in range(40):
+            probe.settle(0.5)
+            if any("players online" in line and "Craft0" in line
+                   for line in server.batch(["list"])):
+                break
+        else:
+            raise RuntimeError("la sonde ne s'est jamais annoncée au serveur")
         server.batch(["gamemode creative Craft0", "gamerule doImmediateRespawn true",
                       f"tp Craft0 {STAND[0]} {STAND[1]} {STAND[2]}"])
-        probe.settle(1.5)
+        probe.settle(1.0)
         probe.open_table()
         print(f"établi ouvert, fenêtre {probe.window}")
 
+        lost: list[str] = []
+
         def ask(label: str, grid: list[str | None], expect_kind: str) -> None:
             ids = [item_index[n] if n else None for n in grid]
-            got = fill(probe, ids)
+            try:
+                got = fill(probe, ids)
+            except TimeoutError as error:
+                # Une grille dont on n'a pas pu confirmer l'etat n'est pas une
+                # grille sans resultat : c'est une mesure ratee, et la compter
+                # comme « rien » fausserait la parite dans le sens flatteur.
+                lost.append(f"{label}: {error}")
+                try:
+                    empty(probe)
+                except TimeoutError:
+                    pass
+                return
             grids.append({
                 "label": label,
                 "kind": expect_kind,
@@ -389,19 +420,29 @@ def main() -> int:
                 else None
             if ids is None:
                 continue
-            got = fill(probe, ids)
+            try:
+                got = fill(probe, ids)
+            except TimeoutError as error:
+                lost.append(f"{recipe_id} (restes): {error}")
+                continue
             if got is None:
                 empty(probe)
                 continue
-            before = [probe.slots.get(GRID_FIRST + i) for i in range(9)]
+            before = grid_now(probe)
             probe.click(0, 0, 0)          # ramasse le résultat : la grille se consomme
-            probe.settle(0.2)
-            after = [probe.slots.get(GRID_FIRST + i) for i in range(9)]
-            for index, (was, now) in enumerate(zip(before, after)):
-                if was is None or now is None:
+            # Attendre que la grille change, et non un délai : sous charge, une
+            # réponse en retard fait lire deux fois le même état et conclure
+            # qu'aucun objet ne laisse de reste. C'est exactement ce qui est
+            # arrivé à la première campagne, où le seau de lait n'a rien rendu.
+            deadline = time.monotonic() + 6.0
+            while grid_now(probe) == before and time.monotonic() < deadline:
+                probe.settle(0.05)
+            probe.settle(0.15)
+            after = grid_now(probe)
+            for was, now in zip(before, after):
+                if was is None or now is None or now == was:
                     continue
-                if now[0] != was[0]:
-                    remainder[items[was[0]]] = items[now[0]]
+                remainder[items[was]] = items[now]
             probe.click(-999, 0, 4)       # jette ce que le curseur tient
             probe.settle(0.1)
             empty(probe)
@@ -409,6 +450,10 @@ def main() -> int:
         matched = sum(1 for g in grids if g["result"])
         print(f"{len(grids)} grilles posées, {matched} avec un résultat, "
               f"{len(grids) - matched} sans")
+        if lost:
+            print(f"! {len(lost)} grilles perdues (non comptées) :")
+            for one in lost[:10]:
+                print(f"      {one}")
         print(f"{len(remainder)} objets à reste : {remainder}")
 
         doc = {
@@ -419,6 +464,7 @@ def main() -> int:
             "version": "1.20.1",
             "grids": len(grids),
             "with_result": matched,
+            "lost": lost,
             "crafting_remainder": dict(sorted(remainder.items())),
             "cases": grids,
         }

@@ -2003,11 +2003,29 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             }
             const auto wanted = lit ? std::string_view{"true"} : std::string_view{"false"};
             for (u16 index = 0; index < property->values.size(); ++index) {
-                if (property->values[index] == wanted) {
-                    set_block_and_broadcast({x, y, z},
-                                            blocks->with_property(state, *property, index));
-                    return;
+                if (property->values[index] != wanted) {
+                    continue;
                 }
+                const registry::BlockStateId next =
+                    blocks->with_property(state, *property, index);
+                // Written here rather than through set_block_and_broadcast,
+                // which takes chunk_mutex itself — and the caller already holds
+                // it. std::mutex is not recursive, so going through it would
+                // deadlock the tick thread the first time a furnace lit up.
+                chunk_at(x >> 4, z >> 4)
+                    .set_block(static_cast<usize>(x & 15), y, static_cast<usize>(z & 15), next);
+                dirty_chunks.insert(chunk_key(x >> 4, z >> 4));
+                const auto framed = net::encode_packet(
+                    net::clientbound::kBlockUpdate,
+                    net::encode_block_update({x, y, z}, static_cast<i32>(next.value())));
+                if (framed) {
+                    for (auto& [other_key, other] : players) {
+                        if (other.connection) {
+                            other.connection->send(*framed);
+                        }
+                    }
+                }
+                return;
             }
         };
         host.mark_dirty = [&](i32 x, i32 z) { dirty_chunks.insert(chunk_key(x >> 4, z >> 4)); };

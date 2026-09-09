@@ -38,9 +38,13 @@ NORMALIZED = Path(os.environ.get("OV_NORMALIZED", ROOT / "data/vanilla/1.20.1/no
 BINARY = ROOT / "build" / "macos-debug" / "apps" / "ov_dedicated" / "ov_dedicated"
 PORT = 25577
 
-TABLE = (2, 5, 2)
-FURNACE = (4, 5, 2)
-STAND = (2.5, 5.0, 4.5)
+# Le superflat du serveur : herbe à -61, donc on marche à -60. Pris de
+# Superflat::kSurfaceY plutôt que deviné — un bloc posé dans le vide tombe hors
+# de portée et le clic suivant ne dit rien.
+SURFACE_Y = -61
+TABLE = (2, SURFACE_Y + 1, 2)
+FURNACE = (4, SURFACE_Y + 1, 2)
+STAND = (2.5, float(SURFACE_Y + 1), 4.5)
 
 CB_CONTAINER_PROPERTY = 0x13
 
