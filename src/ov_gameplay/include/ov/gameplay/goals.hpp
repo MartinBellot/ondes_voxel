@@ -472,11 +472,20 @@ private:
 [[nodiscard]] bool move_to(GoalContext& context, BlockPos destination, f64 speed,
                           f32 max_range = 64.0F);
 
+/// A type id meaning "this mob has no legitimate quarry here".
+///
+/// Distinct from -1, which means *anything*. The difference is not academic: a
+/// hostile mob given -1 targets the nearest entity of any kind, so a skeleton
+/// and a spider standing two blocks apart lock onto each other and never move
+/// again. Measured on our own server before this existed — six of eight mobs
+/// walked, and those two travelled exactly zero blocks in eighty seconds.
+inline constexpr i32 kNoQuarry = -2;
+
 /// The nearest live entity of a type within a radius, or `kNoEntity`.
 ///
-/// `type` of -1 matches anything. Ties are broken by insertion order, which is
-/// the entity world's own order, so two mobs at the same distance are chosen
-/// deterministically.
+/// `type` of -1 matches anything; `kNoQuarry` (or any value below -1) matches
+/// nothing. Ties are broken by insertion order, which is the entity world's own
+/// order, so two mobs at the same distance are chosen deterministically.
 [[nodiscard]] entity::EntityHandle nearest_entity(const entity::EntityWorld& world,
                                                   entity::EntityHandle self, i32 type,
                                                   f64 radius);

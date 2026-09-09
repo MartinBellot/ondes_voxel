@@ -317,6 +317,11 @@ nombre dérivé se fait passer pour un nombre mesuré.
   n'a pas été mesurée pour un mob. Ce qu'elle doit faire est franchir un bloc,
   et elle le fait.
 
+* **Le rayon de 35 blocs** donné à `NearestAttackableTargetGoal` : c'est la
+  valeur mesurée de l'attribut `follow_range` d'un zombie, cohérente avec
+  l'encadrement `]32, 40]` de la section 3, mais l'encadrement ne prouve pas que
+  le rayon *soit* cet attribut.
+
 * **Les priorités de buts** de `install_goals`. Elles reproduisent l'ordre
   observable du jeu (paniquer avant errer, poursuivre avant errer) mais ne sont
   la copie d'aucun relevé.
@@ -344,7 +349,32 @@ nombre dérivé se fait passer pour un nombre mesuré.
 
 ---
 
-## 8. Reproduire
+## 8. Contrôle de bout en bout
+
+`scripts/check_entities.py` fait tourner notre serveur et vérifie que huit mobs
+apparaissent avec les bons identifiants de type, la bonne santé et la bonne
+hauteur de repos. Un contrôle de plus a été fait à la main sur ce mandat, et il
+a trouvé un bug que les tests unitaires ne pouvaient pas voir : sur 1600 ticks
+avec huit mobs, **six sur huit marchaient et deux ne bougeaient pas d'un
+millimètre**.
+
+Le squelette et l'araignée étaient à deux blocs l'un de l'autre, et
+`NearestAttackableTargetGoal` avait reçu -1 — « n'importe quoi ». Ils se sont
+donc pris mutuellement pour cible, sont restés à portée de corps à corps, et le
+but d'attaque, qui à portée relâche le déplacement, les a figés. Le
+comportement était exactement celui que la liste de buts décrivait ; c'est la
+liste qui était fausse.
+
+`kNoQuarry` distingue désormais « n'importe quoi » de « rien », et un mob
+hostile ne chasse que le type que l'appelant nomme. Après correction :
+**huit sur huit**, de 17,7 à 69,5 blocs parcourus en quatre-vingts secondes.
+
+Aucun test unitaire n'aurait attrapé cela : chaque but faisait ce qu'il
+annonçait.
+
+---
+
+## 9. Reproduire
 
 ```bash
 python3 scripts/measure_mobs.py maze speed acquire caps light

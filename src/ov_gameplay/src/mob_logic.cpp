@@ -63,7 +63,8 @@ void FallingMob::tick(entity::EntityWorld& world, entity::EntityHandle self,
 // and that both of them keep looking around while they do it — since Look is a
 // different control from Move and the two never compete.
 
-void install_goals(GoalSelector& selector, const MobKind& kind, i32 player_type) {
+void install_goals(GoalSelector& selector, const MobKind& kind, i32 look_type,
+                   i32 quarry_type) {
     // 0 — staying alive beats everything. A mob that drowns while deciding
     // where to wander is a mob nobody sees again.
     selector.add(0, std::make_unique<FloatGoal>());
@@ -79,7 +80,10 @@ void install_goals(GoalSelector& selector, const MobKind& kind, i32 player_type)
         // Target selection holds only the Target control, so it runs alongside
         // whatever is moving the body. That separation is the whole reason
         // Target is a flag of its own.
-        selector.add(3, std::make_unique<NearestAttackableTargetGoal>(player_type, 35.0, true));
+        // 35 blocks: the measured `follow_range` of a zombie, and inside the
+        // bracket the acquisition campaign put the real radius in — chases at
+        // 32, does not at 40. See docs/provenance/mobs.md section 3.
+        selector.add(3, std::make_unique<NearestAttackableTargetGoal>(quarry_type, 35.0, true));
     }
     if (kind.breeds) {
         selector.add(4, std::make_unique<BreedGoal>(kind.walk_speed));
@@ -89,24 +93,23 @@ void install_goals(GoalSelector& selector, const MobKind& kind, i32 player_type)
     // 6 and 7 — what a mob does when nothing else is happening, which is most
     // of the time and therefore most of what anyone actually watches.
     selector.add(6, std::make_unique<RandomStrollGoal>(kind.walk_speed));
-    selector.add(7, std::make_unique<LookAtEntityGoal>(player_type, 8.0, 0.02F));
+    selector.add(7, std::make_unique<LookAtEntityGoal>(look_type, 8.0, 0.02F));
     selector.add(8, std::make_unique<RandomLookGoal>());
 }
 
 // ── Mob ─────────────────────────────────────────────────────────────────────
 
-Mob::Mob(const MobKind& kind, f32 width, f32 height, i64 seed)
+Mob::Mob(const MobKind& kind, f32 width, f32 height, i64 seed, i32 quarry_type)
     : kind_{&kind}, brain_{2048}, random_{seed} {
     brain_.size                 = MobSize::from_box(width, height);
     brain_.abilities.opens_doors = kind.opens_doors;
     brain_.abilities.avoids_sun  = kind.avoids_sun;
     brain_.abilities.enters_water = true;
 
-    // The player's entity type id is not known here — ov_gameplay has the
-    // registries but not the caller's idea of which entities are players — so
-    // the goals are given -1, meaning "anything". A caller that wants a zombie
-    // to chase only players installs its own list.
-    install_goals(goals_, kind, -1);
+    // Looks at anything, hunts only what the caller named. Handing the hunt
+    // "anything" as well is what made a skeleton and a spider two blocks apart
+    // melee each other forever instead of wandering off.
+    install_goals(goals_, kind, -1, quarry_type);
 
     // Kept so `frighten` can reach it: a damage event is not something a goal
     // can see for itself. Borrowed — the selector owns it and outlives the

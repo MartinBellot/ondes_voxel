@@ -82,7 +82,7 @@ bool move_to(GoalContext& context, BlockPos destination, f64 speed, f32 max_rang
 entity::EntityHandle nearest_entity(const entity::EntityWorld& world, entity::EntityHandle self,
                                     i32 type, f64 radius) {
     const entity::EntityState* mine = world.state(self);
-    if (mine == nullptr) {
+    if (mine == nullptr || type < -1) {
         return entity::kNoEntity;
     }
     const f64            limit = radius * radius;

@@ -3552,10 +3552,22 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 // The seed is the wire id, so a world replayed from the same
                 // sequence of spawns behaves identically.
                 if (const gameplay::MobKind* kind = gameplay::mob_kind(options.mobs[index])) {
-                    mobs->set_logic(*spawned,
-                                    std::make_unique<gameplay::Mob>(*kind, state->width,
-                                                                    state->height,
-                                                                    state->network_id));
+                    // What a hostile one hunts. Mojang's minecraft:player id,
+                    // and it is deliberately *not* "anything": handed that, a
+                    // skeleton and a spider two blocks apart lock onto each
+                    // other and never move again. Players are not yet entities
+                    // in this world, so today nothing matches and hostiles
+                    // wander — which is the honest behaviour rather than a
+                    // brawl between the scenery.
+                    const auto entity_types = registries->find("minecraft:entity_type");
+                    const auto player_type =
+                        entity_types ? registries->protocol_id(*entity_types, "minecraft:player")
+                                     : std::nullopt;
+                    mobs->set_logic(
+                        *spawned,
+                        std::make_unique<gameplay::Mob>(
+                            *kind, state->width, state->height, state->network_id,
+                            player_type ? *player_type : gameplay::kNoQuarry));
                 } else {
                     mobs->set_logic(*spawned, std::make_unique<gameplay::FallingMob>());
                 }

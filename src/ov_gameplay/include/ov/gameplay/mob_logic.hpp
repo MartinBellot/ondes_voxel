@@ -118,7 +118,12 @@ public:
     /// `seed` should differ per mob. The caller derives it from the entity's
     /// wire id, so a world replayed from the same sequence of spawns behaves
     /// identically.
-    Mob(const MobKind& kind, f32 width, f32 height, i64 seed);
+    /// `quarry_type` is the entity type a hostile mob hunts — the caller's
+    /// `minecraft:player` id in a server, `kNoQuarry` when there is nothing it
+    /// should be attacking. Defaulting it to "anything" is what made a skeleton
+    /// and a spider stare at each other instead of wandering.
+    Mob(const MobKind& kind, f32 width, f32 height, i64 seed,
+        i32 quarry_type = kNoQuarry);
 
     void tick(entity::EntityWorld& world, entity::EntityHandle self,
               const entity::TickContext& context) override;
@@ -154,6 +159,11 @@ private:
 /// Public so a test can inspect the arrangement without spawning anything, and
 /// so the priorities are in one readable place rather than scattered through a
 /// constructor.
-void install_goals(GoalSelector& selector, const MobKind& kind, i32 player_type);
+/// `look_type` is what the mob glances at (-1 for anything); `quarry_type` is
+/// what a hostile one hunts (`kNoQuarry` for nothing). Two parameters and not
+/// one, because a cow should watch a player it must not attack and a skeleton
+/// should not hunt the spider it is happy to look at.
+void install_goals(GoalSelector& selector, const MobKind& kind, i32 look_type,
+                   i32 quarry_type);
 
 }  // namespace ov::gameplay
