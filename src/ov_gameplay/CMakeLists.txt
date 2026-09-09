@@ -7,11 +7,14 @@ ov_add_library(ov_gameplay
     LAYER 9
     SOURCES
         src/breaking.cpp
+        src/combat.cpp
         src/collision.cpp
         src/damage.cpp
+        src/durability.cpp
         src/entity_physics.cpp
         src/experience.cpp
         src/fluid.cpp
+        src/item_use.cpp
         src/food.cpp
         src/mob_logic.cpp
         src/pathfinding.cpp
@@ -36,11 +39,15 @@ ov_add_library(ov_gameplay
 ov_add_test(test_ov_gameplay
     SOURCES
         tests/test_breaking.cpp
+        tests/test_combat.cpp
+        tests/test_entity_loot.cpp
         tests/test_collision.cpp
         tests/test_damage.cpp
+        tests/test_durability.cpp
         tests/test_entity_physics.cpp
         tests/test_experience.cpp
         tests/test_fluid.cpp
+        tests/test_item_use.cpp
         tests/test_food.cpp
         tests/test_mob_logic.cpp
         tests/test_pathfinding.cpp

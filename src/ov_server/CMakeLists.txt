@@ -12,6 +12,7 @@ ov_add_library(ov_server
         src/natural_spawning.cpp
         src/player_inventory.cpp
         src/server.cpp
+        src/combat_session.cpp
         src/survival_session.cpp
         src/workbench.cpp
         src/world_ticks.cpp

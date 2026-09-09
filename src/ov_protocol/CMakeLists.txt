@@ -9,6 +9,7 @@ ov_add_library(ov_protocol
         src/client_play.cpp
         src/entity.cpp
         src/framing.cpp
+        src/interaction.cpp
         src/listener.cpp
         src/login.cpp
         src/play.cpp
@@ -35,6 +36,7 @@ ov_add_test(test_ov_protocol
         tests/test_entities.cpp
         tests/test_entity_packets.cpp
         tests/test_framing.cpp
+        tests/test_interaction.cpp
         tests/test_login.cpp
         tests/test_status.cpp
         tests/test_survival.cpp
