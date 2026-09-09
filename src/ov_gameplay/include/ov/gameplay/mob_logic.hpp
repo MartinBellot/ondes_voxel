@@ -11,7 +11,13 @@
 #include "ov/entity/world.hpp"
 #include "ov/gameplay/collision.hpp"
 #include "ov/gameplay/entity_physics.hpp"
+#include "ov/gameplay/goals.hpp"
+#include "ov/gameplay/pathfinding.hpp"
+#include "ov/gameplay/spawning.hpp"
+#include "ov/math/random.hpp"
+#include "ov/world/level.hpp"
 
+#include <memory>
 #include <string_view>
 
 namespace ov::gameplay {
@@ -20,9 +26,18 @@ namespace ov::gameplay {
 ///
 /// The caller builds one on the stack per tick and points the context at it.
 /// Nothing here is owned: the collision world is a view over blocks the tick
-/// thread already holds.
+/// thread already holds, and so is the level.
 struct MobContext {
     const CollisionWorld* world{nullptr};
+
+    /// The blocks a goal reads. Null is legal — a mob with no level cannot
+    /// path, and falls without thinking, which is what `FallingMob` did before
+    /// any of this existed.
+    world::LevelView* level{nullptr};
+
+    /// True while the sky would burn an undead mob. Supplied by the caller
+    /// because a LevelView knows blocks and not the time of day.
+    bool daylight{false};
 };
 
 /// Recover the context, or null if the caller did not provide one.
@@ -37,8 +52,8 @@ struct MobContext {
 ///
 /// Deliberately the whole of it. Vanilla's Mob is a tower of goals over a
 /// LivingEntity that already knows how to fall, and this is that floor — a
-/// zombie that chases a player will do it by adding horizontal velocity on top
-/// of this, not by replacing it.
+/// zombie that chases a player does it by adding horizontal velocity on top of
+/// this, not by replacing it.
 class FallingMob final : public entity::IEntityLogic {
 public:
     explicit FallingMob(EntityMotionConstants constants = {}) noexcept
@@ -52,5 +67,93 @@ public:
 private:
     EntityMotionConstants constants_;
 };
+
+/// How a species differs from every other species.
+///
+/// Everything here is either measured (the box, the speed) or a list of goals.
+/// There is no per-species code: a zombie and a cow run the same `Mob::tick`
+/// and differ only in what is in this struct, which is the point — a ninth
+/// species is a table entry, not a class.
+struct MobKind {
+    std::string_view type_name;
+    MobCategory      category{MobCategory::Monster};
+
+    /// Blocks per tick at full walking speed.
+    ///
+    /// **Not** the `movement_speed` attribute. Measured on a real 1.20.1
+    /// server: a chasing zombie covers 0.11419 blocks a tick while its measured
+    /// attribute is 0.23, so the attribute is roughly twice the speed and is
+    /// not in blocks per tick at all. Each species' number here is its measured
+    /// attribute halved — which reproduces the zombie to within 0.7 % — and
+    /// only the zombie's has actually been measured. See
+    /// docs/provenance/mobs.md; the other seven are stated as derived, not
+    /// measured.
+    f64 walk_speed{0.1};
+
+    bool opens_doors{false};
+    bool avoids_sun{false};
+    /// Attacks players on sight.
+    bool hostile{false};
+    /// Runs when hurt.
+    bool panics{false};
+    /// Can be bred, and follows a parent while young.
+    bool breeds{false};
+};
+
+/// The species this milestone ships. Eight, and the value is in the systems.
+[[nodiscard]] std::span<const MobKind> mob_kinds() noexcept;
+
+/// The kind for a registry name, or null. Named and refused rather than given a
+/// plausible default: a mob whose behaviour was guessed is worse than one that
+/// failed to spawn, because only one of them says so.
+[[nodiscard]] const MobKind* mob_kind(std::string_view type_name) noexcept;
+
+/// A mob with a brain.
+///
+/// Owns its goal selector, its brain and its own random source. One per entity:
+/// two mobs sharing a generator would make the world depend on the order they
+/// happen to be ticked in, which is exactly what determinism forbids.
+class Mob final : public entity::IEntityLogic {
+public:
+    /// `seed` should differ per mob. The caller derives it from the entity's
+    /// wire id, so a world replayed from the same sequence of spawns behaves
+    /// identically.
+    Mob(const MobKind& kind, f32 width, f32 height, i64 seed);
+
+    void tick(entity::EntityWorld& world, entity::EntityHandle self,
+              const entity::TickContext& context) override;
+
+    [[nodiscard]] std::string_view name() const noexcept override { return kind_->type_name; }
+
+    /// For tests and for the server: what the mob is doing right now.
+    [[nodiscard]] const GoalSelector& goals() const noexcept { return goals_; }
+    [[nodiscard]] const MobBrain&     brain() const noexcept { return brain_; }
+    [[nodiscard]] const MobKind&      kind() const noexcept { return *kind_; }
+
+    /// Tell the mob something hurt it. Panicking animals read this.
+    void frighten(i32 ticks) noexcept;
+
+    /// What the mob is currently trying to reach, or kNoEntity.
+    ///
+    /// Read-only on purpose: applying the damage is the caller's business, not
+    /// this module's — ov_gameplay knows what a hit does but not who is allowed
+    /// to be told about it.
+    [[nodiscard]] entity::EntityHandle target() const noexcept { return brain_.target; }
+
+private:
+    const MobKind*           kind_{nullptr};
+    GoalSelector             goals_;
+    MobBrain                 brain_;
+    math::LegacyRandomSource random_;
+    EntityMotionConstants    motion_{};
+    PanicGoal*               panic_{nullptr};
+};
+
+/// Build the goal list for a kind.
+///
+/// Public so a test can inspect the arrangement without spawning anything, and
+/// so the priorities are in one readable place rather than scattered through a
+/// constructor.
+void install_goals(GoalSelector& selector, const MobKind& kind, i32 player_type);
 
 }  // namespace ov::gameplay

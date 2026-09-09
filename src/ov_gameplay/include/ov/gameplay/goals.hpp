@@ -205,6 +205,13 @@ public:
 
     [[nodiscard]] bool is_running(std::string_view name) const;
 
+    /// The goal with this name, or null. Borrowed: the selector owns it.
+    ///
+    /// Exists so a mob can reach a goal it has to feed from outside — a panic
+    /// goal has to be told that something hurt the mob, and a damage event is
+    /// not something a goal can see for itself.
+    [[nodiscard]] Goal* find(std::string_view name) noexcept;
+
 private:
     struct Entry {
         i32                   priority{0};
@@ -250,6 +257,7 @@ public:
     [[nodiscard]] bool     can_continue_to_use(GoalContext& context) override;
     void                   start(GoalContext& context) override;
     void                   stop(GoalContext& context) override;
+    void                   tick(GoalContext& context) override;
     [[nodiscard]] GoalFlag flags() const noexcept override { return GoalFlag::Move; }
     [[nodiscard]] std::string_view name() const noexcept override { return "stroll"; }
 
@@ -363,6 +371,7 @@ public:
     [[nodiscard]] bool     can_continue_to_use(GoalContext& context) override;
     void                   start(GoalContext& context) override;
     void                   stop(GoalContext& context) override;
+    void                   tick(GoalContext& context) override;
     [[nodiscard]] GoalFlag flags() const noexcept override { return GoalFlag::Move; }
     [[nodiscard]] std::string_view name() const noexcept override { return "panic"; }
 
@@ -389,6 +398,7 @@ public:
     [[nodiscard]] bool     can_continue_to_use(GoalContext& context) override;
     void                   start(GoalContext& context) override;
     void                   stop(GoalContext& context) override;
+    void                   tick(GoalContext& context) override;
     [[nodiscard]] GoalFlag flags() const noexcept override { return GoalFlag::Move; }
     [[nodiscard]] std::string_view name() const noexcept override { return "avoid_sun"; }
 

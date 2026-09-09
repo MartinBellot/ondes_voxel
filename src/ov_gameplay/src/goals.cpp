@@ -256,6 +256,15 @@ void GoalSelector::running(std::vector<std::string_view>& out) const {
     }
 }
 
+Goal* GoalSelector::find(std::string_view name) noexcept {
+    for (Entry& entry : entries_) {
+        if (entry.goal->name() == name) {
+            return entry.goal.get();
+        }
+    }
+    return nullptr;
+}
+
 bool GoalSelector::is_running(std::string_view name) const {
     for (const Entry& entry : entries_) {
         if (entry.running && entry.goal->name() == name) {
@@ -263,6 +272,23 @@ bool GoalSelector::is_running(std::string_view name) const {
         }
     }
     return false;
+}
+
+
+/// Re-assert the intent to walk.
+///
+/// Necessary every tick, not once at `start`: the mob clears `wants_move` at
+/// the top of each of its own ticks so that a goal which has quietly stopped
+/// cannot leave the body coasting. A move goal that only set the flag when it
+/// started produced a mob that walked for exactly one tick per decision —
+/// seven ticks of movement in six hundred, which reads as a pathfinder that
+/// cannot find anything rather than as a flag that was cleared.
+static void keep_walking(GoalContext& context, f64 speed) {
+    if (context.brain == nullptr || context.brain->follower.done()) {
+        return;
+    }
+    context.brain->wants_move = true;
+    context.brain->speed      = speed;
 }
 
 // ── FloatGoal ───────────────────────────────────────────────────────────────
@@ -319,6 +345,8 @@ bool RandomStrollGoal::can_continue_to_use(GoalContext& context) {
 void RandomStrollGoal::start(GoalContext& context) {
     (void)move_to(context, wanted_, speed_, 32.0F);
 }
+
+void RandomStrollGoal::tick(GoalContext& context) { keep_walking(context, speed_); }
 
 void RandomStrollGoal::stop(GoalContext& context) {
     if (context.brain != nullptr) {
@@ -548,6 +576,8 @@ bool PanicGoal::can_continue_to_use(GoalContext& context) {
 
 void PanicGoal::start(GoalContext& context) { (void)move_to(context, away_, speed_, 32.0F); }
 
+void PanicGoal::tick(GoalContext& context) { keep_walking(context, speed_); }
+
 void PanicGoal::stop(GoalContext& context) {
     if (context.brain != nullptr) {
         context.brain->follower.clear();
@@ -588,6 +618,8 @@ bool AvoidSunGoal::can_continue_to_use(GoalContext& context) {
 }
 
 void AvoidSunGoal::start(GoalContext& context) { (void)move_to(context, shade_, speed_, 32.0F); }
+
+void AvoidSunGoal::tick(GoalContext& context) { keep_walking(context, speed_); }
 
 void AvoidSunGoal::stop(GoalContext& context) {
     if (context.brain != nullptr) {
