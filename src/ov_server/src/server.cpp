@@ -42,6 +42,7 @@
 #include "ov/world/chunk_storage.hpp"
 #include "ov/protocol/survival.hpp"
 #include "ov/world/level_dat.hpp"
+#include "generated_world.hpp"
 #include "survival_session.hpp"
 
 #include <fmt/format.h>
@@ -1385,6 +1386,32 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         biome_names.emplace_back(name);
     }
 
+    // ── Generated terrain ───────────────────────────────────────────────────
+    //
+    // Off unless `OV_WORLDGEN_SEED` names a seed, and the superflat path below
+    // is untouched when it does not. An environment variable rather than a flag
+    // on purpose: this is the first user of the chunk pipeline and it belongs
+    // with the ChunkMap and the ticket system when those land, not bolted onto
+    // an argument parser several people are editing at once.
+    //
+    //     OV_WORLDGEN_SEED=1234567890 ov_dedicated --world=run/generated
+    //
+    // What it gives is a real overworld: noise, biomes, surface rules, carvers
+    // and — for the first time — the feature stage, so the stone has ores in
+    // it. `GeneratedWorld` owns the whole worldgen stack and the pipeline that
+    // holds the nine chunks decoration needs; see generated_world.hpp.
+    std::unique_ptr<GeneratedWorld> generated;
+    if (const char* seed_text = std::getenv("OV_WORLDGEN_SEED");
+        seed_text != nullptr && world_available && registries) {
+        const i64 world_seed = std::strtoll(seed_text, nullptr, 10);
+        generated = GeneratedWorld::load(data_dir, *blocks, *registries, biome_names, world_seed);
+        if (!generated) {
+            OV_LOG_ERROR("OV_WORLDGEN_SEED was set but the generator could not be built");
+            return 1;
+        }
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
     std::mutex                            chunk_mutex;
     std::unordered_map<i64, world::Chunk> chunk_cache;
     std::unordered_set<i64>               dirty_chunks;
@@ -1515,7 +1542,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 }
             }
         }
-        return chunk_cache.emplace(key, superflat.generate(ChunkPos{cx, cz})).first->second;
+        return chunk_cache
+            .emplace(key, generated ? generated->generate(cx, cz)
+                                    : superflat.generate(ChunkPos{cx, cz}))
+            .first->second;
     };
 
     /// Write every changed chunk, grouped by region so each file opens once.

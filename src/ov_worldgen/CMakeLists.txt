@@ -17,6 +17,7 @@ ov_add_library(ov_worldgen
         src/feature.cpp
         src/noise.cpp
         src/ore_feature.cpp
+        src/pipeline.cpp
         src/placement.cpp
         src/surface_rules.cpp
         src/surface_system.cpp
@@ -39,6 +40,7 @@ ov_add_test(test_ov_worldgen
         tests/test_density.cpp
         tests/test_feature.cpp
         tests/test_noise.cpp
+        tests/test_pipeline.cpp
         tests/test_surface_rules.cpp
     DEPS ov_worldgen
     LABELS unit
