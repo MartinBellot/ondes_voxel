@@ -16,7 +16,9 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <limits>
 #include <set>
+#include <string_view>
 
 using namespace ov;
 using namespace ov::worldgen;
@@ -134,4 +136,124 @@ TEST_CASE("a climate outside every box still names a biome", "[worldgen][biome]"
     ClimatePoint opposite;
     opposite.coordinates = {-20000, -20000, -20000, -20000, -20000, -20000, 0};
     CHECK_FALSE(source->biome_at(opposite).empty());
+}
+
+namespace {
+
+/// A cheap deterministic stream of climates, for probing the search.
+///
+/// Pseudo-random rather than a grid: a grid over six axes at any useful
+/// resolution is billions of points, and what matters is the climates that
+/// fall *between* boxes, which a coarse grid mostly misses.
+class ClimateProbe {
+public:
+    explicit ClimateProbe(u64 seed) noexcept : state_(seed) {}
+
+    [[nodiscard]] ClimatePoint next() noexcept {
+        ClimatePoint point;
+        for (usize axis = 0; axis < 6; ++axis) {
+            point.coordinates[axis] = static_cast<i64>(draw() % 24001) - 12000;
+        }
+        // The seventh axis is never sampled by the world, so probing it with
+        // anything but zero would ask a question the world cannot ask.
+        point.coordinates[6] = 0;
+        return point;
+    }
+
+    [[nodiscard]] u64 draw() noexcept {
+        state_ = state_ * 6364136223846793005ULL + 1442695040888963407ULL;
+        return state_ >> 33;
+    }
+
+private:
+    u64 state_;
+};
+
+}  // namespace
+
+TEST_CASE("the tree finds the nearest box a scan would", "[worldgen][biome]") {
+    if (!std::filesystem::is_directory(reports_root() / "reports")) {
+        SKIP("vanilla reports absent");
+    }
+    auto source = BiomeSource::load(reports_root(), "overworld");
+    REQUIRE(source.has_value());
+
+    // The tree exists to decide *ties*, and it is allowed to name a different
+    // box from a scan only when both are exactly as near. Anything else is a
+    // biome in the wrong place, so this checks the distance rather than the
+    // name: the minimum over every biome in the table, computed independently
+    // of the tree.
+    const auto names = source->biomes();
+    ClimateProbe probe{0x9E3779B97F4A7C15ULL};
+    for (usize round = 0; round < 4000; ++round) {
+        const ClimatePoint point = probe.next();
+        const auto         chosen = source->biome_at(point);
+        REQUIRE_FALSE(chosen.empty());
+
+        i64 nearest = std::numeric_limits<i64>::max();
+        for (const std::string_view name : names) {
+            nearest = std::min(nearest, source->distance_to(point, name));
+        }
+        CHECK(source->distance_to(point, chosen) == nearest);
+    }
+}
+
+TEST_CASE("the search cache breaks ties and nothing else", "[worldgen][biome]") {
+    if (!std::filesystem::is_directory(reports_root() / "reports")) {
+        SKIP("vanilla reports absent");
+    }
+    auto source = BiomeSource::load(reports_root(), "overworld");
+    REQUIRE(source.has_value());
+
+    // Priming the cache with an arbitrary box must never make the search
+    // return a box that is further away than the one it would have returned
+    // cold. That is the cache's whole safety property: it can relabel a
+    // boundary and it can never move a biome. A cache that could would be a
+    // generator whose output depends on how many chunks were loaded first.
+    ClimateProbe probe{0xD1B54A32D192ED03ULL};
+    for (usize round = 0; round < 4000; ++round) {
+        const ClimatePoint point = probe.next();
+        const i64          cold  = source->distance_to(point, source->biome_at(point));
+
+        BiomeSearchCache primed;
+        primed.last = static_cast<i32>(probe.draw() % source->entry_count());
+        const auto warm = source->biome_at(point, primed);
+        REQUIRE_FALSE(warm.empty());
+        CHECK(source->distance_to(point, warm) == cold);
+
+        // And the cache now holds what it just returned, which is what makes
+        // the next query's answer depend on this one.
+        REQUIRE(primed.last >= 0);
+        CHECK(source->entry_biome(static_cast<usize>(primed.last)) == warm);
+    }
+}
+
+TEST_CASE("the cache actually changes an answer somewhere", "[worldgen][biome]") {
+    if (!std::filesystem::is_directory(reports_root() / "reports")) {
+        SKIP("vanilla reports absent");
+    }
+    auto source = BiomeSource::load(reports_root(), "overworld");
+    REQUIRE(source.has_value());
+
+    // The complement of the case above, and the reason this whole mechanism is
+    // in the code: a cache that never changed anything would be an
+    // optimisation, and 2197 biome cells in a reference world say it is not.
+    // If this ever stops finding a tie, either the table stopped overlapping
+    // or the tie-break stopped being reachable, and either way the parity
+    // number is about to move.
+    ClimateProbe probe{0x2545F4914F6CDD1DULL};
+    usize        changed = 0;
+    for (usize round = 0; round < 20000 && changed == 0; ++round) {
+        const ClimatePoint point = probe.next();
+        const auto         cold  = source->biome_at(point);
+        for (i32 entry = 0; entry < static_cast<i32>(source->entry_count()); ++entry) {
+            BiomeSearchCache primed;
+            primed.last = entry;
+            if (source->biome_at(point, primed) != cold) {
+                ++changed;
+                break;
+            }
+        }
+    }
+    CHECK(changed != 0);
 }
