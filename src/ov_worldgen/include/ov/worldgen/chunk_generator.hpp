@@ -70,7 +70,42 @@ public:
     /// The chunk must already have the world's shape; only its contents are
     /// written. The heightmaps are recomputed last, after the carvers, because
     /// a carved cell can be the one the heightmap was pointing at.
+    ///
+    /// Exactly the four stages below, run in order. Kept as one call because
+    /// almost every caller wants all four, and because a caller that has no
+    /// notion of a chunk status should not have to learn one.
     void generate(world::Chunk& chunk) const;
+
+    // ── The stages, individually ────────────────────────────────────────────
+    //
+    // Split out for the pipeline (`pipeline.hpp`), which drives a chunk one
+    // status at a time because the feature stage cannot start until the eight
+    // neighbours have finished the carvers. They are the same code `generate()`
+    // runs, in the same order, and `test_pipeline.cpp` checks block for block
+    // that driving them one by one gives the chunk `generate()` gives.
+    //
+    // None of the four reads a neighbour: they are pure functions of the seed
+    // and the position, which is why the pipeline's radius is zero up to the
+    // carvers and one only at the features.
+
+    /// Stone, water, lava, air — and nothing cut. Reads no biome.
+    void generate_noise(world::Chunk& chunk) const;
+
+    /// The 4x4x4 biome grid. Reads no block.
+    ///
+    /// Independent of the noise stage in both directions, which is why the
+    /// game's status order (biomes before noise) and this file's execution
+    /// order (noise before biomes) produce the same chunk.
+    void generate_biomes(world::Chunk& chunk) const;
+
+    /// Grass, dirt, sand, gravel, sandstone, the badlands' bands, bedrock.
+    /// Needs the biomes. A no-op when no surface system is attached.
+    void generate_surface(world::Chunk& chunk) const;
+
+    /// The carving mask, applied to what the surface rules left. A no-op when
+    /// no carvers are attached, and a no-op in the legacy order, where the
+    /// cutting has already happened inside the noise stage.
+    void generate_carvers(world::Chunk& chunk) const;
 
     /// Give the generator the surface rules, so a generated chunk gets grass,
     /// dirt, sand, gravel, snow, the desert's sandstone, the badlands' clay
@@ -94,6 +129,13 @@ public:
 
     /// What fills a position that is not solid: water, lava or air.
     [[nodiscard]] registry::BlockStateId fluid_at(i32 y) const;
+
+    /// The dimension's sea level, as the noise settings give it.
+    ///
+    /// Exposed because a `FeatureLevel` has to answer the same question — the
+    /// `surface_water_depth_filter` and the springs ask it — and reading it out
+    /// of the generator is the only way to be sure the two agree.
+    [[nodiscard]] i32 sea_level() const noexcept { return sea_level_; }
 
     /// Attach the carvers, and with them the tag that says what they may cut.
     ///

@@ -6,6 +6,7 @@
 ov_add_library(ov_server
     LAYER 12
     SOURCES
+        src/generated_world.cpp
         src/server.cpp
         src/survival_session.cpp
     DEPS
@@ -16,6 +17,7 @@ ov_add_library(ov_server
         ov_protocol
         ov_registry
         ov_world
+        ov_worldgen
     PRIVATE_DEPS
         fmt::fmt
 )

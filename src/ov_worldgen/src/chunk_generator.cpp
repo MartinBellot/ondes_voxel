@@ -202,12 +202,11 @@ void ChunkGenerator::apply_carving(world::Chunk& chunk, const CarvingMask& mask,
     }
 }
 
-void ChunkGenerator::generate(world::Chunk& chunk) const {
+void ChunkGenerator::generate_noise(world::Chunk& chunk) const {
     const auto shape    = chunk.shape();
     const i32  origin_x = chunk.position().x * 16;
     const i32  origin_z = chunk.position().z * 16;
 
-    // ── 1. noise ────────────────────────────────────────────────────────────
     // Stone, water, lava, air. Nothing is cut here: the carvers run after the
     // surface rules, which is the game's order and the reason this file was
     // rewritten. See the header.
@@ -246,8 +245,13 @@ void ChunkGenerator::generate(world::Chunk& chunk) const {
             }
         }
     }
+}
 
-    // ── 2. biomes ───────────────────────────────────────────────────────────
+void ChunkGenerator::generate_biomes(world::Chunk& chunk) const {
+    const auto shape    = chunk.shape();
+    const i32  origin_x = chunk.position().x * 16;
+    const i32  origin_z = chunk.position().z * 16;
+
     // On their own 4x4x4 grid, from the same router.
     //
     // The nesting is not free to choose. The climate search keeps a one-entry
@@ -272,8 +276,9 @@ void ChunkGenerator::generate(world::Chunk& chunk) const {
             }
         }
     }
+}
 
-    // ── 3. surface ──────────────────────────────────────────────────────────
+void ChunkGenerator::generate_surface(world::Chunk& chunk) const {
     // After the biomes, because the rules ask which biome a block is in on
     // almost every line — and before the carvers, because the rules count
     // `stone_depth` down from the top of a column and a cave that had already
@@ -281,8 +286,9 @@ void ChunkGenerator::generate(world::Chunk& chunk) const {
     if (surface_ != nullptr) {
         surface_->build(chunk, *router_, *biomes_, *blocks_);
     }
+}
 
-    // ── 4. carvers ──────────────────────────────────────────────────────────
+void ChunkGenerator::generate_carvers(world::Chunk& chunk) const {
     // The mask is a record of what the carvers considered, taken for the whole
     // chunk at once; it depends on nothing but the seed, the chunk and the
     // world's height, and it is bit-for-bit the game's. Applying it is the
@@ -292,6 +298,13 @@ void ChunkGenerator::generate(world::Chunk& chunk) const {
         const CarvingMask mask = carvers_->carve(chunk.position().x, chunk.position().z);
         apply_carving(chunk, mask, carvers_->context().lava_level());
     }
+}
+
+void ChunkGenerator::generate(world::Chunk& chunk) const {
+    generate_noise(chunk);
+    generate_biomes(chunk);
+    generate_surface(chunk);
+    generate_carvers(chunk);
 
     // Last, and after the carvers rather than before them: a carved cell can be
     // the very block a heightmap was pointing at.
