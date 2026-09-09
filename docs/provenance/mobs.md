@@ -216,47 +216,79 @@ un niveau différent. Trois passages : scellé à minuit, ouvert au ciel à minu
 ouvert au ciel à midi. Un client sonde parqué à 48 blocs de la rangée, hors du
 rayon de refus de 24 blocs et dans le rayon d'offre de 128.
 
-### Le résultat net du premier passage
+### Résultat : le seuil vaut **0**
 
-**À midi, ciel ouvert : zéro monstre dans les onze salles.** La lumière du ciel
-participe donc bel et bien, et le jour supprime entièrement l'apparition des
-monstres. C'est le seul résultat du premier passage qui soit exploitable tel
-quel, et il est décisif.
+Montage corrigé (voir plus bas), trois passages, comptes par niveau de lumière
+**au sol** :
 
-### Ce que le premier passage a mesuré à la place
+| lumière au sol | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| scellé, minuit | **26** | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 |
+| toit ouvert, minuit | **35** | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| toit ouvert, midi | **27** | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 
-Les deux autres passages ont produit des comptes non monotones — 10, 18, 27, 1,
-0, 0, 0, 5, 11 en scellé à minuit — c'est-à-dire pas un seuil. Trois défauts du
-montage, chacun rendant le résultat faux d'une manière différente et plausible :
+**Un monstre n'apparaît qu'à une lumière strictement nulle.** Le seuil est 0, et
+non « inférieur ou égal à 7 » : à 1 il ne se passe déjà plus rien. Le seul 1 de
+la ligne du haut est un mob qui a marché d'une salle voisine, pas une apparition.
+
+C'est la valeur que porte `rules_for(MobCategory::Monster).max_spawn_light`.
+
+### La lumière du ciel participe
+
+Établi par le **premier** montage, et par une comparaison appariée qui reste
+valable malgré ses défauts de calibration : à géométrie et éclairage rigoureusement
+identiques, seule l'heure changeant, minuit donnait des apparitions dans les
+salles sombres (10, 18, 27, …) et midi **zéro partout**. Le niveau de lumière de
+chaque salle était alors mal maîtrisé, mais le contraste minuit/midi ne dépend
+pas de cette calibration.
+
+La formule de combinaison retenue —
+`max(lumière de bloc, lumière du ciel − assombrissement)`, dans
+`LightSource::effective_light` — est cohérente avec ce contraste et testée
+unitairement, mais n'a pas été mesurée terme à terme.
+
+### Ce que les trois passages corrigés mesurent réellement
+
+**Ils mesurent trois salles scellées, pas une scellée et deux ouvertes.** La
+couche de dalles qui règle le problème des toits (point 2 ci-dessous) scelle
+aussi les salles : une dalle inférieure ne laisse pas descendre la lumière du
+ciel. Les variantes « toit ouvert » ne sont donc pas ouvertes.
+
+Cela ne compromet pas le seuil — les trois passages donnent la même réponse, ce
+qui en fait un contrôle de reproductibilité — mais cela veut dire que **la
+moitié « ciel » de la question n'a pas été remesurée par le montage corrigé**,
+et repose entièrement sur la comparaison appariée du paragraphe précédent.
+
+### Les trois défauts du premier montage
+
+Le premier passage produisait des comptes non monotones — 10, 18, 27, 1, 0, 0,
+0, 5, 11 en scellé à minuit — c'est-à-dire pas un seuil du tout. Trois défauts,
+chacun rendant le résultat faux d'une manière différente et plausible :
 
 1. **Une lumière d'angle n'éclaire pas un sol.** Le bloc `minecraft:light` était
    posé dans deux angles du plafond, à six ou sept blocs du milieu du sol ; la
    lumière de bloc décroît de 1 par bloc, donc une salle « au niveau 8 » avait un
    sol éclairé entre 2 et 0 selon l'endroit. La salle avait un dégradé, pas un
-   niveau.
-2. **Les mobs apparaissent sur les toits.** Dans un monde vide, les toits de
+   niveau. Le montage corrigé remplit toute la couche située deux blocs au-dessus
+   du sol, qui vaut donc uniformément `niveau − 2` — et les deux blocs de corps
+   du mob restent dégagés.
+
+2. **Les mobs apparaissaient sur les toits.** Dans un monde vide, les toits de
    pierre des salles étaient la seule autre surface, et un toit à ciel ouvert lit
-   4 à minuit. Ils consommaient le cap que les salles se disputaient.
+   4 à minuit ; ils consommaient le cap que les salles se disputaient. Ils sont
+   coiffés de dalles inférieures, dont la face supérieure n'est pas *sturdy* et
+   sur lesquelles rien ne se pose.
+
 3. **La salle *n* était comptée dans la salle *n + 1*.** Le sélecteur était une
-   sphère de rayon 7 autour d'une salle large de 7 espacée de 10.
+   sphère de rayon 7 autour d'une salle large de 7 espacée de 10, donc chaque
+   compte incluait les bords de ses deux voisines — ce qui est la raison pour
+   laquelle les comptes *remontaient* du côté éclairé. C'est une boîte
+   maintenant, exactement l'intérieur.
 
-Le montage corrigé remplit toute la couche deux blocs au-dessus du sol de blocs
-de lumière (le sol vaut donc uniformément `niveau − 2`, et les deux blocs de
-corps du mob restent dégagés), coiffe les toits de dalles inférieures — dont la
-face supérieure n'est pas *sturdy*, donc rien ne s'y pose — et compte dans une
-boîte qui est exactement l'intérieur de la salle.
+### Ce qui reste non mesuré dans cette campagne
 
-> **État : le passage corrigé de la campagne `light` n'a pas fourni de seuil
-> exploitable dans le temps de cette session.** Le seuil de 0 pour les monstres
-> et de 3 pour les ambiants qui figure dans `rules_for` est donc **non mesuré**
-> et doit être traité comme provisoire. Ce qui est mesuré, c'est la participation
-> de la lumière du ciel (zéro monstre à midi à ciel ouvert), et rien d'autre de
-> cette campagne.
-
-La formule de combinaison — `max(lumière de bloc, lumière du ciel − assombrissement)`
-— est celle que `LightSource::effective_light` applique, et elle est testée
-unitairement ; elle est cohérente avec le résultat de midi mais n'est pas
-elle-même mesurée séparément.
+Le seuil de 3 des **ambiants** dans `rules_for`. Aucune chauve-souris n'est
+apparue : elles demandent une grotte, et le monde de la campagne est vide.
 
 ---
 
@@ -290,6 +322,9 @@ nombre dérivé se fait passer pour un nombre mesuré.
   la copie d'aucun relevé.
 
 ## 7. Ce qui n'est pas implémenté, et le dit
+
+* **Le seuil de lumière des ambiants** (3 dans `rules_for`) — voir la fin de la
+  section 5.
 
 * **Les listes d'apparition par biome.** Vanilla les lit dans les `spawners` du
   datapack ; nous ne parsons pas encore ce champ. Plutôt que d'inventer une
