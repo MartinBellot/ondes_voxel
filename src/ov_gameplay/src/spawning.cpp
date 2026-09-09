@@ -156,7 +156,6 @@ MobCategory category_of(std::string_view type_name) noexcept {
 }
 
 NaturalSpawner::NaturalSpawner(u64 seed) : random_{static_cast<i64>(seed)} {
-    scratch_.reserve(64);
     for (std::vector<SpawnerEntry>& list : entries_) {
         list.reserve(16);
     }

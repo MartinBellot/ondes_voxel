@@ -341,14 +341,6 @@ private:
     i32               visited_{0};
 };
 
-/// Where a mob is trying to get to, and how close counts as arrived.
-struct PathTarget {
-    BlockPos pos{};
-    /// Blocks. A melee attacker wants to be next to its target, not on top of
-    /// it, so it asks for a radius rather than the square itself.
-    f32 reach{0.0F};
-};
-
 /// Follow a path: the position the mob should be steering at right now.
 ///
 /// Returns false when the path is finished or empty. `advance` is what turns a

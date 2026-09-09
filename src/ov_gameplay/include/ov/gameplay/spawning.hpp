@@ -228,7 +228,6 @@ private:
 
     math::LegacyRandomSource   random_;
     std::vector<SpawnerEntry>  entries_[8];
-    std::vector<SpawnRequest>  scratch_;
     i32                        next_pack_{1};
 };
 

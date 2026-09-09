@@ -99,10 +99,11 @@ struct MobBrain {
     /// vanilla does not do it either.
     i64 next_path_tick{0};
 
-    /// Where the head is being pointed, and until when.
+    /// Where the head is being pointed. Set by whichever look goal is running
+    /// and cleared by the mob at the top of each tick, so a goal that has
+    /// quietly stopped cannot leave the head aimed at something.
     Vec3d look_at{};
     bool  has_look{false};
-    i64   look_until{0};
 
     /// The mob's quarry. `kNoEntity` when it has none.
     entity::EntityHandle target{entity::kNoEntity};
