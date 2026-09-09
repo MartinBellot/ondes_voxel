@@ -2,6 +2,13 @@
 
 *2026-09-09. Seed 1234567890, monde de référence `run/reference-1234567890`.*
 
+> **§4 est infirmé.** Sa conclusion — « l'amplitude de `base_3d_noise` est environ
+> quatre fois trop grande » — repose sur un balayage de gain sans témoin. Avec un
+> témoin (le même bruit échantillonné dix mille blocs plus loin) le champ faux
+> marque aussi bien que le vrai, et le Nether, où ce terme est presque toute la
+> `final_density`, mesure l'amplitude directement : elle est correcte à ±20 %.
+> Voir `docs/provenance/amplitude-old-blended-noise.md`. Les §§1–3, 5–7 tiennent.
+
 Ce document ne rapporte aucun changement de génération. Il rapporte des
 **mesures**, dont quatre écartent des hypothèses écrites ailleurs et une
 localise la cause du déficit de surface sans l'établir.

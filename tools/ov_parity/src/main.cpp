@@ -25,6 +25,7 @@
 #include <array>
 #include <bit>
 #include <cmath>
+#include <cstdlib>
 #include <limits>
 #include <filesystem>
 #include <fstream>
@@ -90,6 +91,20 @@ struct Options {
     /// what slope — is a different question from asking whether it lowers an
     /// average.
     std::string dump;
+    /// Read the Nether instead, and report the fraction of stone at each
+    /// height on both sides.
+    ///
+    /// This is the only place old_blended_noise can be seen on its own. The
+    /// Nether's noise_settings name no depth, no factor, no jaggedness and no
+    /// aquifers: between y = 24 and y = 104 its final_density collapses to
+    /// squeeze(0.64 x base_3d_noise), so a block is stone exactly where that
+    /// noise is positive. Above y = 104 a clamped gradient walks the threshold
+    /// away from zero, about four hundredths a block, so the fraction of stone
+    /// at each height *is* that noise's cumulative distribution read off the
+    /// game's own blocks. Nothing here needs the seeds to match, which is what
+    /// makes it usable: the Nether is seeded from the legacy random source and
+    /// this router is not.
+    bool nether{false};
     /// Dump one column: what the game has, and every term we compute.
     std::string column;
     std::filesystem::path pack{"data/vanilla/1.20.1/registry.ovpack"};
@@ -124,6 +139,8 @@ struct Options {
             options.stats = true;
         } else if (argument == "--surface") {
             options.surface = true;
+        } else if (argument == "--nether") {
+            options.nether = true;
         } else if (argument.starts_with("--dump=")) {
             options.dump = value("--dump=");
         } else if (argument.starts_with("--column=")) {
@@ -265,8 +282,321 @@ struct Options {
 
 }  // namespace
 
+/// What the Nether's noise said at this block: stone, empty, or unreadable.
+///
+/// Three answers rather than two, because most of the wrong figures this tool
+/// has produced came from forcing a third case into one of the first two.
+/// Bedrock is five layers thick at the roof and the floor and is placed with no
+/// reference to the density at all; a bastion's nether bricks replaced whatever
+/// was there; a fungus grew after the fact. None of those is evidence either
+/// way, and counting them as empty is what made the roof look forty per cent
+/// too open.
+///
+/// `cave_air` is counted as stone, and that is not a slip: it is precisely the
+/// mark the carvers leave where the noise *had* put stone. Plain air above the
+/// lava sea is the noise's own emptiness.
+enum class NetherBlock { Stone, Empty, Unknown };
+
+[[nodiscard]] NetherBlock classify_nether(std::string_view name) {
+    constexpr std::array<std::string_view, 13> kStone{
+        "minecraft:netherrack",        "minecraft:basalt",
+        "minecraft:blackstone",        "minecraft:soul_sand",
+        "minecraft:soul_soil",         "minecraft:gravel",
+        "minecraft:magma_block",       "minecraft:crimson_nylium",
+        "minecraft:warped_nylium",     "minecraft:nether_gold_ore",
+        "minecraft:nether_quartz_ore", "minecraft:ancient_debris",
+        "minecraft:cave_air"};
+    for (const std::string_view stone : kStone) {
+        if (name == stone) {
+            return NetherBlock::Stone;
+        }
+    }
+    if (name == "minecraft:air" || name == "minecraft:lava" || name == "minecraft:water" ||
+        name == "minecraft:void_air") {
+        return NetherBlock::Empty;
+    }
+    return NetherBlock::Unknown;
+}
+
 int main(int argc, char** argv) {
     const Options options = parse(argc, argv);
+
+    if (options.nether) {
+        // The Nether's own defaults, so that --nether needs no other argument.
+        const std::filesystem::path world =
+            options.world == std::filesystem::path("run/reference-1234567890/world")
+                ? std::filesystem::path(
+                      fmt::format("run/reference-nether-{}/world/DIM-1", options.seed))
+                : options.world;
+        if (!std::filesystem::is_directory(world / "region")) {
+            OV_LOG_ERROR("{} has no region/. Generate one with scripts/reference_nether.sh.",
+                         world.string());
+            return 1;
+        }
+        // Counted per height, on both sides, over the same columns.
+        std::array<i64, 128> their_stone{};
+        std::array<i64, 128> their_total{};
+        usize                chunks_read = 0;
+        /// One sampled column, and which of its heights the game gave a
+        /// readable answer for. Kept so that our own side is evaluated over
+        /// exactly the same blocks, once per candidate amplitude, without
+        /// reading the region files again.
+        struct NetherColumn {
+            i32                x{0};
+            i32                z{0};
+            std::array<u64, 2> readable{};
+        };
+        std::vector<NetherColumn> columns;
+
+        for (const auto& entry : std::filesystem::directory_iterator(world / "region")) {
+            if (entry.path().extension() != ".mca") {
+                continue;
+            }
+            auto region = nbt::RegionFile::open(entry.path());
+            if (!region) {
+                continue;
+            }
+            // `--chunks` is per region file here, not per run. One region is
+            // one patch of Nether a few hundred blocks across, and a lava sea
+            // can fill all of it: the first version of this read sixty chunks
+            // from whichever region came first and reported zero stone across
+            // eleven heights because that region happened to be an ocean.
+            usize from_region = 0;
+            for (u32 index = 0;
+                 index < 1024 && from_region < static_cast<usize>(options.chunks); ++index) {
+                if (!region->has_chunk(index % 32, index / 32)) {
+                    continue;
+                }
+                auto document = region->read_chunk(index % 32, index / 32);
+                if (!document) {
+                    continue;
+                }
+                const nbt::Tag* status = document->root.find("Status");
+                if (status == nullptr || status->as_string() != "minecraft:full") {
+                    continue;
+                }
+                const nbt::Tag* x_pos = document->root.find("xPos");
+                const nbt::Tag* z_pos = document->root.find("zPos");
+                if (x_pos == nullptr || z_pos == nullptr) {
+                    continue;
+                }
+                const auto chunk_x = static_cast<i32>(x_pos->as_i64());
+                const auto chunk_z = static_cast<i32>(z_pos->as_i64());
+
+                // Every third column again, for the same reason: the cell is
+                // four wide and a stride of four would only ever see one
+                // residue.
+                for (i32 local_z = 0; local_z < 16; local_z += 3) {
+                    for (i32 local_x = 0; local_x < 16; local_x += 3) {
+                        NetherColumn column{chunk_x * 16 + local_x, chunk_z * 16 + local_z, {}};
+                        for (i32 y = 0; y < 128; ++y) {
+                            const auto* named = block_at(*document, local_x, y, local_z);
+                            if (named == nullptr) {
+                                continue;
+                            }
+                            const NetherBlock what = classify_nether(*named);
+                            if (what == NetherBlock::Unknown) {
+                                continue;
+                            }
+                            their_stone[static_cast<usize>(y)] +=
+                                what == NetherBlock::Stone ? 1 : 0;
+                            ++their_total[static_cast<usize>(y)];
+                            column.readable[static_cast<usize>(y) / 64] |=
+                                1ULL << (static_cast<usize>(y) % 64);
+                        }
+                        columns.push_back(column);
+                    }
+                }
+                ++from_region;
+                ++chunks_read;
+            }
+        }
+
+        // The threshold the noise is compared against at each height, read off
+        // the Nether's own final_density. Between the two gradients it is
+        // exactly zero; outside them it slides, and that slide is what turns a
+        // column of blocks into a distribution.
+        const auto threshold = [](i32 y) -> f64 {
+            const f64 low  = std::clamp((static_cast<f64>(y) + 8.0) / 32.0, 0.0, 1.0);
+            const f64 high = std::clamp((128.0 - static_cast<f64>(y)) / 24.0, 0.0, 1.0);
+            // 2.5 + low * (-2.5 + 0.9375 + high * (-0.9375 + N)) > 0
+            if (low <= 0.0 || high <= 0.0) {
+                return std::numeric_limits<f64>::quiet_NaN();
+            }
+            return -(2.5 * (1.0 - low) / low + 0.9375 * (1.0 - high)) / high;
+        };
+
+        // The two bands where the threshold moves. Everywhere between them it
+        // is exactly zero and the curve says nothing about amplitude, and
+        // outside them the constant 2.5 swamps any noise there could be, so
+        // evaluating our side there would cost time and buy nothing.
+        const auto interesting = [](i32 y) { return (y >= 8 && y <= 40) || (y >= 92 && y <= 124); };
+
+        // One sweep of the amplitude rather than one build per candidate. The
+        // gain multiplies base_3d_noise and nothing else, so the curve it moves
+        // is exactly the curve this comparison reads, and the gain whose curve
+        // lands on the game's is the factor the arithmetic has to produce.
+        std::vector<f64> gains{0.25, 0.35, 0.5, 0.7, 1.0, 1.4, 2.0, 2.8};
+        if (!options.sweep.empty()) {
+            gains.clear();
+            for (usize start = 0; start < options.sweep.size();) {
+                const usize comma = options.sweep.find(',', start);
+                gains.push_back(std::strtod(options.sweep.substr(start, comma - start).c_str(),
+                                            nullptr));
+                if (comma == std::string::npos) {
+                    break;
+                }
+                start = comma + 1;
+            }
+        }
+        const auto& kGains = gains;
+        std::vector<std::array<i64, 128>> our_stone(kGains.size());
+        std::vector<std::array<i64, 128>> our_total(kGains.size());
+
+        for (usize g = 0; g < kGains.size(); ++g) {
+            // The node reads the gain from the environment when it is built, so
+            // the router is rebuilt per gain. It is three noises here, not the
+            // overworld's thirty-five, and it costs nothing.
+            const std::string text = fmt::format("{}", kGains[g]);
+            ::setenv("OV_BASE3D_GAIN", text.c_str(), 1);
+            auto nether = worldgen::NoiseRouter::load(options.data, "nether", options.seed);
+            if (!nether) {
+                OV_LOG_ERROR("nether router: {}", worldgen::to_string(nether.error()));
+                return 1;
+            }
+            const auto* density = nether->entry("final_density");
+            if (density == nullptr) {
+                OV_LOG_ERROR("the nether router has no final_density");
+                return 1;
+            }
+            for (const NetherColumn& column : columns) {
+                for (i32 y = 0; y < 128; ++y) {
+                    if (!interesting(y) ||
+                        (column.readable[static_cast<usize>(y) / 64] &
+                         (1ULL << (static_cast<usize>(y) % 64))) == 0) {
+                        continue;
+                    }
+                    our_stone[g][static_cast<usize>(y)] +=
+                        density->compute({column.x, y, column.z}) > 0.0 ? 1 : 0;
+                    ++our_total[g][static_cast<usize>(y)];
+                }
+            }
+        }
+        ::unsetenv("OV_BASE3D_GAIN");
+
+        fmt::print("\nseed {}, {} nether chunks, {} columns\n", options.seed, chunks_read,
+                   columns.size());
+        fmt::print(
+            "\nfraction of stone at each height. Between y = 24 and y = 104 the threshold is\n"
+            "zero and the column says only where the noise's median is; in the two bands where\n"
+            "it slides, the column is that noise's survival function read off the game's own\n"
+            "blocks.\n\n");
+        fmt::print("  {:>4} {:>9} {:>8}", "y", "threshold", "game");
+        for (const f64 gain : kGains) {
+            fmt::print(" {:>7.2f}", gain);
+        }
+        fmt::print(" {:>8}\n", "columns");
+        for (i32 y = 0; y < 128; ++y) {
+            const auto slot = static_cast<usize>(y);
+            if (their_total[slot] < 64 || !interesting(y)) {
+                continue;
+            }
+            const f64 t = threshold(y);
+            fmt::print("  {:>4} {:>9} {:>8.4f}", y,
+                       std::isnan(t) ? std::string("  -") : fmt::format("{:+.4f}", t),
+                       static_cast<f64>(their_stone[slot]) / static_cast<f64>(their_total[slot]));
+            for (usize g = 0; g < kGains.size(); ++g) {
+                fmt::print(" {:>7.4f}", our_total[g][slot] == 0
+                                            ? 0.0
+                                            : static_cast<f64>(our_stone[g][slot]) /
+                                                  static_cast<f64>(our_total[g][slot]));
+            }
+            fmt::print(" {:>8}\n", their_total[slot]);
+        }
+
+        // The distance between the two curves, over the sliding bands only.
+        // A single number per gain, so the minimum can be pointed at rather
+        // than argued about.
+        fmt::print("\nmean absolute distance to the game's curve, over the sliding bands\n");
+        fmt::print("  {:>7} {:>10} {:>10} {:>10}\n", "gain", "roof", "floor", "both");
+        for (usize g = 0; g < kGains.size(); ++g) {
+            f64   roof = 0.0, floor_sum = 0.0;
+            usize roof_n = 0, floor_n = 0;
+            for (i32 y = 0; y < 128; ++y) {
+                const auto slot = static_cast<usize>(y);
+                if (their_total[slot] < 64 || our_total[g][slot] == 0 || std::isnan(threshold(y))) {
+                    continue;
+                }
+                const f64 gap = std::abs(static_cast<f64>(their_stone[slot]) /
+                                             static_cast<f64>(their_total[slot]) -
+                                         static_cast<f64>(our_stone[g][slot]) /
+                                             static_cast<f64>(our_total[g][slot]));
+                if (y > 104 && y <= 122) {
+                    roof += gap;
+                    ++roof_n;
+                } else if (y >= 12 && y < 24) {
+                    floor_sum += gap;
+                    ++floor_n;
+                }
+            }
+            fmt::print("  {:>7.2f} {:>10.4f} {:>10.4f} {:>10.4f}\n", kGains[g],
+                       roof_n == 0 ? 0.0 : roof / static_cast<f64>(roof_n),
+                       floor_n == 0 ? 0.0 : floor_sum / static_cast<f64>(floor_n),
+                       roof_n + floor_n == 0
+                           ? 0.0
+                           : (roof + floor_sum) / static_cast<f64>(roof_n + floor_n));
+        }
+
+        // How far the threshold has to travel for the curve to climb from
+        // three quarters to ninety-nine hundredths.
+        //
+        // This is the amplitude on its own, with the level the curve starts
+        // from divided out. It matters because the two curves do not start
+        // from the same place — our noise is positive rather more often than
+        // the game's — and a distance that compares them point by point mixes
+        // that offset into the answer. A width does not: it is measured in the
+        // threshold's units, which are the noise's own units.
+        const auto width = [&](auto value_at) {
+            const auto crossing = [&](f64 level) {
+                f64 previous_t = 0.0;
+                f64 previous_v = value_at(105);
+                for (i32 y = 106; y <= 122; ++y) {
+                    const f64 t = threshold(y);
+                    const f64 v = value_at(y);
+                    if (previous_v < level && v >= level && v > previous_v) {
+                        return previous_t + (t - previous_t) * (level - previous_v) /
+                                                (v - previous_v);
+                    }
+                    previous_t = t;
+                    previous_v = v;
+                }
+                return std::numeric_limits<f64>::quiet_NaN();
+            };
+            return crossing(0.99) - crossing(0.75);
+        };
+
+        const f64 their_width = width([&](i32 y) {
+            const auto slot = static_cast<usize>(y);
+            return their_total[slot] == 0 ? 0.0
+                                          : static_cast<f64>(their_stone[slot]) /
+                                                static_cast<f64>(their_total[slot]);
+        });
+        fmt::print(
+            "\nhow far the threshold travels while the roof curve climbs from 0.75 to 0.99\n");
+        fmt::print("  {:>7} {:>10} {:>10}\n", "gain", "width", "vs game");
+        fmt::print("  {:>7} {:>10.4f} {:>10}\n", "game", std::abs(their_width), "1.000");
+        for (usize g = 0; g < kGains.size(); ++g) {
+            const f64 ours = width([&](i32 y) {
+                const auto slot = static_cast<usize>(y);
+                return our_total[g][slot] == 0 ? 0.0
+                                               : static_cast<f64>(our_stone[g][slot]) /
+                                                     static_cast<f64>(our_total[g][slot]);
+            });
+            fmt::print("  {:>7.2f} {:>10.4f} {:>10.3f}\n", kGains[g], std::abs(ours),
+                       std::abs(ours / their_width));
+        }
+        return 0;
+    }
 
     if (!std::filesystem::is_directory(options.world / "region")) {
         OV_LOG_ERROR("{} has no region/. Generate one with scripts/reference_world.sh.",

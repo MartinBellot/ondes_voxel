@@ -176,7 +176,6 @@ private:
     f64 xz_factor_{0.0};
     f64 y_factor_{0.0};
     f64 smear_scale_multiplier_{0.0};
-    f64 second_divisor_{128.0};
     f64 max_value_{0.0};
 };
 
