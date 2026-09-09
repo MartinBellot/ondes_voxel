@@ -96,13 +96,15 @@ void redstone_comparators(Canvas& canvas, i32 x, i32 z) {
     canvas.set(x + 4, kFloor, z + 7, "minecraft:redstone_lamp");
 
     // Three containers whose fullness is meant to be varied by hand.
-    canvas.set(x + 1, kFloor, z + 11, "minecraft:barrel", {{"facing", "up"}, {"open", "false"}});
+    canvas.container(x + 1, kFloor, z + 11, "minecraft:barrel", "minecraft:barrel",
+                     {{"facing", "up"}, {"open", "false"}});
     canvas.set(x + 2, kFloor, z + 11, "minecraft:comparator",
                {{"facing", "west"}, {"mode", "compare"}, {"powered", "false"}});
     canvas.set(x + 3, kFloor, z + 11, "minecraft:redstone_wire");
     canvas.set(x + 4, kFloor, z + 11, "minecraft:redstone_lamp");
 
-    canvas.set(x + 8, kFloor, z + 11, "minecraft:chest", {{"facing", "north"}, {"type", "single"}});
+    canvas.container(x + 8, kFloor, z + 11, "minecraft:chest", "minecraft:chest",
+                     {{"facing", "north"}, {"type", "single"}});
     canvas.set(x + 9, kFloor, z + 11, "minecraft:comparator",
                {{"facing", "west"}, {"mode", "compare"}, {"powered", "false"}});
     canvas.set(x + 10, kFloor, z + 11, "minecraft:redstone_wire");
@@ -157,17 +159,18 @@ void redstone_transport(Canvas& canvas, i32 x, i32 z) {
     canvas.set(x + 3, kFloor, z + 3, "minecraft:oak_planks");
     canvas.set(x + 1, kFloor, z + 3, "minecraft:redstone_lamp");
 
-    canvas.set(x + 2, kFloor + 2, z + 7, "minecraft:chest",
-               {{"facing", "north"}, {"type", "single"}});
+    canvas.container(x + 2, kFloor + 2, z + 7, "minecraft:chest", "minecraft:chest",
+                     {{"facing", "north"}, {"type", "single"}});
     for (i32 step = 0; step < 5; ++step) {
-        canvas.set(x + 3 + step, kFloor + 2, z + 7, "minecraft:hopper", {{"facing", "west"}});
+        canvas.container(x + 3 + step, kFloor + 2, z + 7, "minecraft:hopper", "minecraft:hopper",
+                         {{"facing", "west"}});
     }
     canvas.fill(x + 2, kFloor, z + 7, x + 8, kFloor + 1, z + 7, "minecraft:stone");
 
-    canvas.set(x + 2, kFloor, z + 11, "minecraft:dispenser",
-               {{"facing", "east"}, {"triggered", "false"}});
-    canvas.set(x + 6, kFloor, z + 11, "minecraft:dropper",
-               {{"facing", "east"}, {"triggered", "false"}});
+    canvas.container(x + 2, kFloor, z + 11, "minecraft:dispenser", "minecraft:dispenser",
+                     {{"facing", "east"}, {"triggered", "false"}});
+    canvas.container(x + 6, kFloor, z + 11, "minecraft:dropper", "minecraft:dropper",
+                     {{"facing", "east"}, {"triggered", "false"}});
     canvas.set(x + 2, kFloor + 1, z + 11, "minecraft:lever",
                {{"face", "floor"}, {"facing", "north"}, {"powered", "false"}});
 }
@@ -435,34 +438,58 @@ void stations_workbenches(Canvas& canvas, i32 x, i32 z) {
         "minecraft:smoker",         "minecraft:anvil",     "minecraft:grindstone",
         "minecraft:stonecutter",    "minecraft:smithing_table", "minecraft:loom",
         "minecraft:cartography_table", "minecraft:fletching_table", "minecraft:lectern"};
+    // Only some of these are containers. A crafting table has no block entity
+    // at all, and giving it one would be as wrong as leaving the furnace
+    // without.
+    const auto entity_for = [](std::string_view station) -> std::string_view {
+        if (station == "minecraft:furnace" || station == "minecraft:blast_furnace" ||
+            station == "minecraft:smoker" || station == "minecraft:lectern") {
+            return station;
+        }
+        return {};
+    };
     for (usize index = 0; index < stations.size(); ++index) {
-        const i32 column = x + 2 + static_cast<i32>(index % 6) * 2;
-        const i32 row    = z + 4 + static_cast<i32>(index / 6) * 3;
-        canvas.set(column, kFloor, row, stations[index]);
+        const i32              column = x + 2 + static_cast<i32>(index % 6) * 2;
+        const i32              row    = z + 4 + static_cast<i32>(index / 6) * 3;
+        const std::string_view entity = entity_for(stations[index]);
+        if (entity.empty()) {
+            canvas.set(column, kFloor, row, stations[index]);
+        } else {
+            canvas.container(column, kFloor, row, stations[index], entity);
+        }
     }
     // An enchanting table with the fifteen shelves that raise its levels.
-    canvas.set(x + 8, kFloor, z + 12, "minecraft:enchanting_table");
+    canvas.container(x + 8, kFloor, z + 12, "minecraft:enchanting_table",
+                     "minecraft:enchanting_table");
     for (i32 index = 0; index < 15; ++index) {
         const i32 offset = index % 5;
         const i32 ring   = index / 5;
         canvas.set(x + 6 + offset, kFloor + ring, z + 10, "minecraft:bookshelf");
     }
-    canvas.set(x + 12, kFloor, z + 12, "minecraft:brewing_stand",
-               {{"has_bottle_0", "false"}, {"has_bottle_1", "false"}, {"has_bottle_2", "false"}});
+    canvas.container(x + 12, kFloor, z + 12, "minecraft:brewing_stand", "minecraft:brewing_stand",
+                     {{"has_bottle_0", "false"}, {"has_bottle_1", "false"}, {"has_bottle_2", "false"}});
     canvas.set(x + 14, kFloor, z + 12, "minecraft:cauldron");
 }
 
 void stations_containers(Canvas& canvas, i32 x, i32 z) {
-    canvas.set(x + 2, kFloor, z + 4, "minecraft:chest", {{"facing", "north"}, {"type", "single"}});
-    canvas.set(x + 4, kFloor, z + 4, "minecraft:chest", {{"facing", "north"}, {"type", "left"}});
-    canvas.set(x + 5, kFloor, z + 4, "minecraft:chest", {{"facing", "north"}, {"type", "right"}});
-    canvas.set(x + 7, kFloor, z + 4, "minecraft:trapped_chest",
-               {{"facing", "north"}, {"type", "single"}});
-    canvas.set(x + 9, kFloor, z + 4, "minecraft:ender_chest", {{"facing", "north"}});
-    canvas.set(x + 11, kFloor, z + 4, "minecraft:barrel", {{"facing", "up"}, {"open", "false"}});
-    canvas.set(x + 13, kFloor, z + 4, "minecraft:shulker_box", {{"facing", "up"}});
-    canvas.set(x + 2, kFloor, z + 8, "minecraft:hopper", {{"enabled", "true"}, {"facing", "down"}});
-    canvas.set(x + 4, kFloor, z + 8, "minecraft:jukebox", {{"has_record", "false"}});
+    canvas.container(x + 2, kFloor, z + 4, "minecraft:chest", "minecraft:chest",
+                     {{"facing", "north"}, {"type", "single"}});
+    canvas.container(x + 4, kFloor, z + 4, "minecraft:chest", "minecraft:chest",
+                     {{"facing", "north"}, {"type", "left"}});
+    canvas.container(x + 5, kFloor, z + 4, "minecraft:chest", "minecraft:chest",
+                     {{"facing", "north"}, {"type", "right"}});
+    canvas.container(x + 7, kFloor, z + 4, "minecraft:trapped_chest", "minecraft:trapped_chest",
+                     {{"facing", "north"}, {"type", "single"}});
+    canvas.container(x + 9, kFloor, z + 4, "minecraft:ender_chest", "minecraft:ender_chest",
+                     {{"facing", "north"}});
+    canvas.container(x + 11, kFloor, z + 4, "minecraft:barrel", "minecraft:barrel",
+                     {{"facing", "up"}, {"open", "false"}});
+    canvas.container(x + 13, kFloor, z + 4, "minecraft:shulker_box", "minecraft:shulker_box",
+                     {{"facing", "up"}});
+    canvas.container(x + 2, kFloor, z + 8, "minecraft:hopper", "minecraft:hopper",
+                     {{"enabled", "true"}, {"facing", "down"}});
+    canvas.container(x + 4, kFloor, z + 8, "minecraft:jukebox", "minecraft:jukebox",
+                     {{"has_record", "false"}});
     for (i32 index = 0; index < 8; ++index) {
         canvas.set(x + 6 + index, kFloor, z + 8, "minecraft:note_block",
                    {{"instrument", "harp"}, {"note", std::to_string(index * 3)},
@@ -477,7 +504,7 @@ void stations_beacon(Canvas& canvas, i32 x, i32 z) {
         canvas.fill(x + 8 - radius, kFloor + tier, z + 8 - radius, x + 8 + radius, kFloor + tier,
                     z + 8 + radius, "minecraft:iron_block");
     }
-    canvas.set(x + 8, kFloor + 3, z + 8, "minecraft:beacon");
+    canvas.container(x + 8, kFloor + 3, z + 8, "minecraft:beacon", "minecraft:beacon");
 }
 
 // ── Mobs ────────────────────────────────────────────────────────────────────

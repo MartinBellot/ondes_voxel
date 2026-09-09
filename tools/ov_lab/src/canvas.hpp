@@ -53,6 +53,15 @@ public:
     void shell(i32 x0, i32 y0, i32 z0, i32 x1, i32 y1, i32 z1, std::string_view name,
                const Props& props = {});
 
+    /// A block that needs a block entity to be usable at all.
+    ///
+    /// A chest without one is a chest the server refuses to open — the block
+    /// is there, the container is not, and nothing says so. Found by the
+    /// client agent trying to open the bench's own chests; the plots had been
+    /// unusable since they were written.
+    void container(i32 x, i32 y, i32 z, std::string_view block, std::string_view entity_type,
+                   const Props& props = {});
+
     /// A standing sign with up to four lines of front text.
     ///
     /// 1.20 rewrote the sign's NBT — `front_text` / `back_text`, each holding
@@ -81,6 +90,8 @@ public:
     [[nodiscard]] usize blocks_written() const noexcept { return written_; }
 
 private:
+    void note_unknown(std::string description) const;
+
     const registry::BlockRegistry* blocks_{nullptr};
     const registry::Registries*    registries_{nullptr};
     world::AirStates               air_{};

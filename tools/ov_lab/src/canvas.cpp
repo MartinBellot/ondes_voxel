@@ -31,6 +31,12 @@ namespace {
 
 }  // namespace
 
+void Canvas::note_unknown(std::string description) const {
+    if (std::ranges::find(unknown_, description) == unknown_.end()) {
+        unknown_.push_back(std::move(description));
+    }
+}
+
 Canvas::Canvas(const registry::BlockRegistry& blocks, const registry::Registries* registries)
     : blocks_(&blocks), registries_(registries), air_(world::AirStates::from(blocks)) {
     if (registries_ != nullptr) {
@@ -45,29 +51,38 @@ Canvas::Canvas(const registry::BlockRegistry& blocks, const registry::Registries
 registry::BlockStateId Canvas::state(std::string_view name, const Props& props) const {
     const auto block = blocks_->find_block(name);
     if (!block) {
-        const std::string missing{name};
-        if (std::ranges::find(unknown_, missing) == unknown_.end()) {
-            unknown_.push_back(missing);
-        }
+        note_unknown(std::string{name});
         return air_.air;
     }
-    if (props.empty()) {
-        return blocks_->default_state(*block);
-    }
-    const auto found = blocks_->state_for(*block, props);
-    if (!found) {
-        std::string described{name};
-        described += '[';
-        for (const auto& [key, value] : props) {
-            described += fmt::format("{}={},", key, value);
+
+    // Start from the default state and move one property at a time, rather than
+    // asking for the state matching a property *set*.
+    //
+    // The difference is not cosmetic. A partial set — a chest given `facing`
+    // and `type` but not `waterlogged` — resolves to some state, and the one it
+    // resolved to had `waterlogged=true`: chests standing in open air, in a
+    // bench other measurements are taken in, reported as fully resolved. The
+    // "0 names refused" line was true and meaningless.
+    //
+    // Walking from the default means an unmentioned property keeps the value
+    // the game gives it, and a property this block does not have is named
+    // instead of quietly deciding something.
+    registry::BlockStateId resolved = blocks_->default_state(*block);
+    for (const auto& [key, value] : props) {
+        const auto property = blocks_->find_property(*block, key);
+        if (!property) {
+            note_unknown(fmt::format("{}[{}=... : no such property]", name, key));
+            continue;
         }
-        described += ']';
-        if (std::ranges::find(unknown_, described) == unknown_.end()) {
-            unknown_.push_back(described);
+        const auto found = std::ranges::find(property->values, value);
+        if (found == property->values.end()) {
+            note_unknown(fmt::format("{}[{}={} : not one of its values]", name, key, value));
+            continue;
         }
-        return blocks_->default_state(*block);
+        const auto index = static_cast<u16>(std::distance(property->values.begin(), found));
+        resolved         = blocks_->with_property(resolved, *property, index);
     }
-    return *found;
+    return resolved;
 }
 
 world::Chunk& Canvas::chunk(i32 chunk_x, i32 chunk_z) {
@@ -121,6 +136,32 @@ void Canvas::shell(i32 x0, i32 y0, i32 z0, i32 x1, i32 y1, i32 z1, std::string_v
             }
         }
     }
+}
+
+void Canvas::container(i32 x, i32 y, i32 z, std::string_view block,
+                       std::string_view entity_type, const Props& props) {
+    set(x, y, z, block, props);
+
+    auto data = nbt::Tag::make_compound();
+    // An empty Items list rather than no Items at all: the field is what says
+    // "this is a container and it is empty", and its absence reads as a
+    // container whose contents were never written.
+    data.compound()->push_back({"Items", nbt::Tag::make_list(nbt::TagType::Compound)});
+
+    world::BlockEntity entity;
+    entity.x    = static_cast<u8>(local_of(x));
+    entity.y    = y;
+    entity.z    = static_cast<u8>(local_of(z));
+    entity.type = std::string{entity_type};
+    if (registries_ != nullptr) {
+        if (const auto registry = registries_->find("minecraft:block_entity_type")) {
+            if (const auto id = registries_->protocol_id(*registry, entity_type)) {
+                entity.type_id = static_cast<i32>(*id);
+            }
+        }
+    }
+    entity.data = std::move(data);
+    chunk(chunk_of(x), chunk_of(z)).set_block_entity(std::move(entity));
 }
 
 void Canvas::sign(i32 x, i32 y, i32 z, std::span<const std::string> lines, i32 rotation) {
