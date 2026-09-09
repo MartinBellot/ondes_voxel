@@ -5,6 +5,7 @@
 #include "ov/base/log.hpp"
 #include "ov/io/byte_writer.hpp"
 #include "ov/protocol/client_play.hpp"
+#include "ov/protocol/entity.hpp"
 #include "ov/protocol/framing.hpp"
 #include "ov/protocol/play.hpp"
 #include "ov/protocol/survival.hpp"
@@ -31,6 +32,139 @@ constexpr i32 kProtocolVersion = 763;
 constexpr i32 kStatePlay = 2;
 
 enum class Stage : u8 { Handshaking, Login, Play, Closed };
+
+/// Walk a Set Entity Metadata body, keeping the fields this client understands.
+///
+/// The format is `(index, type, value)*` terminated by 0xFF, with **no length
+/// prefix per field**. That is the whole reason this function is written out
+/// rather than reaching for the one field it wants: a value skipped by the
+/// wrong width shifts everything after it, and the next index reads as data
+/// from the middle of a float. Two types cannot be skipped without a parser
+/// this module does not have — a compound tag and a particle — and meeting one
+/// stops the walk instead of guessing its length.
+///
+/// Returns false when it stopped early. What was read before that is kept:
+/// vanilla puts the fields in index order, so a prefix is still true.
+[[nodiscard]] bool read_metadata(io::ByteReader& reader, ClientEvents::EntityChange& out) {
+    for (;;) {
+        const auto index = reader.read_u8();
+        if (!index) {
+            return false;
+        }
+        if (*index == 0xFF) {
+            return true;
+        }
+        const auto type = net::read_varint(reader);
+        if (!type) {
+            return false;
+        }
+        switch (static_cast<net::MetadataType>(*type)) {
+            case net::MetadataType::Byte:
+            case net::MetadataType::Boolean:
+                if (!reader.skip(1)) {
+                    return false;
+                }
+                break;
+            case net::MetadataType::Float:
+                if (!reader.skip(4)) {
+                    return false;
+                }
+                break;
+            case net::MetadataType::VarInt:
+            case net::MetadataType::VarLong:
+            case net::MetadataType::Direction:
+            case net::MetadataType::BlockState:
+            case net::MetadataType::OptionalBlockState:
+            case net::MetadataType::OptionalUnsignedInt:
+            case net::MetadataType::Pose:
+            case net::MetadataType::CatVariant:
+            case net::MetadataType::FrogVariant:
+            case net::MetadataType::PaintingVariant:
+            case net::MetadataType::SnifferState:
+                if (!net::read_varint(reader)) {
+                    return false;
+                }
+                break;
+            case net::MetadataType::String:
+            case net::MetadataType::Component:
+                if (!net::read_string(reader)) {
+                    return false;
+                }
+                break;
+            case net::MetadataType::OptionalComponent: {
+                const auto present = reader.read_u8();
+                if (!present) {
+                    return false;
+                }
+                if (*present != 0 && !net::read_string(reader)) {
+                    return false;
+                }
+                break;
+            }
+            case net::MetadataType::ItemStack: {
+                auto stack = net::read_slot(reader);
+                if (!stack) {
+                    return false;
+                }
+                if (*index == net::metadata::kItemStack) {
+                    out.stack = std::move(*stack);
+                }
+                break;
+            }
+            case net::MetadataType::Rotations:
+            case net::MetadataType::Vector3:
+                if (!reader.skip(12)) {
+                    return false;
+                }
+                break;
+            case net::MetadataType::BlockPos:
+                if (!reader.skip(8)) {
+                    return false;
+                }
+                break;
+            case net::MetadataType::OptionalBlockPos:
+            case net::MetadataType::OptionalUuid: {
+                const auto present = reader.read_u8();
+                if (!present) {
+                    return false;
+                }
+                const usize width =
+                    static_cast<net::MetadataType>(*type) == net::MetadataType::OptionalUuid ? 16
+                                                                                             : 8;
+                if (*present != 0 && !reader.skip(width)) {
+                    return false;
+                }
+                break;
+            }
+            case net::MetadataType::VillagerData:
+                for (int field = 0; field < 3; ++field) {
+                    if (!net::read_varint(reader)) {
+                        return false;
+                    }
+                }
+                break;
+            case net::MetadataType::OptionalGlobalPos: {
+                const auto present = reader.read_u8();
+                if (!present) {
+                    return false;
+                }
+                if (*present != 0 && (!net::read_string(reader) || !reader.skip(8))) {
+                    return false;
+                }
+                break;
+            }
+            case net::MetadataType::Quaternion:
+                if (!reader.skip(16)) {
+                    return false;
+                }
+                break;
+            case net::MetadataType::CompoundTag:
+            case net::MetadataType::Particle:
+                // Refused by name rather than skipped by a guessed width.
+                return false;
+        }
+    }
+}
 
 }  // namespace
 
@@ -59,6 +193,7 @@ void ClientEvents::clear() {
     open_screen.reset();
     close_window.reset();
     game_mode.reset();
+    entities.clear();
 }
 
 struct Client::Impl {
@@ -294,6 +429,238 @@ void Client::Impl::handle_play(i32 packet_id, std::span<const u8> body) {
             break;
         }
 
+        // ── What a renderer reads: everything that moves ────────────────
+        //
+        // Eight packets, all of them things the server has been sending since
+        // mobs landed. Every one is decoded in the field order the encoder in
+        // ov/protocol/{play,entity,survival}.hpp writes, and the two orders
+        // that differ between packets are called out where they bite:
+        // Spawn Entity writes **pitch before yaw**, the delta packets write
+        // yaw before pitch.
+
+        case net::clientbound::kSpawnEntity: {
+            const auto id       = net::read_varint(reader);
+            const auto uuid     = net::read_uuid(reader);
+            const auto type     = net::read_varint(reader);
+            const auto x        = reader.read_f64();
+            const auto y        = reader.read_f64();
+            const auto z        = reader.read_f64();
+            const auto pitch    = net::read_angle(reader);
+            const auto yaw      = net::read_angle(reader);
+            const auto head_yaw = net::read_angle(reader);
+            const auto data     = net::read_varint(reader);
+            if (!id || !uuid || !type || !x || !y || !z || !pitch || !yaw || !head_yaw ||
+                !data) {
+                fail("malformed Spawn Entity");
+                return;
+            }
+            ClientEvents::EntityChange change;
+            change.kind     = ClientEvents::EntityChangeKind::Spawn;
+            change.id       = *id;
+            change.type     = *type;
+            change.position = Vec3d{*x, *y, *z};
+            change.pitch    = *pitch;
+            change.yaw      = *yaw;
+            change.head_yaw = *head_yaw;
+            change.data     = *data;
+            const std::lock_guard lock(mutex);
+            inbox.entities.push_back(std::move(change));
+            break;
+        }
+
+        case net::clientbound::kSpawnPlayer: {
+            const auto id    = net::read_varint(reader);
+            const auto uuid  = net::read_uuid(reader);
+            const auto x     = reader.read_f64();
+            const auto y     = reader.read_f64();
+            const auto z     = reader.read_f64();
+            const auto yaw   = net::read_angle(reader);
+            const auto pitch = net::read_angle(reader);
+            if (!id || !uuid || !x || !y || !z || !yaw || !pitch) {
+                fail("malformed Spawn Player");
+                return;
+            }
+            ClientEvents::EntityChange change;
+            change.kind = ClientEvents::EntityChangeKind::Spawn;
+            change.id   = *id;
+            // A player has no type id on the wire: the packet *is* the type.
+            // Resolving the number here rather than in the renderer keeps the
+            // renderer's switch over one registry instead of two.
+            change.type     = ClientEvents::kSpawnedAsPlayer;
+            change.position = Vec3d{*x, *y, *z};
+            change.yaw      = *yaw;
+            change.head_yaw = *yaw;
+            change.pitch    = *pitch;
+            const std::lock_guard lock(mutex);
+            inbox.entities.push_back(std::move(change));
+            break;
+        }
+
+        case net::clientbound::kSpawnExperienceOrb: {
+            const auto id    = net::read_varint(reader);
+            const auto x     = reader.read_f64();
+            const auto y     = reader.read_f64();
+            const auto z     = reader.read_f64();
+            const auto value = reader.read_i16();
+            if (!id || !x || !y || !z || !value) {
+                fail("malformed Spawn Experience Orb");
+                return;
+            }
+            ClientEvents::EntityChange change;
+            change.kind     = ClientEvents::EntityChangeKind::Spawn;
+            change.id       = *id;
+            change.type     = ClientEvents::kSpawnedAsExperienceOrb;
+            change.position = Vec3d{*x, *y, *z};
+            change.data     = *value;
+            const std::lock_guard lock(mutex);
+            inbox.entities.push_back(std::move(change));
+            break;
+        }
+
+        case net::clientbound::kEntityPosition:
+        case net::clientbound::kEntityPositionRotation: {
+            const auto id = net::read_varint(reader);
+            const auto dx = reader.read_i16();
+            const auto dy = reader.read_i16();
+            const auto dz = reader.read_i16();
+            if (!id || !dx || !dy || !dz) {
+                fail("malformed Update Entity Position");
+                return;
+            }
+            ClientEvents::EntityChange change;
+            change.kind = ClientEvents::EntityChangeKind::Move;
+            change.id   = *id;
+            // 1/4096 of a block. Measured, not read: see the comment on
+            // encode_entity_position. Undoing the quantisation with the wrong
+            // divisor is a drift nothing in the protocol can notice.
+            constexpr f64 kDeltaUnit = 1.0 / 4096.0;
+            change.position          = Vec3d{static_cast<f64>(*dx) * kDeltaUnit,
+                                             static_cast<f64>(*dy) * kDeltaUnit,
+                                             static_cast<f64>(*dz) * kDeltaUnit};
+            if (packet_id == net::clientbound::kEntityPositionRotation) {
+                const auto yaw   = net::read_angle(reader);
+                const auto pitch = net::read_angle(reader);
+                if (!yaw || !pitch) {
+                    fail("malformed Update Entity Position and Rotation");
+                    return;
+                }
+                change.yaw      = *yaw;
+                change.pitch    = *pitch;
+                change.head_yaw = *yaw;
+                change.data     = 1;  // the rotation fields are meaningful
+            }
+            const auto on_ground = reader.read_u8();
+            change.on_ground     = on_ground && *on_ground != 0;
+            const std::lock_guard lock(mutex);
+            inbox.entities.push_back(std::move(change));
+            break;
+        }
+
+        case net::clientbound::kEntityRotation: {
+            const auto id    = net::read_varint(reader);
+            const auto yaw   = net::read_angle(reader);
+            const auto pitch = net::read_angle(reader);
+            if (!id || !yaw || !pitch) {
+                fail("malformed Update Entity Rotation");
+                return;
+            }
+            ClientEvents::EntityChange change;
+            change.kind     = ClientEvents::EntityChangeKind::Move;
+            change.id       = *id;
+            change.yaw      = *yaw;
+            change.pitch    = *pitch;
+            change.head_yaw = *yaw;
+            change.data     = 1;
+            const std::lock_guard lock(mutex);
+            inbox.entities.push_back(std::move(change));
+            break;
+        }
+
+        case net::clientbound::kEntityTeleport: {
+            const auto id    = net::read_varint(reader);
+            const auto x     = reader.read_f64();
+            const auto y     = reader.read_f64();
+            const auto z     = reader.read_f64();
+            const auto yaw   = net::read_angle(reader);
+            const auto pitch = net::read_angle(reader);
+            if (!id || !x || !y || !z || !yaw || !pitch) {
+                fail("malformed Teleport Entity");
+                return;
+            }
+            ClientEvents::EntityChange change;
+            change.kind      = ClientEvents::EntityChangeKind::Teleport;
+            change.id        = *id;
+            change.position  = Vec3d{*x, *y, *z};
+            change.yaw       = *yaw;
+            change.pitch     = *pitch;
+            change.head_yaw  = *yaw;
+            const auto on_ground = reader.read_u8();
+            change.on_ground     = on_ground && *on_ground != 0;
+            const std::lock_guard lock(mutex);
+            inbox.entities.push_back(std::move(change));
+            break;
+        }
+
+        case net::clientbound::kEntityHeadRotation: {
+            const auto id  = net::read_varint(reader);
+            const auto yaw = net::read_angle(reader);
+            if (!id || !yaw) {
+                fail("malformed Entity Head Rotation");
+                return;
+            }
+            ClientEvents::EntityChange change;
+            change.kind     = ClientEvents::EntityChangeKind::HeadRotation;
+            change.id       = *id;
+            change.head_yaw = *yaw;
+            const std::lock_guard lock(mutex);
+            inbox.entities.push_back(std::move(change));
+            break;
+        }
+
+        case net::clientbound::kRemoveEntities: {
+            const auto count = net::read_varint(reader);
+            if (!count || *count < 0) {
+                fail("malformed Remove Entities");
+                return;
+            }
+            const std::lock_guard lock(mutex);
+            for (i32 index = 0; index < *count; ++index) {
+                const auto id = net::read_varint(reader);
+                if (!id) {
+                    fail("malformed Remove Entities");
+                    return;
+                }
+                ClientEvents::EntityChange change;
+                change.kind = ClientEvents::EntityChangeKind::Remove;
+                change.id   = *id;
+                inbox.entities.push_back(std::move(change));
+            }
+            break;
+        }
+
+        case net::clientbound::kEntityMetadata: {
+            const auto id = net::read_varint(reader);
+            if (!id) {
+                fail("malformed Set Entity Metadata");
+                return;
+            }
+            ClientEvents::EntityChange change;
+            change.kind = ClientEvents::EntityChangeKind::Metadata;
+            change.id   = *id;
+            // The metadata format has no length prefix per field, so a type
+            // this client cannot skip means the rest of the packet is
+            // unreadable. It stops there rather than guessing — the alternative
+            // is decoding another field's bytes as this one's value, which
+            // looks like data instead of like an error.
+            if (!read_metadata(reader, change)) {
+                OV_LOG_WARN("entity {}: metadata stopped at a field this client cannot skip",
+                            *id);
+            }
+            const std::lock_guard lock(mutex);
+            inbox.entities.push_back(std::move(change));
+            break;
+        }
+
         // ── What the interface reads ────────────────────────────────────
         //
         // Five packets the server has been sending since survival landed and
@@ -492,6 +859,7 @@ void Client::poll(ClientEvents& out) {
     out.loaded.swap(impl_->inbox.loaded);
     out.unloaded.swap(impl_->inbox.unloaded);
     out.changed.swap(impl_->inbox.changed);
+    out.entities.swap(impl_->inbox.entities);
     out.teleport    = impl_->inbox.teleport;
     out.time_of_day = impl_->inbox.time_of_day;
     impl_->inbox.teleport.reset();

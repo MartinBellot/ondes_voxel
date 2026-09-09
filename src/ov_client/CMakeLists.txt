@@ -6,6 +6,7 @@ ov_add_library(ov_client
     LAYER 15
     SOURCES
         src/container_screen.cpp
+        src/entity_renderer.cpp
         src/gui.cpp
         src/hud.cpp
         src/item_view.cpp
@@ -36,6 +37,8 @@ ov_add_shaders(ov_client_shaders
     SOURCES
         shaders/debug_triangle.vert
         shaders/debug_triangle.frag
+        shaders/entity.vert
+        shaders/entity.frag
         shaders/gui.vert
         shaders/gui.frag
         shaders/overlay.vert
