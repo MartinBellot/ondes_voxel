@@ -6,10 +6,11 @@ la différence a été **mesurée**, puisqu'aucune des trois sondes existantes n
 
 Le résultat court, d'abord :
 
-> **Sur les 763 cellules que le réordonnancement change réellement, le nouvel ordre met le bloc
-> du vrai jeu dans 73,3 % des cas contre 8,9 % pour l'ancien.** L'accord sur la peau des
-> grottes passe de **87,40 % à 89,12 %** (+1,72 point). Les trois sondes existantes ne bougent
-> pas d'un chiffre, et c'est attendu : **aucune des trois n'exécute `ChunkGenerator::generate()`**.
+> **Sur les 2 414 cellules que le réordonnancement change réellement, le nouvel ordre met le
+> bloc du vrai jeu dans 63,3 % des cas contre 7,2 % pour l'ancien — un rapport de 8,8 contre 1.**
+> L'accord sur la peau des grottes passe de **87,27 % à 88,67 %**, et à l'intérieur des grottes
+> de **78,35 % à 80,63 %** (150 chunks). Les trois sondes existantes ne bougent pas d'un
+> chiffre, et c'est attendu : **aucune des trois n'exécute `ChunkGenerator::generate()`**.
 
 ---
 
@@ -178,65 +179,66 @@ l'erreur de hauteur en premier — s'annule, et il ne reste que l'ordre.
 
 ### 4.3 Les chiffres
 
-40 chunks `minecraft:full`, `--per-region=2`, seed 1234567890 — 39 d'entre eux sont creusés,
-31 243 cellules de mur et 46 135 cellules d'intérieur.
+150 chunks `minecraft:full`, `--per-region=4`, seed 1234567890 — 142 d'entre eux sont creusés,
+**116 975 cellules de mur** et **172 701 cellules d'intérieur** comparées.
 
 | | murs de grotte | intérieur de grotte |
 |---|---|---|
-| **avant** (carvers puis surface, pierre seule) | 27 305 / 31 243 — **87,396 %** | 32 395 / 46 135 — 70,218 % |
-| **après** (surface puis carvers, le tag) | 27 796 / 31 191 — **89,115 %** | **33 910 / 46 135 — 73,502 %** |
+| **avant** (carvers puis surface, pierre seule) | 102 086 / 116 975 — **87,272 %** | 135 305 / 172 701 — 78,346 % |
+| **après** (surface puis carvers, le tag) | 103 439 / 116 656 — **88,670 %** | **139 247 / 172 701 — 80,629 %** |
 
-**+1,72 point** sur les murs, **+3,28 points** à l'intérieur. (Le dénominateur des murs bouge de
-52 cellules parce que le nombre de cellules attribuées à l'étage des minerais change avec le
+**+1,40 point** sur les murs, **+2,28 points** à l'intérieur. (Le dénominateur des murs bouge de
+319 cellules parce que le nombre de cellules attribuées à l'étage des minerais change avec le
 bloc qu'on y met — elles sont tenues à l'écart des deux totaux, pas comptées comme erreurs.)
 
-Le gain à l'intérieur se décompose : +0,31 point vient du réordonnancement lui-même, et
-+2,97 points de la décision sur les fluides que le réordonnancement a rendue mesurable — voir
-§ 5. Les deux sont dans la même colonne parce qu'ils arrivent dans le même commit, et ils sont
-séparés ici parce qu'ils ne sont pas le même résultat.
+Le gain à l'intérieur mélange deux décisions prises dans le même travail : le réordonnancement,
+et le choix sur les fluides qu'il a rendu mesurable (§ 5). Elles sont séparées là-bas parce
+qu'elles ne sont pas le même résultat.
 
-Comparaison appariée, sur les **763** cellules de mur que le réordonnancement change :
+Comparaison appariée, sur les **2 414** cellules de mur que le réordonnancement change :
 
 | | cellules | part |
 |---|---|---|
-| seul le **nouvel** ordre correspond au jeu | **559** | **73,26 %** |
-| seul l'**ancien** ordre correspond | 68 | 8,91 % |
-| ni l'un ni l'autre | 136 | 17,82 % |
+| seul le **nouvel** ordre correspond au jeu | **1 527** | **63,26 %** |
+| seul l'**ancien** ordre correspond | 174 | 7,21 % |
+| ni l'un ni l'autre | 713 | 29,54 % |
 
-Le rapport est de **8,2 contre 1** en faveur du nouvel ordre.
+Le rapport est de **8,8 contre 1** en faveur du nouvel ordre.
 
 Le désaccord que le réordonnancement fait disparaître est nommé et visible dans la liste des
-confusions : **`minecraft:stone -> minecraft:grass_block`, 468 occurrences avant, 0 après.**
+confusions : **`minecraft:stone -> minecraft:grass_block`, 1 400 occurrences avant, 0 après.**
 C'est exactement l'artefact prédit : de l'herbe posée par les règles de surface à l'intérieur
 d'un plafond de grotte, là où le jeu a de la pierre. C'est la signature de l'ordre, et elle
 disparaît complètement — ce n'est pas une amélioration graduelle, c'est un mode d'erreur qui
 n'existe plus.
 
-En sens inverse, `minecraft:grass_block -> minecraft:stone` apparaît à **67** dans le bras
-« après » et n'existait pas dans le bras « avant ». Ce sont, à une cellule près, les 68 cas où
-l'ancien ordre gagnait : des colonnes où notre erreur de hauteur de surface fait que la grotte
-coupe notre herbe à un endroit où le jeu ne coupait pas la sienne. **Ce n'est pas un défaut de
-l'ordre** — c'est l'erreur du bruit qui devient visible parce que l'ordre est maintenant
-correct, et elle appartient à l'étage de densité. C'est le coût du changement, il est nommé, et
-il est huit fois plus petit que le gain.
+### 4.4 Le coût, nommé
 
-### 4.4 Ce qui n'est pas récupéré
+Deux désaccords **apparaissent** dans le bras « après » et n'existaient pas dans le bras
+« avant » : `minecraft:stone -> minecraft:air` (288) et
+`minecraft:grass_block -> minecraft:air` (284). Ce sont des cellules que nous creusons
+maintenant et que le jeu a gardées pleines. Deux causes, toutes deux extérieures à cet étage :
+
+- **notre hauteur de surface** est décalée de 1 à 8 blocs dans neuf colonnes sur dix, donc une
+  grotte coupe notre colonne à un endroit qui n'est pas celui du jeu ;
+- **l'aquifère manquant** : quand `computeSubstance` répond « barrière », le jeu pose le bit du
+  masque et **laisse le bloc**. Sans aquifère nous creusons toujours.
+
+Ce n'est pas un défaut de l'ordre — c'est l'erreur du bruit et l'aquifère absent qui deviennent
+visibles parce que l'ordre est maintenant correct. C'est le coût du changement, il est compté,
+et il est huit fois plus petit que le gain.
+
+### 4.5 Ce qui n'est récupéré par aucun des deux
 
 Le plus gros désaccord de mur est identique dans les deux bras — **`minecraft:air ->
-minecraft:water`, 1 535 occurrences, au bloc près dans les deux** — et n'a rien à voir avec
-l'ordre : c'est **l'aquifère manquant**. Le jeu demande à `computeSubstance` ce que devient une
-cellule creusée ; nous n'avons pas d'aquifère, donc l'eau du niveau de la mer reste là où le
-jeu a mis de l'air. À lui seul il vaut 4,9 points sur les murs.
+minecraft:water`, 4 511 occurrences, au bloc près dans les deux** — et n'a rien à voir avec
+l'ordre : c'est encore **l'aquifère**, dans l'autre sens. À lui seul il vaut 3,9 points sur les
+murs.
 
-Le deuxième, `minecraft:dripstone_block -> minecraft:stone` (418, identique dans les deux bras
-aussi), est une **feature** — les grottes de dripstone sont décorées après les carvers. Il
-n'appartient ni à cet étage ni à cet ordre.
-
-Un échantillon plus large (250 chunks) a été lancé et **abandonné** : le générateur en build
-debug met plusieurs minutes par chunk quand il génère deux fois, et la mesure ne tenait pas
-dans le temps de la session. Les 40 chunks ci-dessus couvrent 20 fichiers de région et
-77 378 cellules comparées ; c'est dit ici pour que la taille de l'échantillon soit une donnée
-connue et non une omission.
+Viennent ensuite `moss_block -> deepslate` (831), `dripstone_block -> stone` (657),
+`moss_block -> stone` (609) et `clay -> deepslate` (434), tous **identiques dans les deux
+bras** : ce sont les **features** des grottes luxuriantes et des grottes de dripstone, décorées
+après les carvers. Elles n'appartiennent ni à cet étage ni à cet ordre.
 
 ---
 
@@ -250,7 +252,9 @@ d'abord à l'aquifère, qui répond « garde l'eau » sous le niveau de la mer. 
 appliquer le tag à la lettre devait vider des fonds marins que le jeu a laissés pleins. Le
 premier jet du générateur épargnait donc les fluides, avec un commentaire expliquant pourquoi.
 
-**La mesure a dit le contraire**, sur le même échantillon de 40 chunks :
+**La mesure a dit le contraire.** Sur un échantillon de 40 chunks — plus petit que celui du
+§ 4, parce que la comparaison est un aller-retour sur un seul interrupteur et que les deux
+lignes viennent du même échantillon, ce qui est la seule chose qui compte ici :
 
 | | murs de grotte | intérieur de grotte |
 |---|---|---|
@@ -277,9 +281,10 @@ oracle ; le premier est le § 3, où trois sondes ne mesuraient pas ce qu'on cro
 ## 6. Ce qui n'est pas fait
 
 1. **L'aquifère.** C'est la plus grosse pièce manquante de cet étage et elle est chiffrée :
-   1 535 cellules `air -> water` sur 40 chunks, identiques au bloc près dans les deux ordres,
-   soit 4,9 points sur les murs de grotte. Tant qu'elle manque, le remplissage d'une cellule
-   creusée reste « air, ou lave sous `min_y + 8` ».
+   4 511 cellules `air -> water` sur 150 chunks, identiques au bloc près dans les deux ordres,
+   soit 3,9 points sur les murs de grotte — et, dans l'autre sens, l'essentiel des 288 + 284
+   cellules que le nouvel ordre creuse alors que le jeu les a gardées (§ 4.4). Tant qu'elle
+   manque, le remplissage d'une cellule creusée reste « air, ou lave sous `min_y + 8` ».
 2. **L'étage de décoration n'est pas câblé dans `generate()`, et ce n'est pas un oubli.**
    `Decorator::decorate()` prend un `FeatureLevel`, et `placement.hpp` dit explicitement
    pourquoi ce n'est pas un `world::Chunk` : une veine de minerai commencée dans la dernière
@@ -318,10 +323,11 @@ cmake --build build/macos-debug --parallel 2
 
 # la mesure qui voit l'ordre : les deux bras, un seul binaire, un seul échantillon.
 # Compter en minutes, pas en secondes : chaque chunk est généré deux fois, en debug.
-./build/macos-debug/bin/ov_caveedge --chunks=40 --per-region=2
+./build/macos-debug/bin/ov_caveedge --chunks=150 --per-region=4
 
-# la même, en épargnant les fluides — la mesure du § 5
+# la même, en épargnant les fluides — la mesure du § 5, prise à 40 chunks
 ./build/macos-debug/bin/ov_caveedge --chunks=40 --per-region=2 --keep-fluids
+./build/macos-debug/bin/ov_caveedge --chunks=40 --per-region=2
 
 # les trois contrôles de non-régression — ils doivent être identiques à l'avant
 ./build/macos-debug/bin/ov_carveparity --chunks=1200
