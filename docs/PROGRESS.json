@@ -11,7 +11,7 @@
   },
   "last_updated": "2026-09-09",
   "current_milestone": "M6",
-  "current_task": "m6-decoration-seed",
+  "current_task": "m3-chunkmap-async-generation",
   "milestones": {
     "M0": {
       "name": "Fondations",
@@ -43,10 +43,11 @@
     "M3": {
       "name": "Tranche verticale",
       "status": "in_progress",
-      "done": 17,
-      "total": 24,
+      "done": 18,
+      "total": 25,
       "exit_criterion": "Un client Minecraft vanilla 1.20.1 non modifié se connecte, marche, casse et pose un bloc — sans une ligne de Vulkan.",
-      "blocked": []
+      "blocked": [],
+      "notes": "La tranche verticale est atteinte depuis le 2026-09-08. Ce qui reste de M3 est devenu le blocage principal du projet : la generation de terrain est correcte mais pas servable, parce qu'elle tourne sur le thread de tick. ChunkMap, tickets, sections copy-on-write et pool de jobs sont ce qui manque."
     },
     "M4": {
       "name": "Monde persistant",
@@ -67,8 +68,8 @@
     "M6": {
       "name": "Contenu complet",
       "status": "in_progress",
-      "done": 10,
-      "total": 74,
+      "done": 11,
+      "total": 75,
       "exit_criterion": "Une batterie world_test par sous-système ; parité statistique worldgen sur 1000 seeds ; matrice protocole à 100 %.",
       "blocked": [],
       "notes": "Vague d'agents parallèles du 2026-09-09 : carvers, règles de surface, départage des biomes (100,000 %), ordre des étages, fluides, redstone, survie, et le cadre des features. Le blocage unique de l'étage des features est la formule d'ensemencement de la décoration : tout le reste est mesuré et en place, et l'étage est exposé sans être câblé plutôt qu'allumé faux."
@@ -181,7 +182,14 @@
     "protocol_corrections_1201": "Combat Death (0x38) ne porte pas l'id du tueur en 1.20.1 — la capture de 315 octets ne laisse pas la place — et il n'y a pas de Hurt Animation : deux coups de types differents produisent un Damage Event chacun et rien d'autre",
     "ore_positions": "distribution par altitude juste (fer au pic 16-31 : 847 chez eux / 797 chez nous ; diamant ecrase contre le plancher ; deepslate seulement sous y=0) mais positions exactes a 30 blocs sur 13 249, soit le bruit de fond. La formule d'ensemencement de la decoration n'est pas trouvee",
     "test_bench": "run/lab : 31 parcelles, 441 chunks, 460 494 blocs, ecrites depuis un catalogue par tools/ov_lab. Zero refus sur les 24 135 etats. Servi par notre serveur, rendu par notre client, et ouvert par le vrai serveur 1.20.1 sans une erreur, qui a reecrit les quatre regions sans abimer nos blocs",
-    "vanilla_redstone_on_load": "vanilla ne reevalue pas la redstone au chargement : un fil pose contre un bloc de redstone se relit power=0, east=none apres un cycle complet de chargement et de sauvegarde par le vrai serveur. Un circuit doit etre pousse avant de vouloir dire quoi que ce soit"
+    "vanilla_redstone_on_load": "vanilla ne reevalue pas la redstone au chargement : un fil pose contre un bloc de redstone se relit power=0, east=none apres un cycle complet de chargement et de sauvegarde par le vrai serveur. Un circuit doit etre pousse avant de vouloir dire quoi que ce soit",
+    "decoration_seed": "WorldgenRandom enveloppe une source et ne redefinit que la primitive next(bits) : l'etat avance en Xoroshiro128++ pendant que les bits sortent a la mode legacy. next(bits) prend les bits de poids fort, nextInt(16) = (16*next(31))>>31, nextLong() = deux next(32). 9712/9712 marqueurs sur quatre graines dont trois hors echantillon ; positions de minerai 0,226 % -> 99,509 %",
+    "feature_border_writes": "350 762 des 1 254 082 ecritures de features — 27,970 % — tombent hors du chunk decore et sont conservees ; 0 sort du 3x3. Un adaptateur mono-chunk aurait rapporte zero et eu l'air sain",
+    "ore_positions_end_to_end": "82,406 % sur notre propre terrain genere, contre 99,509 % en rejouant sur le terrain du jeu. Les 17,1 points sont attribues : 68,2 % pierre gardee sans que rien n'y arrive, 20,0 % nos propres filons arrives les premiers, 7,9 % terrain non pierreux",
+    "crafting": "1174/1174 recettes chargees, 0 refusee, 30 declarees sans appariement et nommees ; 2885 grilles posees et 2885 identiques au vrai serveur, dont 2533 faconnees dans toutes leurs positions et en miroir, 232 informes melangees, et 120 arrangements qui doivent ne rien produire",
+    "fuels": "248 combustibles sur 1254 items, delai d'allumage epingle par un bloc de commande a chaque tick. Un haut-fourneau n'est pas un four divise par deux — bloc de varech seche 4001 contre 2000 — donc trois tables et non une avec un diviseur",
+    "generated_world_online": "un joueur rejoint un monde genere a y=67 et notre client le rend : herbe, terre, sable, grottes, eau et minerais. Le crash qui l'en empechait etait un Decorator construit depuis un FeatureRegistry local deplace a l'instruction suivante — invisible a la construction, suivi seulement quand un chunk atteint l'etage des features, donc a la premiere connexion et dans aucun test",
+    "generation_throughput": "PAS SERVABLE : la generation tourne sur le thread de tick et depasse le budget de 50 ms. Le serveur imprime 'can't keep up' en boucle, 219 chunks arrivent sur les 289 demandes et le reste jamais. C'est ChunkMap, les tickets et le pool de jobs qui manquent, pas la generation"
   },
   "environment": {
     "$comment": "Vérifié le 2026-09-07 sur la machine de développement via scripts/setup_vanilla.sh.",

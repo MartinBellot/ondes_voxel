@@ -200,7 +200,26 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 
 - [x] Boucle de tick 20 Hz avec budget et rapport de surcharge
 - [ ] `ChunkMap`, système de tickets, niveaux de chargement
-- [ ] **Ordonnancement par régions exclusives** — features déborde sur les voisins 🔒
+      *(**c'est le blocage principal aujourd'hui**. La génération est correcte
+      et n'est pas servable : elle tourne sur le thread de tick, dépasse le
+      budget de 50 ms et le serveur imprime `can't keep up` en boucle. 219
+      chunks arrivent, le reste jamais)*
+- [x] Pipeline de chunks par statuts *(`empty → structure_starts → biomes →
+      noise → surface → carvers → features → full`)*, avec le **rayon des
+      voisins imposé** et non espéré : `features` pousse ses 8 voisins à
+      `carvers`, `full` les pousse à `features`
+      *(**27,97 % des écritures de features tombent hors du chunk décoré et
+      sont conservées** — 350 762 sur 1 254 082. Un adaptateur mono-chunk
+      aurait rapporté zéro et eu l'air sain. Statuts mis en cache : 48 chunks
+      coûtent 484 terrains et 216 décorations, pas 48×9)*
+- [~] **Ordonnancement par régions exclusives** — features déborde sur les voisins 🔒
+      *(la règle est écrite et testée exhaustivement — deux chunks de même
+      classe `(x mod 3, z mod 3)` ont des ensembles d'écriture disjoints, et
+      les neuf classes servent — mais **rien ne tourne en parallèle**, avec
+      l'argument mesuré : la décoration ne fait que la moitié du coût, les
+      quatre étages de terrain ont un rayon nul, et paralléliser exigerait un
+      cache de chunks partagé entre threads, exactement la structure mutable
+      partagée que le principe 3 interdit. De la géométrie, jamais un mutex)*
 - [ ] Sections copy-on-write en `shared_ptr<const>` 🔒
 - [ ] Pool de jobs enkiTS : pinned tasks + priorités
 - [x] Générateur superflat
@@ -404,12 +423,13 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       97,97 → 98,79 %. Cheese, spaghetti et noodle ne sont pas des carvers mais
       des termes de densité, et ils sont dans `final_density`)*
 - [ ] Aquifères, lave, niveaux d'eau
-- [~] Minerais par couche, distributions triangulaires
-      *(la **distribution par altitude est juste** — fer au pic 16-31, diamant
-      écrasé contre le plancher, deepslate seulement sous y=0 — mais les
-      **positions exactes échouent** : 30 blocs sur 13 249, le bruit de fond.
-      La formule d'ensemencement de la décoration n'est pas trouvée, et
-      l'étage est **exposé et non câblé** plutôt qu'allumé faux)*
+- [x] Minerais par couche, distributions triangulaires
+      *(**99,509 % des positions au bloc près** en rejouant sur le terrain du
+      jeu, et **82,406 % sur notre propre terrain généré de bout en bout** —
+      l'écart de 17,1 points est ce que coûte encore notre relief, et il est
+      attribué : 68,2 % là où notre terrain a gardé sa pierre sans que rien
+      n'y arrive, 20,0 % nos propres filons de granite arrivés les premiers,
+      7,9 % un terrain qui n'est pas de la pierre)*
 - [ ] **Les ~65 biomes** — plains, sunflower_plains, snowy_plains, ice_spikes,
       desert, swamp, mangrove_swamp, forest, flower_forest, birch_forest,
       old_growth_birch_forest, dark_forest, old_growth_pine_taiga,
@@ -426,11 +446,13 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       end_midlands, small_end_islands, end_barrens
 - [~] Features : arbres par essence, végétation, geodes d'améthyste, dripstone,
       lush caves, blocs sculk du deep dark, sources, disques, lacs
-      *(le **cadre** est là : 12 des 15 modificateurs de placement, providers,
-      ancres, prédicats, les 11 étapes de décoration et leur trieur
-      inter-biomes ; 39 des 194 features configurées se chargent, le reste est
-      refusé par son nom. `ore`, `scattered_ore`, `spring_feature` et `disk`
-      seulement — les arbres attendent la graine de décoration)*
+      *(le cadre est là et **l'ensemencement est trouvé** : `WorldgenRandom`
+      enveloppe une source et ne redéfinit que `next(bits)`, donc l'état avance
+      en Xoroshiro128++ pendant que les bits sortent à la mode legacy — 9712
+      marqueurs sur 9712, sur quatre graines dont trois hors échantillon.
+      39 des 194 features configurées se chargent, le reste refusé par son nom.
+      `ore`, `scattered_ore`, `spring_feature` et `disk` seulement ; les arbres
+      et la végétation restent)*
 - [ ] **Structures** : villages ×5 (plains, desert, savanna, taiga, snowy),
       avant-poste pillard, mine abandonnée (+ mesa), forteresse (stronghold),
       pyramide du désert, temple de la jungle, igloo, cabane de sorcière,
@@ -567,6 +589,15 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       Nether ; le rayon de recherche du trou est exactement 5 ; l'eau qui coule
       ne waterlogue jamais. Restent les colonnes de bulles et la **magnitude**
       de la poussée, non mesurée — la direction l'est)*
+- [~] **Fabrication et fonte** : recettes façonnées et informes, fours ×3,
+      pierre de taille, forge, livre de recettes
+      *(**1174 / 1174 recettes chargées**, 0 refusée, les 30 déclarées sans
+      appariement nommées ; **2885 grilles posées, 2885 identiques** au vrai
+      serveur — dont 120 arrangements qui doivent ne rien produire, le groupe
+      qu'un apparieur trop gourmand rate. 248 combustibles mesurés sur 1254 ;
+      trois tables de cuisson et non une avec un diviseur. Restent la fenêtre
+      2×2 du joueur, les écrans de forge et de pierre de taille,
+      `Place Recipe`, et un four qui ne tourne que pendant qu'on le regarde)*
 - [ ] **Agriculture et élevage** : toutes les cultures, terre labourée,
       hydratation, os, composteur, abeilles et pollinisation, mode amour,
       croissance, croisement de chevaux et lamas, apprivoisement, tonte, traite,
