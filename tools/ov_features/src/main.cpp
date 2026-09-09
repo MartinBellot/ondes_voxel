@@ -310,7 +310,13 @@ public:
                             static_cast<usize>(floor_mod(z, 16)) * 16 +
                             static_cast<usize>(floor_mod(x, 16));
         blocks[index] = state;
-        written_.emplace(pack(x, y, z), state);
+        // Assign, not emplace. Features overwrite each other constantly — a
+        // granite blob lands on stone and an iron vein lands on the granite —
+        // and `emplace` keeps the *first* write while the block array keeps the
+        // last, so the record and the world disagree. That disagreement cost
+        // 2006 blocks of the comparison: they were ours and correct, and the
+        // record still called them granite.
+        written_[pack(x, y, z)] = state;
         return true;
     }
 
@@ -456,10 +462,24 @@ private:
     return static_cast<i32>(packed & 0xFFF) - 64;
 }
 
+[[nodiscard]] i32 unpack_x(i64 packed) {
+    return static_cast<i32>(packed >> 40);
+}
+
+/// z lives in twenty-eight bits and has to be sign-extended out of them.
+///
+/// Reading it as unsigned turns every negative z into a number near 2^28, which
+/// puts the position in no chunk at all. Half the reference world's patches are
+/// at negative z, so a comparison that got this wrong silently dropped their
+/// side of the tally and read as a shortfall in our own generation.
+[[nodiscard]] i32 unpack_z(i64 packed) {
+    const i64 raw = (packed >> 12) & 0xFFFFFFF;
+    return static_cast<i32>((raw ^ 0x8000000) - 0x8000000);
+}
+
 [[nodiscard]] bool inside_chunk(i64 packed, i32 chunk_x, i32 chunk_z) {
-    const i32 x = static_cast<i32>(packed >> 40);
-    const i32 z = static_cast<i32>((packed >> 12) & 0xFFFFFFF);
-    return floor_div(x, 16) == chunk_x && floor_div(z, 16) == chunk_z;
+    return floor_div(unpack_x(packed), 16) == chunk_x &&
+           floor_div(unpack_z(packed), 16) == chunk_z;
 }
 
 struct Tally {
@@ -497,7 +517,15 @@ int main(int argc, char** argv) {
         OV_LOG_ERROR("features: {}", worldgen::to_string(features.error()));
         return 1;
     }
-    auto decorator = worldgen::Decorator::load(options.data, *pack, *features);
+    // The decorator needs the dimension's biomes in the biome source's own
+    // order: that order is the sorter's tie-break and therefore part of the
+    // seed. The reference world is the overworld.
+    auto biomes = worldgen::BiomeSource::load(options.reports, "overworld");
+    if (!biomes) {
+        OV_LOG_ERROR("biome source: {}", worldgen::to_string(biomes.error()));
+        return 1;
+    }
+    auto decorator = worldgen::Decorator::load(options.data, *pack, *features, *biomes);
     if (!decorator) {
         OV_LOG_ERROR("decorator: {}", worldgen::to_string(decorator.error()));
         return 1;
@@ -842,6 +870,9 @@ int main(int argc, char** argv) {
     }
 
     std::map<std::string, Tally> tallies;
+    /// For every ore of theirs we did not reproduce, the block our replay holds
+    /// at that position.
+    std::map<std::string, i64>   blocked_by;
     usize                        chunks_done = 0;
     usize                        skipped     = 0;
     for (const auto& [chunk_x, chunk_z] : usable) {
@@ -868,19 +899,17 @@ int main(int argc, char** argv) {
         }
 
         std::map<i64, std::string> ours;
+        // Every write, ore or not. The ore map answers "did we place this
+        // one"; the whole map answers "what did we do there instead", and a
+        // shortfall needs the second question.
+        std::map<i64, std::string> ours_all;
         for (const auto& [where, state] : level.written()) {
             const auto name = pack->block_name(pack->block_of(state));
+            ours_all[where] = std::string(name);
             if (host_of(name).empty()) {
                 continue;
             }
-            // Only the centre chunk: a vein of ours that reaches into a
-            // neighbour has no counterpart to compare against, because the
-            // neighbour's own decoration pass is not being run.
-            const i32 world_x = static_cast<i32>(where >> 40);
-            const i32 world_z = static_cast<i32>((where >> 12) & 0xFFFFF) - 0;
-            (void)world_x;
-            (void)world_z;
-            ours.emplace(where, std::string(name));
+            ours[where] = std::string(name);
         }
 
         const auto slice = [&](i32 y) {
@@ -901,6 +930,14 @@ int main(int argc, char** argv) {
                 ++tally.agreed;
             } else {
                 ++tally.theirs_only;
+                // What *we wrote* there instead, from our own writes and not
+                // from the level — asking the level would answer with the
+                // reference world's own block and say nothing at all. A
+                // shortfall is only a number until this separates "another of
+                // our veins got there first" from "no vein of ours reached it".
+                const auto instead = ours_all.find(where);
+                blocked_by[instead == ours_all.end() ? "(nothing of ours reached it)"
+                                                     : instead->second] += 1;
             }
         }
         for (const auto& [where, name] : ours) {
@@ -945,6 +982,19 @@ int main(int argc, char** argv) {
                all_theirs == 0 ? 0.0
                                : 100.0 * static_cast<f64>(all_agreed) /
                                      static_cast<f64>(all_theirs));
+
+    if (!blocked_by.empty()) {
+        fmt::print("\nwhat our replay holds where one of their ores is missing:\n");
+        std::vector<std::pair<std::string, i64>> ranked(blocked_by.begin(), blocked_by.end());
+        std::ranges::sort(ranked, [](const auto& a, const auto& b) { return a.second > b.second; });
+        i64 shown = 0;
+        for (const auto& [name, count] : ranked) {
+            if (shown++ >= 12) {
+                break;
+            }
+            fmt::print("  {:<38} {:>8}\n", name, count);
+        }
+    }
 
     fmt::print("\nby height, theirs / ours, in slices of sixteen:\n");
     for (const auto& [name, tally] : tallies) {

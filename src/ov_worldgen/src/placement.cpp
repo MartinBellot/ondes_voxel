@@ -37,6 +37,29 @@ std::string_view to_string(FeatureError error) noexcept {
     return "unknown";
 }
 
+f64 FeatureRandom::next_gaussian() noexcept {
+    if (have_next_gaussian_) {
+        have_next_gaussian_ = false;
+        return next_gaussian_;
+    }
+    f64 v1 = 0.0;
+    f64 v2 = 0.0;
+    f64 s  = 0.0;
+    do {
+        // Two draws, in this order. Split out because C++ does not sequence
+        // the operands of an expression and Java does.
+        const f64 first  = next_double();
+        const f64 second = next_double();
+        v1 = 2.0 * first - 1.0;
+        v2 = 2.0 * second - 1.0;
+        s  = v1 * v1 + v2 * v2;
+    } while (s >= 1.0 || s == 0.0);
+    const f64 multiplier = std::sqrt(-2.0 * std::log(s) / s);
+    next_gaussian_       = v2 * multiplier;
+    have_next_gaussian_  = true;
+    return v1 * multiplier;
+}
+
 FeatureRandom::Kind configured_feature_random() noexcept {
     const char* choice = std::getenv("OV_FEATURE_RANDOM");
     return choice != nullptr && std::string_view(choice) == "legacy" ? FeatureRandom::Kind::Legacy
