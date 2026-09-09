@@ -13,6 +13,39 @@ Toute entrée doit être ajoutée **au moment** où le système est implémenté
 
 ---
 
+## Index des dossiers de provenance
+
+Ce fichier porte les sources et les décisions transverses. Chaque système livré
+depuis a son propre dossier sous `docs/provenance/`, avec ses mesures, ses
+chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**.
+
+| Dossier | Ce qu'il établit |
+|---|---|
+| [`banc-de-test.md`](provenance/banc-de-test.md) | Le monde de test persistant : 31 parcelles écrites depuis un catalogue, ouvertes par le vrai serveur 1.20.1 sans une erreur |
+| **Terrain** | |
+| [`etage-de-bruit.md`](provenance/etage-de-bruit.md) | L'étage de bruit, et pourquoi la glace n'est pas du terrain |
+| [`amplitude-old-blended-noise.md`](provenance/amplitude-old-blended-noise.md) | L'amplitude disculpée par le Nether, et un critère précédent montré dégénéré |
+| [`surface-rules.md`](provenance/surface-rules.md) | L'interpréteur des règles de surface : 4,07 % → 91,22 % de colonnes exactes |
+| [`carvers.md`](provenance/carvers.md) | Grottes et ravins, masques bit-exacts sur 1200 chunks |
+| [`ordre-des-etages.md`](provenance/ordre-des-etages.md) | L'ordre des étages, et trois harnais structurellement aveugles au changement |
+| [`aquiferes.md`](provenance/aquiferes.md) | L'oracle de l'aquifère, le niveau de fluide mesuré, la barrière refusée |
+| [`biomes-egalites.md`](provenance/biomes-egalites.md) | Le départage des égalités de climat : 100,000 % |
+| [`features.md`](provenance/features.md) | L'ensemencement de la décoration, et pourquoi `WorldgenRandom` n'est pas la source qu'il enveloppe |
+| [`pipeline-de-chunks.md`](provenance/pipeline-de-chunks.md) | La couche qui possède neuf chunks : 27,97 % des écritures franchissent une frontière |
+| [`chunkmap.md`](provenance/chunkmap.md) | Tickets, pool de jobs, génération hors du thread de tick, déterminisme sous TSan |
+| **Jeu** | |
+| [`fluides.md`](provenance/fluides.md) | Écoulement, recherche du trou, mélanges : 3172/3172 positions |
+| [`redstone.md`](provenance/redstone.md) | Le modèle de puissance, circuit par circuit, et 36 exceptions nommées à « cube plein » |
+| [`survie.md`](provenance/survie.md) | Vie, faim, expérience — et les dégâts de chute qui sont un `ceil` |
+| [`crafting-and-smelting.md`](provenance/crafting-and-smelting.md) | 1174 recettes, 2885 grilles, et trois tables de cuisson plutôt qu'un diviseur |
+| [`mobs.md`](provenance/mobs.md) | L'A\* qui prend la même route que le jeu dans le même labyrinthe |
+| [`branchement.md`](provenance/branchement.md) | Le câblage au tick, et les deux bugs qu'il a révélés |
+| **Client** | |
+| [`interface.md`](provenance/interface.md) | Police, HUD, inventaire : 2414 glyphes validés glyphe par glyphe |
+| [`rendu-entites.md`](provenance/rendu-entites.md) | Modèles d'entités, leur source, et le chest refusé faute de source permise |
+
+---
+
 ## Sources de référence
 
 ### Protocole réseau
