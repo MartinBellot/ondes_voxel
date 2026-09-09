@@ -18,6 +18,7 @@
 #include "ov/registry/block_states.hpp"
 #include "ov/worldgen/chunk_generator.hpp"
 #include "ov/worldgen/density.hpp"
+#include "ov/worldgen/noise.hpp"
 
 #include <fmt/format.h>
 
@@ -30,6 +31,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <set>
 #include <optional>
 #include <string>
 #include <vector>
@@ -53,6 +55,15 @@ struct Options {
     /// formula, and that is a far shorter road than reasoning about which of
     /// twenty constants is a percent out.
     std::string sweep;
+    /// Which environment variable `--nether --sweep=` moves. The Nether
+    /// comparison is a distribution oracle for whatever changes the shape of
+    /// `base_3d_noise`, and the amplitude is not the only candidate: the blend
+    /// selector is another, and asking the same oracle about it costs one
+    /// string rather than a second tool.
+    std::string sweep_var{"OV_BASE3D_GAIN"};
+    /// Report the raw distribution of the blend selector, and how often it is
+    /// saturated. No reference world involved.
+    bool selector{false};
     /// Print one representative surface position per biome instead of
     /// comparing. What the renderer needs to be pointed at.
     bool locate{false};
@@ -105,6 +116,20 @@ struct Options {
     /// makes it usable: the Nether is seeded from the legacy random source and
     /// this router is not.
     bool nether{false};
+    /// Cross the game's own carving mask with the game's own blocks.
+    ///
+    /// The aquifer is the one stage of the noise with no published algorithm,
+    /// so it cannot be read; it has to be measured, and this is the oracle
+    /// that measures it. A chunk the game stopped at `minecraft:carvers`
+    /// carries both halves of the evidence at once: `CarvingMasks/AIR` says
+    /// which cells its carvers *considered*, and the block array says what
+    /// they hold afterwards. A considered cell that ends up as water is a cell
+    /// where the aquifer said "fluid"; one that ends up as stone is the
+    /// barrier refusing the cut. Neither answer is visible anywhere else, and
+    /// neither needs our generator to be right first.
+    ///
+    /// `--dump=` writes the rows; without it only the summary is printed.
+    bool aquifer{false};
     /// Dump one column: what the game has, and every term we compute.
     std::string column;
     std::filesystem::path pack{"data/vanilla/1.20.1/registry.ovpack"};
@@ -147,6 +172,12 @@ struct Options {
             options.stats = true;
         } else if (argument == "--surface") {
             options.surface = true;
+        } else if (argument.starts_with("--sweep-var=")) {
+            options.sweep_var = value("--sweep-var=");
+        } else if (argument == "--selector") {
+            options.selector = true;
+        } else if (argument == "--aquifer") {
+            options.aquifer = true;
         } else if (argument == "--nether") {
             options.nether = true;
         } else if (argument.starts_with("--dump=")) {
@@ -468,7 +499,7 @@ int main(int argc, char** argv) {
             // the router is rebuilt per gain. It is three noises here, not the
             // overworld's thirty-five, and it costs nothing.
             const std::string text = fmt::format("{}", kGains[g]);
-            ::setenv("OV_BASE3D_GAIN", text.c_str(), 1);
+            ::setenv(options.sweep_var.c_str(), text.c_str(), 1);
             auto nether = worldgen::NoiseRouter::load(options.data, "nether", options.seed);
             if (!nether) {
                 OV_LOG_ERROR("nether router: {}", worldgen::to_string(nether.error()));
@@ -492,10 +523,10 @@ int main(int argc, char** argv) {
                 }
             }
         }
-        ::unsetenv("OV_BASE3D_GAIN");
+        ::unsetenv(options.sweep_var.c_str());
 
-        fmt::print("\nseed {}, {} nether chunks, {} columns\n", options.seed, chunks_read,
-                   columns.size());
+        fmt::print("\nseed {}, {} nether chunks, {} columns, sweeping {}\n", options.seed,
+                   chunks_read, columns.size(), options.sweep_var);
         fmt::print(
             "\nfraction of stone at each height. Between y = 24 and y = 104 the threshold is\n"
             "zero and the column says only where the noise's median is; in the two bands where\n"
@@ -623,6 +654,304 @@ int main(int argc, char** argv) {
     if (!biomes) {
         OV_LOG_ERROR("biome table: {}", worldgen::to_string(biomes.error()));
         return 1;
+    }
+
+    if (options.selector) {
+        // ── how often is the blend a blend at all? ───────────────────────────
+        //
+        // `old_blended_noise` interpolates between two sixteen-octave stacks
+        // with `blend = (selector / 10 + 1) / 2`, clamped. The selector is
+        // eight octaves whose weights double, so it can reach several hundred
+        // and the clamp would then be doing all the work — a switch rather than
+        // a crossfade. That was written down as a suspected bug and never
+        // measured. This measures it. No reference world is involved: it is a
+        // property of the field.
+        const auto report = [](std::string_view label, const worldgen::BlendedNoise& noise) {
+            f64   sum = 0.0, sum2 = 0.0;
+            f64   low = std::numeric_limits<f64>::max();
+            f64   high = std::numeric_limits<f64>::lowest();
+            usize count = 0, saturated_high = 0, saturated_low = 0;
+            for (i32 x = -2048; x <= 2048; x += 37) {
+                for (i32 z = -2048; z <= 2048; z += 41) {
+                    for (i32 y = -32; y <= 160; y += 17) {
+                        const f64 value = noise.selector(x, y, z);
+                        sum += value;
+                        sum2 += value * value;
+                        low  = std::min(low, value);
+                        high = std::max(high, value);
+                        if (value >= 10.0) {
+                            ++saturated_high;
+                        } else if (value <= -10.0) {
+                            ++saturated_low;
+                        }
+                        ++count;
+                    }
+                }
+            }
+            const f64 n    = static_cast<f64>(count);
+            const f64 mean = sum / n;
+            fmt::print("\n{}: {} samples, divisor {:.4g}\n", label, count,
+                       noise.selector_divisor());
+            fmt::print("  selector  mean {:+.4f}  sd {:.4f}  min {:+.3f}  max {:+.3f}\n", mean,
+                       std::sqrt(std::max(0.0, sum2 / n - mean * mean)), low, high);
+            fmt::print("  clamped to max_limit {:.3f} %   to min_limit {:.3f} %   "
+                       "genuinely blended {:.3f} %\n",
+                       100.0 * static_cast<f64>(saturated_high) / n,
+                       100.0 * static_cast<f64>(saturated_low) / n,
+                       100.0 * static_cast<f64>(count - saturated_high - saturated_low) / n);
+        };
+
+        if (const auto* overworld = router->blended_noise()) {
+            report("overworld", *overworld);
+        } else {
+            fmt::print("the overworld router built no old_blended_noise\n");
+        }
+        auto nether = worldgen::NoiseRouter::load(options.data, "nether", options.seed);
+        if (nether) {
+            if (const auto* noise = nether->blended_noise()) {
+                report("nether", *noise);
+            }
+        }
+        return 0;
+    }
+
+    if (options.aquifer) {
+        // ── the aquifer oracle ──────────────────────────────────────────────
+        //
+        // Two things the game wrote to disk, crossed against each other. The
+        // mask says which cells its carvers considered; the blocks say what is
+        // there afterwards. Our generator is not consulted for either, which is
+        // the point: the answer does not depend on our terrain being right.
+        //
+        // Only chunks stopped at `minecraft:carvers` are read. A `full` chunk
+        // has thrown its mask away, and one stopped earlier has no carving in
+        // its blocks; either way the two halves would not be about the same
+        // stage. Cells at or above the column's topmost solid block are
+        // dropped: a carver that considered open sky says nothing about an
+        // aquifer, and counting that air as "above the fluid level" is exactly
+        // what made the first pass of this measurement contradict itself.
+        const auto* term_flood   = router->entry("fluid_level_floodedness");
+        const auto* term_spread  = router->entry("fluid_level_spread");
+        const auto* term_lava    = router->entry("lava");
+        const auto* term_barrier = router->entry("barrier");
+        const auto* term_density = router->entry("final_density");
+        if (term_flood == nullptr || term_spread == nullptr || term_lava == nullptr ||
+            term_barrier == nullptr || term_density == nullptr) {
+            OV_LOG_ERROR(
+                "the router is missing one of fluid_level_floodedness, fluid_level_spread, "
+                "lava, barrier, final_density; the aquifer oracle needs all five");
+            return 1;
+        }
+
+        const auto regions = options.world / "region";
+        if (!std::filesystem::is_directory(regions)) {
+            OV_LOG_ERROR("{} has no region/.", regions.string());
+            return 1;
+        }
+        std::vector<std::filesystem::path> files;
+        for (const auto& entry : std::filesystem::directory_iterator(regions)) {
+            if (entry.path().extension() == ".mca") {
+                files.push_back(entry.path());
+            }
+        }
+        std::ranges::sort(files);
+
+        std::ofstream out;
+        if (!options.dump.empty()) {
+            out.open(options.dump);
+            if (!out) {
+                OV_LOG_ERROR("cannot write {}", options.dump);
+                return 1;
+            }
+            out << "# B x y z kind density   kind: w water, l lava, a air, s solid\n";
+            out << "# C gx gy gz flood spread lava barrier  (16 x 12 x 16 cell, "
+                   "sampled at the cell's block centre)\n";
+            out << "# I gx gy gz flood spread lava barrier  (the same cell, "
+                   "sampled at its grid index)\n";
+        }
+
+        usize                        chunks = 0;
+        usize                        rows   = 0;
+        std::map<char, usize>        kinds;
+        std::map<std::string, usize> solid_names;
+        // Water, lava, air and kept-solid by height band of 16. Where the
+        // aquifer acts at all is the first thing to know, and it is not
+        // everywhere: above the surface it never fires.
+        std::map<i32, std::array<usize, 4>> bands;
+        std::set<std::array<i32, 3>>        cells;
+
+        for (const auto& file : files) {
+            if (chunks >= static_cast<usize>(options.chunks)) {
+                break;
+            }
+            auto region = nbt::RegionFile::open(file);
+            if (!region) {
+                continue;
+            }
+            for (u32 index = 0; index < 1024 && chunks < static_cast<usize>(options.chunks);
+                 ++index) {
+                auto document = region->read_chunk(index % 32, index / 32);
+                if (!document) {
+                    continue;
+                }
+                const nbt::Tag* status = document->root.find("Status");
+                if (status == nullptr || status->as_string() != "minecraft:carvers") {
+                    continue;
+                }
+                const nbt::Tag* masks = document->root.find("CarvingMasks");
+                const nbt::Tag* air   = masks == nullptr ? nullptr : masks->find("AIR");
+                const auto*     words = air == nullptr ? nullptr
+                                                       : air->get_if<nbt::Tag::LongArray>();
+                if (words == nullptr || words->empty()) {
+                    continue;
+                }
+                const nbt::Tag* x_pos = document->root.find("xPos");
+                const nbt::Tag* z_pos = document->root.find("zPos");
+                if (x_pos == nullptr || z_pos == nullptr) {
+                    continue;
+                }
+                const auto chunk_x = static_cast<i32>(x_pos->as_i64());
+                const auto chunk_z = static_cast<i32>(z_pos->as_i64());
+                ++chunks;
+
+                const i32 min_y = router->min_y();
+                const i32 max_y = min_y + router->height() - 1;
+
+                // The topmost block of each column that is neither air nor
+                // fluid. Everything at or above it is sky.
+                std::array<i32, 256> top{};
+                for (i32 local_z = 0; local_z < 16; ++local_z) {
+                    for (i32 local_x = 0; local_x < 16; ++local_x) {
+                        i32 found = min_y - 1;
+                        for (i32 y = max_y; y >= min_y; --y) {
+                            const std::string_view* name =
+                                block_at(*document, local_x, y, local_z);
+                            if (name == nullptr) {
+                                continue;
+                            }
+                            if (*name == "minecraft:air" || *name == "minecraft:cave_air" ||
+                                *name == "minecraft:void_air" || *name == "minecraft:water" ||
+                                *name == "minecraft:lava") {
+                                continue;
+                            }
+                            found = y;
+                            break;
+                        }
+                        top[static_cast<usize>(local_z * 16 + local_x)] = found;
+                    }
+                }
+
+                for (usize word = 0; word < words->size(); ++word) {
+                    u64 bits = static_cast<u64>((*words)[word]);
+                    while (bits != 0) {
+                        const auto  bit   = static_cast<usize>(std::countr_zero(bits));
+                        const usize cell  = word * 64 + bit;
+                        bits &= bits - 1;
+                        const auto local_x = static_cast<i32>(cell & 15U);
+                        const auto local_z = static_cast<i32>((cell >> 4U) & 15U);
+                        const auto y = static_cast<i32>(cell >> 8U) + min_y;
+                        if (y > max_y || y >= top[static_cast<usize>(local_z * 16 + local_x)]) {
+                            continue;
+                        }
+                        const std::string_view* name =
+                            block_at(*document, local_x, y, local_z);
+                        if (name == nullptr) {
+                            continue;
+                        }
+                        char kind = 's';
+                        if (*name == "minecraft:water") {
+                            kind = 'w';
+                        } else if (*name == "minecraft:lava") {
+                            kind = 'l';
+                        } else if (*name == "minecraft:air" || *name == "minecraft:cave_air" ||
+                                   *name == "minecraft:void_air") {
+                            kind = 'a';
+                        } else {
+                            solid_names[std::string(*name)] += 1;
+                        }
+                        ++kinds[kind];
+                        ++rows;
+                        auto& band = bands[(y >> 4) << 4];
+                        band[kind == 'w' ? 0 : kind == 'l' ? 1 : kind == 'a' ? 2 : 3] += 1;
+
+                        const i32 world_x = chunk_x * 16 + local_x;
+                        const i32 world_z = chunk_z * 16 + local_z;
+                        // The grid the measurement points at: sixteen wide,
+                        // forty tall, anchored so that cell k covers
+                        // [40k, 40k + 40) and its middle is 40k + 20. Every
+                        // fluid level read out of the reference world sits on
+                        // `40k + 20 + 3j`, which is what named this grid.
+                        cells.insert({world_x >> 4,
+                                      y / 40 - (y < 0 && y % 40 != 0 ? 1 : 0),
+                                      world_z >> 4});
+                        if (out) {
+                            out << fmt::format("B {} {} {} {} {:.6f}\n", world_x, y, world_z,
+                                               kind,
+                                               term_density->compute({world_x, y, world_z}));
+                        }
+                    }
+                }
+            }
+        }
+
+        if (out) {
+            for (const auto& cell : cells) {
+                const i32 bx = cell[0] * 16 + 8;
+                const i32 by = cell[1] * 40 + 20;
+                const i32 bz = cell[2] * 16 + 8;
+                out << fmt::format("C {} {} {} {:.6f} {:.6f} {:.6f} {:.6f}\n", cell[0], cell[1],
+                                   cell[2], term_flood->compute({bx, by, bz}),
+                                   term_spread->compute({bx, by, bz}),
+                                   term_lava->compute({bx, by, bz}),
+                                   term_barrier->compute({bx, by, bz}));
+                out << fmt::format("I {} {} {} {:.6f} {:.6f} {:.6f} {:.6f}\n", cell[0], cell[1],
+                                   cell[2],
+                                   term_flood->compute({cell[0], cell[1], cell[2]}),
+                                   term_spread->compute({cell[0], cell[1], cell[2]}),
+                                   term_lava->compute({cell[0], cell[1], cell[2]}),
+                                   term_barrier->compute({cell[0], cell[1], cell[2]}));
+                // The cell's lowest corner, in blocks. Which of the three a
+                // formula reads is not documented anywhere this project may
+                // look, so all three are written and the data chooses.
+                const i32 ox = cell[0] * 16;
+                const i32 oy = cell[1] * 40;
+                const i32 oz = cell[2] * 16;
+                out << fmt::format("O {} {} {} {:.6f} {:.6f} {:.6f} {:.6f}\n", cell[0], cell[1],
+                                   cell[2], term_flood->compute({ox, oy, oz}),
+                                   term_spread->compute({ox, oy, oz}),
+                                   term_lava->compute({ox, oy, oz}),
+                                   term_barrier->compute({ox, oy, oz}));
+            }
+        }
+
+        fmt::print("\naquifer oracle: {} chunks stopped at minecraft:carvers, {} underground "
+                   "considered cells\n",
+                   chunks, rows);
+        const auto share = [&](usize n) {
+            return rows == 0 ? 0.0 : 100.0 * static_cast<f64>(n) / static_cast<f64>(rows);
+        };
+        fmt::print("  air   {:>8}  {:>7.3f} %\n", kinds['a'], share(kinds['a']));
+        fmt::print("  water {:>8}  {:>7.3f} %\n", kinds['w'], share(kinds['w']));
+        fmt::print("  lava  {:>8}  {:>7.3f} %\n", kinds['l'], share(kinds['l']));
+        fmt::print("  solid {:>8}  {:>7.3f} %   <- the barrier, plus what is not replaceable\n",
+                   kinds['s'], share(kinds['s']));
+        fmt::print("\n  {:>12} {:>9} {:>9} {:>9} {:>9}\n", "band", "air", "water", "lava",
+                   "solid");
+        for (const auto& [low, counts] : bands) {
+            fmt::print("  {:>5} ..{:>5} {:>9} {:>9} {:>9} {:>9}\n", low, low + 15, counts[2],
+                       counts[0], counts[1], counts[3]);
+        }
+        fmt::print("\n  what a kept cell is made of:\n");
+        std::vector<std::pair<std::string, usize>> ordered(solid_names.begin(),
+                                                           solid_names.end());
+        std::ranges::sort(ordered, [](const auto& a, const auto& b) { return a.second > b.second; });
+        for (usize i = 0; i < ordered.size() && i < 12; ++i) {
+            fmt::print("    {:<34} {:>8}\n", ordered[i].first, ordered[i].second);
+        }
+        if (!options.dump.empty()) {
+            fmt::print("\n  rows written to {}\n", options.dump);
+        }
+        return 0;
     }
 
     if (options.stats) {

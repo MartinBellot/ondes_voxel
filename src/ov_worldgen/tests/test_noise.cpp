@@ -239,3 +239,48 @@ TEST_CASE("the old terrain noise keeps the amplitude the Nether measured",
     CHECK(roughness > 0.10);
     CHECK(roughness < 0.14);
 }
+
+TEST_CASE("the blend selector is clamped far more often than it blends",
+          "[worldgen][noise]") {
+    // `old_blended_noise` interpolates between two sixteen-octave stacks with
+    // `blend = (selector / 10 + 1) / 2`, clamped to [0, 1]. The selector is a
+    // stack of eight octaves whose weights double, so it reaches several
+    // hundred and the clamp does most of the work: the crossfade is really a
+    // switch. That was written down in
+    // docs/provenance/amplitude-old-blended-noise.md § 5 as a suspected bug and
+    // never measured. It is measured now, twice:
+    //
+    //   * here — 86 % of a lattice of 133 200 positions is clamped, standard
+    //     deviation 56, range +/- 232 (`ov_parity --selector`);
+    //   * and against the game — `ov_parity --nether --sweep-var=OV_SELECTOR_DIV`
+    //     divides the selector, which is the "the game normalises this stack"
+    //     hypothesis, and the Nether's distribution gets monotonically *worse*
+    //     at every divisor tried (mean distance to the game's curve 0.0522 at
+    //     1, 0.0535 at 2, 0.0572 at 5, 0.0609 at 10, 0.0661 at 25, 0.0683 at
+    //     60).
+    //
+    // So the switch is not a bug, and this test is a fence around that: if a
+    // change ever makes the selector small enough to blend most of the time it
+    // is contradicting a measurement, and it should have to say so.
+    math::XoroshiroRandomSource random{1234567890};
+    const BlendedNoise          noise = BlendedNoise::create(random, 0.25, 0.125, 80.0, 160.0, 8.0);
+
+    CHECK(noise.selector_divisor() == 1.0);
+
+    usize clamped = 0;
+    usize count   = 0;
+    f64   largest = 0.0;
+    for (i32 x = -512; x <= 512; x += 13) {
+        for (i32 z = -512; z <= 512; z += 17) {
+            const f64 value = noise.selector(x, 64, z);
+            largest         = std::max(largest, std::abs(value));
+            clamped += std::abs(value) >= 10.0 ? 1 : 0;
+            ++count;
+        }
+    }
+    const f64 share = static_cast<f64>(clamped) / static_cast<f64>(count);
+    CHECK(share > 0.75);
+    // And it is not merely past ten: it is past it by an order of magnitude,
+    // which is why no plausible retuning of the divisor rescues the crossfade.
+    CHECK(largest > 100.0);
+}

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <limits>
 #include <string>
 
@@ -320,10 +321,28 @@ BlendedNoise BlendedNoise::create(math::XoroshiroRandomSource& random, f64 xz_sc
         weight *= 2.0;
     }
     noise.max_value_ = bound / kFirstDivisor / kSecondDivisor;
+
+    // OV_SELECTOR_DIV divides the selector, and nothing else, before the blend.
+    //
+    // It exists to settle one suspicion by measurement rather than by argument.
+    // The blend is `(selector / 10 + 1) / 2` while the selector is eight
+    // octaves whose weights double, so it reaches far past ten and the blend
+    // clamps: the crossfade between the two limit stacks becomes a switch. That
+    // was written down as a possible bug and never tested. Dividing the
+    // selector is exactly the "the game normalises this stack" hypothesis, and
+    // the Nether — where this noise is the whole of the density — reads the
+    // resulting distribution against the game's own blocks. Default 1.0, which
+    // is the field as it stands.
+    if (const char* text = std::getenv("OV_SELECTOR_DIV"); text != nullptr) {
+        const f64 divisor = std::strtod(text, nullptr);
+        if (divisor > 0.0) {
+            noise.selector_divisor_ = divisor;
+        }
+    }
     return noise;
 }
 
-f64 BlendedNoise::value(i32 x, i32 y, i32 z) const noexcept {
+f64 BlendedNoise::selector(i32 x, i32 y, i32 z) const noexcept {
     const f64 sx = static_cast<f64>(x) * xz_multiplier_;
     const f64 sy = static_cast<f64>(y) * y_multiplier_;
     const f64 sz = static_cast<f64>(z) * xz_multiplier_;
@@ -335,32 +354,40 @@ f64 BlendedNoise::value(i32 x, i32 y, i32 z) const noexcept {
     const f64 my = sy / y_factor_;
     const f64 mz = sz / xz_factor_;
 
-    const f64 smear      = y_multiplier_ * smear_scale_multiplier_;
-    const f64 main_smear = smear / y_factor_;
+    const f64 main_smear = y_multiplier_ * smear_scale_multiplier_ / y_factor_;
 
-    f64 selector = 0.0;
-    f64 falloff  = 1.0;
+    f64 total   = 0.0;
+    f64 falloff = 1.0;
     for (const auto& octave : main_.octaves) {
         if (octave != nullptr) {
-            selector += octave->noise(PerlinNoise::wrap(mx * falloff),
-                                      PerlinNoise::wrap(my * falloff),
-                                      PerlinNoise::wrap(mz * falloff), main_smear * falloff,
-                                      my * falloff) /
-                        falloff;
+            total += octave->noise(PerlinNoise::wrap(mx * falloff),
+                                   PerlinNoise::wrap(my * falloff),
+                                   PerlinNoise::wrap(mz * falloff), main_smear * falloff,
+                                   my * falloff) /
+                     falloff;
         }
         falloff /= 2.0;
     }
+    return total;
+}
 
-    const f64 blend = (selector / 10.0 + 1.0) / 2.0;
+f64 BlendedNoise::value(i32 x, i32 y, i32 z) const noexcept {
+    const f64 sx = static_cast<f64>(x) * xz_multiplier_;
+    const f64 sy = static_cast<f64>(y) * y_multiplier_;
+    const f64 sz = static_cast<f64>(z) * xz_multiplier_;
+
+    const f64 smear = y_multiplier_ * smear_scale_multiplier_;
+
+    const f64 blend = (selector(x, y, z) / selector_divisor_ / 10.0 + 1.0) / 2.0;
     // Saturated on either side the other stack is never touched. Not only an
     // optimisation: it is sixteen octaves of Perlin skipped for most of the
     // world.
     const bool only_max = blend >= 1.0;
     const bool only_min = blend <= 0.0;
 
-    f64 low  = 0.0;
-    f64 high = 0.0;
-    falloff  = 1.0;
+    f64 low     = 0.0;
+    f64 high    = 0.0;
+    f64 falloff = 1.0;
     for (usize index = 0; index < min_limit_.octaves.size(); ++index) {
         const f64 wx = PerlinNoise::wrap(sx * falloff);
         const f64 wy = PerlinNoise::wrap(sy * falloff);
