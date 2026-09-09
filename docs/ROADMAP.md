@@ -199,11 +199,12 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 > Sans une ligne de Vulkan.
 
 - [x] Boucle de tick 20 Hz avec budget et rapport de surcharge
-- [ ] `ChunkMap`, système de tickets, niveaux de chargement
-      *(**c'est le blocage principal aujourd'hui**. La génération est correcte
-      et n'est pas servable : elle tourne sur le thread de tick, dépasse le
-      budget de 50 ms et le serveur imprime `can't keep up` en boucle. 219
-      chunks arrivent, le reste jamais)*
+- [x] `ChunkMap`, système de tickets, niveaux de chargement ⭐
+      *(les tickets sont des **raisons** — joueur, forcé, transitoire — et le
+      **niveau**, pas le ticket, décide si un chunk est tické, résident ou
+      parti. La génération est tirée par les tickets et non par les paquets.
+      **289 chunks sur 289 arrivent**, contre 153 ; `can't keep up` passe de 20
+      à **0** ; le tick p99 de **6 686 738 µs à 424 µs**)*
 - [x] Pipeline de chunks par statuts *(`empty → structure_starts → biomes →
       noise → surface → carvers → features → full`)*, avec le **rayon des
       voisins imposé** et non espéré : `features` pousse ses 8 voisins à
@@ -221,7 +222,19 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       cache de chunks partagé entre threads, exactement la structure mutable
       partagée que le principe 3 interdit. De la géométrie, jamais un mutex)*
 - [ ] Sections copy-on-write en `shared_ptr<const>` 🔒
-- [ ] Pool de jobs enkiTS : pinned tasks + priorités
+      *(pas encore nécessaire : rien ne demande d'instantané sans verrou. Le
+      `chunk_mutex` du serveur protège toujours la carte — ce qui l'a quittée
+      est la génération de 0,2 s, pas le verrou — et le retirer demande de
+      router le réseau vers le thread de tick, c'est-à-dire `ov_sim`)*
+- [x] Pool de jobs : `std::jthread` et une file, **pas enkiTS**
+      *(rien ici n'a besoin de vol de travail ni de graphe de tâches, et une
+      dépendance vcpkg coûte plus sur cette machine qu'elle ne rapporte. Ce qui
+      porte le travail est qu'un job reçoit **son index de worker**, ce qui rend
+      un état par worker atteignable sans verrou — indispensable parce que
+      `NoiseRouter` et `SurfaceSystem` gardent des caches mémo `mutable` et
+      qu'une pile de worldgen partagée corrompt la carte au lieu de rendre un
+      nombre périmé. Déterminisme vérifié cellule par cellule : 6 291 456
+      cellules, **0 différence**, sur 1 et 4 workers, et sous TSan)*
 - [x] Générateur superflat
 - [x] Lumière du ciel : sunlight direct + propagation par flood fill *(intra-chunk)*
 - [x] Propagation de lumière inter-chunks *(voisinage 3×3 chargé)*
@@ -422,7 +435,16 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       jeu n'a pas fini : il conserve ses `CarvingMasks`. Accord solide/air
       97,97 → 98,79 %. Cheese, spaghetti et noodle ne sont pas des carvers mais
       des termes de densité, et ils sont dans `final_density`)*
-- [ ] Aquifères, lave, niveaux d'eau
+- [~] Aquifères, lave, niveaux d'eau
+      *(**pas implémentés**, et l'oracle qui les décidera est construit : le
+      masque de creusement du jeu croisé avec ses propres blocs dans le même
+      chunk — 1 775 chunks, 1 490 251 cellules, dont le jeu laisse 69,2 %
+      d'air, **23,5 % d'eau**, 2,8 % de lave et 4,5 % de solide, ce dernier
+      chiffre étant la réponse de la barrière. Le **niveau de fluide est
+      mesuré** — `40k + 20 + 3j`, décalage `3·⌊S·spread⌋` avec `spread` lu à
+      l'**index de la grille** : 89,3 % contre 31,4 % au centre du bloc, et
+      quatre témoins. La barrière, le cas noyé jusqu'au niveau de la mer et le
+      départage eau/lave sont **refusés et nommés**)*
 - [x] Minerais par couche, distributions triangulaires
       *(**99,509 % des positions au bloc près** en rejouant sur le terrain du
       jeu, et **82,406 % sur notre propre terrain généré de bout en bout** —
@@ -450,9 +472,12 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       enveloppe une source et ne redéfinit que `next(bits)`, donc l'état avance
       en Xoroshiro128++ pendant que les bits sortent à la mode legacy — 9712
       marqueurs sur 9712, sur quatre graines dont trois hors échantillon.
-      39 des 194 features configurées se chargent, le reste refusé par son nom.
-      `ore`, `scattered_ore`, `spring_feature` et `disk` seulement ; les arbres
-      et la végétation restent)*
+      **113 des 194 features configurées se chargent**, 134 placed features,
+      le reste refusé par son nom. Les 9 trunk placers, les 11 foliage placers,
+      les 6 décorateurs et la végétation sont écrits — mais la parité des
+      arbres est à **40,5 %** de troncs au bon endroit et **43,1 %** de formes
+      exactes parmi eux : les placeurs simples sont justes, les ramifiés
+      (`fancy`, jungle, `giant`) ne le sont pas, et chacun est nommé)*
 - [ ] **Structures** : villages ×5 (plains, desert, savanna, taiga, snowy),
       avant-poste pillard, mine abandonnée (+ mesa), forteresse (stronghold),
       pyramide du désert, temple de la jungle, igloo, cabane de sorcière,

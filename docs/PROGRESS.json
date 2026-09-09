@@ -43,7 +43,7 @@
     "M3": {
       "name": "Tranche verticale",
       "status": "in_progress",
-      "done": 18,
+      "done": 20,
       "total": 25,
       "exit_criterion": "Un client Minecraft vanilla 1.20.1 non modifié se connecte, marche, casse et pose un bloc — sans une ligne de Vulkan.",
       "blocked": [],
