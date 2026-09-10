@@ -17,6 +17,7 @@ ov_add_test(test_ov_registry
     SOURCES
         tests/test_block_states.cpp
         tests/test_registries.cpp
+        tests/test_sound_tables.cpp
     DEPS ov_registry
     LABELS unit
 )

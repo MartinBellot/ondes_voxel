@@ -58,7 +58,7 @@ MAGIC = b"OVPK"
 # Bumped by hand whenever the layout changes, so a stale cache is detected
 # rather than misread. A mismatched cache read as if it were current is far
 # worse than no cache at all.
-FORMAT_VERSION = 14
+FORMAT_VERSION = 15
 
 _loot_report = ""
 _recipe_report = ""
@@ -102,7 +102,8 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
           hardness_doc: dict, loot_dir, loot_map_doc: dict,
           collision_doc: dict, emission_doc: dict, biome_list: list,
           entities_doc: dict, recipe_dir, fuel_doc: dict,
-          remainder_doc: dict, resistance_doc: dict) -> bytes:
+          remainder_doc: dict, resistance_doc: dict, block_sounds_doc: dict,
+          sound_events_doc: dict) -> bytes:
     blocks = blocks_doc["blocks"]
     state_count = blocks_doc["state_count"]
 
@@ -382,6 +383,74 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
         body += struct.pack("<f", float(resistance.get(block["name"], -1.0)))
     align8(body)
 
+    # ── sound ── What blocks and creatures sound like. Neither is in any Mojang
+    # report; both were measured on a real 1.20.1 server by
+    # scripts/measure_block_sounds.py and scripts/measure_sound_events.py —
+    # see docs/provenance/son.md. 0xFFFF is "no sound", never "sound 65535",
+    # and a field nobody measured stays -1 rather than borrowing a default.
+    sound_index = {name: i for i, name in enumerate(
+        registries_doc["registries"]["minecraft:sound_event"]["entries"])}
+
+    def sound_id(name) -> int:
+        return sound_index.get(name, 0xFFFF) if name else 0xFFFF
+
+    audience_code = {"everyone": 1, "others": 2}
+
+    block_sound_rows = block_sounds_doc["blocks"]
+    toggle_rows = sound_events_doc.get("toggle_sounds", {})
+    block_sounds_offset = HEADER_SIZE + len(body)
+    for block in blocks:
+        row = block_sound_rows.get(block["name"], {})
+        events = row.get("events", {})
+        toggle = toggle_rows.get(block["name"]) or {}
+        opened = toggle.get("open") or {}
+        closed = toggle.get("close") or {}
+        measured = 0
+        for bit, gesture in ((1, "place"), (2, "step"), (4, "fall")):
+            if gesture in row.get("measured", []):
+                measured |= bit
+        if events.get("break") and "break" not in row.get("measured", []):
+            measured |= 8
+        if opened.get("sound") or closed.get("sound"):
+            measured |= 16
+        audience = (audience_code.get(opened.get("audience"), 0) |
+                    audience_code.get(closed.get("audience"), 0) << 2)
+        body += struct.pack(
+            "<7HBB8f",
+            *(sound_id(events.get(g)) for g in ("break", "step", "place", "hit", "fall")),
+            sound_id(opened.get("sound")), sound_id(closed.get("sound")),
+            measured, audience,
+            float(row["volume"]) if row.get("volume") is not None else -1.0,
+            float(row["pitch"]) if row.get("pitch") is not None else -1.0,
+            float(opened["volume"]) if opened.get("volume") is not None else -1.0,
+            float(opened.get("pitch_lo", -1.0)), float(opened.get("pitch_hi", -1.0)),
+            float(closed["volume"]) if closed.get("volume") is not None else -1.0,
+            float(closed.get("pitch_lo", -1.0)), float(closed.get("pitch_hi", -1.0)))
+    align8(body)
+
+    category_index = {name: i for i, name in enumerate(
+        ["master", "music", "record", "weather", "block", "hostile", "neutral", "player",
+         "ambient", "voice"])}
+    mob_rows = sound_events_doc.get("mob_sounds", {})
+    entity_sounds_offset = HEADER_SIZE + len(body)
+    for type_name in registries_doc["registries"]["minecraft:entity_type"]["entries"]:
+        row = mob_rows.get(type_name) or {}
+        hurt = row.get("hurt") or {}
+        death = row.get("death") or {}
+        measured = (1 if hurt.get("sound") else 0) | (2 if death.get("sound") else 0) | \
+                   (4 if row.get("ambient") else 0)
+        volume = hurt.get("volume") if hurt.get("volume") is not None else death.get("volume")
+        pitched = [p for p in (hurt.get("pitch_lo"), hurt.get("pitch_hi"),
+                               death.get("pitch_lo"), death.get("pitch_hi")) if p is not None]
+        body += struct.pack(
+            "<3HBBfff",
+            sound_id(hurt.get("sound")), sound_id(death.get("sound")), sound_id(row.get("ambient")),
+            category_index.get(row.get("category"), 0xFF), measured,
+            float(volume) if volume is not None else -1.0,
+            min(pitched) if pitched else -1.0, max(pitched) if pitched else -1.0)
+    align8(body)
+    # ── end sound ──
+
     registries_offset = HEADER_SIZE + len(body)
     for name_offset, entry_first, entry_count, first_id in registry_records:
         # u32 name, u32 entry_first, u32 entry_count, u32 first_id — 16 bytes.
@@ -498,7 +567,7 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
     align8(body)
 
     header = struct.pack(
-        "<4s" + "I" * 57,
+        "<4s" + "I" * 59,
         MAGIC,
         FORMAT_VERSION,
         len(block_records),
@@ -557,6 +626,8 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
         fuel_offset,
         remainder_offset,
         resistance_offset,
+        block_sounds_offset,
+        entity_sounds_offset,
     )
     assert len(header) <= HEADER_SIZE
     header += b"\0" * (HEADER_SIZE - len(header))
@@ -638,10 +709,25 @@ def main() -> int:
     with open(resistance_path) as f:
         resistance_doc = json.load(f)
 
+    # ── sound ──
+    block_sounds_path = NORMALIZED / "block_sounds.json"
+    if not block_sounds_path.is_file():
+        sys.exit(f"error: {block_sounds_path} not found. "
+                 f"Run scripts/measure_block_sounds.py first.")
+    with open(block_sounds_path) as f:
+        block_sounds_doc = json.load(f)
+    sound_events_path = NORMALIZED / "sound_events.json"
+    if not sound_events_path.is_file():
+        sys.exit(f"error: {sound_events_path} not found. "
+                 f"Run scripts/measure_sound_events.py first.")
+    with open(sound_events_path) as f:
+        sound_events_doc = json.load(f)
+    # ── end sound ──
+
     payload = build(blocks_doc, registries_doc, tags_doc, opacity_doc, stacks_doc,
                     motion_doc, hardness_doc, loot_dir, loot_map_doc, collision_doc,
                     emission_doc, biome_list, entities_doc, recipe_dir, fuel_doc,
-                    remainder_doc, resistance_doc)
+                    remainder_doc, resistance_doc, block_sounds_doc, sound_events_doc)
     tag_records_count = [t for g in tags_doc["tags"].values() for t in g]
     member_count_total = sum(len(v) for g in tags_doc["tags"].values() for v in g.values())
     OUTPUT.write_bytes(payload)
@@ -675,7 +761,7 @@ def main() -> int:
     if build(blocks_doc, registries_doc, tags_doc, opacity_doc, stacks_doc,
              motion_doc, hardness_doc, loot_dir, loot_map_doc, collision_doc,
              emission_doc, biome_list, entities_doc, recipe_dir, fuel_doc,
-             remainder_doc, resistance_doc) != payload:
+             remainder_doc, resistance_doc, block_sounds_doc, sound_events_doc) != payload:
         sys.exit("error: emitter is not deterministic")
     print("    deterministic .. yes")
     return 0

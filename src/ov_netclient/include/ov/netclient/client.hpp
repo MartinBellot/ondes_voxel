@@ -25,7 +25,9 @@
 #include "ov/math/vec.hpp"
 #include "ov/protocol/chat.hpp"
 #include "ov/protocol/chat_types.hpp"
+#include "ov/protocol/blast.hpp"
 #include "ov/protocol/client_play.hpp"
+#include "ov/protocol/sound.hpp"
 #include "ov/registry/block_states.hpp"
 #include "ov/world/chunk.hpp"
 
@@ -244,12 +246,39 @@ struct ClientEvents {
     std::vector<net::SuggestionsResponse> suggestions;
     // ── end chat ──
 
+    // ── What a speaker needs ────────────────────────────────────────────────
+    //
+    // In arrival order. Two of these are not sound packets at all: vanilla's
+    // client plays the explosion and the pickup plop itself, from the packets
+    // it already gets — the capture of the real server shows no Sound Effect
+    // for either (docs/provenance/son.md).
+
+    /// Sound Effect (0x62).
+    std::vector<net::SoundEffect> sounds;
+    /// Entity Sound Effect (0x61).
+    std::vector<net::EntitySoundEffect> entity_sounds;
+    /// Stop Sound (0x63).
+    std::vector<net::StopSound> stop_sounds;
+    /// World Event (0x25). 2001 is a block someone else broke, with its state.
+    std::vector<net::WorldEvent> world_events;
+    /// Explosion (0x1D).
+    std::vector<net::Explosion> explosions;
+    /// Take Item Entity (0x67).
+    struct Pickup {
+        i32 collected{0};
+        i32 collector{0};
+        i32 count{0};
+    };
+    std::vector<Pickup> pickups;
+
     [[nodiscard]] bool empty() const noexcept {
         return loaded.empty() && unloaded.empty() && changed.empty() && !teleport &&
                !time_of_day && !health && !experience && containers.empty() &&
                container_slots.empty() && !open_screen && !close_window && !game_mode &&
                !abilities && entities.empty() && chat.empty() && !chat_types &&
-               !commands && suggestions.empty();
+               !commands && suggestions.empty() && sounds.empty() &&
+               entity_sounds.empty() && stop_sounds.empty() && world_events.empty() &&
+               explosions.empty() && pickups.empty();
     }
     void clear();
 };

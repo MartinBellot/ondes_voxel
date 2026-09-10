@@ -10,6 +10,7 @@ ov_add_executable(ov_voxel
         src/world_source.cpp
     DEPS
         ov_client
+        ov_audio
         ov_gameplay
         ov_netclient
         ov_server

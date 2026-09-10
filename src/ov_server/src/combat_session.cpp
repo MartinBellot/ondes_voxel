@@ -176,6 +176,8 @@ CombatOutcome CombatSession::on_interact(const net::Interact& packet, const Comb
     out.critical = resolved.critical;
     out.swept    = resolved.sweeping;
     out.damage   = resolved.damage;
+    out.strength_scale   = resolved.strength_scale;    // ── sound ──
+    out.sprint_knockback = resolved.sprint_knockback;  // ── sound ──
 
     deliver(resolved, packet.entity_id, player, io);
     wear_held(io, player, gameplay::ToolAction::Attack, 1);

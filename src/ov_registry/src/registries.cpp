@@ -182,6 +182,23 @@ std::expected<Registries, RegistryError> Registries::from_bytes(std::vector<u8> 
                                                     record.attribute_count, record.measured});
     }
 
+    // ── sound ── One record per entity type, beside the ones above.
+    const auto* sound_records =
+        pack_at<EntitySoundRecord>(data_view, header.entity_sounds_offset, header.entity_count);
+    if (sound_records == nullptr) {
+        return std::unexpected{RegistryError::Corrupt};
+    }
+    result.entity_sounds_.reserve(header.entity_count);
+    for (u32 i = 0; i < header.entity_count; ++i) {
+        const EntitySoundRecord& record = sound_records[i];
+        const auto id = [](u16 value) { return value == 0xFFFF ? -1 : static_cast<i32>(value); };
+        result.entity_sounds_.push_back(EntitySounds{
+            id(record.hurt), id(record.death), id(record.ambient),
+            record.category == 0xFF ? -1 : static_cast<i32>(record.category), record.volume,
+            record.pitch_lo, record.pitch_hi, record.measured});
+    }
+    // ── end sound ──
+
     // ── Recipes ─────────────────────────────────────────────────────────────
     const auto* recipe_records =
         pack_at<RecipeRecord>(data_view, header.recipes_offset, header.recipe_count);
@@ -251,6 +268,19 @@ std::optional<Registries::EntityTypeInfo> Registries::entity_type(
     }
     return EntityTypeInfo{record.width, record.height, record.eye_height,
                           (record.measured & 0b10) != 0};
+}
+
+std::optional<Registries::EntitySounds> Registries::entity_sounds(ProtocolId type) const noexcept {
+    if (type < 0 || static_cast<usize>(type) >= entity_sounds_.size()) {
+        return std::nullopt;
+    }
+    const EntitySounds& sounds = entity_sounds_[static_cast<usize>(type)];
+    // The measured bits, not the ids: a creature that makes no hurt sound and
+    // one nobody measured must not look the same.
+    if (sounds.measured == 0) {
+        return std::nullopt;
+    }
+    return sounds;
 }
 
 std::vector<Registries::EntityAttribute> Registries::entity_attributes(ProtocolId type) const {

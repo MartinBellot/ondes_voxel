@@ -35,6 +35,7 @@
 #include <filesystem>
 #include <map>
 #include <regex>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -70,6 +71,10 @@ struct Options {
     fs::path    packs  = "ressourcepacks";
     std::string version{kTargetVersion};
     bool        with_sounds = false;
+    /// Music and records are 432 MB of the 584; the effects are 152. A client
+    /// with no music still plays every block, mob and interface sound, so the
+    /// large half is asked for separately.
+    bool        with_music  = false;
     bool        list_only   = false;
     bool        dry_run     = false;
     bool        show_help   = false;
@@ -92,7 +97,8 @@ void print_usage() {
         "  --output=<path>          where to write (default: run/assets)\n"
         "  --packs=<path>           resource packs to stack (default: ressourcepacks)\n"
         "  --version=<id>           game version (default: {})\n"
-        "  --sounds                 also import sounds (~hundreds of MB)\n"
+        "  --sounds                 also import sounds.json and the sound effects (~150 MB)\n"
+        "  --music                  with --sounds, also music and records (~430 MB more)\n"
         "  --list                   show what was found and stop\n"
         "  --dry-run                report what would be written, write nothing\n"
         "  --help, -h               this message\n"
@@ -112,6 +118,8 @@ Options parse_args(int argc, char** argv) {
             options.show_help = true;
         } else if (arg == "--sounds") {
             options.with_sounds = true;
+        } else if (arg == "--music") {
+            options.with_music = true;
         } else if (arg == "--list") {
             options.list_only = true;
         } else if (arg == "--dry-run") {
@@ -250,11 +258,15 @@ struct IndexedAsset {
 /// linking keeps run/ self-contained and independent of the launcher's store.
 usize import_indexed(const std::vector<IndexedAsset>& assets, const fs::path& objects_root,
                      const fs::path& output, std::string_view prefix, std::string_view label,
-                     Provenance& provenance, bool dry_run) {
+                     Provenance& provenance, bool dry_run,
+                     std::span<const std::string_view> skip = {}) {
     usize written = 0;
 
     for (const auto& asset : assets) {
         if (!prefix.empty() && !asset.name.starts_with(prefix)) {
+            continue;
+        }
+        if (std::ranges::any_of(skip, [&](std::string_view s) { return asset.name.starts_with(s); })) {
             continue;
         }
         const fs::path object   = objects_root / asset.hash.substr(0, 2) / asset.hash;
@@ -442,10 +454,22 @@ int main(int argc, char** argv) {
         fmt::print("  {:30s} {} files\n", "asset index (lang)", languages);
 
         if (options.with_sounds) {
-            const usize sounds =
-                import_indexed(indexed, version->asset_objects, options.output, "minecraft/sounds/",
-                               "asset index", provenance, options.dry_run);
-            fmt::print("  {:30s} {} files\n", "asset index (sounds)", sounds);
+            // sounds.json is the catalogue — event to variants — and sits *beside*
+            // sounds/, so the directory prefix alone never matched it: an import
+            // with --sounds used to bring every .ogg and nothing that names one.
+            const usize catalogue =
+                import_indexed(indexed, version->asset_objects, options.output,
+                               "minecraft/sounds.json", "asset index", provenance, options.dry_run);
+            fmt::print("  {:30s} {} files\n", "asset index (sounds.json)", catalogue);
+            constexpr std::string_view kLarge[] = {"minecraft/sounds/music/",
+                                                   "minecraft/sounds/records/"};
+            const usize sounds = import_indexed(
+                indexed, version->asset_objects, options.output, "minecraft/sounds/",
+                "asset index", provenance, options.dry_run,
+                options.with_music ? std::span<const std::string_view>{}
+                                   : std::span<const std::string_view>{kLarge});
+            fmt::print("  {:30s} {} files{}\n", "asset index (sounds)", sounds,
+                       options.with_music ? "" : " (music and records skipped; pass --music)");
         } else {
             const auto sound_count = std::ranges::count_if(indexed, [](const IndexedAsset& a) {
                 return a.name.starts_with("minecraft/sounds/");

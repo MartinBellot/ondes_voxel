@@ -18,6 +18,7 @@ ov_add_library(ov_protocol
         src/login.cpp
         src/play.cpp
         src/recipe_packets.cpp
+        src/sound.cpp
         src/status.cpp
         src/survival.cpp
         src/types.cpp
@@ -39,6 +40,7 @@ ov_add_test(test_ov_protocol
         tests/test_chat.cpp
         tests/test_chunk_roundtrip.cpp
         tests/test_client_play.cpp
+        tests/test_sound_packets.cpp
         tests/test_effect_packets.cpp
         tests/test_entities.cpp
         tests/test_entity_packets.cpp

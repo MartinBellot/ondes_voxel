@@ -238,6 +238,51 @@ public:
     /// docs/provenance/explosions.md.
     [[nodiscard]] f32 blast_resistance(BlockId block) const noexcept;
 
+    /// What a block sounds like — breaking, stepping, placing, hitting,
+    /// falling, and for a door, trapdoor, gate, button, lever or plate,
+    /// opening and closing.
+    ///
+    /// In no Mojang report. Place, step and fall were heard on the wire by a
+    /// second player on a real 1.20.1 server; break and hit never travel (the
+    /// client plays them itself) and are inferred from the family the other
+    /// three name — `measured` says which is which. See docs/provenance/son.md.
+    struct BlockSounds {
+        enum Event : u8 { Break, Step, Place, Hit, Fall, Open, Close };
+        enum class Audience : u8 {
+            Unmeasured,
+            /// The player who did it hears the server's packet too.
+            Everyone,
+            /// Everyone but that player, whose own client already played it.
+            Others,
+        };
+        static constexpr u8 kPlaceHeard      = 1;
+        static constexpr u8 kStepHeard       = 2;
+        static constexpr u8 kFallHeard       = 4;
+        static constexpr u8 kBreakHitInferred = 8;
+        static constexpr u8 kToggleHeard     = 16;
+
+        /// Indices into minecraft:sound_event, -1 for none.
+        i32 events[7]{-1, -1, -1, -1, -1, -1, -1};
+        u8  measured{0};
+        /// The set's volume and pitch: what `place` is heard at is (v+1)/2 and
+        /// p*0.8, `step` v*0.15 and p, `fall` v*0.5 and p*0.75. -1 unmeasured.
+        f32      volume{-1.0F};
+        f32      pitch{-1.0F};
+        Audience open_audience{Audience::Unmeasured};
+        Audience close_audience{Audience::Unmeasured};
+        f32      open_volume{-1.0F};
+        f32      open_pitch_lo{-1.0F};
+        f32      open_pitch_hi{-1.0F};
+        f32      close_volume{-1.0F};
+        f32      close_pitch_lo{-1.0F};
+        f32      close_pitch_hi{-1.0F};
+
+        [[nodiscard]] i32 event(Event which) const noexcept { return events[which]; }
+    };
+
+    /// Empty when nothing about the block's sound was measured.
+    [[nodiscard]] std::optional<BlockSounds> sounds(BlockId block) const noexcept;
+
     /// Does breaking this block need the right kind of tool to drop anything?
     ///
     /// It also makes it five times slower: vanilla divides by 100 instead of
@@ -336,6 +381,8 @@ private:
     std::span<const u8>           fluid_bits_;
     std::span<const f32>          hardness_;
     std::span<const f32>          resistance_;
+    /// Raw BlockSoundRecords (private layout, see pack_format.hpp).
+    std::span<const u8> sounds_;
     LootData                      loot_;
     std::span<const Box>          boxes_;
     std::span<const u32>          shape_records_;

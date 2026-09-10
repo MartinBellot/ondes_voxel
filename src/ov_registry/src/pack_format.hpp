@@ -24,7 +24,7 @@ namespace ov::registry {
 /// were current is far worse than no cache: the ids would be plausible and
 /// wrong, and nothing would report an error until a vanilla client crashed on
 /// an entity type that does not exist.
-inline constexpr u32 kFormatVersion = 14;
+inline constexpr u32 kFormatVersion = 15;
 
 /// Grew past 128 when the loot tables arrived.
 inline constexpr u32 kHeaderSize = 256;
@@ -116,7 +116,52 @@ struct PackHeader {
     ///
     /// Measured, like the hardness beside it — see docs/provenance/explosions.md.
     u32 resistance_offset;
+
+    /// ── sound ── One BlockSoundRecord per block, then one EntitySoundRecord
+    /// per entity type in registry order. Measured — see docs/provenance/son.md.
+    u32 block_sounds_offset;
+    u32 entity_sounds_offset;
 };
+
+/// What one block sounds like. Event ids index minecraft:sound_event; 0xFFFF
+/// is "none".
+///
+/// `measured`: bit 0 place, bit 1 step, bit 2 fall were **heard on the wire**
+/// by another player; bit 3 says break and hit were **inferred** from the
+/// family the others name (the client plays both itself, so no packet carries
+/// them); bit 4 says open/close were heard. `audience` packs who hears the
+/// open (bits 0-1) and the close (bits 2-3): 1 everyone, 2 everyone but the
+/// player who did it, 0 not measured.
+struct BlockSoundRecord {
+    u16 events[7];  // break, step, place, hit, fall, open, close
+    u8  measured;
+    u8  audience;
+    f32 volume;
+    f32 pitch;
+    f32 open_volume;
+    f32 open_pitch_lo;
+    f32 open_pitch_hi;
+    f32 close_volume;
+    f32 close_pitch_lo;
+    f32 close_pitch_hi;
+};
+
+/// What one entity type sounds like when hurt, killed, or left alone.
+/// `measured`: bit 0 hurt heard, bit 1 death heard, bit 2 the ambient event
+/// exists by name (not heard: see son.md).
+struct EntitySoundRecord {
+    u16 hurt;
+    u16 death;
+    u16 ambient;
+    u8  category;  // Mojang's order; 0xFF unmeasured
+    u8  measured;
+    f32 volume;
+    f32 pitch_lo;
+    f32 pitch_hi;
+};
+
+static_assert(sizeof(BlockSoundRecord) == 48, "layout must match the emitter");
+static_assert(sizeof(EntitySoundRecord) == 20, "layout must match the emitter");
 
 /// One entity type, measured on a running 1.20.1 server.
 ///
