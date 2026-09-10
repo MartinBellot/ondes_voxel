@@ -711,3 +711,75 @@ TEST_CASE("a signal locks a hopper, and the flag reads backwards",
     REQUIRE(redstone.neighbour_changed(world, at, BlockPos{1, 0, 0}));
     REQUIRE(signals.flag_of(world.block_at(at), "enabled"));
 }
+
+TEST_CASE("a note block takes its instrument from the block under it",
+          "[redstone][noteblock]") {
+    REQUIRE_REGISTRY();
+    const auto state = [&](std::string_view name) {
+        const auto id = loaded().blocks->find_block(name);
+        REQUIRE(id.has_value());
+        return loaded().blocks->default_state(*id);
+    };
+
+    // Measured on all 987 blocks in the game; these are the rows that would be
+    // wrong under any rule a person would think of. A wooden **button** and a
+    // wooden **door** are harp, not bass, which is what killed the idea of
+    // deriving this from names.
+    CHECK(redstone.note_instrument(state("minecraft:oak_planks")) == "bass");
+    CHECK(redstone.note_instrument(state("minecraft:oak_button")) == "harp");
+    CHECK(redstone.note_instrument(state("minecraft:oak_door")) == "harp");
+    CHECK(redstone.note_instrument(state("minecraft:stone")) == "basedrum");
+    CHECK(redstone.note_instrument(state("minecraft:sand")) == "snare");
+    CHECK(redstone.note_instrument(state("minecraft:gravel")) == "snare");
+    CHECK(redstone.note_instrument(state("minecraft:glass")) == "hat");
+    CHECK(redstone.note_instrument(state("minecraft:white_wool")) == "guitar");
+    CHECK(redstone.note_instrument(state("minecraft:gold_block")) == "bell");
+    CHECK(redstone.note_instrument(state("minecraft:clay")) == "flute");
+    CHECK(redstone.note_instrument(state("minecraft:packed_ice")) == "chime");
+    CHECK(redstone.note_instrument(state("minecraft:bone_block")) == "xylophone");
+    CHECK(redstone.note_instrument(state("minecraft:iron_block")) == "iron_xylophone");
+    CHECK(redstone.note_instrument(state("minecraft:soul_sand")) == "cow_bell");
+    CHECK(redstone.note_instrument(state("minecraft:pumpkin")) == "didgeridoo");
+    CHECK(redstone.note_instrument(state("minecraft:emerald_block")) == "bit");
+    CHECK(redstone.note_instrument(state("minecraft:hay_block")) == "banjo");
+    CHECK(redstone.note_instrument(state("minecraft:glowstone")) == "pling");
+    // Air, and everything else nobody tabulated, is harp — which is the value
+    // the game gives it and not a fallback.
+    CHECK(redstone.note_instrument(state("minecraft:air")) == "harp");
+    CHECK(redstone.note_instrument(state("minecraft:dirt")) == "harp");
+}
+
+TEST_CASE("changing the floor under a note block rewrites the note block",
+          "[redstone][noteblock]") {
+    REQUIRE_REGISTRY();
+    const BlockPos note{0, 1, 0};
+    const BlockPos floor{0, 0, 0};
+
+    world.put(floor, "minecraft:dirt");
+    world.put(note, "minecraft:note_block", {{"instrument", "harp"}, {"powered", "false"}});
+
+    // Nothing to do: dirt is harp and the note block already says so.
+    REQUIRE_FALSE(redstone.neighbour_changed(world, note, floor));
+
+    world.put(floor, "minecraft:oak_planks");
+    REQUIRE(redstone.neighbour_changed(world, note, floor));
+    CHECK(redstone.note_instrument(world.block_at(floor)) == "bass");
+    {
+        const auto property = loaded().blocks->find_property(
+            loaded().blocks->block_of(world.block_at(note)), "instrument");
+        REQUIRE(property.has_value());
+        const u16 index = loaded().blocks->property_index(world.block_at(note), *property);
+        CHECK(property->values[index] == "bass");
+    }
+
+    // And the two halves are independent: a floor change must not clear
+    // `powered`, and a power change must not reset the instrument.
+    world.put(BlockPos{1, 1, 0}, "minecraft:redstone_block");
+    REQUIRE(redstone.neighbour_changed(world, note, BlockPos{1, 1, 0}));
+    CHECK(signals.flag_of(world.block_at(note), "powered"));
+    const auto property = loaded().blocks->find_property(
+        loaded().blocks->block_of(world.block_at(note)), "instrument");
+    REQUIRE(property.has_value());
+    CHECK(property->values[loaded().blocks->property_index(world.block_at(note), *property)] ==
+          "bass");
+}

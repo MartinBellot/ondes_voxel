@@ -46,6 +46,7 @@
 
 #include <array>
 #include <deque>
+#include <optional>
 #include <vector>
 
 namespace ov::gameplay {
@@ -219,6 +220,19 @@ public:
 
     [[nodiscard]] const SwitchRule* switch_rule(registry::BlockId block) const noexcept;
 
+    /// Which instrument a note block standing on `below` plays.
+    ///
+    /// In 1.20.1 this is not a sound but a **block state**: the note block
+    /// carries `instrument`, the server recomputes it whenever its support
+    /// changes, and the client plays whatever the state says. So the whole rule
+    /// is readable off a save, and it was — for every block in the game. See
+    /// docs/provenance/redstone.md.
+    ///
+    /// Returns the vanilla property value, e.g. "bass". Never empty: a block
+    /// nothing was measured about is `harp`, which is not a guess — `harp` is
+    /// the value the game gives it, and the table lists the exceptions.
+    [[nodiscard]] std::string_view note_instrument(registry::BlockStateId below) const noexcept;
+
     /// Press a plate, or refresh one that is already pressed.
     ///
     /// The counterpart of `neighbour_changed` for the one family of blocks that
@@ -289,6 +303,12 @@ private:
     std::vector<SwitchRule> switches_;
     /// Indexed by block: an index into `switches_`, or -1.
     std::vector<i16> switch_index_;
+
+    /// Indexed by block: the note block instrument that block gives, as a
+    /// property-value index, or -1 for the default.
+    std::vector<i16> instrument_index_;
+    /// The note block's `instrument` property, resolved once.
+    std::optional<registry::PropertyView> instrument_property_;
 };
 
 }  // namespace ov::gameplay
