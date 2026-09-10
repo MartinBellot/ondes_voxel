@@ -43,6 +43,7 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`combat.md`](provenance/combat.md) | Frapper, utiliser, manger, user : la jauge d'attaque, 34 armes, 91 tables de butin |
 | [`verbes.md`](provenance/verbes.md) | Les verbes branchés au serveur, et le levier enfin tiré |
 | [`explosions.md`](provenance/explosions.md) | La résistance au souffle des 987 blocs, mesurée — et le plafond au-delà duquel aucune explosion ne peut plus distinguer deux valeurs |
+| [`tnt-et-gravite.md`](provenance/tnt-et-gravite.md) | La TNT qui saute, le creeper qui siffle, le sable qui tombe — et le paquet Explosion qui n'est pas là où l'archive le met |
 | [`branchement.md`](provenance/branchement.md) | Le câblage au tick, et les deux bugs qu'il a révélés |
 | **Client** | |
 | [`interface.md`](provenance/interface.md) | Police, HUD, inventaire : 2414 glyphes validés glyphe par glyphe |

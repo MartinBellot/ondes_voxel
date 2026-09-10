@@ -9,7 +9,7 @@
     "pack_format": 15,
     "auth_mode": "offline only — no Mojang authentication (product decision)"
   },
-  "last_updated": "2026-09-09",
+  "last_updated": "2026-09-10",
   "current_milestone": "M6",
   "current_task": "m6-block-interaction",
   "milestones": {
@@ -68,7 +68,7 @@
     "M6": {
       "name": "Contenu complet",
       "status": "in_progress",
-      "done": 13,
+      "done": 14,
       "total": 79,
       "exit_criterion": "Une batterie world_test par sous-système ; parité statistique worldgen sur 1000 seeds ; matrice protocole à 100 %.",
       "blocked": [],
@@ -195,6 +195,7 @@
     "sky_darken_bug": "la fraction de jour brute passee dans un seul cosinus rendait 5 au tick 0 la ou le jeu rend 0 : un serveur frais faisait apparaitre des monstres sur de l'herbe eclairee. Vanilla passe le jour par une courbe d'abord",
     "mob_maze": "le meme labyrinthe donne au vrai serveur et a nous donne la meme route : ouvertures a -7, +7, -7, prises dans cet ordre une fois chacune. Vitesse de poursuite 0,115 contre 0,11419 (271 echantillons), cap monstres 70 contre un plateau a 70,88, seuil de lumiere identique",
     "client_interface": "2414 glyphes, avances validees glyphe par glyphe contre un oracle Python independant : 0 desaccord. Le jar vanilla et Faithful 32x different sur 51 glyphes (2,11 %), aucun sous U+0100. HUD +0,02 ms p50 / +0,05 ms p99 d'enregistrement CPU ; un ecran ouvert coute 0,5 ms de GPU et c'est un seul quad",
+    "tnt_and_gravity": "TNT, creeper et 25 blocs soumis a la gravite branches au serveur : vol de la TNT a 2,9e-9 sur 3950 echantillons, meche en chaine 10-29 (20 valeurs sur 384), colonne de sable 2/4/6/8/10/12 ticks, rendement du creeper 0,337. Cratere de bout en bout par notre serveur : union 265/271, intersection 157/170, ecart de frequence 0,048 contre 0,269 pour un temoin decale. Le paquet Explosion est 0x1D et non 0x1E comme le dit l'archive du wiki",
     "lab_state_bug": "Canvas::state demandait l'etat correspondant a un ensemble partiel de proprietes, et un ensemble partiel resout quand meme : les coffres du banc sortaient waterlogged=true, poses a l'air libre, pendant que l'outil annoncait 0 nom refuse. Les etats partent maintenant du defaut du bloc, propriete par propriete"
   },
   "environment": {
