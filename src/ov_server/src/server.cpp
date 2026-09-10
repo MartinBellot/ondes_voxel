@@ -45,6 +45,7 @@
 #include "natural_spawning.hpp"
 #include "player_inventory.hpp"
 #include "world_ticks.hpp"
+#include "agriculture.hpp"  // ── agriculture ──
 #include "ov/world/chunk.hpp"
 #include "ov/world/chunk_map.hpp"
 #include "ov/world/chunk_storage.hpp"
@@ -764,6 +765,11 @@ struct Superflat {
     const bool upper = place.face == 0 || (place.face >= 2 && place.cursor_y > 0.5F);
     set("half", upper ? "top" : "bottom");
     set("type", upper ? "top" : "bottom");
+
+    // ── agriculture ── Leaves a player places never decay. Only leaves have
+    // `persistent`; without it they land at distance 7 and the random tick
+    // takes them.
+    set("persistent", "true");
 
     return state;
 }
@@ -2477,6 +2483,112 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         OV_LOG_WARN("no block registry — fluids and redstone stay inert");
     }
 
+    // ── agriculture ─────────────────────────────────────────────────────────
+    //
+    // The random tick and the plants that answer it. How they behave is in
+    // gameplay/plants.{hpp,cpp}, how positions are picked in agriculture.{hpp,
+    // cpp}; what is here is the light and the loot a plant reaches for over
+    // this server's chunks. Two environments: the tick thread's, which runs
+    // with `chunk_mutex` held, and the right-click's, which takes it itself.
+    std::optional<gameplay::Plants>       plants;
+    std::unique_ptr<TreeGrower>           tree_grower;
+    std::optional<ServerPlantEnvironment> plant_env;
+    std::optional<ServerPlantEnvironment> plant_env_player;
+    /// `randomTickSpeed` lives here: `random_ticks.set_speed(n)` is the gamerule.
+    RandomTicks                           random_ticks{0x4f56'4147'5249'0001ULL};
+    std::vector<Vec3d>                    random_tick_players;
+    /// Loot of blocks a rule broke — a leaf decaying, a crop uprooted —
+    /// published after the tick, under `players_mutex`. Own mutex: a right-click
+    /// can drop too, from the network thread.
+    std::mutex                            plant_drops_mutex;
+    std::vector<ItemEntity>               plant_drops;
+    std::vector<ItemEntity>               plant_drops_out;
+    math::XoroshiroRandomSource           plant_loot_random{0x6A09E667F3BCC908ULL, 0xBB67AE8584CAA73BULL};
+    const auto stored_light = [&](BlockPos pos, bool sky) -> u8 {
+        const world::Chunk* chunk = chunk_if_resident(pos.x >> 4, pos.z >> 4);
+        if (chunk == nullptr) {
+            return 0;
+        }
+        const world::ChunkSection* section = chunk->section_for_y(pos.y);
+        if (section == nullptr) {
+            return sky && pos.y > 0 ? u8{15} : u8{0};
+        }
+        const usize index = world::section_index(static_cast<usize>(pos.x & 15),
+                                                 static_cast<usize>(pos.y & 15),
+                                                 static_cast<usize>(pos.z & 15));
+        return sky ? section->sky_light().get(index) : section->block_light().get(index);
+    };
+    /// Caller holds `chunk_mutex` (it reads the two neighbours a table asks about).
+    const auto plant_drop = [&](BlockPos pos, registry::BlockStateId state) {
+        if (!loot_tables) {
+            return;
+        }
+        const registry::BlockStateId above = block_at({pos.x, pos.y + 1, pos.z});
+        const registry::BlockStateId below = block_at({pos.x, pos.y - 1, pos.z});
+        const std::scoped_lock       lock{plant_drops_mutex};
+        std::vector<gameplay::Drop>  drops;
+        loot_tables->drops(state, gameplay::Held{}, plant_loot_random, drops,
+                           gameplay::Neighbours{.above = above, .below = below});
+        for (const gameplay::Drop& drop : drops) {
+            ItemEntity item;
+            item.entity_id = next_entity_id.fetch_add(1);
+            item.uuid      = net::Uuid{0x4f564954454d0000ULL | static_cast<u64>(item.entity_id),
+                                       static_cast<u64>(item.entity_id) * 0x9E3779B97F4A7C15ULL};
+            item.x         = static_cast<f64>(pos.x) + 0.5;
+            item.y         = static_cast<f64>(pos.y) + 0.25;
+            item.z         = static_cast<f64>(pos.z) + 0.5;
+            item.stack = net::ItemStack{drop.item, static_cast<i8>(std::min(drop.count, 64)), {}};
+            item.born  = server_tick.load(std::memory_order_relaxed);
+            plant_drops.push_back(std::move(item));
+        }
+    };
+    if (blocks && registries && world_ticks) {
+        plants.emplace(*blocks, *registries);
+        tree_grower = TreeGrower::load(std::filesystem::path{OV_DATA_DIR}, *blocks);
+        if (!tree_grower) {
+            OV_LOG_WARN("tree features could not be read — saplings will not grow");
+        }
+        PlantHooks tick_hooks;
+        tick_hooks.block_light = [&](BlockPos pos) { return stored_light(pos, false); };
+        tick_hooks.sky_light   = [&](BlockPos pos) { return stored_light(pos, true); };
+        tick_hooks.sky_darken  = [&] {
+            return sky_darken_for(server_tick.load(std::memory_order_relaxed));
+        };
+        tick_hooks.drop_block = plant_drop;
+        plant_env.emplace(std::move(tick_hooks), tree_grower.get());
+
+        PlantHooks player_hooks;
+        player_hooks.block_light = [&](BlockPos pos) {
+            const std::scoped_lock chunk_lock{chunk_mutex};
+            return stored_light(pos, false);
+        };
+        player_hooks.sky_light = [&](BlockPos pos) {
+            const std::scoped_lock chunk_lock{chunk_mutex};
+            return stored_light(pos, true);
+        };
+        player_hooks.sky_darken = [&] {
+            return sky_darken_for(server_tick.load(std::memory_order_relaxed));
+        };
+        player_hooks.drop_block = [&](BlockPos pos, registry::BlockStateId state) {
+            const std::scoped_lock chunk_lock{chunk_mutex};
+            plant_drop(pos, state);
+        };
+        plant_env_player.emplace(std::move(player_hooks), tree_grower.get());
+
+        world_ticks->attach_plants(*plants, *plant_env);
+        // A measurement knob until `/gamerule randomTickSpeed` exists: the
+        // end-to-end campaign runs the server at a speed where a minute shows
+        // something. Read once, at start-up, never in the tick.
+        if (const char* speed = std::getenv("OV_RANDOM_TICK_SPEED"); speed != nullptr) {
+            random_ticks.set_speed(static_cast<i32>(std::strtol(speed, nullptr, 10)));
+            OV_LOG_INFO("randomTickSpeed {} (OV_RANDOM_TICK_SPEED)", random_ticks.speed());
+        }
+        random_tick_players.reserve(64);
+        plant_drops.reserve(256);
+        plant_drops_out.reserve(256);
+    }
+    // ── end agriculture ─────────────────────────────────────────────────────
+
     /// Send what the drain wrote, and relight the chunks it touched.
     ///
     /// Called with `chunk_mutex` **released**: broadcasting walks the player
@@ -3858,6 +3970,51 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         }
                         // ── end combat and interaction ──────────────────────
 
+                        // ── agriculture ─────────────────────────────────────
+                        // Bone meal and planting. After the block's own
+                        // interaction — a chest clicked with seeds opens — and
+                        // before the generic placement, which would put a
+                        // sapling on stone and seeds nowhere at all.
+                        if (plants && plant_env_player && registries && item_registry) {
+                            const net::ItemStack& hand =
+                                player.inventory[36 + static_cast<usize>(player.held_slot)];
+                            const std::string_view item =
+                                hand.empty() ? std::string_view{}
+                                             : registries->entry_of(*item_registry, hand.item_id);
+                            const BlockPos clicked{place->position.x, place->position.y,
+                                                   place->position.z};
+                            if (item == "minecraft:bone_meal") {
+                                // Seeded from the position and the tick: the
+                                // same click on the same tick grows the same
+                                // way, and no generator is shared between the
+                                // network thread and the tick.
+                                gameplay::PlantRandom random{static_cast<i64>(math::mix_stafford_13(
+                                    (static_cast<u64>(static_cast<u32>(clicked.x)) << 32) ^
+                                    (static_cast<u64>(static_cast<u32>(clicked.z)) << 8) ^
+                                    static_cast<u64>(static_cast<u32>(clicked.y)) ^
+                                    (static_cast<u64>(server_tick.load(std::memory_order_relaxed))
+                                     * 0x9E3779B97F4A7C15ULL)))};
+                                const gameplay::UseOutcome grown = plants->bone_meal(
+                                    player_level, *plant_env_player, clicked, random);
+                                if (!grown.unsupported.empty()) {
+                                    OV_LOG_DEBUG("use on block: {}", grown.unsupported);
+                                }
+                                if (grown.result != gameplay::UseResult::Pass) {
+                                    if (grown.consume_one && options.survival) {
+                                        consume_one_held(player);
+                                    }
+                                    return true;
+                                }
+                            } else if (plants->is_plantable(item)) {
+                                if (plants->plant(player_level, clicked, place->face, item).planted &&
+                                    options.survival) {
+                                    consume_one_held(player);
+                                }
+                                return true;
+                            }
+                        }
+                        // ── end agriculture ─────────────────────────────────
+
                         const net::ItemStack& held =
                             player.inventory[36 + static_cast<usize>(player.held_slot)];
                         const auto held_block =
@@ -4910,6 +5067,47 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                              stats.refused, stats.waves, stats.notifications);
             }
         }
+
+        // ── agriculture: the random tick ────────────────────────────
+        //
+        // After the scheduled ticks, as in the game. The chunk set is
+        // rebuilt once a second — it only changes when somebody crosses a
+        // chunk border — and only chunks within 128 blocks of a player tick:
+        // the game's rule, and why an empty server grows nothing.
+        if (plants && plant_env && level && world_ticks) {
+            if (clock.tick_count() % 20 == 0 || random_ticks.selected().empty()) {
+                random_tick_players.clear();
+                {
+                    const std::unique_lock lock{players_mutex, std::try_to_lock};
+                    if (lock.owns_lock()) {
+                        // No spectators on this server: every player counts.
+                        for (const auto& [key, who] : players) {
+                            random_tick_players.push_back(Vec3d{who.x, who.y, who.z});
+                        }
+                    }
+                }
+                const std::scoped_lock chunk_lock{chunk_mutex};
+                random_ticks.select(chunks, random_tick_players);
+            }
+            {
+                const std::scoped_lock chunk_lock{chunk_mutex};
+                level->set_game_time(clock.tick_count());
+                level->clear_changed();
+                (void)random_ticks.run(*level, chunks, *plants, *plant_env);
+                (void)world_ticks->settle_writes(*level);
+            }
+            flush_tick_writes();
+            {
+                const std::scoped_lock lock{plant_drops_mutex};
+                plant_drops_out.swap(plant_drops);
+            }
+            if (!plant_drops_out.empty()) {
+                const std::scoped_lock lock{players_mutex};
+                publish_items(plant_drops_out);
+                plant_drops_out.clear();
+            }
+        }
+        // ── end agriculture ─────────────────────────────────────────
 
         // ── Containers: hoppers, droppers, dispensers ───────────────
         //

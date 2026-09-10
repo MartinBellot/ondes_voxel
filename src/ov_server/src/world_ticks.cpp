@@ -92,6 +92,11 @@ usize WorldTicks::settle(ServerLevel& level, usize& waves) {
                 extension_->neighbour_changed(level, pos);
             }
             ++notified;
+            if (plants_ != nullptr) {  // ── agriculture ──
+                // The written block itself: a leaf placed next to a log learns
+                // its distance, as the game's placement computes it.
+                plants_->neighbour_changed(level, *plant_env_, pos, pos);
+            }
 
             for (u8 i = 0; i < kDirectionCount; ++i) {
                 const BlockPos neighbour = pos.offset(static_cast<Direction>(i));
@@ -102,6 +107,9 @@ usize WorldTicks::settle(ServerLevel& level, usize& waves) {
                 (void)redstone_.neighbour_changed(level, neighbour, pos);
                 if (extension_ != nullptr) {  // ── tnt and gravity ──
                     extension_->neighbour_changed(level, neighbour);
+                }
+                if (plants_ != nullptr) {  // ── agriculture ──
+                    plants_->neighbour_changed(level, *plant_env_, neighbour, pos);
                 }
                 ++notified;
             }
@@ -179,6 +187,14 @@ WorldTickStats WorldTicks::run(ServerLevel& level, i64 now) {
 
     level.queue(world::TickQueue::Block).collect_due(now, due_);
     for (const world::ScheduledTick& tick : due_) {
+        // ── agriculture ── leaves, cactus, sugar cane and farmland ask for
+        // their own ticks; the plant rules answer them before redstone sees
+        // them.
+        if (const auto block = level.blocks().find_block(tick.what);
+            block && plants_ != nullptr && plants_->scheduled_tick(level, *plant_env_, tick.pos, *block)) {
+            ++stats.block_ticks;
+            continue;
+        }
         if (!level.blocks().find_block(tick.what).has_value()) {
             // A tick naming a block this version does not have. Refused and
             // named rather than dropped: it means something scheduled with a
