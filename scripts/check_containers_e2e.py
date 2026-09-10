@@ -62,6 +62,9 @@ LAB_HOPPER = (34, FLOOR, 168)
 TAIL_CHEST = (226, FLOOR + 2, 7)
 HOPPERS = [(227 + i, FLOOR + 2, 7) for i in range(5)]
 HEAD_HOPPER = HOPPERS[-1]
+# Le distributeur de la même parcelle, avec son levier posé dessus.
+DISPENSER = (226, FLOOR, 11)
+DISPENSER_LEVER = (226, FLOOR + 1, 11)
 
 SB_USE_ITEM_ON = 0x31
 SB_CLOSE_CONTAINER = 0x0C
@@ -382,6 +385,37 @@ def main() -> int:
             fail(f"un entonnoir alimenté a laissé passer "
                  f"{locked_after - locked_before} objet(s)")
         ok(f"verrou total — 0 objet passé en {l1 - l0} ticks serveur")
+
+        # ── 2ter. Le distributeur tire ─────────────────────────────────────
+        #
+        # Le levier du banc est posé **sur** le distributeur, donc il l'alimente
+        # directement — pas de piège à six voisins ici. Ce qui est vérifié est
+        # le front montant : `triggered` passe à vrai, et quatre ticks plus tard
+        # un objet quitte la machine. Un distributeur qui tirerait à chaque tick
+        # tant que le levier est levé viderait ses neuf cases d'un coup.
+        window = client.open_at(DISPENSER)
+        if container_size(client) != 9:
+            fail(f"le distributeur montre {container_size(client)} cases, pas 9")
+        fill_container(client, cobble, 5)
+        held = total_in_window(client, 9)
+        client.close()
+        if held != 5:
+            fail(f"le distributeur tient {held} pavés, pas 5")
+
+        client.walk_to(DISPENSER_LEVER[0] + 0.5, float(DISPENSER_LEVER[1] + 1),
+                       DISPENSER_LEVER[2] + 1.5)
+        client.use_on(DISPENSER_LEVER)
+        client.settle(3.0)
+        if DISPENSER_LEVER not in client.blocks:
+            fail("le levier n'a pas changé d'état — rien n'a pu déclencher la machine")
+
+        client.open_at(DISPENSER)
+        after_fire = total_in_window(client, 9)
+        client.close()
+        note(f"distributeur : {held} pavés avant, {after_fire} après un front montant")
+        if after_fire != held - 1:
+            fail(f"le distributeur a éjecté {held - after_fire} objet(s) sur un front, pas 1")
+        ok("le distributeur tire un objet, une fois, sur le front montant")
 
         # ── 3. Le comparateur : floor(14n/27)+1 ────────────────────────────
         #
