@@ -6,6 +6,9 @@ ov_add_executable(ov_netherparity
         src/main.cpp
     DEPS
         ov_worldgen
+        ov_gameplay
+        ov_protocol
+        ov_io
         ov_registry
         ov_nbt
         fmt::fmt

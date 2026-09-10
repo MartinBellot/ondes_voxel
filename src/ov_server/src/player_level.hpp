@@ -104,6 +104,12 @@ public:
     [[nodiscard]] u32 writes() const noexcept { return writes_; }
     void              clear_writes() noexcept { writes_ = 0; }
 
+    // ── nether ── A writer for another level: its height and its rules.
+    void set_dimension(world::WorldShape shape, world::DimensionTraits traits) noexcept {
+        shape_  = shape;
+        traits_ = traits;
+    }
+
 private:
     PlayerLevelHooks       hooks_;
     world::WorldShape      shape_{world::WorldShape::overworld()};

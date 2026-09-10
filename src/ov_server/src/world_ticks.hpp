@@ -35,6 +35,7 @@
 #pragma once
 
 #include "ov/gameplay/fluid.hpp"
+#include "ov/gameplay/nether_portal.hpp"  // ── nether ──
 #include "ov/gameplay/plants.hpp"
 #include "ov/gameplay/redstone.hpp"
 #include "ov/gameplay/signal.hpp"
@@ -113,6 +114,13 @@ public:
     // ── The server's side of it ─────────────────────────────────────────────
 
     void set_game_time(i64 now) noexcept { now_ = now; }
+
+    // ── nether ── A level for another dimension: its height and its rules —
+    // `ultrawarm` is what makes lava flow as far and as fast as water.
+    void set_dimension(world::WorldShape shape, world::DimensionTraits traits) noexcept {
+        shape_  = shape;
+        traits_ = traits;
+    }
 
     [[nodiscard]] world::BlockTickScheduler&       queue(world::TickQueue which) noexcept;
     [[nodiscard]] const world::BlockTickScheduler& queue(world::TickQueue which) const noexcept;
@@ -258,6 +266,16 @@ private:
     std::vector<BlockPos> wave_;
 
     BlockRuleExtension* extension_{nullptr};  // ── tnt and gravity ──
+
+    // ── nether ──
+public:
+    /// Let every write reach the portal rules: a fire lights its frame, a
+    /// broken frame block empties its portal. Not owned; null turns it off.
+    void attach_portals(const gameplay::PortalRules* portals) noexcept { portals_ = portals; }
+
+private:
+    const gameplay::PortalRules* portals_{nullptr};
+    // ── end nether ──
 };
 
 }  // namespace ov::server

@@ -387,9 +387,16 @@ TEST_CASE("a file this server cannot use is refused and named", "[player_data]")
     }
     SECTION("a dimension this server does not have") {
         nbt::Tag root = vanilla_file();
-        put(root, "Dimension", nbt::Tag{std::string{"minecraft:the_nether"}});
+        put(root, "Dimension", nbt::Tag{std::string{"minecraft:the_end"}});
         CHECK(read_player(root, &kBot, names(), "x").error().kind ==
               PlayerDataErrorKind::UnsupportedDimension);
+    }
+    SECTION("the Nether is one it has") {  // ── nether ──
+        nbt::Tag root = vanilla_file();
+        put(root, "Dimension", nbt::Tag{std::string{"minecraft:the_nether"}});
+        const auto loaded = read_player(root, &kBot, names(), "x");
+        REQUIRE(loaded.has_value());
+        CHECK(loaded->record.dimension == "minecraft:the_nether");
     }
     SECTION("bytes that are not a player file") {
         const std::vector<u8> junk{1, 2, 3, 4};

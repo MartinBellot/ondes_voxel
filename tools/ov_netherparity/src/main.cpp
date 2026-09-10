@@ -21,8 +21,11 @@
 #define OV_LOG_CATEGORY "netherparity"
 
 #include "ov/base/log.hpp"
+#include "ov/gameplay/nether_portal.hpp"
+#include "ov/io/file.hpp"
 #include "ov/nbt/binary.hpp"
 #include "ov/nbt/region.hpp"
+#include "ov/protocol/play.hpp"
 #include "ov/registry/block_states.hpp"
 #include "ov/registry/registries.hpp"
 #include "ov/world/chunk.hpp"
@@ -41,7 +44,9 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cstdio>
 #include <cstdlib>
+#include <tuple>
 #include <filesystem>
 #include <map>
 #include <string>
@@ -77,6 +82,19 @@ struct Options {
     /// Restrict `--pairs` to one game block and/or one of ours.
     std::string pair_game;
     std::string pair_ours;
+    /// `x,y,z,axis;...`: build a portal at each target on our own finished
+    /// Nether terrain and print where it went — the placement algorithm on
+    /// its own, against the positions scripts/measure_nether_portal.py read
+    /// from the real server.
+    std::string portals;
+    /// With `--portal`: also run the algorithm on this world's own terrain.
+    std::filesystem::path portal_world;
+    /// With `--portal` (one target): the Chunk Data packets the real server
+    /// sent a player arriving there — the terrain the game built its portal in,
+    /// before anything ticked — and the portal it built (`x,y,z,axis`), which
+    /// is taken back out: its frame's floor row to netherrack, the rest to air.
+    std::filesystem::path portal_packets;
+    std::string           portal_unbuild;
 };
 
 [[nodiscard]] Options parse(int argc, char** argv) {
@@ -104,6 +122,14 @@ struct Options {
             options.full_chunks = std::atoi(value("--full=").c_str());
         } else if (argument.starts_with("--pairs=")) {
             options.pairs = std::atoi(value("--pairs=").c_str());
+        } else if (argument.starts_with("--portal=")) {
+            options.portals = value("--portal=");
+        } else if (argument.starts_with("--portal-world=")) {
+            options.portal_world = value("--portal-world=");
+        } else if (argument.starts_with("--portal-packets=")) {
+            options.portal_packets = value("--portal-packets=");
+        } else if (argument.starts_with("--portal-unbuild=")) {
+            options.portal_unbuild = value("--portal-unbuild=");
         } else if (argument.starts_with("--pair-game=")) {
             options.pair_game = value("--pair-game=");
         } else if (argument.starts_with("--pair-ours=")) {
@@ -272,6 +298,243 @@ struct Count {
     return whole == 0 ? 0.0 : 100.0 * static_cast<f64>(part) / static_cast<f64>(whole);
 }
 
+/// Our finished Nether, read through the pipeline; writes kept on the side.
+class PipelineOverlay final : public world::LevelWriter {
+public:
+    PipelineOverlay(worldgen::ChunkPipeline& pipeline, const registry::BlockRegistry& blocks)
+        : pipeline_(&pipeline), blocks_(&blocks) {}
+
+    [[nodiscard]] registry::BlockStateId block_at(BlockPos pos) const override {
+        if (pos.y < 0 || pos.y > 255) {
+            return registry::kAirState;
+        }
+        if (const auto found = writes_.find(key(pos)); found != writes_.end()) {
+            return found->second;
+        }
+        const world::Chunk& chunk =
+            pipeline_->promote(pos.x >> 4, pos.z >> 4, worldgen::ChunkStatus::Full);
+        return chunk.get_block(static_cast<usize>(pos.x & 15), pos.y,
+                               static_cast<usize>(pos.z & 15));
+    }
+    [[nodiscard]] bool              is_loaded(BlockPos) const override { return true; }
+    [[nodiscard]] world::WorldShape shape() const override { return world::WorldShape::nether(); }
+    [[nodiscard]] world::DimensionTraits traits() const override { return {true, false}; }
+    [[nodiscard]] const registry::BlockRegistry& blocks() const override { return *blocks_; }
+    void set_block(BlockPos pos, registry::BlockStateId state) override { writes_[key(pos)] = state; }
+    void schedule_tick(BlockPos, std::string_view, i64, world::TickQueue,
+                       world::TickPriority) override {}
+    [[nodiscard]] bool has_scheduled_tick(BlockPos, std::string_view,
+                                          world::TickQueue) const override {
+        return false;
+    }
+    [[nodiscard]] i64 game_time() const override { return 0; }
+
+private:
+    [[nodiscard]] static std::tuple<i32, i32, i32> key(BlockPos p) { return {p.x, p.y, p.z}; }
+    worldgen::ChunkPipeline*                               pipeline_;
+    const registry::BlockRegistry*                         blocks_;
+    std::map<std::tuple<i32, i32, i32>, registry::BlockStateId> writes_;
+};
+
+/// The game's finished Nether, read from its region files; writes on the side.
+/// What lets the placement algorithm be judged apart from our terrain.
+class ReferenceOverlay final : public world::LevelWriter {
+public:
+    ReferenceOverlay(const std::filesystem::path& regions, const registry::BlockRegistry& blocks)
+        : regions_(regions), blocks_(&blocks) {}
+
+    [[nodiscard]] registry::BlockStateId block_at(BlockPos pos) const override {
+        if (pos.y < 0 || pos.y > 255) {
+            return registry::kAirState;
+        }
+        if (const auto found = writes_.find(key(pos)); found != writes_.end()) {
+            return found->second;
+        }
+        const auto chunk_key = std::pair{pos.x >> 4, pos.z >> 4};
+        auto       cached    = chunks_.find(chunk_key);
+        if (cached == chunks_.end()) {
+            ReferenceChunk decoded;
+            const auto     path = regions_ / fmt::format("r.{}.{}.mca", chunk_key.first >> 5,
+                                                         chunk_key.second >> 5);
+            bool ok = false;
+            if (auto region = nbt::RegionFile::open(path)) {
+                const auto lx = static_cast<u32>(chunk_key.first & 31);
+                const auto lz = static_cast<u32>(chunk_key.second & 31);
+                if (region->has_chunk(lx, lz)) {
+                    if (auto document = region->read_chunk(lx, lz)) {
+                        ok = decode(*document, decoded, true);
+                    }
+                }
+            }
+            if (!ok) {
+                ++missing_;
+                decoded.names.assign(static_cast<usize>(kHeight) * 256, "minecraft:air");
+            }
+            cached = chunks_.emplace(chunk_key, std::move(decoded)).first;
+        }
+        const std::string& name = cached->second.block(pos.x & 15, pos.y, pos.z & 15);
+        if (name == "minecraft:air" || name == "minecraft:void_air") {
+            return registry::kAirState;
+        }
+        const auto block = blocks_->find_block(name);
+        return block ? blocks_->default_state(*block) : registry::kAirState;
+    }
+    [[nodiscard]] bool              is_loaded(BlockPos) const override { return true; }
+    [[nodiscard]] world::WorldShape shape() const override { return world::WorldShape::nether(); }
+    [[nodiscard]] world::DimensionTraits traits() const override { return {true, false}; }
+    [[nodiscard]] const registry::BlockRegistry& blocks() const override { return *blocks_; }
+    void set_block(BlockPos pos, registry::BlockStateId state) override { writes_[key(pos)] = state; }
+    void schedule_tick(BlockPos, std::string_view, i64, world::TickQueue,
+                       world::TickPriority) override {}
+    [[nodiscard]] bool has_scheduled_tick(BlockPos, std::string_view,
+                                          world::TickQueue) const override {
+        return false;
+    }
+    [[nodiscard]] i64   game_time() const override { return 0; }
+    [[nodiscard]] usize missing() const noexcept { return missing_; }
+
+private:
+    [[nodiscard]] static std::tuple<i32, i32, i32> key(BlockPos p) { return {p.x, p.y, p.z}; }
+    std::filesystem::path                                        regions_;
+    const registry::BlockRegistry*                               blocks_;
+    mutable std::map<std::pair<i32, i32>, ReferenceChunk>        chunks_;
+    mutable usize                                                missing_{0};
+    std::map<std::tuple<i32, i32, i32>, registry::BlockStateId> writes_;
+};
+
+/// Chunks decoded from the game's own packets; writes on the side.
+class PacketOverlay final : public world::LevelWriter {
+public:
+    PacketOverlay(const std::map<std::pair<i32, i32>, world::Chunk>& chunks,
+                  const registry::BlockRegistry&                      blocks)
+        : chunks_(&chunks), blocks_(&blocks) {}
+
+    [[nodiscard]] registry::BlockStateId block_at(BlockPos pos) const override {
+        if (pos.y < 0 || pos.y > 255) {
+            return registry::kAirState;
+        }
+        if (const auto found = writes_.find(key(pos)); found != writes_.end()) {
+            return found->second;
+        }
+        const auto chunk = chunks_->find(std::pair{pos.x >> 4, pos.z >> 4});
+        if (chunk == chunks_->end()) {
+            return registry::kAirState;
+        }
+        return chunk->second.get_block(static_cast<usize>(pos.x & 15), pos.y,
+                                       static_cast<usize>(pos.z & 15));
+    }
+    [[nodiscard]] bool              is_loaded(BlockPos) const override { return true; }
+    [[nodiscard]] world::WorldShape shape() const override { return world::WorldShape::nether(); }
+    [[nodiscard]] world::DimensionTraits traits() const override { return {true, false}; }
+    [[nodiscard]] const registry::BlockRegistry& blocks() const override { return *blocks_; }
+    void set_block(BlockPos pos, registry::BlockStateId state) override { writes_[key(pos)] = state; }
+    void schedule_tick(BlockPos, std::string_view, i64, world::TickQueue,
+                       world::TickPriority) override {}
+    [[nodiscard]] bool has_scheduled_tick(BlockPos, std::string_view,
+                                          world::TickQueue) const override {
+        return false;
+    }
+    [[nodiscard]] i64 game_time() const override { return 0; }
+
+private:
+    [[nodiscard]] static std::tuple<i32, i32, i32> key(BlockPos p) { return {p.x, p.y, p.z}; }
+    const std::map<std::pair<i32, i32>, world::Chunk>*          chunks_;
+    const registry::BlockRegistry*                              blocks_;
+    std::map<std::tuple<i32, i32, i32>, registry::BlockStateId> writes_;
+};
+
+/// Where our placement algorithm puts a new portal, on our own terrain.
+int place_portals(const Options& options, const registry::BlockRegistry& blocks,
+                  const worldgen::ChunkGenerator& generator, const worldgen::BiomeSource& source) {
+    auto features = worldgen::FeatureRegistry::load(options.data, blocks);
+    if (!features) {
+        return 1;
+    }
+    auto decorator = worldgen::Decorator::load(options.data, blocks, *features, source);
+    if (!decorator) {
+        return 1;
+    }
+    const gameplay::PortalRules rules{blocks};
+    std::string_view            list = options.portals;
+    while (!list.empty()) {
+        const usize            semicolon = list.find(';');
+        const std::string      item{list.substr(0, semicolon)};
+        list = semicolon == std::string_view::npos ? std::string_view{} : list.substr(semicolon + 1);
+        i32  x = 0, y = 0, z = 0;
+        char axis = 'x';
+        if (std::sscanf(item.c_str(), "%d,%d,%d,%c", &x, &y, &z, &axis) != 4) {
+            continue;
+        }
+        const auto portal_axis = axis == 'z' ? gameplay::PortalAxis::Z : gameplay::PortalAxis::X;
+        worldgen::ChunkPipeline pipeline{generator, &*decorator, blocks,
+                                         world::WorldShape::nether(), options.seed};
+        PipelineOverlay         level{pipeline, blocks};
+        const auto made = rules.create(level, BlockPos{x, y, z}, portal_axis, 127);
+        fmt::print("target ({}, {}, {}) axis {} -> portal min corner ({}, {}, {})", x, y, z,
+                   axis, made.min_corner.x, made.min_corner.y, made.min_corner.z);
+        if (!options.portal_packets.empty()) {
+            // The terrain the game built its portal in, as it sent it.
+            const auto bytes = io::read_file(options.portal_packets);
+            if (!bytes) {
+                OV_LOG_ERROR("cannot read {}", options.portal_packets.string());
+                return 1;
+            }
+            const auto air = world::AirStates::from(blocks);
+            std::map<std::pair<i32, i32>, world::Chunk> sent;
+            usize                                       at = 0;
+            while (at + 4 <= bytes->size()) {
+                const usize length = (static_cast<usize>((*bytes)[at]) << 24) |
+                                     (static_cast<usize>((*bytes)[at + 1]) << 16) |
+                                     (static_cast<usize>((*bytes)[at + 2]) << 8) |
+                                     static_cast<usize>((*bytes)[at + 3]);
+                at += 4;
+                if (at + length > bytes->size()) {
+                    break;
+                }
+                if (auto chunk = net::parse_chunk_data(
+                        std::span<const u8>{bytes->data() + at, length},
+                        world::WorldShape::nether(), air, &blocks)) {
+                    const auto pos = chunk->position();
+                    sent.emplace(std::pair{pos.x, pos.z}, std::move(*chunk));
+                }
+                at += length;
+            }
+            PacketOverlay packets{sent, blocks};
+            // Take the game's portal back out.
+            i32  ux = 0, uy = 0, uz = 0;
+            char uaxis = 'x';
+            if (std::sscanf(options.portal_unbuild.c_str(), "%d,%d,%d,%c", &ux, &uy, &uz, &uaxis) ==
+                4) {
+                const auto netherrack =
+                    blocks.default_state(*blocks.find_block("minecraft:netherrack"));
+                for (i32 i = -1; i < 3; ++i) {
+                    for (i32 j = -1; j < 4; ++j) {
+                        const BlockPos p = uaxis == 'z' ? BlockPos{ux, uy + j, uz + i}
+                                                        : BlockPos{ux + i, uy + j, uz};
+                        packets.set_block(p, j < 0 ? netherrack : registry::kAirState);
+                    }
+                }
+            }
+            const auto on_sent = rules.create(packets, BlockPos{x, y, z}, portal_axis, 127);
+            fmt::print("   on the terrain the game sent ({}, {}, {}) [{} chunks]",
+                       on_sent.min_corner.x, on_sent.min_corner.y, on_sent.min_corner.z,
+                       sent.size());
+        }
+        if (!options.portal_world.empty()) {
+            // The same algorithm on the game's own terrain.
+            ReferenceOverlay reference{options.portal_world / "region", blocks};
+            const auto on_game = rules.create(reference, BlockPos{x, y, z}, portal_axis, 127);
+            fmt::print("   on the game's terrain ({}, {}, {}){}", on_game.min_corner.x,
+                       on_game.min_corner.y, on_game.min_corner.z,
+                       reference.missing() != 0
+                           ? fmt::format(" [{} chunks missing]", reference.missing())
+                           : std::string{});
+        }
+        fmt::print("\n");
+    }
+    return 0;
+}
+
 /// Finished chunks, through the pipeline and the Nether's decorator.
 ///
 /// What a `full` chunk has that a `carvers` one has not is the features — and
@@ -413,6 +676,10 @@ int main(int argc, char** argv) {
         return 1;
     }
     const auto air = world::AirStates::from(*blocks);
+
+    if (!options.portals.empty()) {
+        return place_portals(options, *blocks, generator, *source);
+    }
 
     const auto name_of = [&](registry::BlockStateId state) -> std::string_view {
         return state == registry::kAirState ? std::string_view("minecraft:air")
