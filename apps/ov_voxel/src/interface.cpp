@@ -685,9 +685,8 @@ bool Interface::update_creative(const client::InputState& input, netclient::Clie
                 // here rather than asked of the server because Set Creative
                 // Slot names a slot and has no "anywhere" form.
                 for (usize slot = kHotbarFirst; slot < kOffHandSlot; ++slot) {
-                    const usize index = slot < inventory_.size() ? slot : 0;
-                    if (inventory_[index].empty()) {
-                        creative_put(client, static_cast<i16>(index));
+                    if (inventory_[slot].empty()) {
+                        creative_put(client, static_cast<i16>(slot));
                         return true;
                     }
                 }
