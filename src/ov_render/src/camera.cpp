@@ -95,7 +95,14 @@ Vec3f Camera::right() const noexcept {
 }
 
 void Camera::turn(f32 delta_x, f32 delta_y, f32 sensitivity) noexcept {
-    yaw_degrees -= delta_x * sensitivity;
+    // Plus, not minus. `forward()` above uses Minecraft's own convention — yaw
+    // zero faces +Z and yaw increases clockwise seen from above — and in that
+    // convention turning the view to the right *raises* the yaw. Subtracting
+    // here made the mouse turn the camera the wrong way, and the mistake is
+    // invisible from inside the renderer: every view matrix and every raycast
+    // stayed self-consistent, so nothing was ever wrong on screen except which
+    // way the world went when the mouse moved.
+    yaw_degrees += delta_x * sensitivity;
     pitch_degrees += delta_y * sensitivity;
 
     // Just short of vertical. At exactly 90 the forward vector is parallel to
