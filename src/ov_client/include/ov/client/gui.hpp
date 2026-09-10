@@ -144,6 +144,11 @@ public:
     /// four, drawn first so the glyphs land on top of it.
     f32 text(f32 x, f32 y, std::string_view utf8, u32 argb = 0xFFFFFFFFU, bool shadow = true);
 
+    /// The same at `size` times the font's size: a title is drawn at 4, its
+    /// subtitle at 2. Everything scales — advance, shadow offset, bold step,
+    /// underline — so a size-4 glyph is exactly a size-1 glyph magnified.
+    f32 text_scaled(f32 x, f32 y, std::string_view utf8, u32 argb, f32 size, bool shadow = true);
+
     /// The same, centred on `x`.
     f32 text_centred(f32 x, f32 y, std::string_view utf8, u32 argb = 0xFFFFFFFFU,
                      bool shadow = true);
@@ -203,6 +208,9 @@ private:
 
     std::vector<Vertex> scratch_;
     std::vector<Batch>  batches_;
+
+    /// The size text() draws at; 1 except inside text_scaled().
+    f32 text_size_{1.0F};
 
     f32      width_{0.0F};
     f32      height_{0.0F};

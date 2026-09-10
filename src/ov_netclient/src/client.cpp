@@ -4,6 +4,8 @@
 
 #include "ov/base/log.hpp"
 #include "ov/io/byte_writer.hpp"
+#include "ov/protocol/chat.hpp"
+#include "ov/protocol/chat_types.hpp"
 #include "ov/protocol/client_play.hpp"
 #include "ov/protocol/entity.hpp"
 #include "ov/protocol/framing.hpp"
@@ -194,6 +196,10 @@ void ClientEvents::clear() {
     close_window.reset();
     game_mode.reset();
     entities.clear();
+    chat.clear();  // ── chat ──
+    chat_types.reset();
+    commands.reset();
+    suggestions.clear();
 }
 
 struct Client::Impl {
@@ -220,6 +226,10 @@ struct Client::Impl {
     world::AirStates  air;
 
     std::array<u8, 16384> read_buffer{};
+
+    // ── chat ──  The salt of an unsigned message: nothing checks it offline,
+    // and vanilla sends a random one, so a splitmix sequence stands in for it.
+    u64 salt_state{0x9E3779B97F4A7C15ULL};
 
     void send_raw(i32 packet_id, std::span<const u8> body);
     void handle(i32 packet_id, std::span<const u8> body);
@@ -424,8 +434,17 @@ void Client::Impl::handle_play(i32 packet_id, std::span<const u8> body) {
             if (!entity_id || !hardcore || !mode) {
                 return;
             }
+            // ── chat ──  The chat types are in the codec: a Player Chat
+            // Message names one by its index there.
+            auto chat_types = net::read_login_chat_types(body);
+            if (!chat_types) {
+                OV_LOG_WARN("Login (play): the registry codec did not read; chat types unknown");
+            }
             const std::lock_guard lock(mutex);
             inbox.game_mode = *mode;
+            if (chat_types) {
+                inbox.chat_types = std::move(*chat_types);
+            }
             break;
         }
 
@@ -734,6 +753,126 @@ void Client::Impl::handle_play(i32 packet_id, std::span<const u8> body) {
             break;
         }
 
+        // ── chat ────────────────────────────────────────────────────────
+        //
+        // Read with the protocol's own parsers, the ones the server's
+        // encoders are round-tripped against. A packet that does not parse
+        // is logged and dropped: the stream is framed, so the next packet is
+        // still readable.
+        case net::clientbound::kSystemChat: {
+            auto chat = net::parse_system_chat(body);
+            if (!chat) {
+                OV_LOG_WARN("malformed System Chat Message ({} bytes)", body.size());
+                return;
+            }
+            ClientEvents::ChatEvent event;
+            event.kind    = ClientEvents::ChatEvent::Kind::System;
+            event.json    = std::move(chat->content);
+            event.overlay = chat->overlay;
+            const std::lock_guard lock(mutex);
+            inbox.chat.push_back(std::move(event));
+            break;
+        }
+        case net::clientbound::kPlayerChat: {
+            auto chat = net::parse_player_chat(body);
+            if (!chat) {
+                OV_LOG_WARN("malformed Player Chat Message ({} bytes)", body.size());
+                return;
+            }
+            ClientEvents::ChatEvent event;
+            event.kind          = ClientEvents::ChatEvent::Kind::Player;
+            event.body          = std::move(chat->body);
+            event.unsigned_json = std::move(chat->unsigned_content);
+            event.chat_type     = chat->chat_type;
+            event.sender_json   = std::move(chat->name_json);
+            event.target_json   = std::move(chat->target_json);
+            const std::lock_guard lock(mutex);
+            inbox.chat.push_back(std::move(event));
+            break;
+        }
+        case net::clientbound::kDisguisedChat: {
+            auto chat = net::parse_disguised_chat(body);
+            if (!chat) {
+                OV_LOG_WARN("malformed Disguised Chat Message ({} bytes)", body.size());
+                return;
+            }
+            ClientEvents::ChatEvent event;
+            event.kind        = ClientEvents::ChatEvent::Kind::Disguised;
+            event.json        = std::move(chat->message_json);
+            event.chat_type   = chat->chat_type;
+            event.sender_json = std::move(chat->name_json);
+            event.target_json = std::move(chat->target_json);
+            const std::lock_guard lock(mutex);
+            inbox.chat.push_back(std::move(event));
+            break;
+        }
+        case net::clientbound::kSetTitleText:
+        case net::clientbound::kSetSubtitleText:
+        case net::clientbound::kSetActionBarText: {
+            auto text = net::read_string(reader, net::kMaxChatComponentLength);
+            if (!text) {
+                return;
+            }
+            ClientEvents::ChatEvent event;
+            event.kind = packet_id == net::clientbound::kSetTitleText
+                             ? ClientEvents::ChatEvent::Kind::Title
+                             : (packet_id == net::clientbound::kSetSubtitleText
+                                    ? ClientEvents::ChatEvent::Kind::Subtitle
+                                    : ClientEvents::ChatEvent::Kind::ActionBar);
+            event.json = std::move(*text);
+            const std::lock_guard lock(mutex);
+            inbox.chat.push_back(std::move(event));
+            break;
+        }
+        case net::clientbound::kSetTitleAnimationTimes: {
+            const auto fade_in  = reader.read_i32();
+            const auto stay     = reader.read_i32();
+            const auto fade_out = reader.read_i32();
+            if (!fade_in || !stay || !fade_out) {
+                return;
+            }
+            ClientEvents::ChatEvent event;
+            event.kind     = ClientEvents::ChatEvent::Kind::TitleTimes;
+            event.fade_in  = *fade_in;
+            event.stay     = *stay;
+            event.fade_out = *fade_out;
+            const std::lock_guard lock(mutex);
+            inbox.chat.push_back(std::move(event));
+            break;
+        }
+        case net::clientbound::kClearTitles: {
+            const auto reset = reader.read_u8();
+            if (!reset) {
+                return;
+            }
+            ClientEvents::ChatEvent event;
+            event.kind  = ClientEvents::ChatEvent::Kind::ClearTitles;
+            event.reset = *reset != 0;
+            const std::lock_guard lock(mutex);
+            inbox.chat.push_back(std::move(event));
+            break;
+        }
+        case net::clientbound::kCommands: {
+            auto graph = net::parse_commands(body);
+            if (!graph) {
+                OV_LOG_WARN("malformed Commands packet ({} bytes); no completion", body.size());
+                return;
+            }
+            const std::lock_guard lock(mutex);
+            inbox.commands = std::move(*graph);
+            break;
+        }
+        case net::clientbound::kCommandSuggestions: {
+            auto response = net::parse_suggestions_response(body);
+            if (!response) {
+                return;
+            }
+            const std::lock_guard lock(mutex);
+            inbox.suggestions.push_back(std::move(*response));
+            break;
+        }
+        // ── end chat ────────────────────────────────────────────────────
+
         default:
             // Everything else — entities, inventory, sound — is not needed to
             // stand in a world and see it. Ignoring by default rather than
@@ -876,6 +1015,13 @@ void Client::poll(ClientEvents& out) {
     impl_->inbox.experience.reset();
     impl_->inbox.open_screen.reset();
     impl_->inbox.close_window.reset();
+    // ── chat ──
+    out.chat.swap(impl_->inbox.chat);
+    out.suggestions.swap(impl_->inbox.suggestions);
+    out.chat_types = std::move(impl_->inbox.chat_types);
+    out.commands   = std::move(impl_->inbox.commands);
+    impl_->inbox.chat_types.reset();
+    impl_->inbox.commands.reset();
 }
 
 bool Client::in_game() const noexcept {
@@ -963,5 +1109,50 @@ void Client::send_held_slot(i16 slot) {
     writer.write_i16(slot);
     impl_->send_raw(net::serverbound::kSetHeldItem, writer.data());
 }
+
+// ── chat ──
+namespace {
+
+/// Milliseconds since the epoch: the timestamp vanilla puts on a message. A
+/// wall clock, and rightly — it is what the message says about when it was
+/// sent, and it never reaches a simulation.
+[[nodiscard]] i64 now_millis() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
+
+[[nodiscard]] i64 next_salt(u64& state) {
+    state += 0x9E3779B97F4A7C15ULL;
+    u64 z = state;
+    z     = (z ^ (z >> 30U)) * 0xBF58476D1CE4E5B9ULL;
+    z     = (z ^ (z >> 27U)) * 0x94D049BB133111EBULL;
+    return static_cast<i64>(z ^ (z >> 31U));
+}
+
+}  // namespace
+
+void Client::send_chat_message(std::string_view message) {
+    net::ChatMessage chat;
+    chat.message   = std::string(message);
+    chat.timestamp = now_millis();
+    chat.salt      = next_salt(impl_->salt_state);
+    impl_->send_raw(net::serverbound::kChatMessage, net::encode_chat_message(chat));
+}
+
+void Client::send_chat_command(std::string_view command) {
+    net::ChatCommand chat;
+    chat.command   = std::string(command);
+    chat.timestamp = now_millis();
+    chat.salt      = next_salt(impl_->salt_state);
+    impl_->send_raw(net::serverbound::kChatCommand, net::encode_chat_command(chat));
+}
+
+void Client::send_suggestions_request(i32 transaction, std::string_view text) {
+    impl_->send_raw(net::serverbound::kCommandSuggestionsRequest,
+                    net::encode_suggestions_request(
+                        net::SuggestionsRequest{transaction, std::string(text)}));
+}
+// ── end chat ──
 
 }  // namespace ov::netclient

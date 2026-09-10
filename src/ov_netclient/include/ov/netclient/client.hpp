@@ -23,6 +23,8 @@
 
 #include "ov/base/types.hpp"
 #include "ov/math/vec.hpp"
+#include "ov/protocol/chat.hpp"
+#include "ov/protocol/chat_types.hpp"
 #include "ov/protocol/client_play.hpp"
 #include "ov/registry/block_states.hpp"
 #include "ov/world/chunk.hpp"
@@ -178,11 +180,57 @@ struct ClientEvents {
 
     std::vector<EntityChange> entities;
 
+    // ── chat ──
+    //
+    // Everything the chat, the action bar and the titles draw, in arrival
+    // order: a title and its subtitle arrive as two packets and must be
+    // applied in the order the server sent them.
+    struct ChatEvent {
+        enum class Kind : u8 {
+            /// System Chat Message. `json`, and `overlay` for the action bar.
+            System,
+            /// Player Chat Message: `body` (plain text) or `unsigned_json`,
+            /// decorated by chat type `chat_type` with `sender_json`/`target_json`.
+            Player,
+            /// Disguised Chat Message: `json` is the message, decorated the same way.
+            Disguised,
+            Title,
+            Subtitle,
+            /// Set Action Bar Text: `json`.
+            ActionBar,
+            /// Set Title Animation Times, in ticks.
+            TitleTimes,
+            /// Clear Titles; `reset` also restores the default times.
+            ClearTitles,
+        };
+        Kind                       kind{Kind::System};
+        std::string                json;
+        bool                       overlay{false};
+        i32                        chat_type{0};
+        std::string                sender_json;
+        std::optional<std::string> target_json;
+        std::string                body;
+        std::optional<std::string> unsigned_json;
+        i32                        fade_in{0};
+        i32                        stay{0};
+        i32                        fade_out{0};
+        bool                       reset{false};
+    };
+    std::vector<ChatEvent> chat;
+    /// The chat types of the registry codec, from Login (play).
+    std::optional<std::vector<net::ChatDecoration>> chat_types;
+    /// The Commands packet: every command this player may run.
+    std::optional<net::CommandGraphWire> commands;
+    /// Command Suggestions Response, in arrival order.
+    std::vector<net::SuggestionsResponse> suggestions;
+    // ── end chat ──
+
     [[nodiscard]] bool empty() const noexcept {
         return loaded.empty() && unloaded.empty() && changed.empty() && !teleport &&
                !time_of_day && !health && !experience && containers.empty() &&
                container_slots.empty() && !open_screen && !close_window && !game_mode &&
-               entities.empty();
+               entities.empty() && chat.empty() && !chat_types && !commands &&
+               suggestions.empty();
     }
     void clear();
 };
@@ -250,6 +298,15 @@ public:
     /// Tell the server the window is closed. Not optional: a server that still
     /// believes a container is open refuses the next one.
     void send_close_container(u8 window_id);
+
+    // ── chat ──
+    /// Chat Message, unsigned: the text as typed, at most 256 UTF-16 units.
+    void send_chat_message(std::string_view message);
+    /// Chat Command: the command *without* its slash, unsigned.
+    void send_chat_command(std::string_view command);
+    /// Command Suggestions Request: the input up to the cursor, slash included.
+    void send_suggestions_request(i32 transaction, std::string_view text);
+    // ── end chat ──
 
 private:
     struct Impl;

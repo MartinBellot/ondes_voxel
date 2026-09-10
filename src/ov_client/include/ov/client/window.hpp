@@ -11,6 +11,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace ov::client {
 
@@ -50,6 +51,44 @@ enum class Key : u8 {
     Chat,
     Count,
 };
+
+// ── chat ──
+/// The keys a text field and the chat screen give a meaning to, named so no
+/// header outside window.cpp has to see GLFW.
+enum class EditKey : u8 {
+    Enter,
+    Escape,
+    Tab,
+    Backspace,
+    Delete,
+    Left,
+    Right,
+    Up,
+    Down,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+    /// With control: select all, copy, cut, paste.
+    A,
+    C,
+    V,
+    X,
+    /// The key that opens the command line. GLFW_KEY_SLASH, the key vanilla
+    /// binds (`key.keyboard.slash`) — a key *position*, as in vanilla.
+    Slash,
+};
+
+/// One press or auto-repeat of an EditKey, with the modifiers held at that
+/// moment. `control` is vanilla's control: Command on macOS, Control elsewhere.
+struct KeyEvent {
+    EditKey key{EditKey::Enter};
+    bool    repeat{false};
+    bool    shift{false};
+    bool    control{false};
+    bool    alt{false};
+};
+// ── end chat ──
 
 /// Mouse movement and key state for one frame.
 struct InputState {
@@ -105,6 +144,14 @@ struct InputState {
     /// what the game reads there instead.
     bool control_held{false};
 
+    // ── chat ──
+    /// Every key that went down *or repeated* since the last poll, in order.
+    /// A text field reads these rather than `pressed`: holding Backspace must
+    /// delete a character per repeat, and two keys in one frame must not
+    /// collapse into one. See KeyEvent.
+    std::vector<KeyEvent> key_events;
+    // ── end chat ──
+
     [[nodiscard]] bool held(Key key) const noexcept { return keys[static_cast<usize>(key)]; }
 
     [[nodiscard]] bool just_pressed(Key key) const noexcept {
@@ -153,6 +200,12 @@ public:
 
     /// The same for the number key of hotbar slot `index` (0..8).
     [[nodiscard]] std::string hotbar_key_label(i32 index) const;
+
+    // ── chat ──
+    /// The system clipboard, as UTF-8. Empty when it holds no text.
+    [[nodiscard]] std::string clipboard() const;
+    void                      set_clipboard(std::string_view utf8);
+    // ── end chat ──
 
     /// Forward-declared here and defined in the .cpp.
     ///

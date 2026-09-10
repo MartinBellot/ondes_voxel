@@ -208,8 +208,8 @@ void CreativeScreen::rebuild_page() {
     }
     const std::vector<CreativeCell>& cells = tab_cells_[selected_];
     page_.reserve(cells.size());
-    const bool filtered = searching() && !query_.empty();
-    fold_into(query_, folded_);
+    const bool filtered = searching() && !search_.value().empty();
+    fold_into(search_.value(), folded_);
     for (usize i = 0; i < cells.size(); ++i) {
         if (filtered) {
             const bool hit = cells[i].info != nullptr
@@ -289,33 +289,19 @@ void CreativeScreen::type(std::string_view utf8) {
     if (!searching() || utf8.empty()) {
         return;
     }
-    for (const char c : utf8) {
-        // The box holds 50 characters; control characters are not typed.
-        if (static_cast<u8>(c) < 0x20) {
-            continue;
-        }
-        usize characters = 0;
-        for (const char q : query_) {
-            characters += (static_cast<u8>(q) & 0xC0U) != 0x80U ? 1 : 0;
-        }
-        if ((static_cast<u8>(c) & 0xC0U) != 0x80U && characters >= kSearchMaxLength) {
-            break;
-        }
-        query_.push_back(c);
+    // The box holds 50 characters, and what may be typed into it is what may
+    // be typed into chat: the same widget in vanilla, the same one here.
+    if (!search_.insert(utf8)) {
+        return;
     }
     scroll_ = 0.0F;
     rebuild_page();
 }
 
 void CreativeScreen::backspace() {
-    if (!searching() || query_.empty()) {
+    if (!searching() || !search_.erase(-1, false)) {
         return;
     }
-    usize cut = query_.size() - 1;
-    while (cut > 0 && (static_cast<u8>(query_[cut]) & 0xC0U) == 0x80U) {
-        --cut;
-    }
-    query_.resize(cut);
     scroll_ = 0.0F;
     rebuild_page();
 }
@@ -531,7 +517,7 @@ void CreativeScreen::draw(Gui& gui, const ItemRenderer& items, const CreativeTex
     if (searching()) {
         // No border: the text sits at the box's own corner, white, and the
         // cursor at the end is an underscore that blinks.
-        const f32 pen = gui.text(ox + kSearchX, oy + kSearchY, query_, 0xFFFFFFFFU, true);
+        const f32 pen = gui.text(ox + kSearchX, oy + kSearchY, search_.value(), 0xFFFFFFFFU, true);
         if (cursor_on) {
             (void)gui.text(pen, oy + kSearchY, "_", 0xFFFFFFFFU, true);
         }

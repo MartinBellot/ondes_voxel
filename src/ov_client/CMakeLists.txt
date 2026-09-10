@@ -5,6 +5,8 @@
 ov_add_library(ov_client
     LAYER 15
     SOURCES
+        src/chat.cpp
+        src/command_suggestions.cpp
         src/container_screen.cpp
         src/creative_gestures.cpp
         src/creative_screen.cpp
@@ -15,9 +17,11 @@ ov_add_library(ov_client
         src/overlay.cpp
         src/saved_hotbars.cpp
         src/terrain_renderer.cpp
+        src/text_field.cpp
         src/window.cpp
     DEPS
         ov_nbt
+        ov_protocol
         ov_rhi
         ov_render
     PRIVATE_DEPS
@@ -30,6 +34,7 @@ ov_add_library(ov_client
 # drawing.
 ov_add_test(test_ov_client
     SOURCES
+        tests/test_chat.cpp
         tests/test_creative_gestures.cpp
         tests/test_creative_screen.cpp
         tests/test_interface.cpp

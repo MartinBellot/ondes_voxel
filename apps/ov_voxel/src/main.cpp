@@ -206,6 +206,28 @@ struct Options {
     /// Compare our search page and the oracle's queries with the real
     /// client's answers, print the numbers, and exit. No window, no device.
     bool creative_parity{false};
+    // ── chat ──
+    /// Scripted chat, through the path Enter takes: each --chat line is sent
+    /// in turn, the first at frame chat_at, then one every 40 frames.
+    std::vector<std::string> chat_send;
+    u32                      chat_at{150};
+    /// Open the box at this frame, type chat_type into it (suggestions and
+    /// all), and leave it open for the screenshot.
+    u32         chat_open_at{0};
+    std::string chat_type;
+    /// Print every chat message at the end.
+    bool dump_chat{false};
+    /// Write the Commands packet as received (re-encoded) to this file.
+    std::string dump_commands;
+    /// At least this many milliseconds a frame. For scripted captures only:
+    /// an occluded window is not throttled by vsync, and a frame-counted
+    /// script then runs out before the server has answered.
+    u32 frame_ms{0};
+    /// End the run (and take --screenshot) on the frame the newest chat line
+    /// reaches this age in ticks: a fade captured at a stated age, not at
+    /// whatever age a frame count happens to land on.
+    i32 chat_shot_age{0};
+    // ── end chat ──
     /// Dump the font's advances and exit, for scripts/measure_font_widths.py.
     std::string font_widths;
 
@@ -342,6 +364,31 @@ struct Options {
             options.creative_pointer = value("--creative-pointer=");
         } else if (argument == "--creative-parity") {
             options.creative_parity = true;
+        } else if (argument.starts_with("--chat=")) {  // ── chat ──
+            options.chat_send.push_back(value("--chat="));
+        } else if (argument.starts_with("--chat-file=")) {
+            // One line to send per line of the file: JSON components without
+            // a shell's quoting in the way.
+            std::ifstream lines(value("--chat-file="));
+            for (std::string line; std::getline(lines, line);) {
+                if (!line.empty()) {
+                    options.chat_send.push_back(line);
+                }
+            }
+        } else if (argument.starts_with("--chat-at=")) {
+            options.chat_at = static_cast<u32>(std::atoi(value("--chat-at=").c_str()));
+        } else if (argument.starts_with("--chat-open=")) {
+            options.chat_open_at = static_cast<u32>(std::atoi(value("--chat-open=").c_str()));
+        } else if (argument.starts_with("--chat-type=")) {
+            options.chat_type = value("--chat-type=");
+        } else if (argument == "--dump-chat") {
+            options.dump_chat = true;
+        } else if (argument.starts_with("--dump-commands=")) {
+            options.dump_commands = value("--dump-commands=");
+        } else if (argument.starts_with("--frame-ms=")) {
+            options.frame_ms = static_cast<u32>(std::atoi(value("--frame-ms=").c_str()));
+        } else if (argument.starts_with("--chat-shot-age=")) {
+            options.chat_shot_age = std::atoi(value("--chat-shot-age=").c_str());  // ── end chat ──
         } else if (argument == "--dump-window") {
             options.dump_window = true;
         } else if (argument.starts_with("--font-widths=")) {
@@ -1304,6 +1351,9 @@ int main(int argc, char** argv) {
     bool creative_opened  = false;
     bool creative_taken   = false;
     std::string creative_dump;
+    usize       chat_sent     = 0;      // ── chat ──
+    bool        chat_opened   = false;  // ── chat ──
+    u32         chat_ready_at = 0;      // ── chat ──  the frame the command tree arrived
 
     std::optional<RayHit> aimed;
     bool                  dig_sent   = false;
@@ -1496,6 +1546,16 @@ int main(int argc, char** argv) {
                 move.jump   = input.held(client::Key::Up);
                 move.sprint = input.held(client::Key::Sprint);
                 move.sneak  = input.held(client::Key::Down);
+                // ── chat ──  With the box open the keys are letters: vanilla
+                // reads no key binding while a screen is up, so "d" types and
+                // does not strafe.
+                if ((*interface)->chat_open()) {
+                    move.forward = 0.0F;
+                    move.strafe  = 0.0F;
+                    move.jump    = false;
+                    move.sprint  = false;
+                    move.sneak   = false;
+                }
 
                 const auto world_view = session->collision();
                 const auto fluid_view = session->fluids();
@@ -1643,6 +1703,33 @@ int main(int argc, char** argv) {
                 rendered >= options.open_creative + 10) {
                 creative_dump = (*interface)->describe_creative();
             }
+
+            // ── chat, scripted ──────────────────────────────────────────────
+            // Through the same calls Enter and typing make, so what a script
+            // shows is what a player gets — and only once the game has begun
+            // (the command tree is there), counted from that frame, because a
+            // player cannot type before it either.
+            if (chat_ready_at == 0 && (*interface)->chat().commands()) {
+                chat_ready_at = rendered;
+            }
+            const bool chat_ready = chat_ready_at != 0;
+            if (chat_ready && chat_sent < options.chat_send.size() &&
+                rendered >= chat_ready_at + options.chat_at + 40 * static_cast<u32>(chat_sent)) {
+                (*interface)->chat().submit(options.chat_send[chat_sent], *client, nullptr);
+                ++chat_sent;
+            }
+            if (chat_ready && options.chat_open_at != 0 && !chat_opened &&
+                rendered >= chat_ready_at + options.chat_open_at) {
+                (*interface)->chat().open_box("", nullptr);
+                (*interface)->chat().type(options.chat_type, *client);
+                chat_opened = true;
+            }
+            if (options.chat_shot_age > 0 &&
+                (*interface)->chat().newest_age() >= options.chat_shot_age &&
+                (options.frames == 0 || options.frames > rendered + 1)) {
+                options.frames = rendered + 1;  // this frame's successor is the last, and captured
+            }
+            // ── end chat ────────────────────────────────────────────────────
 
             // Where the player is looking, every frame rather than only on a
             // click: the outline has to follow the aim, and the click then uses
@@ -1956,6 +2043,9 @@ int main(int argc, char** argv) {
         if (options.frames != 0 && rendered >= options.frames) {
             running = false;
         }
+        if (options.frame_ms != 0) {  // ── chat ──  pacing for scripted captures
+            std::this_thread::sleep_until(frame_start + std::chrono::milliseconds(options.frame_ms));
+        }
     }
 
     device.wait_idle();
@@ -2066,6 +2156,27 @@ int main(int argc, char** argv) {
                        creative_dump.empty() ? (*interface)->describe_creative() : creative_dump);
             fmt::print("{}\n", (*interface)->describe_inventory());
         }
+        // ── chat ──
+        if (options.dump_chat) {
+            for (const std::string& line : (*interface)->chat().transcript()) {
+                fmt::print("chat: {}\n", line);
+            }
+            fmt::print("chat: newest line {} ticks old at the last frame\n",
+                       (*interface)->chat().newest_age());
+        }
+        if (!options.dump_commands.empty()) {
+            if (const auto& graph = (*interface)->chat().commands()) {
+                const std::vector<u8> bytes = net::encode_commands(*graph);
+                std::ofstream         out(options.dump_commands, std::ios::binary);
+                out.write(reinterpret_cast<const char*>(bytes.data()),
+                          static_cast<std::streamsize>(bytes.size()));
+                fmt::print("commands: {} nodes, {} bytes -> {}\n", graph->nodes.size(),
+                           bytes.size(), options.dump_commands);
+            } else {
+                fmt::print(stderr, "commands: the server sent no Commands packet\n");
+            }
+        }
+        // ── end chat ──
         if (dig_sent) {
             const auto after = session->block_at(dig_target.x, dig_target.y, dig_target.z);
             fmt::print("dug ({}, {}, {}): {} -> {}  {}\n", dig_target.x, dig_target.y,

@@ -205,7 +205,219 @@ private:
     const Language& language_;
 };
 
+/// The walk of Flattener, producing runs with exact colours. Kept separate
+/// rather than folded into Flattener so that flatten_component's bytes — which
+/// the creative tooltips and their tests pin — cannot move.
+class RunBuilder {
+public:
+    explicit RunBuilder(const Language& language) : language_(language) {}
+
+    void walk(json::Value value, const StyledRun& inherited, std::vector<StyledRun>& out,
+              u32 depth = 0) {
+        // Components come off the network: a defence against a hostile tree
+        // nested deeper than any real message, like json::kMaxDepth.
+        if (!value.valid() || depth > json::kMaxDepth) {
+            return;
+        }
+        if (value.is_string()) {
+            text(value.as_string(), inherited, out);
+            return;
+        }
+        if (value.is_number() || value.is_bool()) {
+            text(scalar(value), inherited, out);
+            return;
+        }
+        if (value.is_array()) {
+            if (value.size() == 0) {
+                return;
+            }
+            const StyledRun first = restyle(value[0u], inherited);
+            walk(value[0u], inherited, out, depth + 1);
+            for (u32 i = 1; i < value.size(); ++i) {
+                walk(value[i], first, out, depth + 1);
+            }
+            return;
+        }
+        if (!value.is_object()) {
+            return;
+        }
+        const StyledRun style = restyle(value, inherited);
+        if (const json::Value literal = value["text"]; literal.valid()) {
+            text(literal.is_string() ? std::string(literal.as_string()) : scalar(literal), style,
+                 out);
+        } else if (const json::Value key = value["translate"]; key.is_string()) {
+            translated(value, key.as_string(), style, out, depth);
+        } else if (const json::Value bind = value["keybind"]; bind.is_string()) {
+            const std::string_view shown = default_key_name(bind.as_string());
+            text(shown.empty() ? language_.translate(bind.as_string()) : shown, style, out);
+        }
+        // score, selector, nbt: refused (see the header) — nothing is drawn.
+        const json::Value extra = value["extra"];
+        for (u32 i = 0; i < extra.size(); ++i) {
+            walk(extra[i], style, out, depth + 1);
+        }
+    }
+
+private:
+    [[nodiscard]] static std::string scalar(json::Value value) {
+        if (value.is_bool()) {
+            return value.as_bool() ? "true" : "false";
+        }
+        const f64 number = value.as_number();
+        if (std::floor(number) == number && std::abs(number) < 1e15) {
+            return std::to_string(static_cast<i64>(number));
+        }
+        return std::to_string(number);
+    }
+
+    [[nodiscard]] static StyledRun restyle(json::Value value, const StyledRun& inherited) {
+        StyledRun style = inherited;
+        style.text.clear();
+        if (!value.is_object()) {
+            return style;
+        }
+        if (const json::Value colour = value["color"]; colour.is_string()) {
+            if (const auto rgb = colour_rgb(colour.as_string())) {
+                style.rgb        = *rgb;
+                style.has_colour = true;
+            }
+        }
+        const auto flag = [&value](std::string_view key, bool& field) {
+            if (const json::Value on = value[key]; on.is_bool()) {
+                field = on.as_bool();
+            }
+        };
+        flag("bold", style.bold);
+        flag("italic", style.italic);
+        flag("underlined", style.underlined);
+        flag("strikethrough", style.strikethrough);
+        flag("obfuscated", style.obfuscated);
+        return style;
+    }
+
+    static void text(std::string_view literal, const StyledRun& style, std::vector<StyledRun>& out) {
+        if (literal.empty()) {
+            return;
+        }
+        if (!out.empty() && out.back().same_style(style)) {
+            out.back().text += literal;
+            return;
+        }
+        StyledRun run = style;
+        run.text      = std::string(literal);
+        out.push_back(std::move(run));
+    }
+
+    void translated(json::Value value, std::string_view key, const StyledRun& style,
+                    std::vector<StyledRun>& out, u32 depth) {
+        std::string_view pattern = language_.translate(key);
+        if (pattern == key) {
+            if (const json::Value fallback = value["fallback"]; fallback.is_string()) {
+                pattern = fallback.as_string();
+            }
+        }
+        const json::Value with = value["with"];
+        // The pattern, split where format_translation would substitute: each
+        // placeholder draws its argument's own runs, which inherit this
+        // component's style; the text between them is drawn in that style.
+        usize next = 0;
+        usize from = 0;
+        const auto argument = [&](usize index) {
+            walk(with[static_cast<u32>(index)], style, out, depth + 1);
+        };
+        for (usize i = 0; i < pattern.size(); ++i) {
+            if (pattern[i] != '%' || i + 1 >= pattern.size()) {
+                continue;
+            }
+            if (pattern[i + 1] == '%') {
+                text(pattern.substr(from, i + 1 - from), style, out);
+                from = i + 2;
+                ++i;
+                continue;
+            }
+            if (pattern[i + 1] == 's') {
+                text(pattern.substr(from, i - from), style, out);
+                if (next < with.size()) {
+                    argument(next);
+                } else {
+                    text("%s", style, out);
+                }
+                ++next;
+                from = i + 2;
+                ++i;
+                continue;
+            }
+            usize j     = i + 1;
+            usize index = 0;
+            while (j < pattern.size() && pattern[j] >= '0' && pattern[j] <= '9') {
+                index = index * 10 + static_cast<usize>(pattern[j] - '0');
+                ++j;
+            }
+            if (j + 1 < pattern.size() && j > i + 1 && pattern[j] == '$' && pattern[j + 1] == 's') {
+                text(pattern.substr(from, i - from), style, out);
+                if (index >= 1 && index <= with.size()) {
+                    argument(index - 1);
+                } else {
+                    text(pattern.substr(i, j + 2 - i), style, out);
+                }
+                from = j + 2;
+                i    = j + 1;
+            }
+        }
+        text(pattern.substr(std::min(from, pattern.size())), style, out);
+    }
+
+    const Language& language_;
+};
+
 }  // namespace
+
+std::optional<u32> colour_rgb(std::string_view name) noexcept {
+    if (name.size() == 7 && name[0] == '#') {
+        u32 rgb = 0;
+        for (usize i = 1; i < 7; ++i) {
+            const char c = name[i];
+            u32        digit = 0;
+            if (c >= '0' && c <= '9') {
+                digit = static_cast<u32>(c - '0');
+            } else if (c >= 'a' && c <= 'f') {
+                digit = static_cast<u32>(c - 'a' + 10);
+            } else if (c >= 'A' && c <= 'F') {
+                digit = static_cast<u32>(c - 'A' + 10);
+            } else {
+                return std::nullopt;
+            }
+            rgb = rgb * 16 + digit;
+        }
+        return rgb;
+    }
+    for (const Named& named : kColours) {
+        if (named.name == name) {
+            return named.rgb;
+        }
+    }
+    return std::nullopt;
+}
+
+std::vector<StyledRun> component_runs(std::string_view json_text, const Language& language) {
+    std::vector<StyledRun> out;
+    auto                   document = json::Document::parse(json_text);
+    if (!document) {
+        out.push_back(StyledRun{std::string(json_text)});
+        return out;
+    }
+    RunBuilder builder(language);
+    builder.walk(document->root(), StyledRun{}, out);
+    return out;
+}
+
+std::string plain_text(std::span<const StyledRun> runs) {
+    std::string out;
+    for (const StyledRun& run : runs) {
+        out += run.text;
+    }
+    return out;
+}
 
 char colour_code(std::string_view name) noexcept {
     for (const Named& named : kColours) {
