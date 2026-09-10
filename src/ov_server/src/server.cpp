@@ -3739,11 +3739,28 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                             }
                             if (used.screen != gameplay::ScreenKind::None) {
                                 // Named rather than silently dropped. The
-                                // screens this server does open — chest,
-                                // crafting table, furnace — are handled above
-                                // and never reach here; what lands here is a
-                                // barrel, an anvil, a lectern, and saying so is
-                                // better than a click that does nothing.
+                                // screens this server does open — every
+                                // container in the model, the crafting table,
+                                // the three furnaces — are handled above and
+                                // never reach here; what lands here is an
+                                // anvil, a lectern, a brewing stand, and saying
+                                // so is better than a click that does nothing.
+                                //
+                                // A container this project knows it does not
+                                // model is named as such, so that "nothing
+                                // happened" can be told from "not implemented".
+                                const std::string_view clicked =
+                                    blocks ? blocks->block_name(blocks->block_of(block_at(
+                                                 net::WirePosition{used.screen_position.x,
+                                                                   used.screen_position.y,
+                                                                   used.screen_position.z})))
+                                           : std::string_view{};
+                                if (std::ranges::find(unmodelled_containers(), clicked) !=
+                                    unmodelled_containers().end()) {
+                                    OV_LOG_DEBUG("use on block: {} is a container this server "
+                                                 "does not model",
+                                                 clicked);
+                                }
                                 OV_LOG_DEBUG("use on block: a screen at ({}, {}, {}) is not "
                                              "opened by this server yet",
                                              used.screen_position.x, used.screen_position.y,

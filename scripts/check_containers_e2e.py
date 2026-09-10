@@ -65,6 +65,9 @@ HEAD_HOPPER = HOPPERS[-1]
 # Le distributeur de la même parcelle, avec son levier posé dessus.
 DISPENSER = (226, FLOOR, 11)
 DISPENSER_LEVER = (226, FLOOR + 1, 11)
+# Le dropper de la même parcelle, sans levier : on lui en pose un en
+# s'accroupissant, ce qui exerce aussi la pose sur un conteneur.
+DROPPER = (230, FLOOR, 11)
 
 SB_USE_ITEM_ON = 0x31
 SB_CLOSE_CONTAINER = 0x0C
@@ -416,6 +419,38 @@ def main() -> int:
         if after_fire != held - 1:
             fail(f"le distributeur a éjecté {held - after_fire} objet(s) sur un front, pas 1")
         ok("le distributeur tire un objet, une fois, sur le front montant")
+
+        # ── 2quater. Le dropper éjecte aussi ───────────────────────────────
+        #
+        # Même chemin de code, autre moitié : le dropper n'a pas de table de
+        # comportements, il éjecte toujours. Il n'a pas de levier sur le banc,
+        # donc on lui pose un bloc de redstone dessus — ce qui exerce du même
+        # coup la pose accroupie sur un conteneur.
+        client.open_at(DROPPER)
+        if container_size(client) != 9:
+            fail(f"le dropper montre {container_size(client)} cases, pas 9")
+        fill_container(client, cobble, 5)
+        dropper_before = total_in_window(client, 9)
+        client.close()
+
+        client.creative_set(36, index["minecraft:redstone_block"], 1)
+        client.settle(0.4)
+        client.walk_to(DROPPER[0] + 0.5, float(DROPPER[1] + 1), DROPPER[2] + 1.5)
+        client.sneak(True)
+        client.use_on(DROPPER)
+        client.settle(3.0)
+        client.sneak(False)
+        above_dropper = (DROPPER[0], DROPPER[1] + 1, DROPPER[2])
+        if above_dropper not in client.blocks:
+            fail(f"rien n'a été posé en {above_dropper} — le dropper n'a pas été déclenché")
+
+        client.open_at(DROPPER)
+        dropper_after = total_in_window(client, 9)
+        client.close()
+        note(f"dropper : {dropper_before} pavés avant, {dropper_after} après")
+        if dropper_after != dropper_before - 1:
+            fail(f"le dropper a éjecté {dropper_before - dropper_after} objet(s), pas 1")
+        ok("le dropper éjecte un objet sur le front montant")
 
         # ── 3. Le comparateur : floor(14n/27)+1 ────────────────────────────
         #
