@@ -341,6 +341,40 @@ TEST_CASE("a chained TNT waits between an eighth and three eighths of its fuse",
     CHECK(high == 29);
 }
 
+TEST_CASE("what each source is worth, in cells of dirt", "[explosion][parity]") {
+    if (pack() == nullptr) {
+        return;
+    }
+    const auto&      registry = *pack();
+    const Explosions rules{registry};
+    // The same box the sources bench used: dirt, half 9 and up 7 solid, read
+    // back over half 8 and up 6, sixteen shots, union and intersection. The
+    // powers are the only thing that changes between the rows.
+    for (const auto& [name, power] : explosion_sources()) {
+        const BoxLevel     level{registry, state_of(registry, "minecraft:dirt"), 9, 7};
+        ExplosionSpec      spec{};
+        spec.centre = Vec3d{0.5, 0.06125, 0.5};
+        spec.power  = power;
+        math::LegacyRandomSource rng{7788};
+        std::map<i64, i32>       counts;
+        constexpr i32            kShots = 16;
+        for (i32 shot = 0; shot < kShots; ++shot) {
+            std::vector<BlockPos> taken;
+            rules.collect_blocks(level, spec, rng, taken);
+            for (const BlockPos pos : taken) {
+                if (std::abs(pos.x) <= 8 && std::abs(pos.z) <= 8 && std::abs(pos.y) <= 6) {
+                    ++counts[key_of(pos.x, pos.y, pos.z)];
+                }
+            }
+        }
+        const auto always = static_cast<usize>(
+            std::count_if(counts.begin(), counts.end(),
+                          [](const auto& kv) { return kv.second == kShots; }));
+        WARN("source " << name << " power " << power << ": union " << counts.size()
+                       << " intersection " << always);
+    }
+}
+
 TEST_CASE("the crater a real server made, cell by cell", "[explosion][parity]") {
     if (pack() == nullptr) {
         WARN("no registry.ovpack — run tools/ov_datagen/ovpack.py");

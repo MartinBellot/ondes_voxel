@@ -357,21 +357,49 @@ bouche-trou.
 
 ---
 
-## 6. Reproduire
+## 6. Ce qui n'est pas fait, et nommé
+
+- **Le feu.** `rolls_fire` existe et tire une fois sur trois, mais ce « une fois
+  sur trois » vient de l'article du wiki et **n'a été mesuré par aucun banc de
+  cette campagne** : aucun lit n'a été posé dans le Nether ici. C'est marqué dans
+  le header, à l'endroit où quelqu'un qui implémente l'ancre de résurrection le
+  lira. La liste que ce module rend ne convient d'ailleurs pas pour ça :
+  `collect_blocks` ne rend que des **blocs**, alors que le feu va dans les
+  cellules d'**air** que les rayons ont traversées, et que vanilla garde dans la
+  même liste jusqu'à la fin.
+- **Rien n'est branché dans le serveur.** `src/ov_server/` appartient à un autre
+  mandat cette nuit. Une TNT amorcée ne saute toujours pas, un creeper toujours
+  ne siffle pas, et `Explosions` n'a aucun appelant hors des tests. Les règles,
+  la table et la parité sont là ; le câblage ne l'est pas.
+- **Le dampener de Protection contre les explosions** est un paramètre, pas une
+  table : zéro pour une entité sans enchantement, ce qui est le cas mesuré.
+- **L'immunité par type** (dragon, nuage d'effet) n'est pas ici : c'est une
+  propriété du type d'entité, et `hit_entity` répond pour la boîte qu'on lui
+  donne. L'appelant décide qui il lui donne.
+- **La résistance au-delà de ~30** est indiscernable pour tout oracle du jeu, et
+  c'est démontré plus haut, pas supposé.
+
+---
+
+## 7. Reproduire
 
 ```bash
-python3 scripts/measure_blast.py resistance 16    # ~25 min, 987 blocs
-python3 scripts/measure_blast.py resistance_gap 16
-python3 scripts/measure_blast.py crater 24        # la forme, cellule par cellule
-python3 scripts/measure_blast.py damage
-python3 scripts/measure_blast.py drops
-python3 scripts/measure_blast.py sources
-python3 scripts/measure_blast.py table            # la confrontation, puis la table
-python3 tools/ov_datagen/ovpack.py                # FORMAT_VERSION 14
+python3 scripts/measure_blast.py resistance 16     # ~25 min, 987 blocs
+python3 scripts/measure_blast.py resistance_gap 16 # ~25 min, la bande haute
+python3 scripts/measure_blast.py crater 16         # la forme, cellule par cellule
+python3 scripts/measure_blast.py damage 8
+python3 scripts/measure_blast.py drops 12
+python3 scripts/measure_blast.py sources 8
+python3 scripts/measure_blast.py table             # la confrontation, puis la table
+python3 tools/ov_datagen/ovpack.py                 # FORMAT_VERSION 14
+python3 scripts/check_blast.py                     # le verrou
 ```
 
 Chaque scénario démarre et arrête son propre serveur, sur le port 25613, dans
-`run/blast-oracle/<scénario>/`. Aucun ne dépend d'un autre.
+`run/blast-oracle/<scénario>/`. Aucun ne dépend d'un autre, et
+`OV_BLAST_PORT` permet d'en faire tourner deux côte à côte — ce qui est une
+question de mémoire, pas de port, mais le port est ce qui empêche le second
+d'échouer à s'attacher en ressemblant à un serveur qui a démarré.
 
 ⚠ `tools/ov_datagen/ovpack.py` est passé de **13 à 14** : le pack porte
 maintenant un flottant de résistance par bloc, dans le `u32` que l'en-tête
