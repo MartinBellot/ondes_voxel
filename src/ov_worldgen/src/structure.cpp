@@ -68,6 +68,8 @@ std::string_view to_string(PlacementDecision decision) noexcept {
             return "placed";
         case PlacementDecision::Unsupported:
             return "unsupported";
+        case PlacementDecision::OtherDimension:
+            return "other-dimension";
     }
     return "?";
 }
@@ -233,6 +235,9 @@ struct StructurePlacer::Impl {
     const StructureSetRegistry*      sets{nullptr};
     std::vector<StructureDefinition> structures;
     BiomeTags                        tags;
+    /// Set names the dimension cannot produce. Empty means no restriction was
+    /// asked for, which is not the same as "every set is impossible".
+    std::set<std::string> foreign;
 };
 
 namespace {
@@ -416,12 +421,49 @@ namespace {
 
 }  // namespace
 
+void StructurePlacer::restrict_to_biomes(const std::vector<std::string_view>& biomes) {
+    impl_->foreign.clear();
+    if (biomes.empty() || impl_->sets == nullptr) {
+        return;
+    }
+    for (const StructureSet& set : impl_->sets->sets()) {
+        bool reachable = false;
+        for (const StructureSetEntry& entry : set.entries) {
+            const StructureDefinition* definition = find(entry.structure);
+            if (definition == nullptr) {
+                continue;
+            }
+            for (std::string_view biome : biomes) {
+                if (biome_allowed(impl_->tags, definition->biomes, biome)) {
+                    reachable = true;
+                    break;
+                }
+            }
+            if (reachable) {
+                break;
+            }
+        }
+        // The stronghold is the exception the rule would get wrong: its biome
+        // field is consulted when the rings are laid out, not when a chunk is
+        // asked, so a set with no biome match is still an overworld set. It is
+        // already refused as unsupported, and marking it foreign as well would
+        // hide which of the two reasons applies.
+        if (!reachable && !set.concentric) {
+            impl_->foreign.insert(set.name);
+        }
+    }
+}
+
 StructurePlacementResult StructurePlacer::decide_set(const StructureSet& set, i64 level_seed,
                                                      i32 chunk_x, i32 chunk_z,
                                                      const StructureWorldSampler* sampler) const {
     StructurePlacementResult result;
     result.set = set.name;
 
+    if (impl_->foreign.contains(set.name)) {
+        result.decision = PlacementDecision::OtherDimension;
+        return result;
+    }
     if (!set.spread) {
         result.decision = PlacementDecision::Unsupported;
         return result;

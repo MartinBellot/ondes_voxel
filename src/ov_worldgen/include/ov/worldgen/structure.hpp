@@ -177,6 +177,15 @@ enum class PlacementDecision : u8 {
     PlacedByPlacement,
     /// The set's placement type is not one we implement (the strongholds).
     Unsupported,
+    /// No structure of the set can occur in this dimension's biomes, so the
+    /// dimension never asks the set at all.
+    ///
+    /// The game filters the sets once, when it builds a dimension's generator
+    /// state, by intersecting each structure's biome tag with the biomes the
+    /// dimension's source can produce. Without that filter an overworld chunk
+    /// happily "places" a nether fossil every second chunk — 1 286 of them in
+    /// 5 092 chunks, measured, before the filter was added.
+    OtherDimension,
 };
 
 [[nodiscard]] std::string_view to_string(PlacementDecision decision) noexcept;
@@ -198,6 +207,14 @@ public:
     /// sets. The registry is borrowed and must outlive the placer.
     [[nodiscard]] static std::expected<StructurePlacer, StructureSetError> load(
         const std::filesystem::path& data_root, const StructureSetRegistry& sets);
+
+    /// Keep only the sets a dimension can actually produce.
+    ///
+    /// `biomes` is the list the dimension's biome source can name. A set none
+    /// of whose structures has a biome in that list is marked and answers
+    /// `OtherDimension` from then on. Calling this with an empty list leaves
+    /// every set active — the honest reading of "no dimension was named".
+    void restrict_to_biomes(const std::vector<std::string_view>& biomes);
 
     /// Every set's verdict for one chunk, in set order.
     ///
