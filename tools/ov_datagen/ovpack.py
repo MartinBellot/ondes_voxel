@@ -656,7 +656,8 @@ def main() -> int:
     print(f"    motion flags ... {motion_doc['measured']} blocks measured")
     print(f"    hardness ....... {hardness_doc['count']} blocks")
     print(f"    blast res. ..... {resistance_doc['count']} blocks, "
-          f"{resistance_doc['measured']} confirmed against the game")
+          f"{resistance_doc['measured']} put in front of a charge, "
+          f"{resistance_doc['confirmed']} inside their measured class")
     print(f"    biomes ......... {len(biome_list)}")
     print(f"    loot tables .... {_loot_report}")
     print(f"    collision ...... {len(collision_doc['shapes'])} shapes, "

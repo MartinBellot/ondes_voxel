@@ -136,12 +136,25 @@ def run_batched(server: Server, commands: list[str], chunk: int = 400) -> None:
 
 ROW = 9
 COLUMNS = 46
-CELL_DX = 20   # >= row length + the reach of the next charge backwards
 CELL_DZ = 12   # >= twice the reach, so no charge touches its neighbour's row
 
+# The gap between the charge and the first cell of the row.
+#
+# With no gap the bench saturates: every block from 2.5 up to 9 breaks its first
+# cell every time and nothing beyond it, ever, so 340 blocks share one reading.
+# Four blocks of air in front eats about three of the four units of ray energy
+# and puts the whole 2.5..9 band back where a cell breaks *sometimes* — and a
+# frequency is a measurement where a certainty is not.
+GAPS = {"resistance": 0, "resistance_gap": 4}
 
-def cell_of(index: int) -> tuple[int, int]:
-    return (index % COLUMNS) * CELL_DX, (index // COLUMNS) * CELL_DZ
+
+def cell_dx(gap: int) -> int:
+    # Row length, plus the gap, plus how far the next charge reaches backwards.
+    return gap + ROW + 11
+
+
+def cell_of(index: int, gap: int) -> tuple[int, int]:
+    return (index % COLUMNS) * cell_dx(gap), (index // COLUMNS) * CELL_DZ
 
 
 def bench_names() -> tuple[list[str], set[str]]:
@@ -158,16 +171,16 @@ def placed(name: str, dry: set[str]) -> str:
     return f"{name}[waterlogged=false]" if name in dry else name
 
 
-def measure_resistance(out: Path, trials: int) -> None:
+def measure_resistance(out: Path, trials: int, gap: int = 0) -> None:
     names, dry = bench_names()
     y = BENCH_Y
     check_y(y, y - 1, y - 2)
     rows = (len(names) + COLUMNS - 1) // COLUMNS
-    width = COLUMNS * CELL_DX + ROW + 8
+    width = COLUMNS * cell_dx(gap) + gap + ROW + 8
     depth = rows * CELL_DZ + 8
 
-    server, world = start("resistance")
-    result: dict = {"trials": trials, "row": ROW, "power": 4}
+    server, world = start("resistance" if gap == 0 else "resistance_gap")
+    result: dict = {"trials": trials, "row": ROW, "power": 4, "gap": gap}
     try:
         forceload(server, -8, -8, width, depth)
         fill(server, -8, y - 2, -8, width, y - 2, depth, "minecraft:barrier")
@@ -183,12 +196,13 @@ def measure_resistance(out: Path, trials: int) -> None:
             for index, name in enumerate(names):
                 if name not in subset:
                     continue
-                cx, cz = cell_of(index)
+                cx, cz = cell_of(index, gap)
                 floor = floor_of.get(name)
                 if floor is not None:
-                    commands.append(f"fill {cx} {y - 1} {cz} {cx + ROW} {y - 1} {cz} {floor}")
-                commands.append(
-                    f"fill {cx + 1} {y} {cz} {cx + ROW} {y} {cz} {placed(name, dry)}")
+                    commands.append(
+                        f"fill {cx} {y - 1} {cz} {cx + gap + ROW} {y - 1} {cz} {floor}")
+                commands.append(f"fill {cx + gap + 1} {y} {cz} {cx + gap + ROW} {y} {cz} "
+                                f"{placed(name, dry)}")
             return commands
 
         def read_rows(subset: list[str]) -> dict[str, list[str]]:
@@ -196,9 +210,9 @@ def measure_resistance(out: Path, trials: int) -> None:
             for index, name in enumerate(names):
                 if name not in subset:
                     continue
-                cx, cz = cell_of(index)
+                cx, cz = cell_of(index, gap)
                 order.append(name)
-                cells += [(cx + k, y, cz) for k in range(1, ROW + 1)]
+                cells += [(cx + gap + k, y, cz) for k in range(1, ROW + 1)]
             states = read_states(world, cells)
             return {n: [name_of(s) for s in states[i * ROW:(i + 1) * ROW]]
                     for i, n in enumerate(order)}
@@ -233,7 +247,7 @@ def measure_resistance(out: Path, trials: int) -> None:
             for index, name in enumerate(names):
                 if name not in counts:
                     continue
-                cx, cz = cell_of(index)
+                cx, cz = cell_of(index, gap)
                 summons.append(f"summon minecraft:tnt {cx + 0.5} {y}.0 {cz + 0.5} "
                                "{Fuse:0,NoGravity:1b,Motion:[0.0,0.0,0.0]}")
             run_batched(server, summons)
@@ -313,6 +327,18 @@ def measure_crater(out: Path, trials: int) -> None:
         server.stop()
     with open(out, "w") as f:
         json.dump(result, f, indent=1)
+    # The same thing again as flat text, because the C++ parity test reads it
+    # and ov_gameplay has no JSON parser — the crafting parity table is written
+    # the same way for the same reason.
+    with open(NORMALIZED / "blast_crater.txt", "w") as f:
+        cx, cy, cz = result["centre"]
+        f.write(f"# trials {trials} half {CRATER_HALF} up {CRATER_UP} power 4 "
+                f"centre {cx} {cy} {cz}\n")
+        for material in CRATER_MATERIALS:
+            for cell, count in sorted(result["counts"][material].items(),
+                                      key=lambda kv: tuple(int(v) for v in kv[0].split(","))):
+                dx, dy, dz = cell.split(",")
+                f.write(f"{material} {dx} {dy} {dz} {count}\n")
 
 
 # ── scenario: damage ────────────────────────────────────────────────────────
@@ -499,15 +525,169 @@ def measure_sources(out: Path, trials: int) -> None:
         json.dump(result, f, indent=1)
 
 
+def measure_resistance_gap(out: Path, trials: int) -> None:
+    measure_resistance(out, trials, gap=GAPS["resistance_gap"])
+
+
+
+
+# ── scenario: table ─────────────────────────────────────────────────────────
+#
+# The bench gives a **penetration score** per block: the sum, over the nine
+# cells of the row, of how often that cell broke. It is monotone in blast
+# resistance and in nothing else. What it does not give is a number in the
+# game's own units — so the number comes from PrismarineJS/minecraft-data (MIT)
+# and the bench is what confronts it, exactly as scripts/measure_hardness.py
+# does for hardness.
+#
+# What the confrontation can catch, and does:
+#   * a block whose score sits outside its own resistance class;
+#   * a class ordered the wrong way round against another;
+#   * a block the candidate table does not mention at all.
+# What it cannot catch is a value inside a band the bench does not separate,
+# and those bands are written into the output rather than glossed over.
+
+CANDIDATE_URL = ("https://raw.githubusercontent.com/PrismarineJS/minecraft-data/"
+                 "master/data/pc/1.20/blocks.json")
+
+# Blocks whose row reads something other than their resistance, each with the
+# mechanic that does it. Named rather than dropped quietly: a bench that cannot
+# reach a block has to say which block and why.
+CONFOUNDED = {
+    "minecraft:tnt":
+        "chain-detonates — the row is lit by the charge and blows itself up",
+}
+for _coral in ("tube", "brain", "bubble", "fire", "horn"):
+    for _suffix in ("", "_fan", "_wall_fan", "_block"):
+        CONFOUNDED[f"minecraft:{_coral}_coral{_suffix}"] = (
+            "living coral dies out of water — the row turns into its dead "
+            "version and reads as destroyed")
+
+
+def fetch_candidate() -> dict:
+    """The candidate table, cached next to the measurements."""
+    cached = NORMALIZED / "blast_candidate.json"
+    if not cached.is_file():
+        import urllib.request
+        with urllib.request.urlopen(CANDIDATE_URL, timeout=60) as response:
+            cached.write_bytes(response.read())
+    with open(cached) as f:
+        return {f"minecraft:{b['name']}": float(b["resistance"]) for b in json.load(f)}
+
+
+def scores(doc: dict) -> dict[str, float]:
+    trials = doc["trials"]
+    return {name: sum(cells) / trials for name, cells in doc["counts"].items()}
+
+
+def measure_table(out: Path, trials: int) -> None:
+    candidate = fetch_candidate()
+    benches = []
+    for label, filename in (("row", "blast_row.json"), ("gap", "blast_row_gap.json")):
+        path = NORMALIZED / filename
+        if path.is_file():
+            with open(path) as f:
+                benches.append((label, json.load(f)))
+    if not benches:
+        raise RuntimeError("no bench data — run measure_blast.py resistance first")
+
+    per_bench = {label: scores(doc) for label, doc in benches}
+    measured_on = sorted(set().union(*(set(s) for s in per_bench.values())))
+    refused = sorted(set(candidate) - set(measured_on) - DYNAMIC - FLOODS)
+
+    # Group by the candidate value and look at the spread inside each group.
+    report: dict = {"benches": {label: doc["trials"] for label, doc in benches},
+                    "groups": {}, "deviations": [], "unseparated": {}}
+    ok, flagged = 0, []
+    for label, score in per_bench.items():
+        classes: dict[float, list[str]] = {}
+        for name, value in score.items():
+            classes.setdefault(candidate[name], []).append(name)
+        group_stats = {}
+        for value, members in sorted(classes.items()):
+            clean = [score[n] for n in members if n not in CONFOUNDED]
+            if not clean:
+                continue
+            clean.sort()
+            median = clean[len(clean) // 2]
+            group_stats[value] = {"n": len(clean), "median": round(median, 4),
+                                  "min": round(clean[0], 4), "max": round(clean[-1], 4)}
+            for n in members:
+                if n in CONFOUNDED:
+                    continue
+                if abs(score[n] - median) > 0.4:
+                    flagged.append([label, n, value, round(score[n], 4), round(median, 4)])
+                else:
+                    ok += 1
+        report["groups"][label] = {str(k): v for k, v in group_stats.items()}
+        # Which candidate values this bench cannot tell apart.
+        #
+        # Compared on the class **median**, not on the min and max: the extremes
+        # are one block each and a single confounded block would merge two
+        # classes that the bulk of their members separate cleanly. Two classes
+        # count as separated when their medians differ by more than 0.1 of a
+        # cell — three times the spread a clean class shows over 16 shots.
+        values = sorted(group_stats)
+        bands, current = [], [values[0]]
+        for previous, value in zip(values, values[1:]):
+            if abs(group_stats[previous]["median"] - group_stats[value]["median"]) <= 0.1:
+                current.append(value)
+            else:
+                bands.append(current)
+                current = [value]
+        bands.append(current)
+        report["unseparated"][label] = [b for b in bands if len(b) > 1]
+        report.setdefault("separated", {})[label] = sum(1 for b in bands if len(b) == 1)
+
+    report["deviations"] = flagged
+    report["confounded"] = {k: v for k, v in sorted(CONFOUNDED.items()) if k in candidate}
+    report["refused"] = refused
+    doc = {
+        "$comment": "Resistance a l'explosion. Candidat repris de "
+                    "PrismarineJS/minecraft-data (MIT), pc/1.20, puis confronte bloc par bloc "
+                    "a un vrai serveur 1.20.1 par scripts/measure_blast.py : un banc de neuf "
+                    "cellules du meme bloc en ligne droite devant une charge, K fois, dont la "
+                    "profondeur de penetration est monotone en resistance. Voir "
+                    "docs/provenance/explosions.md.",
+        "version": "1.20.1",
+        "source": "PrismarineJS/minecraft-data pc/1.20 blocks.json",
+        "count": len(candidate),
+        "measured": len(measured_on),
+        "confirmed": ok,
+        "blocks": {name: candidate[name] for name in sorted(candidate)},
+        "report": report,
+    }
+    with open(out, "w") as f:
+        json.dump(doc, f, indent=1)
+    print(f"  candidate values ... {len(set(candidate.values()))} distinct over "
+          f"{len(candidate)} blocks")
+    print(f"  measured on a bench  {len(measured_on)}")
+    print(f"  inside their class   {ok}")
+    print(f"  deviations ......... {len(flagged)}")
+    for row_ in flagged:
+        print(f"      {row_[0]:4s} {row_[1]:45s} R={row_[2]} S={row_[3]} (class {row_[4]})")
+    print(f"  confounded ......... {len(report['confounded'])}")
+    print(f"  never stood up ..... {len(refused)}")
+    for label, bands in report["unseparated"].items():
+        print(f"  {label}: bands the bench does not separate: {bands}")
+
+
 SCENARIOS = {
     "resistance": measure_resistance,
+    "table": measure_table,
+    "resistance_gap": measure_resistance_gap,
     "crater": measure_crater,
     "damage": measure_damage,
     "drops": measure_drops,
     "sources": measure_sources,
 }
 
-DEFAULT_TRIALS = {"resistance": 24, "crater": 30, "damage": 12, "drops": 20, "sources": 20}
+OUTPUT_NAME = {"resistance": "blast_row.json",
+               "resistance_gap": "blast_row_gap.json",
+               "table": "blast_resistance.json"}
+
+DEFAULT_TRIALS = {"resistance": 24, "resistance_gap": 24, "crater": 30,
+                  "damage": 12, "drops": 20, "sources": 20, "table": 0}
 
 
 def main() -> int:
@@ -518,7 +698,7 @@ def main() -> int:
     trials = int(sys.argv[2]) if len(sys.argv) > 2 else DEFAULT_TRIALS[name]
     NORMALIZED.mkdir(parents=True, exist_ok=True)
     print(f"── {name} ({trials} trials) ──")
-    SCENARIOS[name](NORMALIZED / f"blast_{name}.json", trials)
+    SCENARIOS[name](NORMALIZED / OUTPUT_NAME.get(name, f"blast_{name}.json"), trials)
     return 0
 
 
