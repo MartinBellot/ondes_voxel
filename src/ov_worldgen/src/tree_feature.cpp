@@ -1079,6 +1079,29 @@ protected:
     i32 height_;
 };
 
+/// The big oak's canopy, measured rather than reasoned.
+///
+/// `scripts/probe_tree.sh` grows one fancy oak per chunk in a world whose only
+/// feature is that oak, then three copies of the same tree whose foliage placer
+/// differs in exactly one field. Reading the rows off the disk gives the rule
+/// directly, with no silhouette-matching in between:
+///
+/// | radius | offset | height | rows, top to bottom |
+/// |---|---|---|---|
+/// | 2 | 4 | 4 | 1, 2, 2, 2, 1 |
+/// | 4 | 4 | 4 | 3, 4, 4, 4, 3 |
+/// | 2 | 6 | 6 | 1, 2, 2, 2, 2, 2, 1 |
+/// | 2 | 1 | 4 | 1, 2, 2, 2, 1 (at `dy` 1 down to −3) |
+///
+/// So: the rows run from `offset` down to `offset - height` as everywhere else,
+/// the range is the radius, and the **first and last** rows are one narrower.
+/// The reading that had been guessed here instead — `radius + 1 - y` — makes a
+/// cone that is widest at the bottom, which is why a fancy oak came out with
+/// its canopy two levels too low and no tree ever matched.
+///
+/// The cell count fixes the skip just as tightly: 21 of 25 at range 2, 37 of 49
+/// at range 3, 61 of 81 at range 4. Those are exactly the lattice points with
+/// `x² + z² < range² + range`, and nothing else.
 class FancyFoliagePlacer final : public BlobFoliagePlacer {
 public:
     using BlobFoliagePlacer::BlobFoliagePlacer;
@@ -1089,8 +1112,10 @@ protected:
     void grow(const TreeWorld& world, TreeWriter& writer, FeatureRandom& random,
               const TreeConfig& config, i32, const FoliageAttachment& attachment, i32 height,
               i32 radius, i32 offset) const override {
+        const i32 wide = radius + attachment.radius_offset;
         for (i32 y = offset; y >= offset - height; --y) {
-            const i32 range = radius + attachment.radius_offset + 1 - y;
+            const bool cap   = y == offset || y == offset - height;
+            const i32  range = cap ? wide - 1 : wide;
             place_leaves_row(world, writer, random, config, attachment.pos, range, y,
                              attachment.double_trunk);
         }
@@ -1098,13 +1123,26 @@ protected:
 
     [[nodiscard]] bool should_skip(FeatureRandom&, i32 x, i32, i32 z, i32 range,
                                    bool) const override {
-        if (x + z >= 7) {
-            return true;
-        }
-        return x * x + z * z > range * range;
+        // Measured at ranges 1 to 4. A radius above 4 is not reachable from any
+        // vanilla file and is therefore not measured.
+        return x * x + z * z >= range * range + range;
     }
 };
 
+/// The jungle bush.
+///
+/// Its corner is **drawn for**, and the draw is not the blob's. Measured on a
+/// probe world of nothing but `trees_jungle`: the game keeps three corners of a
+/// range-1 row out of four — so the corner is not skipped outright — and the
+/// same row at local y = 0 keeps them, so the blob's `|| y == 0` clause is not
+/// there either. The degenerate corner of a **range-zero** row, which is the
+/// single block at the top of a bush, is sometimes written and sometimes not,
+/// which is how one knows the draw happens even when there is no corner to
+/// speak of.
+///
+/// This mattered far past the bush's own three rows: the draw was missing
+/// entirely, so every feature placed after a bush in the same chunk was reading
+/// the generator one step early.
 class BushFoliagePlacer final : public BlobFoliagePlacer {
 public:
     using BlobFoliagePlacer::BlobFoliagePlacer;
@@ -1122,9 +1160,12 @@ protected:
         }
     }
 
-    [[nodiscard]] bool should_skip(FeatureRandom&, i32 x, i32, i32 z, i32 range,
+    [[nodiscard]] bool should_skip(FeatureRandom& random, i32 x, i32, i32 z, i32 range,
                                    bool) const override {
-        return x == range && z == range && range > 0;
+        if (x != range || z != range) {
+            return false;
+        }
+        return random.next_int(2) == 0;
     }
 };
 
@@ -1171,7 +1212,7 @@ public:
     [[nodiscard]] i32 foliage_height(FeatureRandom& random, i32 height,
                                      const TreeConfig&) const override {
         const i32 trunk = trunk_height_->sample(random);
-        return std::max(0, height - 1 - trunk);
+        return std::max(4, height - trunk);
     }
 
 protected:
