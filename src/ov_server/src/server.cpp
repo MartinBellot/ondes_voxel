@@ -1408,6 +1408,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     // The tick the server is on, readable from the network threads. Breaking
     // is counted in ticks, and the packet handler runs on another thread.
     std::atomic<i64> server_tick{0};
+    // ── loading: how much of the spawn area is resident, 0 to 100. Written by
+    // the tick thread, read by the login path, which refuses with it until it
+    // reaches 100 — vanilla's server does not even listen until then ──
+    std::atomic<i32> spawn_ready_percent{0};
 
     std::FILE* motion_log = nullptr;
     if (!options.record_motion.empty()) {
@@ -3855,6 +3859,32 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 }
                 // ── end player data ──
 
+                // ── loading ──
+                // A generated world is not open until its spawn area is. A
+                // player let in earlier stands in a void the workers cannot
+                // fill fast enough, and this path used to wait for it on the
+                // network thread — twenty seconds in which no other player got
+                // a keep-alive — then refuse *after* Login Success, where the
+                // client is already in Play and a login packet id means
+                // something else. Refused here instead, at once, with the key
+                // vanilla's own loading screen uses: a vanilla client shows
+                // "Preparing spawn area: N%", and ours waits and knocks again.
+                if (chunk_source) {
+                    const i32 ready = spawn_ready_percent.load(std::memory_order_relaxed);
+                    if (ready < 100) {
+                        OV_LOG_INFO("{} asked to join; spawn area {}% ready — refused for now",
+                                    login->name, ready);
+                        io::ByteWriter refusal;
+                        net::write_string(
+                            refusal,
+                            fmt::format(R"({{"translate":"menu.preparingSpawn","with":["{}"]}})",
+                                        ready));
+                        send_packet(static_cast<i32>(net::LoginPacket::Disconnect), refusal.take());
+                        return true;
+                    }
+                }
+                // ── end loading ──
+
                 send_packet(static_cast<i32>(net::LoginPacket::Success),
                             net::encode_login_success(uuid, login->name));
 
@@ -3961,7 +3991,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                     home_x, home_z,
                                     std::chrono::duration_cast<std::chrono::seconds>(kSpawnWait)
                                         .count());
-                        send_packet(static_cast<i32>(net::LoginPacket::Disconnect),
+                        // ── loading: after Login Success the client is in Play,
+                        // so this is the Play Disconnect — same JSON reason ──
+                        send_packet(net::clientbound::kDisconnect,
                                     net::encode_login_disconnect(
                                         "Ondes VOXEL — the spawn chunk is still generating.\n"
                                         "Try again in a moment."));
@@ -5455,6 +5487,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     /// `Workbench` per furnace per tick would allocate inside the tick body.
     Workbench headless_furnace;
     u64                         chunks_published = 0;
+    // ── loading ──
+    i32        spawn_percent_seen = -1;
+    const auto spawn_prep_started = std::chrono::steady_clock::now();
 
     // The spawn is a reason of its own, and it has to exist before anyone is
     // there to ask for it. Without this ticket the chunk the first player lands
@@ -5710,6 +5745,41 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 }
             }
         }
+
+        // ── loading ──
+        // How much of the spawn area is resident: the nine chunks around the
+        // spawn column, which the Forced ticket keeps once they arrive. Logged
+        // the way vanilla's server logs its own preparation, and published for
+        // the login path. Only until it is complete; then it costs nothing.
+        if (chunk_source && spawn_percent_seen < 100) {
+            const i32 spawn_cx = level_settings.spawn_x >> 4;
+            const i32 spawn_cz = level_settings.spawn_z >> 4;
+            i32       resident = 0;
+            {
+                const std::scoped_lock lock{chunk_mutex};
+                for (i32 dz = -1; dz <= 1; ++dz) {
+                    for (i32 dx = -1; dx <= 1; ++dx) {
+                        if (chunk_if_resident(spawn_cx + dx, spawn_cz + dz) != nullptr) {
+                            ++resident;
+                        }
+                    }
+                }
+            }
+            const i32 percent = resident * 100 / 9;
+            if (percent != spawn_percent_seen) {
+                spawn_percent_seen = percent;
+                spawn_ready_percent.store(percent, std::memory_order_relaxed);
+                if (percent < 100) {
+                    OV_LOG_INFO("Preparing spawn area: {}%", percent);
+                } else {
+                    OV_LOG_INFO("Spawn area ready in {:.1f} s — players may join",
+                                std::chrono::duration<f64>(std::chrono::steady_clock::now() -
+                                                           spawn_prep_started)
+                                    .count());
+                }
+            }
+        }
+        // ── end loading ──
 
         // ── What the tickets want and the map has not got ───────────────────
         //

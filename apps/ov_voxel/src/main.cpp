@@ -26,6 +26,7 @@
 #include "ov/client/window.hpp"
 #include "ov/registry/block_states.hpp"
 #include "ov/registry/registries.hpp"
+#include "ov/render/text_component.hpp"
 #include "ov/render/atlas.hpp"
 #include "ov/render/biome_colours.hpp"
 #include "ov/render/block_models.hpp"
@@ -1130,6 +1131,9 @@ int main(int argc, char** argv) {
     i32                                jump_window  = 0;
     constexpr i32                      kJumpWindowTicks = 7;
 
+    // ── loading: kept past the first connection, to knock again while the
+    // server prepares its spawn area ──
+    netclient::ClientDesc login;
     if (online) {
         std::string host = options.connect;
         u16         port = 25565;
@@ -1138,7 +1142,6 @@ int main(int argc, char** argv) {
             host = host.substr(0, colon);
         }
 
-        netclient::ClientDesc login;
         login.host          = host;
         login.port          = port;
         login.username      = options.username;
@@ -1341,6 +1344,10 @@ int main(int argc, char** argv) {
     u32              drawn_last_frame = 0;
     u32              rendered         = 0;
     bool             running          = true;
+    // ── loading ──
+    // The line vanilla's loading screen would show this frame, or empty.
+    std::string loading_line;
+    auto        next_knock = std::chrono::steady_clock::now();
     bool             captured         = false;
 
     while (running) {
@@ -1375,13 +1382,40 @@ int main(int argc, char** argv) {
                         static_cast<f32>(input.mouse_delta_y));
         }
 
-        if (online) {
-            if (!client->connected()) {
-                const auto why = client->disconnect_reason();
+        // ── loading ──
+        // A server still preparing its spawn area refuses a login with
+        // `menu.preparingSpawn` and how far along it is. That is not a reason
+        // to quit: stay on the loading screen and knock again once a second,
+        // as a player would press Join again. Every other disconnect still
+        // ends the client.
+        loading_line.clear();
+        if (online && !client->connected()) {
+            const auto why       = client->disconnect_reason();
+            const auto preparing = why.find("menu.preparingSpawn");
+            if (preparing == std::string::npos) {
                 OV_LOG_ERROR("disconnected: {}", why.empty() ? "the server went away" : why);
                 running = false;
                 continue;
             }
+            std::string percent = "0";
+            if (const auto open = why.find("[\"", preparing); open != std::string::npos) {
+                if (const auto close = why.find('"', open + 2); close != std::string::npos) {
+                    percent = why.substr(open + 2, close - open - 2);
+                }
+            }
+            const std::array<std::string, 1> arguments{percent};
+            loading_line = render::format_translation(
+                (*interface)->translate("menu.preparingSpawn"), arguments);
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= next_knock) {
+                next_knock = now + std::chrono::seconds{1};
+                if (auto again = netclient::Client::connect(login); again) {
+                    client = std::move(*again);
+                    events.clear();
+                }
+            }
+        }
+        if (online && client->connected()) {
 
             client->poll(events);
             // The interface first: Login (play) carries the game mode, and the
@@ -1485,6 +1519,9 @@ int main(int argc, char** argv) {
                 spawned && session->chunk_at(static_cast<i32>(std::floor(player.position.x)) >> 4,
                                              static_cast<i32>(std::floor(player.position.z)) >> 4) !=
                                nullptr;
+            if (!ground_ready) {  // ── loading ──
+                loading_line = (*interface)->translate("multiplayer.downloadingTerrain");
+            }
             if (spawned && !ground_ready) {
                 tick_accumulator = 0.0;
                 // ...but the server still has to be told where we are, or a
@@ -1963,6 +2000,7 @@ int main(int argc, char** argv) {
             cmd.begin_rendering(ui_attachments, nullptr, width, height);
             cmd.set_viewport(0.0F, 0.0F, static_cast<f32>(width), static_cast<f32>(height));
             cmd.set_scissor(0, 0, width, height);
+            (*interface)->set_loading(loading_line);  // ── loading ──
             (*interface)->draw(cmd, width, height);
             cmd.end_rendering();
         }

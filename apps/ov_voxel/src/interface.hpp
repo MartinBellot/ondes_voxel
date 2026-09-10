@@ -104,6 +104,21 @@ public:
 
     [[nodiscard]] bool screen_open() const noexcept { return screen_.has_value(); }
 
+    // ── loading ──
+    /// Cover the whole window with vanilla's loading screen — the options
+    /// background tiled and darkened, one centred line — until cleared with an
+    /// empty line. Nothing else is drawn while it is up, the HUD included.
+    void set_loading(std::string line) { loading_line_ = std::move(line); }
+    [[nodiscard]] bool loading() const noexcept { return !loading_line_.empty(); }
+    /// A key from the game's own language file, so the loading lines read as
+    /// the game's do in whatever language the player chose.
+    [[nodiscard]] std::string translate(std::string_view key) const {
+        return std::string(language_.translate(key));
+    }
+    std::string        loading_line_;
+    client::GuiTexture loading_background_{client::GuiTexture::Invalid};
+    // ── end loading ──
+
     /// Put the player's own inventory up, or take it down. Window 0 is never
     /// opened by the server: the client decides to show it.
     void toggle_inventory(client::Window& window, netclient::Client& client);

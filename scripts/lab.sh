@@ -76,6 +76,17 @@ for unit in sys.argv[1].encode("utf-16-be").hex(" ", 2).split():
 print(h - (1 << 32) if h >= 1 << 31 else h)' "$SEED") || exit 1
     fi
     WORLD=${OV_LAB_WORLD:-run/seed-${SEED_VALUE}}
+    # Generation in a Debug build is an order of magnitude slower — measured on
+    # seed 12345 with no player: 0 chunks in the first minute against 64 in
+    # Release — so a seed world is served from the release preset unless
+    # OV_PRESET says otherwise. Configured on first use.
+    if [ -z "${OV_PRESET:-}" ]; then
+        PRESET=macos-release
+        BIN="build/${PRESET}/bin"
+    fi
+    [ -d "build/${PRESET}" ] || cmake --preset "$PRESET" >/dev/null || {
+        echo "configure of preset $PRESET failed" >&2; exit 1
+    }
     if [ "$REBUILD" = 1 ]; then
         echo "--rebuild rebuilds the bench; with --seed use --fresh" >&2; exit 2
     fi

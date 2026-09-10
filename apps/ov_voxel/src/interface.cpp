@@ -134,6 +134,15 @@ std::expected<std::unique_ptr<Interface>, std::string> Interface::create(
         self->backgrounds_.emplace_back(std::string(location), *handle);
     }
 
+    // ── loading ──
+    // The dirt behind every loading screen. Missing is not fatal: the screen
+    // falls back to a plain dark fill and says the rest.
+    if (auto dirt = sheet("minecraft:gui/options_background"); dirt) {
+        self->loading_background_ = *dirt;
+    } else {
+        OV_LOG_WARN("{}", dirt.error());
+    }
+
     const client::GuiTexture atlas_texture =
         self->gui_->borrow_texture(atlas, atlas_width, atlas_height);
     self->items_.emplace(items, atlas_texture, foliage_tint);
@@ -928,6 +937,33 @@ void Interface::draw(rhi::CommandList& cmd, u32 framebuffer_width, u32 framebuff
             ? options_.gui_scale
             : client::auto_gui_scale(framebuffer_width, framebuffer_height, 0);
     gui_->begin(framebuffer_width, framebuffer_height, scale);
+
+    // ── loading ──
+    // Vanilla's loading screens — "Preparing spawn area", "Loading terrain" —
+    // are the options background tiled every 32 GUI pixels at a quarter
+    // brightness, with one white line centred 50 GUI pixels above the middle.
+    // Opaque, so nothing of a world that is not there yet shows through.
+    if (!loading_line_.empty()) {
+        const f32 w = gui_->width();
+        const f32 h = gui_->height();
+        if (loading_background_ != client::GuiTexture::Invalid) {
+            constexpr f32 kTile = 32.0F;
+            for (f32 y = 0.0F; y < h; y += kTile) {
+                for (f32 x = 0.0F; x < w; x += kTile) {
+                    const f32 tw = std::min(kTile, w - x);
+                    const f32 th = std::min(kTile, h - y);
+                    gui_->quad(loading_background_, x, y, tw, th, 0.0F, 0.0F, tw / kTile,
+                               th / kTile, 0xFF404040U);
+                }
+            }
+        } else {
+            gui_->fill(0.0F, 0.0F, w, h, 0xFF202020U);
+        }
+        gui_->text_centred(w * 0.5F, h * 0.5F - 50.0F, loading_line_, 0xFFFFFFFFU);
+        gui_->flush(cmd);
+        return;
+    }
+    // ── end loading ──
 
     if (options_.hud) {
         client::draw_hud(*gui_, *items_, textures_, hud_);
