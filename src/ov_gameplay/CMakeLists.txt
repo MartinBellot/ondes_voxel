@@ -28,6 +28,7 @@ ov_add_library(ov_gameplay
         src/hopper.cpp
         src/dispenser.cpp
         src/piston.cpp
+        src/plants.cpp
         src/loot.cpp
         src/recipe.cpp
         src/crafting.cpp
@@ -64,6 +65,7 @@ ov_add_test(test_ov_gameplay
         tests/test_hopper.cpp
         tests/test_dispenser.cpp
         tests/test_piston.cpp
+        tests/test_plants.cpp
         tests/test_loot.cpp
         tests/test_crafting.cpp
         tests/test_crafting_parity.cpp

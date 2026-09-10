@@ -2055,10 +2055,99 @@ public:
                 decorator->decorate(world, writer, random, logs, leaves, roots);
             }
         }
+        update_leaf_distances(world, level, writer);
         return true;
     }
 
 private:
+    /// The last pass the game makes over a finished tree: every leaf in the
+    /// tree's box gets its `distance` from the nearest `#logs` block, through
+    /// leaves, up to six. It draws nothing and so is not part of the tree's
+    /// shape — features.md compares by block for that reason — but without it
+    /// every generated leaf carries the provider's `distance=7`, and the first
+    /// random tick decays whole forests.
+    ///
+    /// Measured on the real game: the reference world's generated leaves carry
+    /// distances 1..6 (docs/provenance/agriculture.md § arbres), and a leaf's
+    /// distance is exactly the steps through leaves from a log (288 / 288
+    /// cells of a measured sheet). A leaf the pass does not reach in six steps
+    /// keeps its 7, as in the game.
+    static void update_leaf_distances(const TreeWorld& world, FeatureLevel& level,
+                                      const TreeWriter& writer) {
+        const auto logs    = writer.sorted_logs();
+        const auto foliage = writer.sorted_foliage();
+        const auto roots   = writer.sorted_roots();
+        if (foliage.empty()) {
+            return;
+        }
+        BlockPos lo = foliage.front();
+        BlockPos hi = foliage.front();
+        const auto grow = [&](const std::vector<BlockPos>& set) {
+            for (const BlockPos& p : set) {
+                lo = {std::min(lo.x, p.x), std::min(lo.y, p.y), std::min(lo.z, p.z)};
+                hi = {std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z)};
+            }
+        };
+        grow(logs);
+        grow(foliage);
+        grow(roots);
+
+        const i32 sx = hi.x - lo.x + 1;
+        const i32 sy = hi.y - lo.y + 1;
+        const i32 sz = hi.z - lo.z + 1;
+        const auto index = [&](BlockPos p) {
+            return static_cast<usize>(((p.y - lo.y) * sz + (p.z - lo.z)) * sx + (p.x - lo.x));
+        };
+        const auto inside = [&](BlockPos p) {
+            return p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y && p.z >= lo.z &&
+                   p.z <= hi.z;
+        };
+
+        const registry::BlockRegistry& blocks = *world.blocks;
+        std::vector<u8>       seen(static_cast<usize>(sx) * static_cast<usize>(sy) * static_cast<usize>(sz), 0);
+        std::vector<BlockPos> frontier;
+        for (i32 y = lo.y; y <= hi.y; ++y) {
+            for (i32 z = lo.z; z <= hi.z; ++z) {
+                for (i32 x = lo.x; x <= hi.x; ++x) {
+                    if (TreeTags::holds(world.tags->logs, blocks.block_of(level.block_at(x, y, z)))) {
+                        seen[index({x, y, z})] = 1;
+                        frontier.push_back({x, y, z});
+                    }
+                }
+            }
+        }
+
+        constexpr std::array<std::array<i32, 3>, 6> kSix{{
+            {1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1},
+        }};
+        std::vector<BlockPos> next;
+        for (i32 distance = 1; distance <= 6 && !frontier.empty(); ++distance) {
+            next.clear();
+            for (const BlockPos& from : frontier) {
+                for (const auto& d : kSix) {
+                    const BlockPos at{from.x + d[0], from.y + d[1], from.z + d[2]};
+                    if (!inside(at) || seen[index(at)] != 0) {
+                        continue;
+                    }
+                    const registry::BlockStateId state = level.block_at(at.x, at.y, at.z);
+                    if (!TreeTags::holds(world.tags->leaves, blocks.block_of(state))) {
+                        continue;
+                    }
+                    seen[index(at)] = 1;
+                    const auto property = blocks.find_property(blocks.block_of(state), "distance");
+                    if (property) {
+                        // Values run "1".."7", so the index is distance - 1.
+                        (void)level.set_block(at.x, at.y, at.z,
+                                              blocks.with_property(state, *property,
+                                                                   static_cast<u16>(distance - 1)));
+                    }
+                    next.push_back(at);
+                }
+            }
+            frontier.swap(next);
+        }
+    }
+
     /// How much of the asked-for height is actually clear, checked as a column
     /// whose width the feature size decides.
     [[nodiscard]] i32 free_height(const TreeWorld& world, i32 height, BlockPos at) const {

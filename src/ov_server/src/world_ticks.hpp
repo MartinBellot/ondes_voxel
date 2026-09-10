@@ -35,6 +35,7 @@
 #pragma once
 
 #include "ov/gameplay/fluid.hpp"
+#include "ov/gameplay/plants.hpp"
 #include "ov/gameplay/redstone.hpp"
 #include "ov/gameplay/signal.hpp"
 #include "ov/math/block_pos.hpp"
@@ -182,6 +183,23 @@ public:
     [[nodiscard]] const gameplay::FluidRules& fluid() const noexcept { return fluid_; }
     [[nodiscard]] gameplay::Redstone&         redstone() noexcept { return redstone_; }
 
+    // ── agriculture ──
+    /// Let the plant rules answer block ticks and neighbour changes too: a
+    /// leaf recomputing its distance, a crop losing its farmland. Both must
+    /// outlive this object. See agriculture.hpp.
+    void attach_plants(const gameplay::Plants& plants, gameplay::PlantEnvironment& env) noexcept {
+        plants_    = &plants;
+        plant_env_ = &env;
+    }
+
+    /// Settle whatever was written since the level's last clear — the random
+    /// tick's writes, which happen outside `run`.
+    usize settle_writes(ServerLevel& level) {
+        usize waves = 0;
+        return settle(level, waves);
+    }
+    // ── end agriculture ──
+
     /// How many waves one settle may run before it is called a loop.
     ///
     /// A circuit that never settles is laggy in vanilla too; what it must not
@@ -195,6 +213,9 @@ private:
 
     gameplay::FluidRules fluid_;
     gameplay::Redstone   redstone_;
+
+    const gameplay::Plants*     plants_{nullptr};
+    gameplay::PlantEnvironment* plant_env_{nullptr};
 
     std::vector<world::ScheduledTick> due_;
     /// The wave being processed, moved out of the level so that writes made
