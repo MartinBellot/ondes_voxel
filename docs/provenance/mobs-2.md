@@ -196,7 +196,51 @@ doté de la liste d'un autre. Les `spawn_costs` ne concernent que deux biomes du
 
 ### 2.2 La composition, contre le vrai serveur
 
-*(§ rempli à la mesure.)*
+**Protocole** (`measure_mobs2.py biomes`). Un monde généré par le vrai serveur à la graine de
+référence 1234567890 (jeté après). Pour chaque biome : `locate biome`, la sonde posée en surface
+(`spreadplayers`) **en créatif** — un spectateur ne compte pas pour l'apparition —, tout tué,
+minuit, puis chaque `Spawn Entity` reçu pendant 240 s, sa position gardée ; le biome de chaque
+position d'apparition est ensuite testé un par un (`execute if biome`, un marqueur par test).
+
+**Pureté faible, et pourquoi le comptage se fait par position.** `locate` rend le bord le plus
+proche d'un biome, pas son centre : sur l'anneau de 32 à 120 blocs autour de la sonde, à y = 70, la
+pureté vaut 0,09 (plaines), 0,38 (désert), 0,32 (plaines enneigées), 0,03 (taïga enneigée). D'où
+deux comptes : les apparitions **dont la position est dans le biome**, et toutes celles à moins de
+128 blocs de la sonde.
+
+Monstres apparus **dans le biome** (vanilla, 240 s, minuit ; chauves-souris et calmars exclus) :
+
+| biome | creeper | squelette | araignée | zombie | husk | stray | enderman | autres |
+|---|---|---|---|---|---|---|---|---|
+| plaines | 5 | 6 | 3 | 2 | — | — | 1 | villageois zombie 1 |
+| désert | 37 | 25 | 22 | 5 | **2** | — | 2 | sorcière 1 |
+| plaines enneigées | 35 | 6 | 21 | 31 | — | **5** | 2 | villageois zombie 1 |
+| taïga enneigée | 5 | 3 | — | 10 | — | — | — | — |
+
+**Ce que disent le husk et le stray.** Le désert pèse le husk 80 et le zombie 19 ; les plaines
+enneigées, le stray 80 et le squelette 20. Pourtant : 2 husks pour 5 zombies, 5 strays pour
+6 squelettes. La plupart des apparitions d'un biome sont **dans ses grottes** — le biome d'une grotte
+sous le désert est encore le désert —, et là le husk et le stray, qui exigent le ciel, sont
+refusés : le tirage est perdu, pas remplacé. Seule la surface leur revient. C'est exactement la règle
+de `spawn_rules.cpp` (§ 4), et c'est aussi une preuve que le type est tiré **avant** le test de la
+position : sinon le husk prendrait les places que le zombie laisse.
+
+Toutes les apparitions à moins de 128 blocs (mêmes 240 s) : plaines 477 (dont creeper 103,
+squelette 71, zombie 68, saumon 59, chauve-souris 48, araignée 42), désert 504 (poisson tropical
+96, creeper 93, squelette 81, zombie 44, araignée 41, husk 2), plaines enneigées 420 (zombie 82,
+creeper 69, squelette 62, saumon 52, stray 5), taïga enneigée 303 (creeper 57, squelette 57,
+zombie 53, renard 5, loup 4, lapin 3). Les poissons et calmars viennent des rivières et océans
+voisins que l'anneau recoupe.
+
+**Les animaux** de la taïga enneigée (renards 6, lapins 2, vaches 4) et des plaines enneigées
+(lapins 6, ours polaire 1) sont ceux **posés à la génération des chunks** — ce serveur ne le fait
+pas (§ 8).
+
+**Le marais n'a rien donné : zéro apparition, dans le biome comme dehors.** Le montage a échoué
+à cet endroit (le dernier des cinq ; la sonde n'a plus rien reçu) et la cause n'est pas élucidée.
+Les slimes de surface et les grenouilles **ne sont donc pas vérifiés** contre le vrai serveur.
+
+*(Notre serveur, aux mêmes positions : § rempli à la mesure.)*
 
 ---
 
