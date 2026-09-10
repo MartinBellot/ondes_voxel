@@ -143,6 +143,12 @@ struct ArgumentType {
         t.has_min = true;
         return t;
     }
+    [[nodiscard]] static ArgumentType integer_between(i32 min, i32 max) {
+        ArgumentType t = integer_at_least(min);
+        t.max     = max;
+        t.has_max = true;
+        return t;
+    }
     [[nodiscard]] static ArgumentType word() { return of(ArgKind::Word); }
     [[nodiscard]] static ArgumentType greedy() { return of(ArgKind::Greedy); }
     [[nodiscard]] static ArgumentType entity(bool single, bool players_only) {

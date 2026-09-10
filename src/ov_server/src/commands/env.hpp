@@ -39,6 +39,9 @@ public:
     [[nodiscard]] bool item_in_tag(std::string_view tag, i32 item) const;
     [[nodiscard]] bool entity_in_tag(std::string_view tag, std::string_view type) const;
 
+    /// Every entry of a registry by name, e.g. "minecraft:mob_effect".
+    [[nodiscard]] std::vector<std::string> registry_ids(std::string_view registry) const;
+
     /// Mojang's id for a parser, from `minecraft:command_argument_type`.
     [[nodiscard]] std::optional<i32> parser_id(std::string_view name) const;
 

@@ -62,6 +62,10 @@ struct EntityInfo {
     i32 experience_level{0};
     /// Items only: what the stack is, for its display name.
     std::string item;
+    /// False for a player on the death screen. `@e` passes only the living —
+    /// the capture's `kill @e[gamemode=creative]` found nobody while the
+    /// probe lay dead.
+    bool alive{true};
 };
 
 /// One coordinate of `~1 ^ 5`: whether it is relative, and its number.

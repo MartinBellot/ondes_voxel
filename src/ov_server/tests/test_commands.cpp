@@ -65,6 +65,7 @@ struct FakeServer {
     std::array<net::ItemStack, 46> inventory{};
     net::ItemStack                 carried{};
     SurvivalSession                survival{};
+    EffectSession                  effects{};
     f64                            x{0.5};
     f64                            y{-60.0};
     f64                            z{0.5};
@@ -101,6 +102,9 @@ struct FakeServer {
             p.inventory  = &inventory;
             p.carried    = &carried;
             p.survival   = &survival;
+            p.effects    = &effects;
+            p.effect_bearer = EffectBearer{1, game_mode == 0 || game_mode == 2, 0};
+            p.broadcast_others = [](i32, std::span<const u8>) {};
             p.send       = [this](i32 id, std::span<const u8> payload) {
                 sent.emplace_back(id, std::vector<u8>(payload.begin(), payload.end()));
             };
@@ -152,6 +156,7 @@ struct FakeServer {
                 blocks[{c.pos.x, c.pos.y, c.pos.z}] = c.state;
             }
         };
+        h.break_blocks    = [](std::span<const BlockPos>) {};
         h.kick            = [](i32, std::string_view) {};
         h.save            = [this] { saved = true; };
         h.stop            = [this] { stopped = true; };
@@ -597,6 +602,44 @@ TEST_CASE("gamemode, difficulty and gamerule answer as vanilla", "[commands][van
           std::vector<std::string>{R"({"translate":"commands.gamerule.query","with":["keepInventory","false"]})"});
 }
 
+TEST_CASE("effect answers with vanilla's three arguments", "[commands][vanilla]") {
+    if (!have_packs()) {
+        SKIP("no registry pack");
+    }
+    Harness h;
+    // The capture: effect, target, and the duration in whole seconds — a
+    // third argument the English pattern never prints.
+    CHECK(h.run("effect give @s speed") ==
+          std::vector<std::string>{R"({"translate":"commands.effect.give.success.single","with":[{"translate":"effect.minecraft.speed"},)" +
+                                   kProbe + R"(,"30"]})"});
+    CHECK(h.run("effect give @s speed 10 0") ==
+          std::vector<std::string>{R"({"color":"red","extra":[{"translate":"commands.effect.give.failed"}],"text":""})"});
+    CHECK(h.run("effect give @s speed infinite 2 true")[0].find(R"(,"0"]})") != std::string::npos);
+    CHECK(h.run("effect clear @s speed") ==
+          std::vector<std::string>{R"({"translate":"commands.effect.clear.specific.success.single","with":[{"translate":"effect.minecraft.speed"},)" +
+                                   kProbe + "]}"});
+    CHECK(h.run("effect clear @s speed") ==
+          std::vector<std::string>{R"({"color":"red","extra":[{"translate":"commands.effect.clear.specific.failed"}],"text":""})"});
+    CHECK(h.run("effect clear") ==
+          std::vector<std::string>{R"({"color":"red","extra":[{"translate":"commands.effect.clear.everything.failed"}],"text":""})"});
+    CHECK(h.run("effect give @s nosuch") ==
+          std::vector<std::string>{R"({"color":"red","extra":[{"translate":"argument.resource.not_found","with":["minecraft:nosuch","minecraft:mob_effect"]}],"text":""})"});
+}
+
+TEST_CASE("killing a player announces the death first, and @e forgets the dead", "[commands][vanilla]") {
+    if (!have_packs()) {
+        SKIP("no registry pack");
+    }
+    Harness h;
+    const auto killed = h.run("kill @s");
+    REQUIRE(killed.size() == 2);
+    CHECK(killed[0] == R"({"translate":"death.attack.genericKill","with":[)" + kProbe + "]}");
+    CHECK(killed[1] == R"({"translate":"commands.kill.success.single","with":[)" + kProbe + "]}");
+    // The capture's `kill @e[gamemode=creative]` with the probe lying dead.
+    CHECK(h.run("kill @e[gamemode=creative]") ==
+          std::vector<std::string>{R"({"color":"red","extra":[{"translate":"argument.entity.notfound.entity"}],"text":""})"});
+}
+
 TEST_CASE("help prints vanilla's smart usage", "[commands][vanilla]") {
     if (!have_packs()) {
         SKIP("no registry pack");
@@ -613,6 +656,7 @@ TEST_CASE("help prints vanilla's smart usage", "[commands][vanilla]") {
         "/clear [<targets>]",
         "/defaultgamemode <gamemode>",
         "/difficulty [peaceful|easy|normal|hard]",
+        "/effect (clear|give)",
         "/me <action>",
         "/experience (add|set|query)",
         "/xp -> experience",
@@ -648,7 +692,7 @@ TEST_CASE("help prints vanilla's smart usage", "[commands][vanilla]") {
         gamerule += (i == 0 ? "" : "|") + std::string{kGameRules[i].name};
     }
     std::vector<std::string> with_rules = expected;
-    with_rules.insert(with_rules.begin() + 8, gamerule + ")");
+    with_rules.insert(with_rules.begin() + 9, gamerule + ")");
     std::vector<std::string> printed;
     for (const std::string& line : h.run("help")) {
         printed.push_back(line.substr(9, line.size() - 11));  // {"text":"…"}

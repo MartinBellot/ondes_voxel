@@ -127,6 +127,19 @@ bool ParseEnv::entity_in_tag(std::string_view tag, std::string_view type) const 
     return found && id && registries_->tag_contains(*found, *id);
 }
 
+std::vector<std::string> ParseEnv::registry_ids(std::string_view registry) const {
+    std::vector<std::string> out;
+    if (registries_ == nullptr) {
+        return out;
+    }
+    if (const auto id = registries_->find(registry)) {
+        for (const std::string_view name : registries_->entries(*id)) {
+            out.emplace_back(name);
+        }
+    }
+    return out;
+}
+
 std::optional<i32> ParseEnv::parser_id(std::string_view name) const {
     if (registries_ == nullptr || !argument_registry_) {
         return std::nullopt;

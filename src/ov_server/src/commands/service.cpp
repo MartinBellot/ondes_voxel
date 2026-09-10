@@ -189,6 +189,8 @@ std::vector<EntityInfo> CommandService::snapshot() const {
         info.pitch            = *p.pitch;
         info.game_mode        = *p.game_mode;
         info.experience_level = p.survival != nullptr ? p.survival->experience_level : 0;
+        info.alive = p.survival == nullptr ||
+                     (!p.survival->awaiting_respawn && !p.survival->health.dead);
         out.push_back(std::move(info));
     }
     if (host_ != nullptr && host_->entities) {

@@ -134,9 +134,17 @@ COMMANDS: list[str] = [
     "gamemode creative", "defaultgamemode survival", "defaultgamemode creative",
     "defaultgamemode foo",
     # ── experience ──
-    "xp add @s 10", "xp add @s 3 levels", "xp set @s 5 levels", "xp set @s 10 points",
+    "xp add @s 10", "xp add @s 3 levels", "xp set @s 5 levels", "xp set @s 10 points", "xp set @s 17 points", "xp set @s 18 points",
+    "xp set @s 10 points",
     "xp query @s points", "xp query @s levels", "experience add @s 1", "xp set @s -1",
     "xp set @s 1000 points", "xp add nobody 1", "xp query @s", "xp set @s 0 levels",
+    # ── effects ──
+    "effect give @s speed", "effect give @s minecraft:speed 30 1",
+    "effect give @s speed 10 0", "effect give @s speed infinite 2 true",
+    "effect give @s nosuch", "effect give @s speed 0", "effect give @s speed 30 256",
+    "effect give @e[type=cow] speed", "effect clear @s speed", "effect clear @s speed",
+    "effect give @s haste 5", "effect clear @s", "effect clear @s", "effect clear",
+    "effect give nobody speed", "effect clear @s nosuch",
     # ── spawn points ──
     "spawnpoint", "spawnpoint @s 1 -60 1", "spawnpoint @s 1 -60 1 90", "setworldspawn",
     "setworldspawn 0 -60 0", "setworldspawn 0 -60 0 45", "setworldspawn 0 -60",
@@ -441,7 +449,10 @@ def main() -> int:
     try:
         server.batch(["gamerule doMobSpawning false", "gamerule doDaylightCycle false",
                       "gamerule doWeatherCycle false", "time set 1000", "weather clear",
-                      "difficulty easy"])
+                      "difficulty easy",
+                      # Vanilla's default; ours is creative. Set before the
+                      # probe joins, so both start it in the same mode.
+                      "defaultgamemode survival"])
         probe = CommandProbe(port)
         probe.pump(4.0)
         document["login"] = [{"id": pid, "size": len(p),

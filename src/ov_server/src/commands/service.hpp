@@ -16,10 +16,9 @@
 // `WorkbenchHost` and `LevelHooks`, and for the same reason: this directory
 // must not know what a chunk map or a connection is.
 //
-// `/effect` is not here on purpose: another wave writes status effects. The
-// place to add it is `register_commands()` in game_commands.cpp, between
-// `difficulty` and `me` — vanilla's registration order, which is the order
-// the client lists commands in.
+// `/effect` goes through `EffectSession` (effect_session.hpp), the status
+// effects wave's own API; it sits between `difficulty` and `me` in
+// `register_commands()`, vanilla's registration order.
 #pragma once
 
 #include "context.hpp"
@@ -29,6 +28,7 @@
 #include "text.hpp"
 #include "world_state.hpp"
 
+#include "../effect_session.hpp"
 #include "../survival_session.hpp"
 
 #include "ov/math/random.hpp"
@@ -76,7 +76,12 @@ struct PlayerRef {
     i16                             held_slot{0};
     net::ItemStack*                 carried{nullptr};
     SurvivalSession*                survival{nullptr};
+    /// Null when the server has no effect system for this player.
+    EffectSession*                  effects{nullptr};
+    EffectBearer                    effect_bearer{};
     std::function<void(i32, std::span<const u8>)> send;
+    /// To everyone but this player.
+    std::function<void(i32, std::span<const u8>)> broadcast_others;
 };
 
 struct BlockChange {
@@ -114,6 +119,10 @@ struct CommandHost {
     std::function<void(BlockPos)> destroy_block;
     /// Many at once, relit once per chunk and sent section by section.
     std::function<void(std::span<const BlockChange>)> set_blocks;
+    /// The breaking half of `fill … destroy`: particles and loot for each,
+    /// without writing — the writes follow through `set_blocks`, so a fill
+    /// does not relight a neighbourhood per block.
+    std::function<void(std::span<const BlockPos>)> break_blocks;
     std::function<void(i32 player, std::string_view reason_json)> kick;
     std::function<void()> save;
     std::function<void()> stop;

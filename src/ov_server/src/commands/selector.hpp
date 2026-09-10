@@ -62,6 +62,8 @@ struct EntitySelector {
     bool includes_entities{false};
     bool current_entity{false};
     bool uses_selector{false};
+    /// `@e` only: the living. `@a`, `@p` and `@r` still name a dead player.
+    bool alive_only{false};
     Order order{Order::Arbitrary};
 
     std::optional<std::string> player_name;

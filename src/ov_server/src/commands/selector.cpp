@@ -708,6 +708,7 @@ Parsed<EntitySelector> parse_entity_selector(StringReader& reader, const ParseEn
         case 'e':
             s.max_results       = std::numeric_limits<i32>::max();
             s.includes_entities = true;
+            s.alive_only        = true;
             break;
         default:
             reader.set_cursor(reader.cursor() - 1);
@@ -799,7 +800,7 @@ Parsed<std::vector<const EntityInfo*>> find_entities(const EntitySelector& selec
         return out;
     }
     for (const EntityInfo& e : world) {
-        if (!selector.includes_entities && !e.player) {
+        if ((!selector.includes_entities && !e.player) || (selector.alive_only && !e.alive)) {
             continue;
         }
         if (matches(selector, e, origin, env)) {

@@ -313,8 +313,169 @@ void CommandService::register_commands() {
         }
     }
 
-    // `effect` belongs here, between `difficulty` and `me`, in vanilla's order.
-    // Another wave writes status effects; its command registers at this line.
+    // ── effect ──────────────────────────────────────────────────────────────
+    //
+    // On the status effects wave's own API (effect_session.hpp). Players
+    // only: the mobs of this server carry no effects yet, and a mob target is
+    // refused by name rather than counted as a failure to apply.
+    {
+        const auto effect_of = [](const CommandContext& ctx) -> Parsed<gameplay::Effect> {
+            const std::string& id     = ctx.find<ResourceArg>("effect")->id;
+            const auto         effect = gameplay::effect_from_name(id);
+            if (!effect) {
+                return std::unexpected{error("argument.resource.not_found",
+                                             {Text::raw(id), Text::raw("minecraft:mob_effect")})};
+            }
+            return *effect;
+        };
+        const auto effect_name = [](gameplay::Effect effect) {
+            const std::string_view id    = gameplay::effect_info(effect).name;
+            const auto             colon = id.find(':');
+            return Text::translatable("effect." + std::string{id.substr(0, colon)} + "." +
+                                      std::string{id.substr(colon + 1)});
+        };
+        const auto targets_of = [this](const CommandContext& ctx) -> Parsed<std::vector<PlayerRef*>> {
+            std::vector<const EntityInfo*> found;
+            if (ctx.has("targets")) {
+                auto chosen = entities(ctx, "targets");
+                if (!chosen) {
+                    return std::unexpected{chosen.error()};
+                }
+                found = std::move(*chosen);
+            } else {
+                for (const EntityInfo& e : world_snapshot_) {
+                    if (e.player && ctx.source().is_player() && e.id == ctx.source().entity_id) {
+                        found.push_back(&e);
+                    }
+                }
+                if (found.empty()) {
+                    return std::unexpected{error("permissions.requires.entity")};
+                }
+            }
+            std::vector<PlayerRef*> out;
+            for (const EntityInfo* e : found) {
+                PlayerRef* p = e->player ? player(e->id) : nullptr;
+                if (p == nullptr || p->effects == nullptr || p->survival == nullptr) {
+                    return std::unexpected{not_modelled("keep status effects on anything but a player")};
+                }
+                out.push_back(p);
+            }
+            return out;
+        };
+        const auto give = [this, effect_of, effect_name, targets_of](bool infinite) {
+            return [this, effect_of, effect_name, targets_of, infinite](const CommandContext& ctx)
+                       -> Parsed<i32> {
+                auto targets = targets_of(ctx);
+                if (!targets) {
+                    return std::unexpected{targets.error()};
+                }
+                const auto effect = effect_of(ctx);
+                if (!effect) {
+                    return std::unexpected{effect.error()};
+                }
+                const i32*  seconds = ctx.find<i32>("seconds");
+                const i32*  amplifier = ctx.find<i32>("amplifier");
+                const bool* hide      = ctx.find<bool>("hideParticles");
+                // Instant health and damage count their duration in ticks, and
+                // default to one; everything else counts seconds, default 30.
+                const bool instant  = gameplay::effect_info(*effect).instantaneous;
+                const i32  duration = infinite  ? gameplay::kInfiniteDuration
+                                      : seconds ? (instant ? *seconds : *seconds * 20)
+                                                : (instant ? 1 : 600);
+                const bool hidden   = hide != nullptr && *hide;
+                const gameplay::EffectInstance instance{
+                    .effect    = *effect,
+                    .duration  = duration,
+                    .amplifier = static_cast<u8>(amplifier != nullptr ? *amplifier : 0),
+                    .ambient   = false,
+                    .visible   = !hidden,
+                    .show_icon = !hidden};
+                i32 applied = 0;
+                for (PlayerRef* p : *targets) {
+                    const gameplay::AddResult result = p->effects->apply(
+                        instance, *p->survival, EffectIo{p->send, p->broadcast_others}, p->effect_bearer);
+                    if (result != gameplay::AddResult::Unchanged &&
+                        result != gameplay::AddResult::Immune) {
+                        ++applied;
+                    }
+                }
+                if (applied == 0) {
+                    return std::unexpected{error("commands.effect.give.failed")};
+                }
+                // A third argument the English pattern never prints: the
+                // duration in whole seconds — "30", "5", and "0" for infinite,
+                // whose -1 ticks divide to 0. All three are in the capture.
+                const Text shown_seconds = raw(duration / 20);
+                if (targets->size() == 1) {
+                    success(ctx.source(),
+                            Text::translatable("commands.effect.give.success.single",
+                                               {effect_name(*effect),
+                                                player_display_name((*targets)[0]->name, (*targets)[0]->uuid),
+                                                shown_seconds}),
+                            true);
+                } else {
+                    success(ctx.source(),
+                            Text::translatable("commands.effect.give.success.multiple",
+                                               {effect_name(*effect), raw(static_cast<i64>(targets->size())),
+                                                shown_seconds}),
+                            true);
+                }
+                return applied;
+            };
+        };
+        const auto clear = [this, effect_of, effect_name, targets_of](bool specific) {
+            return [this, effect_of, effect_name, targets_of, specific](const CommandContext& ctx)
+                       -> Parsed<i32> {
+                auto targets = targets_of(ctx);
+                if (!targets) {
+                    return std::unexpected{targets.error()};
+                }
+                std::optional<gameplay::Effect> which;
+                if (specific) {
+                    const auto effect = effect_of(ctx);
+                    if (!effect) {
+                        return std::unexpected{effect.error()};
+                    }
+                    which = *effect;
+                }
+                i32 cleared = 0;
+                for (PlayerRef* p : *targets) {
+                    const EffectIo io{p->send, p->broadcast_others};
+                    const bool     done = which ? p->effects->remove(*which, *p->survival, io, p->effect_bearer)
+                                                : p->effects->clear(*p->survival, io, p->effect_bearer) > 0;
+                    cleared += done ? 1 : 0;
+                }
+                if (cleared == 0) {
+                    return std::unexpected{error(which ? "commands.effect.clear.specific.failed"
+                                                       : "commands.effect.clear.everything.failed")};
+                }
+                const bool  single = targets->size() == 1;
+                const Text  who    = single ? player_display_name((*targets)[0]->name, (*targets)[0]->uuid)
+                                            : raw(static_cast<i64>(targets->size()));
+                const std::string key = std::string{"commands.effect.clear."} +
+                                        (which ? "specific" : "everything") + ".success." +
+                                        (single ? "single" : "multiple");
+                success(ctx.source(),
+                        which ? Text::translatable(key, {effect_name(*which), who})
+                              : Text::translatable(key, {who}),
+                        true);
+                return cleared;
+            };
+        };
+        const u32 node        = top("effect", kPermissionGameMaster);
+        const u32 clear_node  = d.literal(node, "clear", clear(false));
+        const u32 clear_who   = d.argument(clear_node, "targets", ArgumentType::entity(false, false), clear(false));
+        d.argument(clear_who, "effect", ArgumentType::resource("minecraft:mob_effect"), clear(true));
+        const u32 give_node   = d.literal(node, "give");
+        const u32 give_who    = d.argument(give_node, "targets", ArgumentType::entity(false, false));
+        const u32 give_effect = d.argument(give_who, "effect", ArgumentType::resource("minecraft:mob_effect"), give(false));
+        const u32 seconds     = d.argument(give_effect, "seconds", ArgumentType::integer_between(1, 1000000), give(false));
+        const u32 amplifier   = d.argument(seconds, "amplifier", ArgumentType::integer_between(0, 255), give(false));
+        d.argument(amplifier, "hideParticles", ArgumentType::boolean(), give(false));
+        const u32 forever        = d.literal(give_effect, "infinite", give(true));
+        const u32 forever_amp    = d.argument(forever, "amplifier", ArgumentType::integer_between(0, 255), give(true));
+        d.argument(forever_amp, "hideParticles", ArgumentType::boolean(), give(true));
+    }
 
     // ── me ──────────────────────────────────────────────────────────────────
     {
@@ -358,18 +519,32 @@ void CommandService::register_commands() {
                     SurvivalSession& s = *p->survival;
                     if (set && !levels) {
                         const i32 cost = gameplay::experience_to_next_level(s.experience_level, s.curve);
-                        if (amount > cost) {
+                        // At or above the level's cost is refused: the capture
+                        // has 17 refused at level 5, whose cost is 17.
+                        if (amount >= cost) {
                             continue;
                         }
                         s.experience_points = amount;
-                    } else if (set) {
-                        s.experience_level = amount;
                     } else if (levels) {
-                        s.experience_level += amount;
+                        // Vanilla keeps the bar's *fraction* across a level
+                        // change, and reads points back as fraction × cost:
+                        // the capture's `xp query … points` after `xp set 0
+                        // levels` answers 4, not the 11 the old level held.
+                        const i32 old_cost =
+                            gameplay::experience_to_next_level(s.experience_level, s.curve);
+                        const f32 fraction = old_cost > 0 ? static_cast<f32>(s.experience_points) /
+                                                                static_cast<f32>(old_cost)
+                                                          : 0.0F;
+                        s.experience_level = set ? amount : s.experience_level + amount;
                         if (s.experience_level < 0) {
                             s.experience_level  = 0;
                             s.experience_points = 0;
                             s.experience_total  = 0;
+                        } else {
+                            const i32 new_cost =
+                                gameplay::experience_to_next_level(s.experience_level, s.curve);
+                            s.experience_points =
+                                static_cast<i32>(fraction * static_cast<f32>(new_cost));
                         }
                     } else if (amount > 0) {
                         s.award_experience(amount);
@@ -477,6 +652,8 @@ void CommandService::register_commands() {
                     return env_.blocks()->is_air(env_.blocks()->block_of(s));
                 };
                 std::vector<BlockChange> changes;
+                std::vector<BlockPos>    broken;
+                i32                      counted = 0;
                 for (i32 z = low.z; z <= high.z; ++z) {
                     for (i32 y = low.y; y <= high.y; ++y) {
                         for (i32 x = low.x; x <= high.x; ++x) {
@@ -508,8 +685,14 @@ void CommandService::register_commands() {
                                 break;
                             case Mode::Destroy:
                                 if (!is_air(current)) {
-                                    host_->destroy_block(pos);
-                                    current = host_->block_at(pos);
+                                    // Broken first, then the target placed on
+                                    // the air that is left: the write always
+                                    // happens, the count only when the target
+                                    // is not air.
+                                    broken.push_back(pos);
+                                    changes.push_back(BlockChange{pos, target});
+                                    counted += is_air(target) ? 0 : 1;
+                                    continue;
                                 }
                                 break;
                             }
@@ -521,18 +704,21 @@ void CommandService::register_commands() {
                                 continue;
                             }
                             changes.push_back(BlockChange{pos, target});
+                            ++counted;
                         }
                     }
                 }
-                if (changes.empty()) {
+                if (!broken.empty()) {
+                    host_->break_blocks(broken);
+                }
+                if (!changes.empty()) {
+                    host_->set_blocks(changes);
+                }
+                if (counted == 0) {
                     return std::unexpected{error("commands.fill.failed")};
                 }
-                host_->set_blocks(changes);
-                success(src,
-                        Text::translatable("commands.fill.success",
-                                           {raw(static_cast<i64>(changes.size()))}),
-                        true);
-                return static_cast<i32>(changes.size());
+                success(src, Text::translatable("commands.fill.success", {raw(counted)}), true);
+                return counted;
             };
         };
         const u32 node  = top("fill", kPermissionGameMaster);
@@ -786,6 +972,17 @@ void CommandService::register_commands() {
                         // survival tick carries out the death on its next pass.
                         (void)p->survival->hurt(gameplay::DamageKind::GenericKill,
                                                 std::numeric_limits<f32>::max(), io, p->entity_id);
+                        // The death message goes to everyone, before the
+                        // command's own line — the capture's order.
+                        if (p->survival->health.dead && world_.rules.flag("showDeathMessages")) {
+                            const Text death = Text::translatable(
+                                "death.attack.genericKill", {player_display_name(p->name, p->uuid)});
+                            host_->broadcast(net::clientbound::kSystemChat,
+                                             net::encode_system_chat(to_json(death), false));
+                            if (console) {
+                                console(plain(death, lang()));
+                            }
+                        }
                     }
                 } else {
                     (void)host_->kill_entity(e->id);
@@ -895,7 +1092,8 @@ void CommandService::register_commands() {
                                                 {to_json(Text::literal(text)), kChatTypeSay,
                                                  to_json(Text::literal("Server")), std::nullopt}));
                            if (console) {
-                               console("[Server] " + text);
+                               // Vanilla's own console line, prefix included.
+                               console("[Not Secure] [Server] " + text);
                            }
                        }
                        return 1;
@@ -1471,22 +1669,16 @@ void CommandService::register_commands() {
                 return changed;
             };
         };
-        const auto names_where = [this](bool op) {
-            return [this, op](const CommandContext&, SuggestionsBuilder& builder) {
-                for (const PlayerRef& p : players_) {
-                    if (ops_.level_of(p.uuid).has_value() == op &&
-                        std::string_view{p.name}.starts_with(builder.remaining())) {
-                        builder.suggest(std::string{p.name});
-                    }
-                }
-            };
-        };
+        // Suggestions are answered on the network thread, which may not read
+        // the ops list or the player records the tick thread owns. So both
+        // offer every online name, where vanilla leaves out those already
+        // (de-)opped — stated in docs/provenance/commandes.md.
         const u32 deop = top("deop", kPermissionAdmin);
-        d.suggests(d.argument(deop, "targets", ArgumentType::game_profile(), change(false)),
-                   names_where(true), "minecraft:ask_server");
+        d.suggests(d.argument(deop, "targets", ArgumentType::game_profile(), change(false)), {},
+                   "minecraft:ask_server");
         const u32 op = top("op", kPermissionAdmin);
-        d.suggests(d.argument(op, "targets", ArgumentType::game_profile(), change(true)),
-                   names_where(false), "minecraft:ask_server");
+        d.suggests(d.argument(op, "targets", ArgumentType::game_profile(), change(true)), {},
+                   "minecraft:ask_server");
     }
 
     // ── save-all / stop ─────────────────────────────────────────────────────

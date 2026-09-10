@@ -740,6 +740,19 @@ std::vector<u8> encode_look_at(bool eyes, f64 x, f64 y, f64 z) {
     return writer.take();
 }
 
+std::vector<u8> encode_synchronize_position_relative(f64 x, f64 y, f64 z, f32 yaw, f32 pitch,
+                                                     u8 flags, i32 teleport_id) {
+    io::ByteWriter writer;
+    writer.write_f64(x);
+    writer.write_f64(y);
+    writer.write_f64(z);
+    writer.write_f32(yaw);
+    writer.write_f32(pitch);
+    writer.write_u8(flags);
+    write_varint(writer, teleport_id);
+    return writer.take();
+}
+
 std::vector<u8> encode_player_info_game_mode(const Uuid& uuid, i32 game_mode) {
     io::ByteWriter writer;
     writer.write_u8(0x04);  // actions: Update Game Mode only

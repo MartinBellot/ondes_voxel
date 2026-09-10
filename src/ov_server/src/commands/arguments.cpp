@@ -972,6 +972,10 @@ void suggest_argument(const ArgumentType& type, SuggestionsBuilder& builder, con
         break;
     }
     case ArgKind::Resource: {
+        if (type.registry != "minecraft:entity_type") {
+            suggest_resources(builder, env.registry_ids(type.registry));
+            break;
+        }
         // `summon`: every type but the two that cannot be summoned.
         std::vector<std::string>          ids;
         std::vector<std::optional<Text>>  tooltips;

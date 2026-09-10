@@ -281,4 +281,11 @@ inline constexpr i32 kWorldEventBlockBreak = 2001;
 /// `tp … facing` does.
 [[nodiscard]] std::vector<u8> encode_look_at(bool eyes, f64 x, f64 y, f64 z);
 
+/// Synchronize Position with relative flags (0x01 x, 0x02 y, 0x04 z, 0x08 yaw,
+/// 0x10 pitch): a flagged field is an offset, which is how vanilla sends a
+/// `tp ~ ~5 ~` — the capture shows flags 0x1F and a y of 5.
+[[nodiscard]] std::vector<u8> encode_synchronize_position_relative(f64 x, f64 y, f64 z, f32 yaw,
+                                                                   f32 pitch, u8 flags,
+                                                                   i32 teleport_id);
+
 }  // namespace ov::net
