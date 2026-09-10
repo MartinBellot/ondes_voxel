@@ -505,7 +505,21 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       bastion ×4, fossile du Nether, cité de l'End, **cité antique**,
       **ruines de sentier**, puits du désert, donjon, fossile, geode
 - [ ] Jigsaw, pools de structures, ancrages
-- [ ] **Nether** : portails, allumage, ratio 1:8, liaison de portails
+- [x] **Nether** : portails, allumage, ratio 1:8, liaison de portails
+      *(**2026-09-11** : génération du Nether contre le vrai serveur à la graine
+      1234567890 — biomes 3 071 999/3 072 000 cellules, masques de carvers
+      166/166 chunks, blocs après bruit, surface et carvers 76,9 → **99,802 %**,
+      chunks finis 99,913 % —, une seconde dimension dans le serveur (carte de
+      chunks, génération asynchrone, `DIM-1/region`, dimension du joueur
+      partout), portails de 2×3 à 21×21, 80 ticks en survie, recharge 300,
+      recherche à 128/16 puis création : notre algorithme retrouve le portail
+      du jeu **6/6** sur son terrain, et le portail construit par notre
+      serveur est celui du jeu bloc pour bloc. Aller-retour de bout en bout
+      11/11. Au passage, `old_blended_noise` lisait ses octaves à l'envers avec
+      une graine de la mauvaise source : solide/air de l'Overworld 99,141 →
+      **99,763 %** et le décalage de surface de ~2 blocs disparaît. Restent les
+      mobs du Nether, 19 features et ses structures, et plusieurs gestes dans
+      le Nether (conteneurs, TNT). Voir `docs/provenance/nether.md`)*
 - [ ] **End** : îles principales, îles extérieures, passerelles, portail de sortie
 
 ### Entités et IA
