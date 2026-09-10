@@ -772,7 +772,18 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       serveur — 1689 cases, 1248 items distincts, et exactement 7 items du
       registre qui n'apparaissent dans aucun onglet, nommés. Recherche,
       défilement, et +0,27 ms d'enregistrement CPU : les 45 modèles d'items en
-      3D n'ajoutent rien de mesurable au GPU*
+      3D n'ajoutent rien de mesurable au GPU. **2026-09-10 : il était
+      inaccessible chez l'utilisateur** — `creative_tabs.json`, gitignoré, n'était
+      produit par rien et l'écran retombait en silence sur l'inventaire de
+      survie ; `setup_vanilla.sh` le génère désormais et le refus s'affiche.
+      Géométrie remesurée **en faisant tourner le vrai client 1.20.1** : pas
+      des onglets 27 et non 28, onglets de droite ancrés au bord, armure
+      cliquable, onglet opérateur caché ; recherche **1557/1557** piles dans
+      l'ordre du vrai client, 18/19 requêtes identiques ; tous les gestes
+      mesurés (un clic donne 1 objet, pas une pile) ; barres sauvegardées
+      `hotbar.nbt`. Pixels identiques 69 à 96 % selon l'onglet ; restent
+      l'éclairage directionnel des blocs, le mélange sRGB, le joueur en
+      miniature et le reflet d'enchantement*
 - [ ] Écrans : menu principal, création et sélection de monde, options
       (contrôles, vidéo, son, langue, accessibilité, packs), pause, mort,
       inventaire, établi, fours ×3, coffres ×4, entonnoir, distributeur,

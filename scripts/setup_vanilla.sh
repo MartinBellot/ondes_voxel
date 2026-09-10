@@ -219,5 +219,21 @@ else
     echo "      scripts/measure_creative_screen.py asks the vanilla client for them (opens a window)."
 fi
 
+# ── Entity models ────────────────────────────────────────────────────────────
+# The same trap as the creative catalogue: gitignored, produced by nothing, and
+# lost with the worktree that made it — after which the client draws no mob and
+# says so only in its log. Fetched from the pinned bedrock-samples commit and
+# checked against the Java textures by the script itself.
+head_ "Entity models"
+MODELS="data/vanilla/1.20.1/entity_models.json"
+if [ -f "$MODELS" ]; then
+    ok "$MODELS"
+elif python3 scripts/measure_entity_models.py --fetch >/tmp/ov_entity_models.log 2>&1 &&
+     [ -f "$MODELS" ]; then
+    ok "$MODELS (fetched and checked)"
+else
+    miss "$MODELS could not be generated — see /tmp/ov_entity_models.log"
+fi
+
 # Not an error: M0 is fully buildable without any of this.
 exit 0
