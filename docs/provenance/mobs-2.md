@@ -136,6 +136,37 @@ Vitesse de croisière sur herbe, blocs par tick :
 | mouton, errance / panique | 0,11415 / 0,1777 | 0,115 / 0,144 | 0,11419 / 0,1784 |
 | poulet, errance / panique | 0,13485 / 0,2617 | 0,125 / 0,156 | 0,13491 / 0,2644 |
 
+### 1.6 De bout en bout, sur notre serveur
+
+`check_mobs2_e2e.py speed` : quatre mobs de chaque espèce invoqués à la console d'`ov_dedicated`
+sur son superplat, 90 s, la sonde lisant les `Update Entity Position` (pas quantifiés à 1/4096) —
+même statistique de plateau que la campagne vanilla :
+
+| espèce | vanilla | notre serveur | écart |
+|---|---|---|---|
+| zombie | 0,11417 | 0,11421 | +0,03 % |
+| husk | 0,11417 | 0,11422 | +0,04 % |
+| noyé | 0,11416 | 0,11423 | +0,06 % |
+| squelette | 0,13488 | 0,13491 | +0,02 % |
+| stray | 0,13485 | 0,13491 | +0,04 % |
+| sorcière | 0,13484 | 0,13490 | +0,04 % |
+| creeper | 0,08633 | 0,08632 | −0,01 % |
+| araignée | 0,12429 | 0,12432 | +0,02 % |
+| araignée venimeuse | 0,12426 | 0,12430 | +0,03 % |
+| enderman | 0,19412 | 0,19432 | +0,10 % |
+| vache | 0,08632 | 0,08633 | +0,01 % |
+| cochon | 0,13482 | 0,13493 | +0,08 % |
+| mouton | 0,11415 | 0,11421 | +0,05 % |
+| poulet | 0,13485 | 0,13490 | +0,04 % |
+| lapin | 0,13175 | 0,13189 | +0,11 % (glisse, ne saute pas) |
+| loup | 0,19416 | 0,19430 | +0,07 % |
+| renard | 0,19392 | 0,19431 | +0,20 % |
+| chat | 0,12432 | 0,12430 | −0,02 % |
+| cheval | 0,05354 | 0,05352 | −0,04 % |
+
+Dix-neuf espèces sur dix-neuf à 0,2 % près, par le vrai chemin de code (buts, `Mob::tick`,
+`step_entity`, paquets de mouvement). Avant cette vague le creeper allait à 0,125 (+45 %).
+
 **Le labyrinthe et la poursuite ne bougent pas.** Le labyrinthe juge l'A\* (`test_pathfinding.cpp`,
 suite des ouvertures), que la vitesse ne touche pas. La poursuite du zombie passe de 0,115 à
 0,11419 : c'est la valeur mesurée par `mobs.md`, désormais **prédite** plutôt que recopiée.
