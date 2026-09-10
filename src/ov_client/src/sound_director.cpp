@@ -1,6 +1,7 @@
 #include "ov/client/sound_director.hpp"
 
 #include "ov/audio/sound_engine.hpp"
+#include "ov/base/log.hpp"
 #include "ov/netclient/client.hpp"
 #include "ov/protocol/chat.hpp"
 
@@ -64,9 +65,14 @@ void SoundDirector::play(std::string_view event, i32 category, Vec3d at, f32 vol
     request.volume   = volume;
     request.pitch    = pitch;
     request.seed     = seed;
-    if (engine_->play(request)) {
+    if (const auto started = engine_->play(request); started) {
         ++played_;
     } else {
+        // The first few by name: a refusal nobody can see is a sound that
+        // silently never plays. After that, only counted.
+        if (refused_ < 8) {
+            OV_LOG_INFO("sound {} refused: {}", event, audio::to_string(started.error()));
+        }
         ++refused_;
     }
 }

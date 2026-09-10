@@ -47,6 +47,20 @@ Sounds::Sounds(const registry::BlockRegistry& blocks, const registry::Registries
     attack_weak_      = sound_named("minecraft:entity.player.attack.weak");
 }
 
+void Sounds::eating(const SoundHost& host, const void* eater, Vec3d feet) {
+    const f32 volume = random_.next_int(2) == 0 ? 0.5F : 1.0F;
+    play(host, eater, sound_named("minecraft:entity.generic.eat"), kPlayerCategory, feet, volume,
+         pitch_between(kVoiceLo, kVoiceHi));
+}
+
+void Sounds::ate(const SoundHost& host, Vec3d feet) {
+    play(host, nullptr, sound_named("minecraft:entity.player.burp"), kPlayerCategory, feet, 0.5F,
+         pitch_between(0.9F, 1.0F));
+    const f32 volume = random_.next_int(2) == 0 ? 0.5F : 1.0F;
+    play(host, nullptr, sound_named("minecraft:entity.generic.eat"), net::sound_category::kNeutral,
+         feet, volume, pitch_between(kVoiceLo, kVoiceHi));
+}
+
 void Sounds::player_attack(const SoundHost& host, Vec3d feet, bool critical, bool swept,
                            bool knockback, f32 strength_scale) {
     const bool strong = strength_scale > 0.9F;

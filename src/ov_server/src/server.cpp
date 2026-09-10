@@ -1973,6 +1973,11 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     if (blocks && registries) {
         sounds.emplace(*blocks, *registries, i64{0x6F76736F756E64});
     }
+    /// The block a player's click is acting on, while it acts. What the click
+    /// sets off elsewhere — a fence gate opened by the lever just pulled — is
+    /// heard by everyone; the clicked block (and the other half of a clicked
+    /// door) already has its own sound. Network thread only.
+    std::optional<BlockPos> sound_click;
     SoundHost sound_host;
     sound_host.send_near = [&](const void* except, Vec3d at, f64 radius, i32 id,
                                std::span<const u8> payload) {
@@ -2881,7 +2886,18 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             // edit, so it relights, broadcasts and queues the neighbour
             // notification exactly as placing a block does. Called with
             // `chunk_mutex` released — it takes it itself.
+            registry::BlockStateId before{};  // ── sound ──
+            if (sounds) {
+                const std::scoped_lock chunk_lock{chunk_mutex};
+                before = block_at({pos.x, pos.y, pos.z});
+            }
             set_block_and_broadcast({pos.x, pos.y, pos.z}, state);
+            // ── sound ── what the click set off, heard by everyone: the capture's
+            // lever opens the gate beside it and both players hear the gate.
+            if (sounds && !(sound_click && pos.x == sound_click->x && pos.z == sound_click->z &&
+                            std::abs(pos.y - sound_click->y) <= 1)) {
+                sounds->block_changed(sound_host, nullptr, pos, before, state);
+            }
         };
         hooks.schedule_tick = [&](BlockPos pos, std::string_view what, i64 delay,
                                   world::TickQueue queue, world::TickPriority priority) {
@@ -4642,9 +4658,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                 const std::scoped_lock chunk_lock{chunk_mutex};
                                 clicked_before = block_at(place->position);
                             }
+                            sound_click = BlockPos{place->position.x, place->position.y,
+                                                   place->position.z};  // ── sound ──
                             const CombatOutcome used = player.combat.on_use_item_on(
                                 *place, combat_view(player), combat_io(player), player_level,
                                 *item_use);
+                            sound_click.reset();  // ── sound ──
                             if (sounds) {  // ── sound ── a door, a lever, a button…
                                 registry::BlockStateId clicked_after{};
                                 {
@@ -6464,7 +6483,22 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     who.combat_last_z     = who.z;
                     who.combat_last_valid = true;
 
+                    const i32              using_left = who.combat.use.remaining;  // ── sound ──
+                    const std::string_view using_item = who.combat.use.item;
                     const std::string_view finished = who.combat.tick(combat_view(who), step);
+                    if (sounds && who.connection && gameplay::food_for(using_item)) {  // ── sound ──
+                        const Vec3d feet{who.x, who.y, who.z};
+                        // Seven mouthfuls in a 32-tick use, as captured: the last
+                        // one falls on the very tick the use finishes, before the
+                        // burp. Playing it only while the use was still active
+                        // gave six, which the comparison caught.
+                        if (using_left > 0 && using_left <= 25 && using_left % 4 == 1) {
+                            sounds->eating(sound_host, who.connection.get(), feet);
+                        }
+                        if (!finished.empty()) {
+                            sounds->ate(sound_host, feet);
+                        }
+                    }
                     if (finished.empty()) {
                         continue;
                     }

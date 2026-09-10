@@ -65,12 +65,22 @@ def heard(capture: dict, names: list[str]) -> dict:
     return out
 
 
+# Events whose volume is drawn at random: compared as a set of allowed values,
+# not one by one. The wiki's Food page gives eating a volume that "varies"
+# (0.5, 1.0 or 1.5); the capture heard 0.5 and 1.0.
+RANDOM_VOLUME = {("minecraft:entity.generic.eat", "player"): {0.5, 1.0, 1.5}}
+
+
 def key(d: dict) -> tuple:
     if d["kind"] == "world_event":
         return ("world_event", d["event"], d["data"])
     if d["kind"] == "stop":
         return ("stop", d.get("source"), d.get("sound"))
-    return (d["kind"], d.get("sound"), d.get("category"), round(d.get("volume", 0), 4))
+    volume = round(d.get("volume", 0), 4)
+    allowed = RANDOM_VOLUME.get((d.get("sound"), d.get("category")))
+    if allowed is not None and volume in allowed:
+        volume = "random"
+    return (d["kind"], d.get("sound"), d.get("category"), volume)
 
 
 def compare(vanilla: dict, ours: dict, ranges: dict) -> tuple[list, int, int, int]:
@@ -147,6 +157,10 @@ def pitch_ranges(*captures: dict) -> dict:
         lo, hi = ranges[event]
         ranges[event] = (min(lo, 0.9), max(hi, 1.0))
     ranges["minecraft:entity.player.hurt"] = (0.8, 1.2)
+    # The wiki's Food page: eating 0.8 .. 1.2, the burp 0.9 .. 1.0. One capture
+    # heard one burp, which is a sample and not a range.
+    ranges["minecraft:entity.generic.eat"] = (0.8, 1.2)
+    ranges["minecraft:entity.player.burp"] = (0.9, 1.0)
     return ranges
 
 

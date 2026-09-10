@@ -1401,7 +1401,12 @@ int main(int argc, char** argv) {
                 options.daylight_cycle = true;
             }
             // ── sound ── before the entity world forgets what was picked up.
+            // Only the audio work is timed: this segment and the listener's
+            // below. A first version timed from here to the engine update and
+            // measured the meshing and the physics in between — 4.8 ms of
+            // "audio" that was the frame.
             const auto audio_started = std::chrono::steady_clock::now();
+            f64        audio_ms      = 0.0;
             if (sound_director) {
                 sound_director->on_events(
                     events, [&entity_world](i32 id) -> std::optional<client::HeardEntity> {
@@ -1419,9 +1424,14 @@ int main(int argc, char** argv) {
                 // that is when this client plays them.
                 for (const auto& change : events.changed) {
                     const BlockPos at{change.x, change.y, change.z};
-                    if (pending_place && at == *pending_place &&
-                        change.state != registry::kAirState) {
-                        sound_director->placed(change.state, at);
+                    // The first answer about that cell closes it: a block is the
+                    // placement accepted, air is the refusal the server sends
+                    // back — heard as nothing.
+                    if (pending_place && at == *pending_place) {
+                        if (change.state != registry::kAirState) {
+                            OV_LOG_INFO("sound: placed ({}, {}, {}) confirmed", at.x, at.y, at.z);
+                            sound_director->placed(change.state, at);
+                        }
                         pending_place.reset();
                     }
                     if (pending_use && at == pending_use->first) {
@@ -1429,12 +1439,22 @@ int main(int argc, char** argv) {
                         pending_use.reset();
                     }
                 }
-                if (pending_place && ++pending_place_frames > 60) {
+                // The answer closes a pending gesture, not a clock. A window of
+                // 60 and then 240 frames — a fifth of a second, then 1.65 s at
+                // 145 fps — both closed before a Debug server busy generating
+                // chunks had answered, and the placement was heard as nothing.
+                // What is left is a safety net for an answer that never comes.
+                if (pending_place && ++pending_place_frames > 4000) {
+                    OV_LOG_INFO("sound: no Block Update for the place at ({}, {}, {})",
+                                pending_place->x, pending_place->y, pending_place->z);
                     pending_place.reset();  // refused: nothing to hear
                 }
-                if (pending_use && ++pending_use_frames > 60) {
+                if (pending_use && ++pending_use_frames > 4000) {
                     pending_use.reset();
                 }
+                audio_ms += std::chrono::duration<f64, std::milli>(
+                                std::chrono::steady_clock::now() - audio_started)
+                                .count();
             }
             // ── end sound ──
             session->apply(events);
@@ -1549,13 +1569,15 @@ int main(int argc, char** argv) {
                                     static_cast<f32>(player.position.y + 1.62),
                                     static_cast<f32>(player.position.z)};
             if (sound_director) {  // ── sound ── the ears are the camera
+                const auto listen_started = std::chrono::steady_clock::now();
                 sound_director->listen(
                     Vec3d{player.position.x, player.position.y + 1.62, player.position.z},
                     camera.yaw_degrees);
                 sound_engine->update();
-                audio_frame_ms.push_back(std::chrono::duration<f64, std::milli>(
-                                             std::chrono::steady_clock::now() - audio_started)
-                                             .count());
+                audio_ms += std::chrono::duration<f64, std::milli>(
+                                std::chrono::steady_clock::now() - listen_started)
+                                .count();
+                audio_frame_ms.push_back(audio_ms);
             }
 
             // The scripted dig: wait until the player has been standing for a
@@ -1588,6 +1610,8 @@ int main(int argc, char** argv) {
                 place_sent           = true;
                 pending_place        = place_target;  // ── sound ──
                 pending_place_frames = 0;
+                OV_LOG_INFO("sound: waiting for the place at ({}, {}, {})", place_target.x,
+                            place_target.y, place_target.z);
             }
 
             // Right-click a named block once the world has settled, and then

@@ -362,6 +362,14 @@ def build_table(blocks, names, raw) -> dict:
                     set_aside = {**set_aside, gesture: [measured[gesture]["sound"]],
                                  "reason": "family differs from the confirmed place"}
                     del measured[gesture]
+        # Families that still disagree with no confirmed place to arbitrate:
+        # nothing is kept. The orange wall banner stepped as gravel and fell
+        # as wood; picking one would be a guess dressed as a measurement.
+        if "place" not in measured and len({s["sound"].rsplit(".", 1)[0]
+                                            for s in measured.values()}) > 1:
+            set_aside = {**set_aside, **{g: [s["sound"]] for g, s in measured.items()},
+                         "reason": "families disagree and no confirmed place arbitrates"}
+            measured = {}
         for gesture in measured:
             counts[gesture] += 1
 

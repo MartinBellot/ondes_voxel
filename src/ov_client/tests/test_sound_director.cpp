@@ -203,6 +203,23 @@ TEST_CASE("director: footsteps come one per 1/0.6 blocks, at 0.15", "[sound][dir
     CHECK(log[0].category == audio::SoundCategory::Player);
 }
 
+TEST_CASE("director: this player's own place and break, at (v+1)/2 and p*0.8",
+          "[sound][director]") {
+    Rig rig;
+    if (!rig.missing.empty()) {
+        SKIP(rig.missing);
+    }
+    rig.director->placed(rig.stone(), BlockPos{2, -60, 5});
+    rig.director->broke(rig.stone(), BlockPos{0, -61, 5});
+    const auto log = rig.engine->take_log();
+    REQUIRE(log.size() == 2);
+    CHECK(log[0].event == "minecraft:block.stone.place");
+    CHECK_THAT(log[0].volume, WithinAbs(1.0, 1e-6));
+    CHECK_THAT(log[0].pitch, WithinAbs(0.8, 1e-6));
+    CHECK(log[0].position.y == -59.5);
+    CHECK(log[1].event == "minecraft:block.stone.break");
+}
+
 TEST_CASE("director: a landing is the fall, the block, the hurt — in that order",
           "[sound][director]") {
     Rig rig;

@@ -242,6 +242,29 @@ TEST_CASE("server sounds: the swing — strong when charged, crit and weak other
     CHECK(effect(rec.sent[2]).sound.sound_id == sound_id("minecraft:entity.player.attack.weak"));
 }
 
+TEST_CASE("server sounds: eating — mouthfuls for the others, the burp for all",
+          "[server][sound]") {
+    Sounds   sounds{*loaded().blocks, *loaded().registries, 1};
+    Recorder rec;
+    int      eater = 0;
+    const Vec3d at{0.5, -60.0, 0.5};
+    sounds.eating(rec.host, &eater, at);
+    sounds.ate(rec.host, at);
+    REQUIRE(rec.sent.size() == 3);
+    CHECK(rec.sent[0].except == &eater);
+    const auto bite = effect(rec.sent[0]);
+    CHECK(bite.sound.sound_id == sound_id("minecraft:entity.generic.eat"));
+    CHECK(bite.category == net::sound_category::kPlayer);
+    CHECK((bite.volume == 0.5F || bite.volume == 1.0F));
+    CHECK(rec.sent[1].except == nullptr);
+    const auto burp = effect(rec.sent[1]);
+    CHECK(burp.sound.sound_id == sound_id("minecraft:entity.player.burp"));
+    CHECK(burp.volume == 0.5F);
+    const auto last = effect(rec.sent[2]);
+    CHECK(last.sound.sound_id == sound_id("minecraft:entity.generic.eat"));
+    CHECK(last.category == net::sound_category::kNeutral);  // captured so
+}
+
 TEST_CASE("server sounds: a cow's hurt and the TNT's fuse", "[server][sound]") {
     Sounds   sounds{*loaded().blocks, *loaded().registries, 1};
     Recorder rec;

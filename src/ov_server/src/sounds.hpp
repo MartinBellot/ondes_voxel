@@ -105,6 +105,14 @@ public:
     void player_attack(const SoundHost& host, Vec3d feet, bool critical, bool swept,
                        bool knockback, f32 strength_scale);
 
+    /// A mouthful while a player eats: everyone near but the eater, category
+    /// player, volume 1.0 or 0.5, pitch 0.8 .. 1.2. The capture heard seven over
+    /// a 32-tick golden apple; which ticks they fall on is ours (the caller's).
+    void eating(const SoundHost& host, const void* eater, Vec3d feet);
+    /// The food is finished: the burp (player, 0.5), then the last mouthful in
+    /// category **neutral** — both captured, both heard by the eater too.
+    void ate(const SoundHost& host, Vec3d feet);
+
     /// A TNT entity was primed at `position` (the entity's, not the block's).
     void tnt_primed(const SoundHost& host, Vec3d position);
 
