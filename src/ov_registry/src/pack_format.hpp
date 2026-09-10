@@ -24,7 +24,7 @@ namespace ov::registry {
 /// were current is far worse than no cache: the ids would be plausible and
 /// wrong, and nothing would report an error until a vanilla client crashed on
 /// an entity type that does not exist.
-inline constexpr u32 kFormatVersion = 13;
+inline constexpr u32 kFormatVersion = 14;
 
 /// Grew past 128 when the loot tables arrived.
 inline constexpr u32 kHeaderSize = 256;
@@ -112,7 +112,10 @@ struct PackHeader {
     /// or -1 for none. Measured, like the burn times.
     u32 remainder_offset;
 
-    u32 reserved;
+    /// One float per block: how much of an explosion's energy it eats.
+    ///
+    /// Measured, like the hardness beside it — see docs/provenance/explosions.md.
+    u32 resistance_offset;
 };
 
 /// One entity type, measured on a running 1.20.1 server.

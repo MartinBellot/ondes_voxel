@@ -13,6 +13,7 @@ ov_add_library(ov_gameplay
         src/durability.cpp
         src/entity_physics.cpp
         src/experience.cpp
+        src/explosion.cpp
         src/fluid.cpp
         src/item_use.cpp
         src/food.cpp
@@ -48,6 +49,7 @@ ov_add_test(test_ov_gameplay
         tests/test_durability.cpp
         tests/test_entity_physics.cpp
         tests/test_experience.cpp
+        tests/test_explosion.cpp
         tests/test_fluid.cpp
         tests/test_item_use.cpp
         tests/test_food.cpp
