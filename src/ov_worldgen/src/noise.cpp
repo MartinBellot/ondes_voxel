@@ -131,26 +131,85 @@ f64 PerlinNoise::wrap(f64 value) noexcept {
     return value - static_cast<f64>(floor_i64(value / 3.3554432E7 + 0.5)) * 3.3554432E7;
 }
 
-PerlinNoise PerlinNoise::create(math::XoroshiroRandomSource& random, i32 first_octave,
-                                std::span<const f64> amplitudes) {
-    PerlinNoise noise;
-    noise.first_octave_ = first_octave;
-    noise.amplitudes_.assign(amplitudes.begin(), amplitudes.end());
-    noise.octaves_.resize(amplitudes.size());
+namespace {
 
-    // Each octave is seeded by *name*, not in sequence. That is why a zero
-    // amplitude can skip an octave without shifting the others: the name
-    // carries the octave number.
-    const math::XoroshiroPositionalFactory factory{static_cast<u64>(random.next_long()),
-                                                   static_cast<u64>(random.next_long())};
+/// The "new" initialisation, whichever factory the stack was forked into.
+///
+/// Each octave is seeded by *name*, not in sequence. That is why a zero
+/// amplitude can skip an octave without shifting the others: the name carries
+/// the octave number.
+template<typename Factory>
+[[nodiscard]] std::vector<std::unique_ptr<ImprovedNoise>> named_octaves(
+    const Factory& factory, i32 first_octave, std::span<const f64> amplitudes) {
+    std::vector<std::unique_ptr<ImprovedNoise>> octaves(amplitudes.size());
     for (usize i = 0; i < amplitudes.size(); ++i) {
         if (amplitudes[i] == 0.0) {
             continue;
         }
         const std::string name = "octave_" + std::to_string(first_octave + static_cast<i32>(i));
-        auto               source = factory.from_hash_of(name);
-        noise.octaves_[i]         = std::make_unique<ImprovedNoise>(source);
+        auto              source = factory.from_hash_of(name);
+        octaves[i]               = std::make_unique<ImprovedNoise>(source);
     }
+    return octaves;
+}
+
+/// `ImprovedNoise`'s whole consumption: three doubles of two draws each and a
+/// 256-step shuffle of one draw each — 262. The old initialisation skips an
+/// octave by throwing exactly that many `nextInt()`s away.
+constexpr i32 kImprovedNoiseDraws = 262;
+
+}  // namespace
+
+PerlinNoise PerlinNoise::create(math::XoroshiroRandomSource& random, i32 first_octave,
+                                std::span<const f64> amplitudes) {
+    // The factory takes two longs: Xoroshiro's state is 128 bits.
+    const math::XoroshiroPositionalFactory factory{static_cast<u64>(random.next_long()),
+                                                   static_cast<u64>(random.next_long())};
+    return from_octaves(named_octaves(factory, first_octave, amplitudes), first_octave,
+                        amplitudes);
+}
+
+PerlinNoise PerlinNoise::create(math::LegacyRandomSource& random, i32 first_octave,
+                                std::span<const f64> amplitudes) {
+    // One long: `LegacyRandomSource.forkPositional()` is a factory over a
+    // single 64-bit seed, and its names hash with String.hashCode.
+    const math::LegacyPositionalFactory factory{static_cast<u64>(random.next_long())};
+    return from_octaves(named_octaves(factory, first_octave, amplitudes), first_octave,
+                        amplitudes);
+}
+
+PerlinNoise PerlinNoise::create_legacy(math::LegacyRandomSource& random, i32 first_octave,
+                                       std::span<const f64> amplitudes) {
+    const auto count = static_cast<i32>(amplitudes.size());
+    // The index of octave zero in the amplitude list. The old scheme counts
+    // from there downwards, and positive octaves did not exist in it.
+    const i32 zero = -first_octave;
+    std::vector<std::unique_ptr<ImprovedNoise>> octaves(amplitudes.size());
+
+    // Constructed unconditionally: whether or not octave zero is kept, its
+    // draws are spent.
+    auto top = std::make_unique<ImprovedNoise>(random);
+    if (zero >= 0 && zero < count && amplitudes[static_cast<usize>(zero)] != 0.0) {
+        octaves[static_cast<usize>(zero)] = std::move(top);
+    }
+    for (i32 index = zero - 1; index >= 0; --index) {
+        if (index < count && amplitudes[static_cast<usize>(index)] != 0.0) {
+            octaves[static_cast<usize>(index)] = std::make_unique<ImprovedNoise>(random);
+        } else {
+            for (i32 draw = 0; draw < kImprovedNoiseDraws; ++draw) {
+                (void)random.next_int();
+            }
+        }
+    }
+    return from_octaves(std::move(octaves), first_octave, amplitudes);
+}
+
+PerlinNoise PerlinNoise::from_octaves(std::vector<std::unique_ptr<ImprovedNoise>> octaves,
+                                      i32 first_octave, std::span<const f64> amplitudes) {
+    PerlinNoise noise;
+    noise.first_octave_ = first_octave;
+    noise.amplitudes_.assign(amplitudes.begin(), amplitudes.end());
+    noise.octaves_ = std::move(octaves);
 
     const auto count           = static_cast<i32>(amplitudes.size());
     noise.lowest_input_factor_ = std::pow(2.0, static_cast<f64>(first_octave));
@@ -204,7 +263,26 @@ NormalNoise NormalNoise::create(math::XoroshiroRandomSource& random, i32 first_o
     // the order is state again.
     PerlinNoise first  = PerlinNoise::create(random, first_octave, amplitudes);
     PerlinNoise second = PerlinNoise::create(random, first_octave, amplitudes);
+    return from_stacks(std::move(first), std::move(second), amplitudes);
+}
 
+NormalNoise NormalNoise::create(math::LegacyRandomSource& random, i32 first_octave,
+                                std::span<const f64> amplitudes) {
+    PerlinNoise first  = PerlinNoise::create(random, first_octave, amplitudes);
+    PerlinNoise second = PerlinNoise::create(random, first_octave, amplitudes);
+    return from_stacks(std::move(first), std::move(second), amplitudes);
+}
+
+NormalNoise NormalNoise::create_legacy_nether_biome(math::LegacyRandomSource& random,
+                                                    i32 first_octave,
+                                                    std::span<const f64> amplitudes) {
+    PerlinNoise first  = PerlinNoise::create_legacy(random, first_octave, amplitudes);
+    PerlinNoise second = PerlinNoise::create_legacy(random, first_octave, amplitudes);
+    return from_stacks(std::move(first), std::move(second), amplitudes);
+}
+
+NormalNoise NormalNoise::from_stacks(PerlinNoise first, PerlinNoise second,
+                                     std::span<const f64> amplitudes) {
     // The scaling depends only on the *span* of non-zero octaves, not on how
     // many there are inside it.
     i32 lowest  = std::numeric_limits<i32>::max();
@@ -214,6 +292,14 @@ NormalNoise NormalNoise::create(math::XoroshiroRandomSource& random, i32 first_o
             lowest  = std::min(lowest, static_cast<i32>(i));
             highest = std::max(highest, static_cast<i32>(i));
         }
+    }
+    // A stack with no octave at all — the legacy world's `offset`, built with
+    // a single zero amplitude — has no span. It is zero everywhere whatever the
+    // factor, so the factor only has to be finite: in Java the int subtraction
+    // wraps to one, and one it is here, without the overflow.
+    if (lowest > highest) {
+        lowest  = 0;
+        highest = 1;
     }
     const f64 span      = static_cast<f64>(highest - lowest);
     const f64 deviation = 0.1 * (1.0 + 1.0 / (span + 1.0));
@@ -267,8 +353,9 @@ constexpr f64   kSecondDivisor = 128.0;
 
 }  // namespace
 
-BlendedNoise::LegacyStack BlendedNoise::LegacyStack::create(math::XoroshiroRandomSource& random,
-                                                            i32 first_octave, usize count) {
+template<typename Random>
+BlendedNoise::LegacyStack BlendedNoise::LegacyStack::create(Random& random, i32 first_octave,
+                                                            usize count) {
     LegacyStack stack;
     stack.first_octave = first_octave;
     stack.octaves.resize(count);
@@ -289,6 +376,17 @@ BlendedNoise::LegacyStack BlendedNoise::LegacyStack::create(math::XoroshiroRando
 
 BlendedNoise BlendedNoise::create(math::XoroshiroRandomSource& random, f64 xz_scale, f64 y_scale,
                                   f64 xz_factor, f64 y_factor, f64 smear_scale_multiplier) {
+    return build(random, xz_scale, y_scale, xz_factor, y_factor, smear_scale_multiplier);
+}
+
+BlendedNoise BlendedNoise::create(math::LegacyRandomSource& random, f64 xz_scale, f64 y_scale,
+                                  f64 xz_factor, f64 y_factor, f64 smear_scale_multiplier) {
+    return build(random, xz_scale, y_scale, xz_factor, y_factor, smear_scale_multiplier);
+}
+
+template<typename Random>
+BlendedNoise BlendedNoise::build(Random& random, f64 xz_scale, f64 y_scale, f64 xz_factor,
+                                 f64 y_factor, f64 smear_scale_multiplier) {
     BlendedNoise noise;
     // All three from the same generator, in this order: the two limits at
     // sixteen octaves each, then the selector at eight.
@@ -358,7 +456,15 @@ f64 BlendedNoise::selector(i32 x, i32 y, i32 z) const noexcept {
 
     f64 total   = 0.0;
     f64 falloff = 1.0;
-    for (const auto& octave : main_.octaves) {
+    // From the top of the array down. The game reads these stacks through
+    // `getOctaveNoise(i)`, which indexes `length - 1 - i`: the step with
+    // falloff 1 uses the octave the old initialisation created *first*. Read
+    // in array order instead, every octave samples the right frequency with
+    // another octave's permutation — the same distribution, a different
+    // world. Measured: the Nether's blocks go from 76.9 % to 99.9 % agreement
+    // (docs/provenance/nether.md).
+    for (usize step = 0; step < main_.octaves.size(); ++step) {
+        const auto& octave = main_.octaves[main_.octaves.size() - 1 - step];
         if (octave != nullptr) {
             total += octave->noise(PerlinNoise::wrap(mx * falloff),
                                    PerlinNoise::wrap(my * falloff),
@@ -388,7 +494,9 @@ f64 BlendedNoise::value(i32 x, i32 y, i32 z) const noexcept {
     f64 low     = 0.0;
     f64 high    = 0.0;
     f64 falloff = 1.0;
-    for (usize index = 0; index < min_limit_.octaves.size(); ++index) {
+    // Top of the array first, as in `selector`.
+    for (usize step = 0; step < min_limit_.octaves.size(); ++step) {
+        const usize index = min_limit_.octaves.size() - 1 - step;
         const f64 wx = PerlinNoise::wrap(sx * falloff);
         const f64 wy = PerlinNoise::wrap(sy * falloff);
         const f64 wz = PerlinNoise::wrap(sz * falloff);

@@ -70,6 +70,13 @@ enum class PlantSurvivalRule : u8 {
 /// vanilla features this costs are the two mushroom patches — whose rule reads
 /// the light level, which worldgen does not compute — and the two fire
 /// patches, whose rule asks what is flammable nearby.
+///
+/// ── nether ── The fire patches load now, under `NotAirBelow`. Fire's own
+/// rule is "a sturdy face below, *or* something flammable beside it", and both
+/// patches carry a predicate that already demands netherrack (soul sand or soul
+/// soil for soul fire) underneath — so in every position the feature can reach,
+/// the first half of the rule holds and the answer is yes. The mushrooms stay
+/// refused: their rule reads the light.
 [[nodiscard]] std::optional<PlantSurvivalRule> plant_survival_rule(
     std::string_view block_name) noexcept;
 

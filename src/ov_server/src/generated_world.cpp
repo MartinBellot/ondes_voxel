@@ -56,14 +56,19 @@ struct GeneratedWorld::Stack {
     std::optional<worldgen::ChunkGenerator> generator;
     std::optional<worldgen::ChunkPipeline>  pipeline;
 
+    /// ── nether ── The chunk's shape: the overworld's, or the Nether's 256.
+    world::WorldShape shape{world::WorldShape::overworld()};
+
     Stack(i64 world_seed, worldgen::NoiseRouter&& r, worldgen::BiomeSource&& b,
-          worldgen::SurfaceSystem&& s, worldgen::FeatureRegistry&& f)
+          worldgen::SurfaceSystem&& s, worldgen::FeatureRegistry&& f, bool nether)
         : router(std::move(r)),
           biomes(std::move(b)),
           surface(std::move(s)),
           features(std::move(f)),
           carving{router.min_y(), router.height()},
-          carvers{world_seed, carving} {}
+          carvers{nether ? worldgen::CarverStage::nether(world_seed)
+                         : worldgen::CarverStage{world_seed, carving}},
+          shape{nether ? world::WorldShape::nether() : world::WorldShape::overworld()} {}
 };
 
 struct GeneratedWorld::Impl {
@@ -86,19 +91,20 @@ namespace {
 [[nodiscard]] std::unique_ptr<GeneratedWorld::Stack> build_stack(
     const std::filesystem::path& data, const std::filesystem::path& reports,
     const registry::BlockRegistry& blocks, const registry::Registries& registries, i64 seed,
-    bool quiet) {
-    auto router = worldgen::NoiseRouter::load(data, "overworld", seed);
+    bool quiet, std::string_view settings) {
+    const std::string name{settings};
+    auto              router = worldgen::NoiseRouter::load(data, name, seed);
     if (!router) {
         OV_LOG_ERROR("worldgen: router: {} — run tools/ov_datagen first",
                      worldgen::to_string(router.error()));
         return nullptr;
     }
-    auto biomes = worldgen::BiomeSource::load(reports, "overworld");
+    auto biomes = worldgen::BiomeSource::load(reports, name);
     if (!biomes) {
         OV_LOG_ERROR("worldgen: biome source: {}", worldgen::to_string(biomes.error()));
         return nullptr;
     }
-    auto surface = worldgen::SurfaceSystem::load(data, "overworld", seed, blocks);
+    auto surface = worldgen::SurfaceSystem::load(data, name, seed, blocks);
     if (!surface) {
         OV_LOG_ERROR("worldgen: surface rules: {}", worldgen::to_string(surface.error()));
         return nullptr;
@@ -109,8 +115,9 @@ namespace {
         return nullptr;
     }
 
-    auto stack = std::make_unique<GeneratedWorld::Stack>(
-        seed, std::move(*router), std::move(*biomes), std::move(*surface), std::move(*features));
+    auto stack = std::make_unique<GeneratedWorld::Stack>(seed, std::move(*router),
+                                                         std::move(*biomes), std::move(*surface),
+                                                         std::move(*features), name == "nether");
 
     // From `stack->features` and `stack->biomes`, not from the locals that were
     // just moved out of them: see the comment on Stack::decorator.
@@ -131,8 +138,7 @@ namespace {
         return nullptr;
     }
 
-    stack->pipeline.emplace(*stack->generator, &*stack->decorator, blocks,
-                            world::WorldShape::overworld(), seed);
+    stack->pipeline.emplace(*stack->generator, &*stack->decorator, blocks, stack->shape, seed);
     (void)quiet;
     return stack;
 }
@@ -146,7 +152,7 @@ GeneratedWorld::~GeneratedWorld() = default;
 std::unique_ptr<GeneratedWorld> GeneratedWorld::load(
     const std::filesystem::path& data_root, const registry::BlockRegistry& blocks,
     const registry::Registries& registries, std::span<const std::string_view> codec_biomes,
-    i64 seed, usize stacks) {
+    i64 seed, usize stacks, std::string_view settings) {
     const auto data    = data_root / "vanilla" / "1.20.1" / "generated" / "data" / "minecraft";
     const auto reports = data_root / "vanilla" / "1.20.1" / "generated";
 
@@ -156,7 +162,7 @@ std::unique_ptr<GeneratedWorld> GeneratedWorld::load(
     const usize wanted = stacks == 0 ? usize{1} : stacks;
     impl->stacks.reserve(wanted);
     for (usize index = 0; index < wanted; ++index) {
-        auto stack = build_stack(data, reports, blocks, registries, seed, index != 0);
+        auto stack = build_stack(data, reports, blocks, registries, seed, index != 0, settings);
         if (!stack) {
             return nullptr;
         }
@@ -191,9 +197,9 @@ std::unique_ptr<GeneratedWorld> GeneratedWorld::load(
     }
 
     OV_LOG_INFO(
-        "worldgen: overworld ready at seed {} — noise, biomes, surface, carvers, features; "
+        "worldgen: {} ready at seed {} — noise, biomes, surface, carvers, features; "
         "{} independent stacks",
-        seed, impl->stacks.size());
+        settings, seed, impl->stacks.size());
     return std::unique_ptr<GeneratedWorld>(new GeneratedWorld(std::move(impl)));
 }
 

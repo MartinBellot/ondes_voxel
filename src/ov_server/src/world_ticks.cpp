@@ -91,6 +91,9 @@ usize WorldTicks::settle(ServerLevel& level, usize& waves) {
             if (extension_ != nullptr) {  // ── tnt and gravity ──
                 extension_->neighbour_changed(level, pos);
             }
+            if (portals_ != nullptr) {  // ── nether ──
+                (void)portals_->on_block_changed(level, pos);
+            }
             ++notified;
             if (plants_ != nullptr) {  // ── agriculture ──
                 // The written block itself: a leaf placed next to a log learns

@@ -117,6 +117,17 @@ public:
     /// The world seed this router was loaded with. The aquifer forks its own
     /// positional factory from it, from the same root the noises use.
     [[nodiscard]] i64 seed() const noexcept;
+
+    /// `legacy_random_source` from the settings: true for the Nether, whose
+    /// every noise is then seeded from `java.util.Random` rather than
+    /// Xoroshiro.
+    [[nodiscard]] bool legacy_random_source() const noexcept;
+
+    /// The settings' `default_block` and `default_fluid`, by name — stone and
+    /// water in the overworld, netherrack and lava in the Nether.
+    [[nodiscard]] std::string_view default_block() const noexcept;
+    [[nodiscard]] std::string_view default_fluid() const noexcept;
+
     [[nodiscard]] i32 min_y() const noexcept;
     [[nodiscard]] i32 height() const noexcept;
     /// Cell size in blocks: horizontal and vertical. The terrain is sampled on

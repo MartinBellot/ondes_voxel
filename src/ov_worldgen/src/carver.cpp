@@ -206,7 +206,7 @@ void carve_ellipsoid(const CarvingContext& context, i32 chunk_x, i32 chunk_z, f6
     const i32 to_x   = std::min(mth_floor(x + horizontal_radius) - base_x, 15);
     const i32 from_y = std::max(mth_floor(y - vertical_radius) - 1, context.min_y + 1);
     const i32 to_y   = std::min(mth_floor(y + vertical_radius) + 1,
-                                context.min_y + context.height - 1 - kTopMargin);
+                                context.min_y + context.depth() - 1 - kTopMargin);
     const i32 from_z = std::max(mth_floor(z - horizontal_radius) - base_z - 1, 0);
     const i32 to_z   = std::min(mth_floor(z + horizontal_radius) - base_z, 15);
 
@@ -244,7 +244,30 @@ void carve_ellipsoid(const CarvingContext& context, i32 chunk_x, i32 chunk_z, f6
     return result;
 }
 
+// ── nether ──
+/// `NetherWorldCarver.getThickness`: `(f * 2 + f) * 2`, two draws and never
+/// the widening the cave carver rolls for.
+[[nodiscard]] f32 nether_cave_thickness(math::LegacyRandomSource& random) noexcept {
+    const f32 first  = random.next_float();
+    const f32 second = random.next_float();
+    return (first * 2.0F + second) * 2.0F;
+}
+
+/// `NetherWorldCarver.getCaveBound()`.
+constexpr i32 kNetherCaveBound = 10;
+
+/// `NetherWorldCarver.getYScale()`: the tunnels are five times as tall as
+/// they are wide at the start, before the per-branch reset to one.
+constexpr f64 kNetherYScale = 5.0;
+
 }  // namespace
+
+CaveCarverConfig nether_cave_config(const CarvingContext& context) noexcept {
+    // configured_carver/nether_cave.json: probability 0.2, y uniform from
+    // absolute 0 to below_top 1. `below_top` resolves against the generator's
+    // depth, not the chunk's: 0 + 128 - 1 - 1 = 126.
+    return CaveCarverConfig{0.2F, 0, context.min_y + context.depth() - 1 - 1, true};
+}
 
 // ── CaveWorldCarver ─────────────────────────────────────────────────────────
 
@@ -342,7 +365,9 @@ void CaveWorldCarver::carve(math::LegacyRandomSource& random, i32 origin_x, i32 
     // get a whole cave system. Nesting them is the point: a flat
     // `next_int(15)` would give the same average and a completely different
     // distribution.
-    const i32 origins = random.next_int(random.next_int(random.next_int(kCaveBound) + 1) + 1);
+    const bool nether  = config_.nether;
+    const i32  bound   = nether ? kNetherCaveBound : kCaveBound;
+    const i32  origins = random.next_int(random.next_int(random.next_int(bound) + 1) + 1);
 
     for (i32 origin = 0; origin < origins; ++origin) {
         const f64 x = static_cast<f64>(origin_x * 16 + random.next_int(16));
@@ -351,18 +376,26 @@ void CaveWorldCarver::carve(math::LegacyRandomSource& random, i32 origin_x, i32 
 
         // horizontal_radius_multiplier, vertical_radius_multiplier,
         // floor_level: three uniform draws, in the order the JSON's fields are
-        // read in.
-        const f64 horizontal_multiplier = static_cast<f64>(sample_uniform(random, 0.7F, 1.4F));
-        const f64 vertical_multiplier   = static_cast<f64>(sample_uniform(random, 0.8F, 1.3F));
-        const f64 floor_level           = static_cast<f64>(sample_uniform(random, -1.0F, -0.4F));
+        // read in. The Nether's three are constants — 1.0, 1.0, -0.7 — and a
+        // constant provider draws nothing.
+        f64 horizontal_multiplier = 1.0;
+        f64 vertical_multiplier   = 1.0;
+        f64 floor_level           = -0.7;
+        if (!nether) {
+            horizontal_multiplier = static_cast<f64>(sample_uniform(random, 0.7F, 1.4F));
+            vertical_multiplier   = static_cast<f64>(sample_uniform(random, 0.8F, 1.3F));
+            floor_level           = static_cast<f64>(sample_uniform(random, -1.0F, -0.4F));
+        }
 
         const SkipShape shape{&floor_level, nullptr, context_.min_y};
 
         i32 tunnels = 1;
         if (random.next_int(4) == 0) {
             // A room: one wide, squat ellipsoid at the origin, and one to three
-            // extra tunnels leaving it.
-            const f64 y_scale     = static_cast<f64>(sample_uniform(random, 0.1F, 0.9F));
+            // extra tunnels leaving it. The Nether's yScale is the constant
+            // 0.5.
+            const f64 y_scale =
+                nether ? 0.5 : static_cast<f64>(sample_uniform(random, 0.1F, 0.9F));
             const f32 room_radius = 1.0F + random.next_float() * 6.0F;
             const f64 radius      = 1.5 + static_cast<f64>(mth_sin(kPiF / 2.0F) * room_radius);
             // The room is carved one block east of the origin. Not a rounding
@@ -375,12 +408,13 @@ void CaveWorldCarver::carve(math::LegacyRandomSource& random, i32 origin_x, i32 
         for (i32 tunnel = 0; tunnel < tunnels; ++tunnel) {
             const f32 yaw       = random.next_float() * (kPiF * 2.0F);
             const f32 pitch     = (random.next_float() - 0.5F) / 4.0F;
-            const f32 thickness = cave_thickness(random);
+            const f32 thickness =
+                nether ? nether_cave_thickness(random) : cave_thickness(random);
             const i32 branches  = kTunnelRangeBlocks - random.next_int(kTunnelRangeBlocks / 4);
             const i64 seed      = random.next_long();
             create_tunnel(context_, chunk_x, chunk_z, seed, x, y, z, horizontal_multiplier,
-                          vertical_multiplier, thickness, yaw, pitch, 0, branches, 1.0, shape,
-                          mask);
+                          vertical_multiplier, thickness, yaw, pitch, 0, branches,
+                          nether ? kNetherYScale : 1.0, shape, mask);
         }
     }
 }
@@ -519,12 +553,29 @@ void CanyonWorldCarver::carve(math::LegacyRandomSource& random, i32 origin_x, i3
 
 // ── CarverStage ─────────────────────────────────────────────────────────────
 
-CarverStage::CarverStage(i64 seed, CarvingContext context)
+CarverStage::CarverStage(i64 seed, CarvingContext context, CarverPreset preset)
     : seed_(seed),
       context_(context),
-      cave_(context, cave_config(context)),
+      preset_(preset),
+      cave_(context, preset == CarverPreset::Nether ? nether_cave_config(context)
+                                                    : cave_config(context)),
       cave_extra_(context, cave_extra_underground_config(context)),
       canyon_(context) {}
+
+CarverStage CarverStage::nether(i64 seed) {
+    // The Nether's chunks start at 0 and are 256 tall; its noise — and so the
+    // carvers' notion of the top — is 128 deep. Lava at 31.
+    return CarverStage{seed, CarvingContext{0, 256, 31, 128}, CarverPreset::Nether};
+}
+
+std::string_view CarverStage::replaceables_tag() const noexcept {
+    return preset_ == CarverPreset::Nether ? "minecraft:nether_carver_replaceables"
+                                           : "minecraft:overworld_carver_replaceables";
+}
+
+std::string_view CarverStage::carved_air() const noexcept {
+    return preset_ == CarverPreset::Nether ? "minecraft:cave_air" : "minecraft:air";
+}
 
 CarvingMask CarverStage::carve(i32 chunk_x, i32 chunk_z) const {
     CarvingMask mask{context_.min_y, context_.height};
@@ -552,6 +603,10 @@ void CarverStage::carve_into(i32 chunk_x, i32 chunk_z, CarvingMask& mask) const 
                 if (cave_.is_start_chunk(random)) {
                     cave_.carve(random, origin_x, origin_z, chunk_x, chunk_z, mask);
                 }
+            }
+            // ── nether ── One carver, at index 0: nothing more to seed.
+            if (preset_ == CarverPreset::Nether) {
+                continue;
             }
             {
                 auto random = large_feature_random(seed_ + 1, origin_x, origin_z);

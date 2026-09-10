@@ -53,10 +53,14 @@ public:
     /// directly. Nothing is shared between them because the noise router and
     /// the surface system keep `mutable` memo caches — see the comment on
     /// `Stack` in the .cpp. Zero is read as one.
+    ///
+    /// ── nether ── `settings` names the noise settings — "overworld", or
+    /// "nether" for the Nether's stack: its router, its five biomes, its
+    /// surface rules, its one carver and a 256-block chunk.
     [[nodiscard]] static std::unique_ptr<GeneratedWorld> load(
         const std::filesystem::path& data_root, const registry::BlockRegistry& blocks,
         const registry::Registries& registries, std::span<const std::string_view> codec_biomes,
-        i64 seed, usize stacks = 1);
+        i64 seed, usize stacks = 1, std::string_view settings = "overworld");
 
     /// How many stacks were built. A caller must never pass an index at or
     /// above this to `generate_square`.

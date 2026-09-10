@@ -20,6 +20,7 @@ ov_add_library(ov_worldgen
         src/ore_feature.cpp
         src/pipeline.cpp
         src/placement.cpp
+        src/random_factory.cpp
         src/structure.cpp
         src/structure_set.cpp
         src/surface_rules.cpp
@@ -45,6 +46,7 @@ ov_add_test(test_ov_worldgen
         tests/test_chunk_generator.cpp
         tests/test_density.cpp
         tests/test_feature.cpp
+        tests/test_nether.cpp
         tests/test_noise.cpp
         tests/test_pipeline.cpp
         tests/test_structure_set.cpp

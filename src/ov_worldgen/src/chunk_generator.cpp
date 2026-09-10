@@ -51,8 +51,10 @@ ChunkGenerator::ChunkGenerator(const NoiseRouter& router, const BiomeSource& bio
         const auto block = blocks.find_block(name);
         return block ? blocks.default_state(*block) : registry::kAirState;
     };
-    stone_ = resolve("minecraft:stone");
-    water_ = resolve("minecraft:water");
+    // ── nether ── The settings' default block and fluid: stone and water in
+    // the overworld, netherrack and lava in the Nether.
+    stone_ = resolve(router.default_block());
+    water_ = resolve(router.default_fluid());
     lava_  = resolve("minecraft:lava");
     dirt_  = resolve("minecraft:dirt");
 
@@ -143,7 +145,11 @@ std::expected<void, CarverAttachError> ChunkGenerator::set_carvers(
         OV_LOG_ERROR("worldgen: {}", to_string(CarverAttachError::NoBlockRegistry));
         return std::unexpected(CarverAttachError::NoBlockRegistry);
     }
-    const auto tag = registries.find_tag(*block_registry, kReplaceablesTag);
+    // ── nether ── The stage names its own tag: the Nether's carvers cut
+    // `#minecraft:nether_carver_replaceables`.
+    const std::string_view replaceables =
+        carvers != nullptr ? carvers->replaceables_tag() : kReplaceablesTag;
+    const auto tag = registries.find_tag(*block_registry, replaceables);
     if (!tag) {
         OV_LOG_ERROR("worldgen: {}", to_string(CarverAttachError::NoReplaceablesTag));
         return std::unexpected(CarverAttachError::NoReplaceablesTag);
@@ -194,6 +200,14 @@ void ChunkGenerator::apply_carving(world::Chunk& chunk, const CarvingMask& mask,
     const auto shape    = chunk.shape();
     const i32  origin_x = chunk.position().x * 16;
     const i32  origin_z = chunk.position().z * 16;
+    // ── nether ── `air` for the overworld's carvers, `cave_air` for the
+    // Nether's. One lookup per chunk.
+    registry::BlockStateId carved_air = registry::kAirState;
+    if (carvers_ != nullptr) {
+        if (const auto block = blocks_->find_block(carvers_->carved_air())) {
+            carved_air = blocks_->default_state(*block);
+        }
+    }
 
     for (usize local_z = 0; local_z < 16; ++local_z) {
         for (usize local_x = 0; local_x < 16; ++local_x) {
@@ -222,7 +236,7 @@ void ChunkGenerator::apply_carving(world::Chunk& chunk, const CarvingMask& mask,
                 // aquifer would say. Above it the aquifer decides, with a
                 // density of zero: its fluid under its level, air above, and
                 // no cut at all where a barrier holds.
-                registry::BlockStateId carved   = registry::kAirState;
+                registry::BlockStateId carved   = carved_air;  // ── nether ──
                 bool                   schedule = false;
                 if (y <= lava_level) {
                     carved = lava_;
@@ -234,10 +248,13 @@ void ChunkGenerator::apply_carving(world::Chunk& chunk, const CarvingMask& mask,
                         continue;
                     }
                     carved   = state_of(answer.substance);
+                    if (carved == registry::kAirState) {
+                        carved = carved_air;  // ── nether ──
+                    }
                     schedule = answer.schedule;
                 }
                 chunk.set_block(local_x, y, local_z, carved);
-                if (schedule && fluid_updates != nullptr && carved != registry::kAirState) {
+                if (schedule && fluid_updates != nullptr && carved != carved_air && carved != registry::kAirState) {
                     fluid_updates->push_back(BlockPos{origin_x + static_cast<i32>(local_x), y,
                                                       origin_z + static_cast<i32>(local_z)});
                 }
@@ -270,6 +287,11 @@ void ChunkGenerator::generate_noise(world::Chunk& chunk,
     if (aquifer_active()) {
         aquifer.emplace(*aquifer_);
     }
+    // ── nether ── Only the noise's own height is filled. The Nether's chunks
+    // are 256 tall and its noise 128: above it the world is air, and the
+    // density there — a clamped gradient past its end — would say stone.
+    const i32 noise_low  = std::max(shape.min_y, router_->min_y());
+    const i32 noise_high = std::min(shape.max_y(), router_->min_y() + router_->height() - 1);
 
     // Stone, water, lava, air. Nothing is cut here: the carvers run after the
     // surface rules, which is the game's order and the reason this file was
@@ -278,7 +300,7 @@ void ChunkGenerator::generate_noise(world::Chunk& chunk,
         for (usize local_x = 0; local_x < 16; ++local_x) {
             const i32 world_x = origin_x + static_cast<i32>(local_x);
             const i32 world_z = origin_z + static_cast<i32>(local_z);
-            for (i32 y = shape.min_y; y <= shape.max_y(); ++y) {
+            for (i32 y = noise_low; y <= noise_high; ++y) {  // ── nether ──
                 registry::BlockStateId state = registry::kAirState;
                 if (aquifer) {
                     const auto answer =

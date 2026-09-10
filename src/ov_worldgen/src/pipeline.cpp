@@ -5,6 +5,7 @@
 #include "ov/base/log.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -125,9 +126,21 @@ public:
         return blocks_->biome_name(chunk->get_biome(local_16(x), clamped, local_16(z)));
     }
 
-    [[nodiscard]] i32 min_y() const override { return shape_.min_y; }
-    [[nodiscard]] i32 world_height() const override { return static_cast<i32>(shape_.height); }
+    // ── nether ── The generation context, not the chunk: `max(level min,
+    // generator min)` and `min(level height, generator depth)`. Identical in
+    // the overworld; in the Nether it is 0 and 128 rather than 0 and 256, and
+    // every `below_top` anchor — the quartz, the gold, the springs — moves by
+    // 128 blocks without it.
+    [[nodiscard]] i32 min_y() const override { return std::max(shape_.min_y, gen_min_y_); }
+    [[nodiscard]] i32 world_height() const override {
+        return std::min(static_cast<i32>(shape_.height), gen_depth_);
+    }
     [[nodiscard]] i32 sea_level() const override { return sea_level_; }
+
+    void set_generation_extent(i32 gen_min_y, i32 gen_depth) noexcept {
+        gen_min_y_ = gen_min_y;
+        gen_depth_ = gen_depth;
+    }
 
     [[nodiscard]] u64 writes() const noexcept { return writes_; }
     [[nodiscard]] u64 border() const noexcept { return border_; }
@@ -153,6 +166,8 @@ private:
     i32                              centre_x_;
     i32                              centre_z_;
     std::array<world::Chunk*, 9>     chunks_{};
+    i32                              gen_min_y_{std::numeric_limits<i32>::min()};
+    i32                              gen_depth_{std::numeric_limits<i32>::max()};
     u64                              writes_{0};
     u64                              border_{0};
     u64                              dropped_{0};
@@ -298,6 +313,7 @@ struct ChunkPipeline::Impl {
         // be cut away afterwards; one reaching into a neighbour that does not
         // exist yet would be dropped.
         PipelineLevel level{*blocks, shape, sea_level, chunk_x, chunk_z};
+        level.set_generation_extent(generator->gen_min_y(), generator->gen_depth());  // ── nether ──
         for (i32 dz = -1; dz <= 1; ++dz) {
             for (i32 dx = -1; dx <= 1; ++dx) {
                 if (dx == 0 && dz == 0) {
