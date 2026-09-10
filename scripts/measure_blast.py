@@ -60,7 +60,12 @@ from measure_redstone import (  # noqa: E402
 
 NORMALIZED = ROOT / "data" / "vanilla" / "1.20.1" / "normalized"
 RUN = ROOT / "run" / "blast-oracle"
-PORT = 25613
+import os
+
+# Overridable so a small scenario can run beside a long one. Two vanilla servers
+# on one machine is a memory question, not a port question, but the port is what
+# stops the second from failing to bind and looking like a server that started.
+PORT = int(os.environ.get("OV_BLAST_PORT", "25613"))
 
 # Well clear of the superflat floor at -61 and of the build limit. A ray reaches
 # at most 4/3 * power blocks, so eight of clearance is more than enough and
@@ -404,7 +409,16 @@ def measure_damage(out: Path, trials: int) -> None:
             server.batch([f"summon minecraft:tnt 0.0 {y}.0 0.0 "
                           "{Fuse:0,NoGravity:1b,Motion:[0.0,0.0,0.0]}"])
             wait_ticks(server, 2)
-            for d in DAMAGE_DISTANCES:
+            # ⚠ The order the targets are read in is **part of the
+            #   measurement**, and it alternates for that reason. A console
+            #   round trip costs the server a tick or more, so the tenth
+            #   target is read many ticks after the first — and a stored
+            #   impulse decays while it waits. Reading forwards and backwards
+            #   on alternate trials separates "the impulse falls off with
+            #   distance" from "the impulse decays while we walk the list":
+            #   the first would not care which end we start from.
+            order = DAMAGE_DISTANCES if trial % 2 == 0 else list(reversed(DAMAGE_DISTANCES))
+            for d in order:
                 selector = f"@e[type=minecraft:zombie,tag=d{d},limit=1]"
                 for line in server.batch([f"data get entity {selector} Health"]):
                     match = re.search(r"following entity data: ([0-9.]+)", line)
@@ -420,6 +434,7 @@ def measure_damage(out: Path, trials: int) -> None:
                              for d in DAMAGE_DISTANCES))
         result["damage"] = {str(d): damage[d] for d in DAMAGE_DISTANCES}
         result["motion"] = {str(d): motion[d] for d in DAMAGE_DISTANCES}
+        result["read_order"] = "even trials forwards, odd trials backwards"
         for d in DAMAGE_DISTANCES:
             if damage[d]:
                 print(f"  {d:3d} blocs : degats {sorted(set(damage[d]))} "
@@ -452,7 +467,11 @@ def measure_drops(out: Path, trials: int) -> None:
         broken, dropped = [], []
         for trial in range(trials):
             server.batch(["kill @e[type=minecraft:item]"])
-            fill(server, -8, y - 5, -8, 8, y + 5, 8, "minecraft:stone")
+            # Dirt, not stone. A charge at the centre of **solid** stone barely
+            # scratches it — the first block a ray is inside already costs more
+            # than the ray carries — and a yield read off two broken blocks is
+            # not a measurement. Dirt gives a crater of a hundred and something.
+            fill(server, -8, y - 5, -8, 8, y + 5, 8, "minecraft:dirt")
             server.batch([f"summon minecraft:tnt 0.5 {y}.0 0.5 "
                           "{Fuse:0,NoGravity:1b,Motion:[0.0,0.0,0.0]}"])
             wait_ticks(server, 20)
@@ -465,7 +484,7 @@ def measure_drops(out: Path, trials: int) -> None:
                 "scoreboard players operation #total blast += @s blast",
                 "scoreboard players get #total blast"])
             for line in lines:
-                match = re.search(r"\[#total\] has (\d+) ", line)
+                match = re.search(r"has (\d+) \[blast\]", line)
                 if match:
                     count = int(match.group(1))
             server.batch(["kill @e[type=minecraft:item]"])
@@ -473,7 +492,7 @@ def measure_drops(out: Path, trials: int) -> None:
             cells = [(dx, y + dy, dz) for dy in range(-5, 6)
                      for dz in range(-8, 9) for dx in range(-8, 9)]
             states = read_states(world, cells)
-            gone = sum(1 for state in states if name_of(state) != "minecraft:stone")
+            gone = sum(1 for state in states if name_of(state) != "minecraft:dirt")
             broken.append(gone)
             dropped.append(count)
             print(f"  trial {trial + 1}/{trials}: broke {gone}, dropped {count}")

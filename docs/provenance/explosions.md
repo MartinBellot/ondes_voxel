@@ -161,6 +161,23 @@ l'énergie avant la rangée et remet la bande haute dans la zone où une cellule
 casse *parfois* — et une fréquence mesure là où une certitude ne mesure rien. La
 dernière bande, elle, est un plafond du jeu.
 
+### Le verrou
+
+`scripts/check_blast.py` relit les flottants **dans le `.ovpack` lui-même**, pas
+dans le JSON qui l'a produit, et revérifie la propriété sur laquelle tout repose :
+
+```
+  blocs ............ 1003
+  identiques ....... 1003
+  classes mesurées . 31
+  inversions ....... 0
+```
+
+La comparaison est **relative** et pas absolue : `3 600 000,8` s'écrit
+`3 600 000,75` dans un `float`, et un epsilon absolu déclarait faux le barrier et
+le bloc de lumière pour porter la seule valeur qu'un flottant 32 bits sache
+porter.
+
 ---
 
 ## 2. L'algorithme
@@ -205,14 +222,132 @@ choix est écrit dans le code plutôt que subi.
 
 ## 3. Le cratère, cellule par cellule
 
-*(section remplie par `measure_blast.py crater` ; voir le test de parité
-`« the crater a real server made, cell by cell »`.)*
+Une charge au centre d'une boîte pleine d'un seul matériau, **16 fois**, la boîte
+reconstruite entre chaque tir, chaque cellule relue dans les fichiers de région.
+Chez nous : la même géométrie, la même puissance, le même centre, seize tirs sur
+un `LegacyRandomSource` de graine fixe.
+
+⚠ **Pas de sable ni de gravier dans cette boîte.** Une boîte de sable fait cinq
+mille entités de bloc qui tombe par tir : elle a rempli le tas de 2 Go et tué le
+serveur au dix-huitième tir sur vingt-quatre — et celles qui retombent changent
+la boîte avant le tir suivant. C'est aussi pourquoi le banc écrit ses tables
+**après chaque passe** : la première campagne a perdu 18 passes valides en
+mourant avant la fin.
+
+### Ce que le vrai serveur a fait
+
+| matériau | résistance | union des 16 | intersection |
+|---|---|---|---|
+| `glass` | 0,3 | 312 | 188 |
+| `dirt` | 0,5 | 211 | 128 |
+| `oak_planks` | 3 | 18 | 18 |
+| `stone` | 6 | 2 | 2 |
+| `end_stone` | 9 | 1 | 1 |
+| `obsidian` | 1200 | 0 | 0 |
+
+Une charge au milieu d'une boîte **pleine** est bien plus faible qu'une charge
+dans une poche d'air : le premier bloc qu'un rayon traverse est déjà le bloc où
+il est né, et pour la pierre il coûte à lui seul plus que le rayon ne porte.
+C'est ce qui sépare cette table des 26 blocs de pierre relevés dans
+`redstone.md` § 14, où le bloc de TNT devenait de l'air en s'amorçant.
+
+### Notre cratère contre le leur
+
+| | cellules | d'accord | chez nous seulement | chez eux seulement |
+|---|---|---|---|---|
+| **union** des 16 tirs | 555 | **541 — 97,5 %** | 11 | 3 |
+| **intersection** des 16 tirs | 555 | **513 — 92,4 %** | 17 | 25 |
+
+Et cellule par cellule, l'écart **de fréquence** moyen vaut **0,042** sur seize
+tirs — moins d'un tir sur vingt-quatre. Par matériau : 0 pour `oak_planks`,
+`stone`, `end_stone` et `obsidian` (accord parfait, cellule par cellule),
+0,045 pour `dirt`, 0,043 pour `glass`.
+
+Les deux erreurs sont séparées, comme demandé, et elles sont **au bord** : une
+union sur seize tirs est une estimation du rayon le plus chanceux, et son bord
+bouge encore à seize échantillons des deux côtés. Aucune cellule de désaccord
+n'est à l'intérieur du cratère.
 
 ---
 
 ## 4. Les dégâts et le recul
 
-*(section remplie par `measure_blast.py damage`.)*
+Un zombie par distance, de 1 à 10 blocs, `NoAI` pour qu'il reste où on l'a mis,
+mille points de vie pour qu'il survive, **et pas `Invulnerable`** — un invulnérable
+ne lit rien et ressemble exactement à une cible hors de portée. Minuit, parce
+qu'un zombie en plein midi brûle et que les dégâts relus seraient un feu.
+
+### Les dégâts : 10 sur 10
+
+`dégâts = ⌊(i² + i) / 2 × 7 × 2P + 1⌋` avec `i = (1 − distance / 2P) × exposition`,
+`P = 4`, la distance prise **des pieds** de l'entité au centre.
+
+| distance | PV perdus | brut (÷ armure) | prédit |
+|---|---|---|---|
+| 1 | 45,264 | 46 | **46** |
+| 2 | 36,408 | 37 | **37** |
+| 3 | 28,536 | 29 | **29** |
+| 4 | 20,664 | 21 | **21** |
+| 5 | 14,760 | 15 | **15** |
+| 6 | 8,856 | 9 | **9** |
+| 7 | 3,936 | 4 | **4** |
+| 8, 9, 10 | 0 | 0 | **0** |
+
+Sept distances dans la portée, trois au-delà, **dix accords sur dix**, et
+identiques sur les huit passes : l'exposition vaut 1 dans un monde vide et la
+formule ne tire rien au sort.
+
+Le facteur `0,984` est l'armure du zombie, pas un ajustement : deux points
+d'armure, et la règle d'absorption du jeu donne `1 − max(2/5, …)/25 = 0,984`.
+Que les sept valeurs relues soient toutes des multiples exacts de 0,984 d'un
+**entier** est le contrôle qui dit que la formule est bien plancherée avant
+l'armure et pas après.
+
+La portée est exactement `2P` : à 8 blocs le zombie est à `√(64 + 0,06125²)`,
+donc à un cheveu **au-delà** de 8, et prend zéro.
+
+### Le recul : la direction d'abord, la norme ensuite
+
+La direction est celle du centre vers **les yeux** de l'entité, pas vers ses
+pieds ni vers le centre de sa boîte. Sur les sept distances, le rapport entre la
+composante horizontale et la verticale du recul relu vaut celui de la direction
+prédite à **1,00000** — ce qui fixe du même coup la hauteur des yeux du zombie
+(1,74) et la hauteur du centre de la charge (`y + 0,06125`) à cinq décimales.
+
+La **norme** a coûté un contre-témoin, et c'est le piège de cette section.
+
+Relue telle quelle, elle valait `0,851 × impact` à un bloc, `0,817` à deux,
+`0,785` à trois — une décroissance trop propre pour être du bruit et trop
+régulière pour être une exposition. Chaque écart valait exactement `0,98²` du
+précédent. Deux explications tiennent le même chiffre : *le recul décroît avec
+la distance*, ou *le recul stocké décroît pendant qu'on parcourt la liste*, un
+aller-retour de console coûtant des ticks.
+
+Le banc lit donc les cibles **à l'endroit une passe sur deux et à l'envers
+l'autre**. Si c'était la distance, le sens de lecture ne changerait rien :
+
+| distance | ticks impliqués, lu à l'endroit | lu à l'envers |
+|---|---|---|
+| 1 | 7 | 26 |
+| 2 | 9 | 24 |
+| 3 | 11 | 22 |
+| 4 | 13 | 20 |
+| 5 | 15 | 18 |
+| 6 | 17 | 16 |
+| 7 | 19 | 14 |
+
+Des **entiers exacts**, deux par cible, et l'ordre s'inverse avec le sens de
+lecture. C'est le délai de la console, pas la physique. Extrapolée à zéro tick,
+la norme vaut `impact` à cinq décimales aux sept distances **et dans les deux
+sens** :
+
+> **l'impulsion est `impact` le long du vecteur unitaire du centre vers les
+> yeux**, et la vitesse stockée d'un mob `NoAI` perd 0,98 par tick.
+
+Ce qui reste **non mesuré ici** : le dampener de Protection contre les
+explosions. Il est un paramètre de `hit_entity`, pas une table, et vaut zéro
+pour une entité sans enchantement — ce qui est le cas mesuré, pas un
+bouche-trou.
 
 ---
 

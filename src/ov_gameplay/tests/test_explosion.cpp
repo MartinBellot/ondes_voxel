@@ -367,7 +367,14 @@ TEST_CASE("the crater a real server made, cell by cell", "[explosion][parity]") 
         const BoxLevel level{registry, state_of(registry, material), table->half + 1,
                              table->up + 1};
         ExplosionSpec  spec{};
-        spec.centre = table->centre;
+        // The measured cells are keyed **relative to the charge's own block**,
+        // so the box here sits on the origin and the centre keeps only what is
+        // inside that block. Using the absolute y the bench worked at would put
+        // the charge forty blocks under the box, in open air, and take nothing
+        // at all — which is exactly what the first run of this comparison did.
+        spec.centre = Vec3d{table->centre.x - std::floor(table->centre.x),
+                            table->centre.y - std::floor(table->centre.y),
+                            table->centre.z - std::floor(table->centre.z)};
         spec.power  = table->power;
 
         std::map<i64, i32> mine;
