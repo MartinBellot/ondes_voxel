@@ -158,11 +158,11 @@ public:
     /// flooded corridor survives a charge that flattens a dry one.
     [[nodiscard]] f32 resistance_of(registry::BlockStateId state) const noexcept;
 
-    /// True for a state the pack has no measurement for.
+    /// Does the pack carry a resistance for this state at all?
     ///
-    /// Named rather than folded into a zero: a block whose resistance is
-    /// missing would otherwise be the most fragile in the game, and this
-    /// project refuses that kind of default.
+    /// False is the answer that matters, and it is named rather than folded
+    /// into a zero: a block whose resistance is missing would otherwise be the
+    /// most fragile in the game, and `collect_blocks` refuses to take it.
     [[nodiscard]] bool resistance_measured(registry::BlockStateId state) const noexcept;
 
     /// The blocks a charge takes, appended to `out`, sorted and without

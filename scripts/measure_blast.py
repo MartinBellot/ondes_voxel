@@ -743,6 +743,27 @@ def measure_table(out: Path, trials: int) -> None:
     print(f"  never stood up ..... {len(refused)}")
     for label, bands in report["unseparated"].items():
         print(f"  {label}: bands the bench does not separate: {bands}")
+    # Two benches with different blind spots see more together than either
+    # alone: a band one of them merges the other often splits. The partition
+    # that counts is the **intersection** of theirs.
+    # Only values a bench actually saw. Water and lava answer 100 and are on no
+    # bench at all — they are refused before it starts — so counting 100 as
+    # "not separated from 0" would be a tie between a measurement and nothing.
+    seen = {float(v) for stats in report["groups"].values() for v in stats}
+    groups: dict[tuple, list[float]] = {}
+    for value in sorted(seen):
+        key = tuple(sorted((label, tuple(b)) for label, bands in report["unseparated"].items()
+                           for b in bands if value in b))
+        groups.setdefault(key, []).append(value)
+    combined = sorted((sorted(v) for v in groups.values()), key=lambda v: v[0])
+    report["combined"] = combined
+    with open(out, "w") as f:
+        json.dump(doc, f, indent=1)
+    print(f"  combined: {len(combined)} groups the two benches separate, "
+          f"out of {len(set(candidate.values()))} candidate values")
+    for group in combined:
+        if len(group) > 1:
+            print(f"      still tied: {group}")
 
 
 SCENARIOS = {

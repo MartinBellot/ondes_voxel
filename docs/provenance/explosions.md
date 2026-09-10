@@ -155,11 +155,38 @@ Bandes que le banc à puissance 4 et sans écart ne sépare pas :
 `[0,1 · 0,2]` · `[0,25 · 0,3]` · `[0,5 · 0,6 · 0,65 · 0,7 · 0,75]` ·
 `[1,4 · 1,5 · 1,8 · 2,0]` · `[2,5 … 9,0]` · `[600 … 3,6 M]`
 
-Les quatre premières bandes sont un problème de résolution, pas de principe : le
-banc a **un écart d'air réglable** (`measure_blast.py resistance_gap`) qui mange
-l'énergie avant la rangée et remet la bande haute dans la zone où une cellule
-casse *parfois* — et une fréquence mesure là où une certitude ne mesure rien. La
-dernière bande, elle, est un plafond du jeu.
+La dernière bande est un plafond du jeu. Les autres sont un problème de
+résolution, et le banc en a un second pour ça.
+
+### Le deuxième banc : quatre blocs d'air devant la rangée
+
+`measure_blast.py resistance_gap` est la même chose avec **quatre cellules d'air
+entre la charge et la rangée**. L'air mange les trois quarts de l'énergie avant
+qu'elle n'arrive, ce qui déplace tout le seuil : là où le banc collé donnait
+« la première cellule casse toujours » pour tout ce qui va de 2,5 à 9 — 340
+blocs qui partageaient une seule lecture — le banc avec écart donne une
+*fréquence*, et une fréquence mesure là où une certitude ne mesure rien.
+
+Les deux bancs n'ont pas les mêmes angles morts, et c'est le point : ce qui
+compte est **l'intersection de leurs partitions**.
+
+| bande | banc collé | banc avec écart |
+|---|---|---|
+| bas (0 … 0,4) | sépare 0 · 0,1-0,2 · 0,25-0,3 · 0,4 | fond 0-0,2 ensemble |
+| milieu (0,5 … 2,5) | sépare 0,5-0,75 · 0,8 · 1,0 · 1,4-2,0 | fond 0,7-2,5 ensemble |
+| haut (2,5 … 9) | **une seule lecture pour 340 blocs** | sépare 2,5 · 3,0-3,5 · 4+ |
+
+Ensemble, ils séparent **15 groupes sur les 32 valeurs candidates**, contre 10
+pour le banc collé seul. Ce qui reste à égalité, nommé :
+
+`[0,1 · 0,2]` · `[0,5 · 0,6]` · `[0,7 · 0,75]` · `[0,8 · 1,0]` ·
+`[1,4 · 1,5 · 1,8 · 2,0]` · `[3,0 · 3,5]` · `[4,0 · 4,2 · 4,8 · 5,0 · 6,0 · 9,0]` ·
+`[600 · 1200 · 3,6 M]`
+
+Le total des deux bancs : **963 blocs** vus par au moins un banc,
+**1885 lectures sur 1900** dans leur propre classe, **15 écarts** — 3 sur le banc
+collé (nommés ci-dessus), 12 sur le banc avec écart, qui a moins de dynamique et
+donc plus de bruit relatif. Aucun des deux n'a d'inversion.
 
 ### Le verrou
 
