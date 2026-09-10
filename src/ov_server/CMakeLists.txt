@@ -18,6 +18,7 @@ ov_add_library(ov_server
         src/mob_combat.cpp
         src/player_level.cpp
         src/survival_session.cpp
+        src/tnt_gravity.cpp
         src/workbench.cpp
         src/world_ticks.cpp
     DEPS

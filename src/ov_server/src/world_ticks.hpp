@@ -152,6 +152,28 @@ private:
     u64                   writes_{0};
 };
 
+// ── tnt and gravity ──────────────────────────────────────────────────────────
+/// A third set of block rules, owned outside this file: falling blocks and
+/// TNT (tnt_gravity.hpp). An interface rather than a member so this file does
+/// not learn what an entity is — both rules end by asking for one.
+class BlockRuleExtension {
+public:
+    BlockRuleExtension()                                     = default;
+    BlockRuleExtension(const BlockRuleExtension&)            = delete;
+    BlockRuleExtension& operator=(const BlockRuleExtension&) = delete;
+    BlockRuleExtension(BlockRuleExtension&&)                 = delete;
+    BlockRuleExtension& operator=(BlockRuleExtension&&)      = delete;
+    virtual ~BlockRuleExtension()                            = default;
+
+    /// Called exactly where the fluid engine is: for every changed position
+    /// and each of its six neighbours.
+    virtual void neighbour_changed(ServerLevel& level, BlockPos pos) = 0;
+
+    /// A block tick came due. True when it was this extension's to answer.
+    virtual bool scheduled_tick(ServerLevel& level, BlockPos pos, std::string_view what) = 0;
+};
+// ── end tnt and gravity ──────────────────────────────────────────────────────
+
 /// What one drain did. Instrumentation, and the numbers a report is written
 /// from.
 struct WorldTickStats {
@@ -189,6 +211,19 @@ public:
     /// going — so the drain stops for this tick rather than reporting an error.
     static constexpr usize kMaxWaves = 512;
 
+    // ── tnt and gravity ──────────────────────────────────────────────────────
+    /// Hand the drain a third engine. Not owned; null turns it off.
+    void set_extension(BlockRuleExtension* extension) noexcept { extension_ = extension; }
+
+    /// Notify around everything the level recorded as written since the last
+    /// settle — what an explosion that wrote through the level needs, since it
+    /// does not happen inside `run`.
+    usize settle_changes(ServerLevel& level) {
+        usize waves = 0;
+        return settle(level, waves);
+    }
+    // ── end tnt and gravity ──────────────────────────────────────────────────
+
 private:
     /// Notify around everything in `seeds`, and keep going while writes appear.
     usize settle(ServerLevel& level, usize& waves);
@@ -200,6 +235,8 @@ private:
     /// The wave being processed, moved out of the level so that writes made
     /// while notifying land in the *next* wave rather than in this one.
     std::vector<BlockPos> wave_;
+
+    BlockRuleExtension* extension_{nullptr};  // ── tnt and gravity ──
 };
 
 }  // namespace ov::server

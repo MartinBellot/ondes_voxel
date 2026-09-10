@@ -180,6 +180,18 @@ public:
     void collect_blocks(const world::LevelView& level, const ExplosionSpec& spec,
                         math::LegacyRandomSource& rng, std::vector<BlockPos>& out) const;
 
+    /// The same draw, and the air cells as well, in a second list.
+    ///
+    /// Vanilla's own list, and the one the Explosion packet carries: a charge
+    /// on untouched superflat ground sends 676 records on average while
+    /// breaking under a hundred blocks, and ours sends 673.5 for the same 32
+    /// charges (docs/provenance/tnt-et-gravite.md). Consumes the
+    /// generator exactly as `collect_blocks` does, so the two lists of one
+    /// shot are the crater `collect_blocks` would have given.
+    void collect_cells(const world::LevelView& level, const ExplosionSpec& spec,
+                       math::LegacyRandomSource& rng, std::vector<BlockPos>& blocks,
+                       std::vector<BlockPos>& air) const;
+
     /// Does this state give up its drops when an explosion takes it?
     ///
     /// Air never does, and neither does anything the pack could not measure.
@@ -263,6 +275,10 @@ public:
     [[nodiscard]] i32 chained_fuse(i32 full_fuse, math::LegacyRandomSource& rng) const;
 
 private:
+    void collect(const world::LevelView& level, const ExplosionSpec& spec,
+                 math::LegacyRandomSource& rng, std::vector<BlockPos>& out,
+                 std::vector<BlockPos>* air) const;
+
     const registry::BlockRegistry* blocks_{nullptr};
     ExplosionConstants             constants_{};
 };
