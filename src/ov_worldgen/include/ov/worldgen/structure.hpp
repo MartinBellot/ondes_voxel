@@ -248,8 +248,8 @@ public:
     /// between a usable step and an unusable one. Nineteen sets ask about the
     /// same two columns, and answering each of them separately means nineteen
     /// scans of a 384-block column with a full density evaluation per block.
-    /// Measured, debug build: **+72,6 s per chunk** without this, +0,05 s with
-    /// it. See docs/provenance/structures.md § 8.
+    /// Measured, debug build: **+72,58 s per chunk** without this, **+0,213 s**
+    /// with it. See docs/provenance/structures.md § 8.
     struct AnchorColumns {
         /// Indexed [corner ? 1 : 0]. -1 means "not computed yet".
         std::array<i32, 2> surface{-1, -1};
