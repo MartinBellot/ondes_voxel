@@ -245,7 +245,28 @@ le test vérifie seulement la fréquence (1000 ± 90 sur 10 000 chunks).
 
 ## 5. Le slime (campagne `slime`)
 
-*(§ rempli à la mesure — voir plus bas.)*
+Les règles documentées (minecraft.wiki, *Slime*) : taille 1, 2 ou 4 à l'apparition (l'exposant tiré
+dans 0..2, une chance de plus en difficile — le multiplicateur spécial, pris à 0) ; boîte
+0,5202 × taille (0,5202 mesuré à la taille 1), santé taille², vitesse 0,2 + 0,1 × taille ; à la mort,
+une taille > 1 laisse `2 + next_int(3)` slimes de la moitié de sa taille, sur une grille 2 × 2 d'un
+quart de la taille. `slime.cpp` porte les règles, `slimes.cpp` la taille de chaque slime par
+identifiant réseau, l'indice de métadonnée 16 (entier) et la division ; les enfants naissent au tick
+suivant la mort, dans le bloc `mobs-2` de `server.cpp`.
+
+**De bout en bout, notre serveur** (`check_mobs2_e2e.py slime`, 40 slimes invoqués à la console,
+tués à la console, les `Spawn Entity` de slime comptés et leur indice 16 lu sur le fil) :
+
+| taille du parent (lue sur le fil) | parents | enfants 2 / 3 / 4 | taille des enfants |
+|---|---|---|---|
+| 1 | 20 | aucun (20 fois 0) | — |
+| 2 | 8 | 3 / 1 / 4 | 1 |
+| 4 | 12 | 5 / 3 / 4 | 2 |
+
+Tailles tirées : 20 / 8 / 12 sur 40 (un tiers chacune attendu, 13,3 ; χ² = 4,4 à 2 ddl, p ≈ 0,11 —
+le petit échantillon ne distingue rien). L'indice 16 **n'est pas relevé sur un vrai serveur** : il est
+pris à la place que le protocole de Mob laisse au premier champ de Slime.
+
+*(Mesure vanilla de la division : § rempli à la mesure.)*
 
 ---
 
