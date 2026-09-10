@@ -409,3 +409,35 @@ TEST_CASE("water categories want water, not a floor", "[gameplay][spawn]") {
     environment.level = &ocean;
     CHECK(spawner.can_spawn_at(environment, MobCategory::WaterCreature, {60, -4, 0}, 0.8F, 0.8F));
 }
+
+TEST_CASE("a position inside a solid block is refused before a mob is chosen",
+          "[gameplay][spawn]") {
+    if (blocks() == nullptr || registries() == nullptr) {
+        WARN("registry.ovpack missing");
+        return;
+    }
+    // The cheap half of the position test, and the only part of it that
+    // rejects anything in bulk. Everything else `position_plausible` asks —
+    // loaded, in range, far from a player, dark enough — is true nearly
+    // everywhere; a block that stops movement is what actually turns attempts
+    // away, and it needs no hitbox to decide.
+    GroundLevel level{*blocks(), "minecraft:stone"};
+    FixedLight  light;
+    light.block = 0;
+    light.sky   = 0;
+
+    SpawnEnvironment environment;
+    environment.level      = &level;
+    environment.light      = &light;
+    environment.registries = registries();
+
+    NaturalSpawner spawner{1};
+    // Inside the stone: refused without asking what kind of mob it would be.
+    CHECK_FALSE(spawner.position_plausible(environment, MobCategory::Monster, {40, -8, 40}));
+    // In the air above it: the cheap half has no objection. Whether a mob fits
+    // there is `can_spawn_at`'s question, and it needs a size.
+    CHECK(spawner.position_plausible(environment, MobCategory::Monster, {40, 8, 40}));
+    // And the same air cell fails the full test, because there is no floor
+    // under it — which is the rejection that still costs a type draw.
+    CHECK_FALSE(spawner.can_spawn_at(environment, MobCategory::Monster, {40, 8, 40}, 0.6F, 1.95F));
+}

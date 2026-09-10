@@ -579,3 +579,207 @@ TEST_CASE("a lamp lights at once and goes out four ticks later",
     settle(redstone, world, 2);
     REQUIRE_FALSE(signals.flag_of(world.block_at(BlockPos{0, 0, 0}), "lit"));
 }
+
+TEST_CASE("a pressed button comes back up, on the delay its material has",
+          "[redstone][switch]") {
+    REQUIRE_REGISTRY();
+    // Measured tick by tick against a real 1.20.1 server, thirteen materials,
+    // through a probe client that clicked each one and read the two Block
+    // Updates off the server's own clock: stone 20, every wood 30. See
+    // docs/provenance/redstone.md §11.
+    struct Case {
+        std::string_view name;
+        i64              ticks;
+    };
+    for (const Case& c : std::array<Case, 4>{{{"minecraft:stone_button", 20},
+                                              {"minecraft:polished_blackstone_button", 20},
+                                              {"minecraft:oak_button", 30},
+                                              {"minecraft:warped_button", 30}}}) {
+        TestWorld here{*loaded().blocks};
+        const BlockPos at{0, 0, 0};
+        here.put(at, c.name, {{"face", "floor"}, {"facing", "north"}, {"powered", "true"}});
+        // The press itself is `item_use`'s job; what this asserts is the half
+        // that did not exist — that the scheduled release has a rule at all.
+        // Before it, `scheduled_tick` fell through to `consumer_rule`, found
+        // nothing and returned false, and the button stayed down for ever.
+        here.queue_.schedule(at, c.name, c.ticks, here.now, world::TickPriority::Normal);
+
+        settle(redstone, here, c.ticks - 1);
+        REQUIRE(signals.flag_of(here.block_at(at), "powered"));
+        settle(redstone, here, 1);
+        REQUIRE_FALSE(signals.flag_of(here.block_at(at), "powered"));
+    }
+}
+
+TEST_CASE("a plate stays down while something stands on it", "[redstone][switch]") {
+    REQUIRE_REGISTRY();
+
+    /// A world with one square something is standing on.
+    class Standing final : public RedstoneWorld {
+    public:
+        explicit Standing(TestWorld& inner) : inner_{&inner} {}
+
+        [[nodiscard]] registry::BlockStateId block_at(BlockPos pos) const override {
+            return inner_->block_at(pos);
+        }
+        [[nodiscard]] bool is_loaded(BlockPos pos) const override { return inner_->is_loaded(pos); }
+        [[nodiscard]] world::WorldShape shape() const override { return inner_->shape(); }
+        [[nodiscard]] world::DimensionTraits traits() const override { return inner_->traits(); }
+        [[nodiscard]] const registry::BlockRegistry& blocks() const override {
+            return inner_->blocks();
+        }
+        void set_block(BlockPos pos, registry::BlockStateId state) override {
+            inner_->set_block(pos, state);
+        }
+        void schedule_tick(BlockPos pos, std::string_view what, i64 delay, world::TickQueue queue,
+                           world::TickPriority priority) override {
+            inner_->schedule_tick(pos, what, delay, queue, priority);
+        }
+        [[nodiscard]] bool has_scheduled_tick(BlockPos pos, std::string_view what,
+                                              world::TickQueue queue) const override {
+            return inner_->has_scheduled_tick(pos, what, queue);
+        }
+        [[nodiscard]] i64 game_time() const override { return inner_->game_time(); }
+        [[nodiscard]] i32 container_signal(BlockPos pos) const override {
+            return inner_->container_signal(pos);
+        }
+        [[nodiscard]] i32 entity_pressure(BlockPos pos) const override {
+            return pos == standing ? weight : 0;
+        }
+
+        BlockPos standing{999, 999, 999};
+        i32      weight{0};
+
+    private:
+        TestWorld* inner_;
+    };
+
+    const BlockPos at{0, 0, 0};
+    Standing       stage{world};
+    world.put(at, "minecraft:stone_pressure_plate", {{"powered", "false"}});
+
+    // Nothing on it: `plate_step` writes nothing and arms nothing.
+    REQUIRE_FALSE(redstone.plate_step(stage, at));
+    REQUIRE_FALSE(signals.flag_of(world.block_at(at), "powered"));
+
+    stage.standing = at;
+    stage.weight   = 15;
+    REQUIRE(redstone.plate_step(stage, at));
+    REQUIRE(signals.flag_of(world.block_at(at), "powered"));
+
+    // Nineteen ticks later it is still down: the plate re-armed, because
+    // something is still standing on it. The scheduled delay is 20, read off a
+    // save's `block_ticks` rather than off the wire — see the provenance file
+    // for why the two disagree by one.
+    for (i64 i = 0; i < 19; ++i) {
+        ++world.now;
+        std::vector<world::ScheduledTick> due;
+        world.queue_.collect_due(world.now, due);
+        for (const world::ScheduledTick& tick : due) {
+            redstone.scheduled_tick(stage, tick.pos, tick.what);
+        }
+    }
+    REQUIRE(signals.flag_of(world.block_at(at), "powered"));
+
+    // Step off, and it lets go at its next scheduled tick and no sooner.
+    stage.weight = 0;
+    for (i64 i = 0; i < 21; ++i) {
+        ++world.now;
+        std::vector<world::ScheduledTick> due;
+        world.queue_.collect_due(world.now, due);
+        for (const world::ScheduledTick& tick : due) {
+            redstone.scheduled_tick(stage, tick.pos, tick.what);
+        }
+    }
+    REQUIRE_FALSE(signals.flag_of(world.block_at(at), "powered"));
+}
+
+TEST_CASE("a signal locks a hopper, and the flag reads backwards",
+          "[redstone][consumer]") {
+    REQUIRE_REGISTRY();
+    // Measured: a chest → hopper → chest rig moved 30 cobblestone in 242 server
+    // ticks with the hopper free, and **zero** in the same span with a lever on
+    // it. The state the save carried was `enabled=false`. See
+    // docs/provenance/redstone.md §12.
+    const BlockPos at{0, 0, 0};
+    world.put(at, "minecraft:hopper", {{"facing", "down"}, {"enabled", "true"}});
+    world.put(BlockPos{1, 0, 0}, "minecraft:redstone_block");
+    REQUIRE(redstone.neighbour_changed(world, at, BlockPos{1, 0, 0}));
+    REQUIRE_FALSE(signals.flag_of(world.block_at(at), "enabled"));
+
+    world.put(BlockPos{1, 0, 0}, "minecraft:air");
+    REQUIRE(redstone.neighbour_changed(world, at, BlockPos{1, 0, 0}));
+    REQUIRE(signals.flag_of(world.block_at(at), "enabled"));
+}
+
+TEST_CASE("a note block takes its instrument from the block under it",
+          "[redstone][noteblock]") {
+    REQUIRE_REGISTRY();
+    const auto state = [&](std::string_view name) {
+        const auto id = loaded().blocks->find_block(name);
+        REQUIRE(id.has_value());
+        return loaded().blocks->default_state(*id);
+    };
+
+    // Measured on all 987 blocks in the game; these are the rows that would be
+    // wrong under any rule a person would think of. A wooden **button** and a
+    // wooden **door** are harp, not bass, which is what killed the idea of
+    // deriving this from names.
+    CHECK(redstone.note_instrument(state("minecraft:oak_planks")) == "bass");
+    CHECK(redstone.note_instrument(state("minecraft:oak_button")) == "harp");
+    CHECK(redstone.note_instrument(state("minecraft:oak_door")) == "harp");
+    CHECK(redstone.note_instrument(state("minecraft:stone")) == "basedrum");
+    CHECK(redstone.note_instrument(state("minecraft:sand")) == "snare");
+    CHECK(redstone.note_instrument(state("minecraft:gravel")) == "snare");
+    CHECK(redstone.note_instrument(state("minecraft:glass")) == "hat");
+    CHECK(redstone.note_instrument(state("minecraft:white_wool")) == "guitar");
+    CHECK(redstone.note_instrument(state("minecraft:gold_block")) == "bell");
+    CHECK(redstone.note_instrument(state("minecraft:clay")) == "flute");
+    CHECK(redstone.note_instrument(state("minecraft:packed_ice")) == "chime");
+    CHECK(redstone.note_instrument(state("minecraft:bone_block")) == "xylophone");
+    CHECK(redstone.note_instrument(state("minecraft:iron_block")) == "iron_xylophone");
+    CHECK(redstone.note_instrument(state("minecraft:soul_sand")) == "cow_bell");
+    CHECK(redstone.note_instrument(state("minecraft:pumpkin")) == "didgeridoo");
+    CHECK(redstone.note_instrument(state("minecraft:emerald_block")) == "bit");
+    CHECK(redstone.note_instrument(state("minecraft:hay_block")) == "banjo");
+    CHECK(redstone.note_instrument(state("minecraft:glowstone")) == "pling");
+    // Air, and everything else nobody tabulated, is harp — which is the value
+    // the game gives it and not a fallback.
+    CHECK(redstone.note_instrument(state("minecraft:air")) == "harp");
+    CHECK(redstone.note_instrument(state("minecraft:dirt")) == "harp");
+}
+
+TEST_CASE("changing the floor under a note block rewrites the note block",
+          "[redstone][noteblock]") {
+    REQUIRE_REGISTRY();
+    const BlockPos note{0, 1, 0};
+    const BlockPos floor{0, 0, 0};
+
+    world.put(floor, "minecraft:dirt");
+    world.put(note, "minecraft:note_block", {{"instrument", "harp"}, {"powered", "false"}});
+
+    // Nothing to do: dirt is harp and the note block already says so.
+    REQUIRE_FALSE(redstone.neighbour_changed(world, note, floor));
+
+    world.put(floor, "minecraft:oak_planks");
+    REQUIRE(redstone.neighbour_changed(world, note, floor));
+    CHECK(redstone.note_instrument(world.block_at(floor)) == "bass");
+    {
+        const auto property = loaded().blocks->find_property(
+            loaded().blocks->block_of(world.block_at(note)), "instrument");
+        REQUIRE(property.has_value());
+        const u16 index = loaded().blocks->property_index(world.block_at(note), *property);
+        CHECK(property->values[index] == "bass");
+    }
+
+    // And the two halves are independent: a floor change must not clear
+    // `powered`, and a power change must not reset the instrument.
+    world.put(BlockPos{1, 1, 0}, "minecraft:redstone_block");
+    REQUIRE(redstone.neighbour_changed(world, note, BlockPos{1, 1, 0}));
+    CHECK(signals.flag_of(world.block_at(note), "powered"));
+    const auto property = loaded().blocks->find_property(
+        loaded().blocks->block_of(world.block_at(note)), "instrument");
+    REQUIRE(property.has_value());
+    CHECK(property->values[loaded().blocks->property_index(world.block_at(note), *property)] ==
+          "bass");
+}
