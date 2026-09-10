@@ -18,6 +18,7 @@ ov_add_library(ov_server
         src/effect_session.cpp
         src/mob_combat.cpp
         src/player_level.cpp
+        src/player_data.cpp
         src/survival_session.cpp
         src/tnt_gravity.cpp
         src/workbench.cpp
@@ -49,6 +50,7 @@ ov_add_test(test_ov_server
         tests/test_block_container.cpp
         tests/test_player_inventory.cpp
         tests/test_player_level.cpp
+        tests/test_player_data.cpp
     DEPS ov_server
     LABELS unit
 )

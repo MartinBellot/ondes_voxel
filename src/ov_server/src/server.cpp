@@ -43,6 +43,7 @@
 #include "item_transport.hpp"
 // ── scheduled ticks, natural spawning, and the player's own window ─────────
 #include "natural_spawning.hpp"
+#include "player_data.hpp"  // ── player data ──
 #include "player_inventory.hpp"
 #include "world_ticks.hpp"
 #include "ov/world/chunk.hpp"
@@ -168,6 +169,12 @@ struct Options {
     /// (name, amplifier, ticks). A test entry point until /effect exists —
     /// scripts/check_effects_e2e.py drives it — and named as one.
     std::vector<std::string> effects;
+
+    // ── player data ──
+    /// The singleplayer host's name, set by ov_voxel --singleplayer. Their
+    /// record also goes into level.dat's Data.Player, where vanilla looks for
+    /// the player of a singleplayer world. Empty on a dedicated server.
+    std::string host_player;
 };
 
 /// Where a connection is in the protocol's state machine.
@@ -1138,6 +1145,8 @@ Options parse_args(int argc, char** argv) {
                 list = comma == std::string_view::npos ? std::string_view{}
                                                        : list.substr(comma + 1);
             }
+        } else if (arg.starts_with("--host-player=")) {  // ── player data ──
+            options.host_player = std::string{arg.substr(14)};
         } else if (arg.starts_with("--mobs=")) {
             std::string_view list = arg.substr(7);
             while (!list.empty()) {
@@ -1455,6 +1464,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         }
         OV_LOG_INFO("world data version {} — Minecraft 1.20.1", stored);
     }
+
+    // ── player data ─────────────────────────────────────────────────────────
+    // world/playerdata/<uuid>.dat in vanilla's format; see player_data.hpp.
+    PlayerDataStore player_data{level_dir,
+                                ItemNames{registries ? &*registries : nullptr, item_registry},
+                                options.host_player};
+    player_data.load_level_player(level_dir / "level.dat");
+    // ── end player data ─────────────────────────────────────────────────────
 
     std::vector<std::string> biome_name_storage =
         codec_bytes ? biome_names_in_codec(*codec_bytes) : std::vector<std::string>{};
@@ -1774,7 +1791,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // whose regions are newer than its level.dat is the state a crash
         // leaves behind.
         if (!io::write_file_atomic(level_dir / "level.dat",
-                                   world::encode_level_dat(level_settings))) {
+                                   // ── player data: with Data.Player when there is one ──
+                                   player_data.encode_level_dat(level_settings))) {
             OV_LOG_WARN("could not write level.dat");
         }
 
@@ -2804,6 +2822,45 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     };
     // ── end effects ─────────────────────────────────────────────────────────
 
+    // ── player data ─────────────────────────────────────────────────────────
+    /// A player's record as they stand. The game mode is the server's own
+    /// until players have one each.
+    const auto player_record_of = [&](const Player& who) {
+        usize        overflow = 0;
+        PlayerRecord record   = capture_player(
+            PlayerPose{who.x, who.y, who.z, who.yaw, who.pitch, who.on_ground},
+            options.survival ? 0 : 1, who.inventory, who.carried, who.held_slot, who.survival,
+            who.effects, &overflow);
+        if (overflow > 0) {
+            OV_LOG_WARN("{}: {} stacks from the crafting grid or the cursor found no free slot "
+                        "and are not in the save",
+                        who.name, overflow);
+        }
+        return record;
+    };
+    const auto save_player = [&](const net::Uuid& uuid, const std::string& name,
+                                 const PlayerRecord& record) {
+        if (!player_data.save(uuid, name, record)) {
+            OV_LOG_WARN("could not write {} for {}", player_data.file_of(uuid).string(), name);
+        }
+    };
+    /// Everyone online, snapshotted under the lock and written outside it.
+    const auto save_online_players = [&] {
+        std::vector<std::tuple<net::Uuid, std::string, PlayerRecord>> online;
+        {
+            const std::scoped_lock lock{players_mutex};
+            for (const auto& [key, who] : players) {
+                if (who.connection) {
+                    online.emplace_back(who.uuid, who.name, player_record_of(who));
+                }
+            }
+        }
+        for (const auto& [uuid, name, record] : online) {
+            save_player(uuid, name, record);
+        }
+    };
+    // ── end player data ─────────────────────────────────────────────────────
+
     /// The player, as the combat session reads them.
     const auto combat_view = [&](const Player& who) {
         CombatPlayer view;
@@ -3043,11 +3100,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     });
 
     listener->on_disconnect([&](const net::ConnectionPtr& connection) {
+        // ── player data: captured under the lock, written after it ──
+        std::optional<std::tuple<net::Uuid, std::string, PlayerRecord>> leaving;
         {
             const std::scoped_lock lock{players_mutex};
             if (const auto it = players.find(connection.get()); it != players.end()) {
                 const i32       entity_id = it->second.entity_id;
                 const net::Uuid uuid      = it->second.uuid;
+                leaving.emplace(uuid, it->second.name, player_record_of(it->second));  // ── player data ──
                 players.erase(it);
 
                 // The reason goes with the player. Without this the chunks they
@@ -3068,6 +3128,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 broadcast(nullptr, net::clientbound::kPlayerInfoRemove,
                           net::encode_player_info_remove(uuid));
             }
+        }
+        if (leaving) {  // ── player data ──
+            save_player(std::get<0>(*leaving), std::get<1>(*leaving), std::get<2>(*leaving));
         }
         const std::scoped_lock lock{states_mutex};
         states.erase(connection.get());
@@ -3170,6 +3233,27 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     return true;
                 }
 
+                // ── player data: read before the door opens; refused, never
+                // overwritten — a player let in would be saved over the file ──
+                std::optional<LoadedPlayer> stored;
+                if (auto loaded = player_data.load(uuid, login->name); !loaded) {
+                    OV_LOG_ERROR("refusing {}: {}", login->name, loaded.error().message);
+                    send_packet(static_cast<i32>(net::LoginPacket::Disconnect),
+                                net::encode_login_disconnect(
+                                    "Ondes VOXEL — your saved player data cannot be used by this "
+                                    "server.\nIt has been left untouched; the server log names "
+                                    "the file and the reason."));
+                    return true;
+                } else if (*loaded) {
+                    stored = std::move(**loaded);
+                    if (stored->unknown_items + stored->unknown_effects > 0) {
+                        OV_LOG_WARN("{}: {} items and {} effects this server does not know, "
+                                    "kept in the file as they are",
+                                    login->name, stored->unknown_items, stored->unknown_effects);
+                    }
+                }
+                // ── end player data ──
+
                 send_packet(static_cast<i32>(net::LoginPacket::Success),
                             net::encode_login_success(uuid, login->name));
 
@@ -3188,6 +3272,18 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         player.pitch = saved->second.pitch;
                         remembered   = true;
                     }
+                }
+                if (stored) {  // ── player data: the file wins over the memory ──
+                    PlayerPose pose{};
+                    restore_player(stored->record, pose, player.inventory, player.held_slot,
+                                   player.survival, player.effects);
+                    player.x         = pose.x;
+                    player.y         = pose.y;
+                    player.z         = pose.z;
+                    player.yaw       = pose.yaw;
+                    player.pitch     = pose.pitch;
+                    player.on_ground = pose.on_ground;
+                    remembered       = true;
                 }
                 if (!remembered) {
                     // A first arrival stands on whatever the world's surface
@@ -3369,6 +3465,31 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 // recipe book stays empty.
                 send_recipe_book(workbench_context,
                                  [&](i32 id, std::vector<u8> payload) { send_packet(id, payload); });
+                // ── player data: what they carry, and which slot is in hand ──
+                if (stored) {
+                    send_packet(net::clientbound::kContainerContent,
+                                net::encode_container_content(
+                                    0, 0,
+                                    player_window_contents(registries ? &*registries : nullptr,
+                                                           recipe_book ? &*recipe_book : nullptr,
+                                                           player.inventory),
+                                    net::ItemStack{}));
+                    // Set Held Item, clientbound, 0x4D in protocol 763 — the
+                    // packet vanilla sends at join (measure_player_data.py).
+                    constexpr i32           kSetHeldItemClientbound = 0x4D;
+                    const std::array<u8, 1> held{static_cast<u8>(player.held_slot)};
+                    send_packet(kSetHeldItemClientbound, held);
+                    // The restored effects, now, with the file's durations —
+                    // on the record the tick owns, so it does not send them
+                    // again one tick shorter.
+                    const std::scoped_lock lock{players_mutex};
+                    if (const auto it = players.find(connection.get()); it != players.end()) {
+                        it->second.effects.announce(it->second.survival,
+                                                    effect_io_for(it->second),
+                                                    effect_bearer_for(it->second));
+                    }
+                }
+                // ── end player data ──
                 OV_LOG_INFO("{} joined at ({:.1f}, {:.1f}, {:.1f})", login->name, player.x,
                             player.y, player.z);
                 return true;
@@ -5793,6 +5914,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         if (const auto now = std::chrono::steady_clock::now();
             now - last_autosave >= std::chrono::seconds{30}) {
             last_autosave = now;
+            save_online_players();  // ── player data ── before level.dat, for the host
             save_world();
         }
 
@@ -6099,6 +6221,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         OV_LOG_INFO("allocations: {} ({} bytes), tick violations: {}", stats.allocations,
                     stats.bytes, stats.violations);
     }
+    save_online_players();  // ── player data ──
     save_world();
 
     listener->stop();
