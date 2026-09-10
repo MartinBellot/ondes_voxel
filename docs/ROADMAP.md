@@ -513,8 +513,21 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [~] Attributs, modificateurs, équipement
       *(les valeurs de base des 13 attributs relevées sur un vrai serveur
       1.20.1 pour les 120 types mesurables — 622 valeurs — et une absence
-      reste une absence. Les modificateurs et l'équipement restent à faire)*
-- [ ] **33 effets de statut** : speed, slowness, haste, mining_fatigue, strength,
+      reste une absence. **Les modificateurs sont faits** : bornes des 13
+      attributs 13/13, trois opérations bit pour bit, et l'ordre à l'intérieur
+      d'une opération est celui des seaux de hachage de Java — 5/5, contre 2/5
+      pour l'ordre d'insertion. L'équipement reste à faire)*
+- [~] **33 effets de statut**
+      *(**2026-09-10** : les 33 portés, envoyés et décomptés ; règles de
+      remplacement et effet caché mesurés. Régénération, poison et wither
+      **522/522** intervalles (amplificateurs 0-5), instantanés 24/24 morts-
+      vivants inversés compris, résistance 36/36, couleur de particules 64/64,
+      cassage sous haste / fatigue / conduit 30/32 au tick près. Branchés :
+      manger, lait, miel, mort, cassage, mêlée, chute, souffle. **Restent** les
+      effets sur les mobs, la persistance (le serveur n'écrit aucun fichier
+      joueur), et les effets sans règle serveur — nausée, lévitation, dolphin's
+      grace, bad omen, hero of the village. Voir `docs/provenance/effets.md`)* :
+      speed, slowness, haste, mining_fatigue, strength,
       instant_health, instant_damage, jump_boost, nausea, regeneration,
       resistance, fire_resistance, water_breathing, invisibility, blindness,
       night_vision, hunger, weakness, poison, wither, health_boost, absorption,
