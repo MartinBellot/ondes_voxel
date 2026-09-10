@@ -167,6 +167,21 @@ struct SpawnEnvironment {
 
     /// The registries, for turning a type name into a size and a hitbox.
     const registry::Registries* registries{nullptr};
+
+    /// The world age, in ticks.
+    ///
+    /// One category is gated on it. Passive mobs do not attempt to spawn every
+    /// tick like everything else: the game runs their pass **once every 400
+    /// ticks**, which is why a plain sat by a river fills with cows over
+    /// minutes rather than seconds. Without the gate the spawner offers a
+    /// passive attempt four hundred times too often, the category cap fills in
+    /// the first second of a world and nothing ever spawns again.
+    ///
+    /// -1 means "the caller keeps no clock", and it is **not** treated as tick
+    /// zero — which would make the gate fire on every call. The spawner then
+    /// counts its own calls instead, which is exactly as good a clock as long
+    /// as `spawn_tick` means what it says.
+    i64 game_time{-1};
 };
 
 /// Which mob types a category may put in a biome, and how many at a time.
@@ -217,6 +232,23 @@ public:
     [[nodiscard]] bool can_spawn_at(const SpawnEnvironment& environment, MobCategory category,
                                     BlockPos pos, f32 width, f32 height) const;
 
+    /// Everything `can_spawn_at` asks that does **not** depend on the mob.
+    ///
+    /// Loaded, inside the world, far enough from every player, dark enough, and
+    /// — for a passive — on grass under sky. None of it needs a hitbox, so all
+    /// of it can be answered before a type has been drawn.
+    ///
+    /// That order matters twice. It saves the draw on the vast majority of
+    /// positions, which are underground or under a player's feet; and the draw
+    /// was the only hot caller `registry::Registries::protocol_id` had. Asking
+    /// the cheap half first is why a name → id hash index is not needed to make
+    /// the spawn pass fast.
+    [[nodiscard]] bool position_plausible(const SpawnEnvironment& environment,
+                                          MobCategory category, BlockPos pos) const;
+
+    /// How often the passive pass runs, in ticks. Vanilla's `gameTime % 400`.
+    static constexpr i64 kPassiveSpawnInterval = 400;
+
     /// The distance below which no mob is ever placed, whatever else is true.
     static constexpr f64 kMinimumPlayerDistance = 24.0;
 
@@ -229,6 +261,8 @@ private:
     math::LegacyRandomSource   random_;
     std::vector<SpawnerEntry>  entries_[8];
     i32                        next_pack_{1};
+    /// Calls to `spawn_tick`, used as a clock when the caller supplies none.
+    i64 ticks_{0};
 };
 
 /// What should happen to a mob that already exists.
