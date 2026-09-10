@@ -4,10 +4,10 @@ Ce document rend compte d'une seule chose, mesurée : **dans quel chunk le jeu d
 structure, et est-ce que nous disons la même chose**. Il ne parle pas de géométrie — aucun bloc de
 structure n'est posé à ce stade, et c'est dit ici plutôt que laissé à deviner.
 
-> Le choix est délibéré et il vient du mandat : une structure au bon endroit avec une géométrie
-> approximative reste utile ; une structure parfaite au mauvais endroit ne l'est pas. Le placement
-> est en outre la seule partie de la génération dont l'oracle est un **booléen** et non un champ
-> bruité.
+> Le choix est délibéré. Une structure au bon endroit avec une géométrie approximative reste
+> utile ; une structure parfaite au mauvais endroit ne l'est pas. Et le placement est la seule
+> partie de la génération dont l'oracle est un **booléen** plutôt qu'un champ bruité : sur des
+> milliers de chunks, il y a une structure ou il n'y en a pas.
 
 ---
 
@@ -323,8 +323,10 @@ Ils sont cités comme **absence de dégât collatéral**, pas comme preuve. La p
 
 ## 10. Ce qui n'est pas fait, nommé
 
-* **Aucune géométrie.** Pas un bloc de structure n'est posé. Le mandat demandait une structure
-  bloc pour bloc ; elle n'est pas là, et le socle mesuré a été préféré à une géométrie plausible.
+* **Aucune géométrie.** Pas un bloc de structure n'est posé. Une structure complète, bloc pour
+  bloc, était prévue dans le même passage ; elle n'est pas là. Le socle mesuré a été préféré à une
+  géométrie plausible, parce qu'une géométrie reconstruite de mémoire au lieu d'être spécifiée
+  n'aurait pas d'oracle et n'aurait donc pas de chiffre.
 * **Le système jigsaw** — pools de gabarits, ancrages, profondeur, résolution des connexions —
   n'est pas commencé. C'est aussi ce qui bloque le § 5.
 * **Les gabarits `.nbt`** (1 010 fichiers dans `data/minecraft/structures/` du jar serveur) ne sont
