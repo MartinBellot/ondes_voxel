@@ -173,6 +173,9 @@ void TntGravity::spawn_primed(entity::EntityWorld& world, BlockPos pos, i32 fuse
     state->broadcast_valid     = true;
     world.set_logic(*handle, std::make_unique<gameplay::PrimedTntLogic>(fuse, blast_events_));
     spawn_packets(world, *state, deliver);
+    if (on_primed_) {  // ── sound ──
+        on_primed_(at);
+    }
 }
 
 void TntGravity::spawn_falling(entity::EntityWorld& world, const gameplay::FallStart& start,

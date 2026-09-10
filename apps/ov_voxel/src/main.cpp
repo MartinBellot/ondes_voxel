@@ -21,6 +21,9 @@
 #include "ov/base/time.hpp"
 #include "ov/client/entity_renderer.hpp"
 #include "ov/client/overlay.hpp"
+#include "ov/audio/sound_catalog.hpp"   // ── sound ──
+#include "ov/audio/sound_engine.hpp"    // ── sound ──
+#include "ov/client/sound_director.hpp" // ── sound ──
 #include "ov/client/terrain_renderer.hpp"
 #include "ov/client/window.hpp"
 #include "ov/registry/block_states.hpp"
@@ -214,6 +217,14 @@ struct Options {
     /// looked at, which is how the questions a unit test cannot answer — is
     /// this texture mirrored? — actually get settled.
     std::string camera;
+
+    // ── sound ──
+    /// Play nothing and open no device.
+    bool sound{true};
+    /// Print every sound that started, at the end: what the end-to-end check reads.
+    bool sound_log{false};
+    /// `master:0.8,music:0` — the options screen that does not exist yet.
+    std::string volumes;
 };
 
 [[nodiscard]] Options parse_arguments(std::span<char*> args) {
@@ -325,6 +336,12 @@ struct Options {
             options.entity_stats = true;
         } else if (argument == "--entity-bounds") {
             options.entity_bounds = true;
+        } else if (argument == "--no-sound") {  // ── sound ──
+            options.sound = false;
+        } else if (argument == "--sound-log") {
+            options.sound_log = true;
+        } else if (argument.starts_with("--volume=")) {
+            options.volumes = value("--volume=");
         } else if (argument == "--singleplayer") {
             options.singleplayer = true;
         } else if (argument.starts_with("--singleplayer-port=")) {
@@ -986,6 +1003,17 @@ int main(int argc, char** argv) {
 
     std::unique_ptr<netclient::Client> client;
     std::unique_ptr<demo::Session>     session;
+    // ── sound ── in this order: the director points into the engine, the
+    // engine into the catalogue, and destruction runs the other way.
+    std::optional<audio::SoundCatalog>     sound_catalog;
+    std::unique_ptr<audio::SoundEngine>    sound_engine;
+    std::unique_ptr<client::SoundDirector> sound_director;
+    std::optional<BlockPos>                pending_place;
+    i32                                    pending_place_frames = 0;
+    std::optional<std::pair<BlockPos, registry::BlockStateId>> pending_use;
+    i32                                    pending_use_frames = 0;
+    f64                                    fall_peak          = 0.0;
+    std::vector<f64>                       audio_frame_ms;
     netclient::ClientEvents            events;
     gameplay::MotionState              player;
     const gameplay::MotionConstants    motion;
@@ -1027,6 +1055,70 @@ int main(int argc, char** argv) {
         }
         client  = std::move(*connected);
         session = std::make_unique<demo::Session>(*blocks, models, *atlas, tints, **terrain);
+
+        // ── sound ── sounds.json, the device, and what decides what is heard.
+        if (options.sound && registries != nullptr) {
+            const std::filesystem::path root{options.assets};
+            std::ifstream               in(root / "assets/minecraft/sounds.json", std::ios::binary);
+            if (!in) {
+                OV_LOG_WARN("sound: no sounds.json under {} — run ov-assetimport --sounds; "
+                            "the game stays silent",
+                            options.assets);
+            } else {
+                const std::string text((std::istreambuf_iterator<char>(in)),
+                                       std::istreambuf_iterator<char>());
+                if (auto parsed = audio::SoundCatalog::parse(text); !parsed) {
+                    OV_LOG_WARN("sound: {}", parsed.error());
+                } else {
+                    sound_catalog.emplace(std::move(*parsed));
+                    audio::EngineDesc sound_desc;
+                    sound_desc.catalog  = &*sound_catalog;
+                    sound_desc.keep_log = options.sound_log;
+                    sound_desc.read = [root](std::string_view path) -> std::optional<std::vector<u8>> {
+                        std::ifstream file(root / path, std::ios::binary);
+                        if (!file) {
+                            return std::nullopt;
+                        }
+                        return std::vector<u8>(std::istreambuf_iterator<char>(file),
+                                               std::istreambuf_iterator<char>());
+                    };
+                    auto engine = audio::SoundEngine::create(sound_desc);
+                    if (!engine) {
+                        // No device is not a reason to lose the rest: the null
+                        // backend still decides, logs and counts every sound.
+                        OV_LOG_WARN("sound: {} — continuing without output", engine.error());
+                        sound_desc.backend = audio::Backend::Null;
+                        engine             = audio::SoundEngine::create(sound_desc);
+                    }
+                    if (engine) {
+                        sound_engine = std::move(*engine);
+                        // `master:0.8,music:0`: one pair at a time, a name that
+                        // is not a category said so rather than ignored.
+                        usize start = 0;
+                        while (start < options.volumes.size()) {
+                            const usize end   = std::min(options.volumes.find(',', start),
+                                                         options.volumes.size());
+                            const auto  pair  = options.volumes.substr(start, end - start);
+                            const usize colon = pair.find(':');
+                            const auto  which = audio::category_from_name(pair.substr(0, colon));
+                            if (colon == std::string::npos || !which) {
+                                OV_LOG_WARN("--volume: '{}' is not category:value", pair);
+                            } else {
+                                sound_engine->set_volume(
+                                    *which,
+                                    static_cast<f32>(std::atof(pair.substr(colon + 1).c_str())));
+                            }
+                            start = end + 1;
+                        }
+                        sound_director = std::make_unique<client::SoundDirector>(
+                            *sound_engine, *blocks, *registries, i64{0x5EED});
+                        OV_LOG_INFO("sound: {} events, {} variants", sound_catalog->event_count(),
+                                    sound_catalog->entry_count());
+                    }
+                }
+            }
+        }
+        // ── end sound ──
         OV_LOG_INFO("connected to {}:{} as {}", host, port, options.username);
     }
 
@@ -1308,6 +1400,43 @@ int main(int argc, char** argv) {
                 start_time           = std::chrono::steady_clock::now();
                 options.daylight_cycle = true;
             }
+            // ── sound ── before the entity world forgets what was picked up.
+            const auto audio_started = std::chrono::steady_clock::now();
+            if (sound_director) {
+                sound_director->on_events(
+                    events, [&entity_world](i32 id) -> std::optional<client::HeardEntity> {
+                        const auto& known = entity_world.entities();
+                        const auto  it    = known.find(id);
+                        if (it == known.end()) {
+                            return std::nullopt;
+                        }
+                        return client::HeardEntity{
+                            it->second.to,
+                            it->second.orb ? netclient::ClientEvents::kSpawnedAsExperienceOrb : 0};
+                    });
+                // The server leaves this player out of its own placing and of the
+                // door it opened: the answer it does send is the Block Update, so
+                // that is when this client plays them.
+                for (const auto& change : events.changed) {
+                    const BlockPos at{change.x, change.y, change.z};
+                    if (pending_place && at == *pending_place &&
+                        change.state != registry::kAirState) {
+                        sound_director->placed(change.state, at);
+                        pending_place.reset();
+                    }
+                    if (pending_use && at == pending_use->first) {
+                        sound_director->toggled(pending_use->second, change.state, at);
+                        pending_use.reset();
+                    }
+                }
+                if (pending_place && ++pending_place_frames > 60) {
+                    pending_place.reset();  // refused: nothing to hear
+                }
+                if (pending_use && ++pending_use_frames > 60) {
+                    pending_use.reset();
+                }
+            }
+            // ── end sound ──
             session->apply(events);
             entity_world.apply(events, registries);
 
@@ -1370,7 +1499,36 @@ int main(int argc, char** argv) {
 
                 const auto world_view = session->collision();
                 const auto fluid_view = session->fluids();
+                const Vec3d before_step   = player.position;  // ── sound ──
+                const bool  was_on_ground = player.on_ground;
                 player = gameplay::step(player, move, motion, world_view, &fluid_view);
+                if (sound_director) {  // ── sound ── footsteps, a landing, the music
+                    const auto under = session->block_at(
+                        static_cast<i32>(std::floor(player.position.x)),
+                        static_cast<i32>(std::floor(player.position.y - 0.2)),
+                        static_cast<i32>(std::floor(player.position.z)));
+                    const f64 dx = player.position.x - before_step.x;
+                    const f64 dz = player.position.z - before_step.z;
+                    if (!move.sneak) {
+                        sound_director->walked(std::sqrt(dx * dx + dz * dz), player.on_ground,
+                                               under, player.position);
+                    }
+                    if (was_on_ground && !player.on_ground) {
+                        fall_peak = player.position.y;
+                    }
+                    if (!player.on_ground) {
+                        fall_peak = std::max(fall_peak, player.position.y);
+                    }
+                    if (!was_on_ground && player.on_ground && !(*interface)->hud().creative) {
+                        // Survival's rule, measured: ceil(distance - 3).
+                        const f64 fallen = fall_peak - player.position.y;
+                        if (fallen > 3.0) {
+                            sound_director->landed(static_cast<f32>(std::ceil(fallen - 3.0)),
+                                                   under, player.position);
+                        }
+                    }
+                    sound_director->tick((*interface)->hud().creative);
+                }
 
                 netclient::PlayerInput report;
                 report.position  = player.position;
@@ -1390,6 +1548,15 @@ int main(int argc, char** argv) {
             camera.position = Vec3f{static_cast<f32>(player.position.x),
                                     static_cast<f32>(player.position.y + 1.62),
                                     static_cast<f32>(player.position.z)};
+            if (sound_director) {  // ── sound ── the ears are the camera
+                sound_director->listen(
+                    Vec3d{player.position.x, player.position.y + 1.62, player.position.z},
+                    camera.yaw_degrees);
+                sound_engine->update();
+                audio_frame_ms.push_back(std::chrono::duration<f64, std::milli>(
+                                             std::chrono::steady_clock::now() - audio_started)
+                                             .count());
+            }
 
             // The scripted dig: wait until the player has been standing for a
             // moment, break what is under its feet, and remember what was
@@ -1403,6 +1570,9 @@ int main(int argc, char** argv) {
                 client->send_dig(dig_target.x, dig_target.y, dig_target.z, 0, 1);
                 client->send_dig(dig_target.x, dig_target.y, dig_target.z, 2, 1);
                 dig_sent = true;
+                if (sound_director) {  // ── sound ── the breaker's own client plays it
+                    sound_director->broke(dig_before, dig_target);
+                }
             }
 
             // And place one, two blocks to the side — not where the player is
@@ -1415,7 +1585,9 @@ int main(int argc, char** argv) {
                 place_target = BlockPos{dig_target.x + 2, dig_target.y + 1, dig_target.z};
                 client->send_place(place_target.x, place_target.y - 1, place_target.z, 1, 0.5F,
                                    1.0F, 0.5F);
-                place_sent = true;
+                place_sent           = true;
+                pending_place        = place_target;  // ── sound ──
+                pending_place_frames = 0;
             }
 
             // Right-click a named block once the world has settled, and then
@@ -1426,7 +1598,9 @@ int main(int argc, char** argv) {
                 // are pointing at, not the space the block ends up in.
                 client->send_place(place_target_scripted.x, place_target_scripted.y - 1,
                                    place_target_scripted.z, 1, 0.5F, 1.0F, 0.5F);
-                scripted_place_sent = true;
+                scripted_place_sent  = true;
+                pending_place        = place_target_scripted;  // ── sound ──
+                pending_place_frames = 0;
             }
             if (use_wanted && ground_ready && !use_sent && rendered > 160) {
                 client->send_place(use_target.x, use_target.y, use_target.z, 1, 0.5F, 1.0F,
@@ -1528,11 +1702,29 @@ int main(int argc, char** argv) {
                         // Start and finish in the same tick: creative-style
                         // instant breaking. The timed dig belongs with the
                         // block-breaking progress the server already computes.
+                        const auto broken =  // ── sound ──
+                            session->block_at(hit->block.x, hit->block.y, hit->block.z);
                         client->send_dig(hit->block.x, hit->block.y, hit->block.z, 0, face);
                         client->send_dig(hit->block.x, hit->block.y, hit->block.z, 2, face);
+                        if (sound_director) {  // ── sound ──
+                            sound_director->broke(broken, hit->block);
+                        }
                     } else {
                         client->send_place(hit->block.x, hit->block.y, hit->block.z, face, 0.5F,
                                            0.5F, 0.5F);
+                        // ── sound ── the placed cell is one step along the face
+                        // (0..5: -Y, +Y, -Z, +Z, -X, +X); the clicked one may
+                        // toggle instead. Whichever update comes back decides.
+                        constexpr std::array<std::array<i32, 3>, 6> kFaceStep{
+                            {{0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0}}};
+                        const auto& step     = kFaceStep[static_cast<usize>(std::clamp(face, 0, 5))];
+                        pending_place        = BlockPos{hit->block.x + step[0],
+                                                        hit->block.y + step[1],
+                                                        hit->block.z + step[2]};
+                        pending_place_frames = 0;
+                        pending_use          = std::pair{
+                            hit->block, session->block_at(hit->block.x, hit->block.y, hit->block.z)};
+                        pending_use_frames = 0;
                     }
                 }
             }
@@ -1906,6 +2098,24 @@ int main(int argc, char** argv) {
         }
         for (const std::string& unknown : entity_world.unknown_types()) {
             fmt::print("ent  not drawn: {}\n", unknown);
+        }
+    }
+
+    if (sound_engine) {  // ── sound ──
+        const auto audio = drop(audio_frame_ms);
+        const auto stats = sound_engine->stats();
+        fmt::print("snd  p50 {:.3f} ms   p99 {:.3f} ms   max {:.3f} ms per frame  "
+                   "({} played, {} refused, {} dropped for voices, {} files decoded, {:.1f} MB)\n",
+                   percentile(audio, 0.50), percentile(audio, 0.99), percentile(audio, 1.0),
+                   stats.started, stats.refused, stats.dropped_no_voice, stats.cached_files,
+                   static_cast<f64>(stats.cached_bytes) / (1024.0 * 1024.0));
+        if (options.sound_log) {
+            for (const audio::PlayedSound& played : sound_engine->take_log()) {
+                fmt::print("snd  {} {} ({:.2f}, {:.2f}, {:.2f}) volume {:.3f} pitch {:.3f} {}\n",
+                           audio::to_string(played.category), played.event, played.position.x,
+                           played.position.y, played.position.z, played.volume, played.pitch,
+                           played.file);
+            }
         }
     }
 

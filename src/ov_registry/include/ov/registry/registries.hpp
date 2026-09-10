@@ -154,6 +154,30 @@ public:
     /// of them something nothing can ever hit, and nothing would say so.
     [[nodiscard]] std::optional<EntityTypeInfo> entity_type(ProtocolId type) const noexcept;
 
+    /// What a creature sounds like, measured on a real 1.20.1 server: hurt
+    /// three times by /damage and then killed, and every Sound Effect a second
+    /// player heard written down. See docs/provenance/son.md.
+    struct EntitySounds {
+        /// Indices into minecraft:sound_event, -1 for none.
+        i32 hurt{-1};
+        i32 death{-1};
+        /// Named by the registry (`entity.<type>.ambient`), not heard: an
+        /// ambient sound comes when it likes, and three hurts and a death do
+        /// not wait for one.
+        i32 ambient{-1};
+        /// Mojang's sound category, as the packet carries it; -1 unmeasured.
+        i32 category{-1};
+        f32 volume{-1.0F};
+        /// The pitch range seen over the samples — a sample, not a bound.
+        f32 pitch_lo{-1.0F};
+        f32 pitch_hi{-1.0F};
+        /// Bit 0 hurt heard, bit 1 death heard, bit 2 ambient named.
+        u8 measured{0};
+    };
+
+    /// Empty for a type nothing about was measured.
+    [[nodiscard]] std::optional<EntitySounds> entity_sounds(ProtocolId type) const noexcept;
+
     /// One attribute a type owns, as an index into minecraft:attribute.
     struct EntityAttribute {
         ProtocolId attribute{0};
@@ -261,6 +285,7 @@ private:
     std::span<const ProtocolId>    members_;
     std::vector<EntityRecord>      entity_types_;
     std::vector<EntityAttribute>   entity_attributes_;
+    std::vector<EntitySounds>      entity_sounds_;
     RecipeData                     recipes_;
     /// The pack's string blob, for the three recipe name accessors. Held as
     /// offset and length rather than as resolved views: 1174 recipes carry

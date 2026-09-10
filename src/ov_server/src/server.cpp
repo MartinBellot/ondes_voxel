@@ -46,6 +46,7 @@
 #include "player_data.hpp"  // ── player data ──
 #include "player_inventory.hpp"
 #include "world_ticks.hpp"
+#include "sounds.hpp"  // ── sound ──
 #include "agriculture.hpp"  // ── agriculture ──
 #include "ov/world/chunk.hpp"
 #include "ov/world/chunk_map.hpp"
@@ -991,6 +992,9 @@ struct Player {
     i64  last_keep_alive_sent_ms{0};
     i64  keep_alive_id{0};
     bool awaiting_keep_alive{false};
+
+    /// ── sound ── how far this player has walked, in footsteps.
+    Sounds::Stride stride{};
 
     /// The player's own 46 slots, as the protocol numbers them: 0 is the
     /// crafting result, 1..4 the grid, 5..8 armour, 9..35 the main inventory,
@@ -1962,6 +1966,34 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         }
     };
 
+    // ── sound ── what the server makes heard, and to whom (sounds.hpp). Built
+    // before every packet handler below, which all capture it. `send_near` is
+    // called with players_mutex held, like `broadcast`.
+    std::optional<Sounds> sounds;
+    if (blocks && registries) {
+        sounds.emplace(*blocks, *registries, i64{0x6F76736F756E64});
+    }
+    SoundHost sound_host;
+    sound_host.send_near = [&](const void* except, Vec3d at, f64 radius, i32 id,
+                               std::span<const u8> payload) {
+        const auto framed = net::encode_packet(id, payload);
+        if (!framed) {
+            return;
+        }
+        for (auto& [key, other] : players) {
+            if (key == except || !other.connection || !other.confirmed) {
+                continue;
+            }
+            const f64 dx = other.x - at.x;
+            const f64 dy = other.y - at.y;
+            const f64 dz = other.z - at.z;
+            if (dx * dx + dy * dy + dz * dz <= radius * radius) {
+                other.connection->send(*framed);
+            }
+        }
+    };
+    // ── end sound ──
+
     /// Confirm a change the client already predicted.
     ///
     /// Without this the client shows its guess, waits, and then rolls it back —
@@ -2523,6 +2555,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 item_transport->note_block_change(pos, before, state);
             }
             tick_broadcasts.emplace_back(where, state);
+            if (sounds) {  // ── sound ── a button releasing, a door moved by power
+                sounds->queue_changed(pos, before, state);
+            }
             tick_relight.insert(chunk_key(pos.x >> 4, pos.z >> 4));
         };
         hooks.container_signal = [&](BlockPos pos) -> i32 {
@@ -2700,6 +2735,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         }
         const std::unique_lock lock{players_mutex, std::try_to_lock};
         if (lock.owns_lock()) {
+            if (sounds) {  // ── sound ── what the drain toggled, to everyone near
+                sounds->flush(sound_host);
+            }
             for (const auto& [where, state] : tick_broadcasts) {
                 const auto framed = net::encode_packet(
                     net::clientbound::kBlockUpdate,
@@ -3109,6 +3147,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         broadcast(nullptr, net::clientbound::kEntityMetadata,
                   net::encode_entity_metadata(state->network_id, fields.take()));
 
+        if (sounds) {  // ── sound ── the hurt, or the death cry: everyone near
+            if (result.killed) {
+                sounds->mob_death(sound_host, state->type, state->position);
+            } else {
+                sounds->mob_hurt(sound_host, state->type, state->position);
+            }
+        }
+
         if (!result.killed) {
             return true;
         }
@@ -3436,6 +3482,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 // The death animation, then the loot a death without a player
                 // behind it draws, then gone at the end of the entity tick.
                 broadcast(nullptr, net::clientbound::kEntityEvent, net::encode_entity_event(id, 3));
+                if (sounds) {  // ── sound ── /kill: the death cry and nothing before it
+                    sounds->mob_death(sound_host, state->type, state->position);
+                }
                 std::vector<gameplay::Drop> drops;
                 (void)mob_combat->loot(*state, false, 0, mob_loot_random, drops);
                 std::vector<ItemEntity> dropped;
@@ -4134,6 +4183,27 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                             player.survival.note_movement(player.y, player.on_ground,
                                                           std::sqrt(dx * dx + dz * dz));
                         }
+                        // ── sound ── footsteps, for everyone near but the walker.
+                        // Sneaking and spectating are silent: not measured, and
+                        // said so in docs/provenance/son.md.
+                        if (sounds && movement->x && player.on_ground && !player.sneaking &&
+                            player.game_mode != 3) {
+                            const f64 dx = player.x - before_x;
+                            const f64 dz = player.z - before_z;
+                            if (Sounds::advance(player.stride, std::sqrt(dx * dx + dz * dz))) {
+                                registry::BlockStateId under{};
+                                {
+                                    const std::scoped_lock chunk_lock{chunk_mutex};
+                                    under = block_at(net::WirePosition{
+                                        static_cast<i32>(std::floor(player.x)),
+                                        static_cast<i32>(std::floor(player.y - 0.2)),
+                                        static_cast<i32>(std::floor(player.z))});
+                                }
+                                sounds->step(sound_host, connection.get(),
+                                             Vec3d{player.x, player.y, player.z}, under);
+                            }
+                        }
+                        // ── end sound ──
                         // ── end survival ───────────────────────────────────
 
                         if (motion_log != nullptr) {
@@ -4344,7 +4414,20 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                             // Creative breaks on the first packet: the block is
                             // already gone on the client when it arrives.
                             if (action->status == 0 || action->status == 2) {
+                                // ── sound ── the others are told what broke
+                                registry::BlockStateId broken{};
+                                {
+                                    const std::scoped_lock chunk_lock{chunk_mutex};
+                                    broken = block_at(action->position);
+                                }
                                 set_block_connected(action->position, superflat.air.air);
+                                if (sounds) {
+                                    sounds->block_broken(sound_host, connection.get(),
+                                                         BlockPos{action->position.x,
+                                                                  action->position.y,
+                                                                  action->position.z},
+                                                         broken);
+                                }
                             }
                             return true;
                         }
@@ -4363,7 +4446,19 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                 // has already assumed.
                                 std::vector<ItemEntity> dropped;
                                 drop_loot(player, action->position, dropped);
+                                registry::BlockStateId broken{};  // ── sound ──
+                                {
+                                    const std::scoped_lock chunk_lock{chunk_mutex};
+                                    broken = block_at(action->position);
+                                }
                                 set_block_connected(action->position, superflat.air.air);
+                                if (sounds) {  // ── sound ──
+                                    sounds->block_broken(sound_host, connection.get(),
+                                                         BlockPos{action->position.x,
+                                                                  action->position.y,
+                                                                  action->position.z},
+                                                         broken);
+                                }
                                 publish_items(dropped);
                                 return true;
                             }
@@ -4393,7 +4488,19 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                 player.digging = player.delayed_dig = false;
                                 std::vector<ItemEntity> dropped;
                                 drop_loot(player, action->position, dropped);
+                                registry::BlockStateId broken{};  // ── sound ──
+                                {
+                                    const std::scoped_lock chunk_lock{chunk_mutex};
+                                    broken = block_at(action->position);
+                                }
                                 set_block_connected(action->position, superflat.air.air);
+                                if (sounds) {  // ── sound ──
+                                    sounds->block_broken(sound_host, connection.get(),
+                                                         BlockPos{action->position.x,
+                                                                  action->position.y,
+                                                                  action->position.z},
+                                                         broken);
+                                }
                                 publish_items(dropped);
                             } else if (progress > 0.0F) {
                                 player.digging     = false;
@@ -4465,6 +4572,28 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                 player.window_x    = place->position.x;
                                 player.window_y    = place->position.y;
                                 player.window_z    = place->position.z;
+                                if (sounds) {  // ── sound ── the first viewer opens the lid
+                                    bool watched = false;
+                                    for (const auto& [viewer_key, viewer] : players) {
+                                        watched = watched ||
+                                                  (&viewer != &player && viewer.window_open &&
+                                                   viewer.window_spec != nullptr &&
+                                                   viewer.window_x == player.window_x &&
+                                                   viewer.window_y == player.window_y &&
+                                                   viewer.window_z == player.window_z);
+                                    }
+                                    if (!watched) {
+                                        sounds->container(
+                                            sound_host,
+                                            BlockPos{place->position.x, place->position.y,
+                                                     place->position.z},
+                                            clicked_chunk.get_block(
+                                                static_cast<usize>(place->position.x & 15),
+                                                place->position.y,
+                                                static_cast<usize>(place->position.z & 15)),
+                                            true);
+                                    }
+                                }
 
                                 std::vector<net::ItemStack> slots;
                                 slots.reserve(static_cast<usize>(inventory->size()) + 36);
@@ -4503,9 +4632,26 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         // iron door clicked bare-handed refuses, and letting
                         // that fall through would place a block through it.
                         if (item_use) {
+                            registry::BlockStateId clicked_before{};  // ── sound ──
+                            {
+                                const std::scoped_lock chunk_lock{chunk_mutex};
+                                clicked_before = block_at(place->position);
+                            }
                             const CombatOutcome used = player.combat.on_use_item_on(
                                 *place, combat_view(player), combat_io(player), player_level,
                                 *item_use);
+                            if (sounds) {  // ── sound ── a door, a lever, a button…
+                                registry::BlockStateId clicked_after{};
+                                {
+                                    const std::scoped_lock chunk_lock{chunk_mutex};
+                                    clicked_after = block_at(place->position);
+                                }
+                                sounds->block_changed(sound_host, connection.get(),
+                                                      BlockPos{place->position.x,
+                                                               place->position.y,
+                                                               place->position.z},
+                                                      clicked_before, clicked_after);
+                            }
                             if (!used.unsupported.empty()) {
                                 OV_LOG_DEBUG("use on block: {} is recognised and not carried out",
                                              used.unsupported);
@@ -4696,6 +4842,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                             }
                         }
                         set_block_connected(target, placed);
+                        if (sounds) {  // ── sound ── heard by all but the placer
+                            sounds->block_placed(sound_host, connection.get(),
+                                                 BlockPos{target.x, target.y, target.z}, placed);
+                        }
 
                         // Doors and beds take two blocks. Placing only the half
                         // the player clicked leaves a door that cannot open and
@@ -4764,6 +4914,30 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                             const std::scoped_lock chunk_lock{chunk_mutex};
                             close_workbench(workbench_host(player, send_packet), *player.bench);
                             player.bench.reset();
+                        }
+                        if (sounds && player.window_open &&
+                            player.window_spec != nullptr) {  // ── sound ── the last one shuts it
+                            bool watched = false;
+                            for (const auto& [viewer_key, viewer] : players) {
+                                watched = watched ||
+                                          (&viewer != &player && viewer.window_open &&
+                                           viewer.window_spec != nullptr &&
+                                           viewer.window_x == player.window_x &&
+                                           viewer.window_y == player.window_y &&
+                                           viewer.window_z == player.window_z);
+                            }
+                            if (!watched) {
+                                registry::BlockStateId lid{};
+                                {
+                                    const std::scoped_lock chunk_lock{chunk_mutex};
+                                    lid = block_at(net::WirePosition{
+                                        player.window_x, player.window_y, player.window_z});
+                                }
+                                sounds->container(sound_host,
+                                                  BlockPos{player.window_x, player.window_y,
+                                                           player.window_z},
+                                                  lid, false);
+                            }
                         }
                         player.window_open = false;
                         player.window_spec = nullptr;
@@ -5497,6 +5671,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             }
         }
     };
+    if (tnt_gravity && sounds) {  // ── sound ── the fuse, heard by everyone near
+        tnt_gravity->on_primed([&](Vec3d at) { sounds->tnt_primed(sound_host, at); });
+    }
     // ── end tnt and gravity ─────────────────────────────────────────────────
 
     // ── commands: the dedicated server's console ────────────────────────────
@@ -6438,6 +6615,19 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         !commands || commands->world().rules.flag("naturalRegeneration"),
                         static_cast<f64>(world::WorldShape::overworld().min_y));
 
+                    if (sounds && who.survival.last_fall > 0.0F) {  // ── sound ── the landing
+                        registry::BlockStateId under{};
+                        {
+                            const std::scoped_lock chunk_lock{chunk_mutex};
+                            under = block_at(net::WirePosition{
+                                static_cast<i32>(std::floor(who.x)),
+                                static_cast<i32>(std::floor(who.y - 0.2)),
+                                static_cast<i32>(std::floor(who.z))});
+                        }
+                        sounds->fall(sound_host, who.connection.get(), Vec3d{who.x, who.y, who.z},
+                                     under, who.survival.last_fall);
+                    }
+
                     if (who.wants_respawn) {
                         who.wants_respawn = false;
                         // ── commands: /spawnpoint's, else /setworldspawn's ──
@@ -6594,7 +6784,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         const f64 dy = taker->y + 0.9 - orb.y;
                         const f64 dz = taker->z - orb.z;
                         if (nearest <= orb_rules.pickup_range * orb_rules.pickup_range) {
+                            const i32 level_before = taker->survival.experience_level;  // ── sound ──
                             taker->survival.award_experience(orb.value);
+                            if (sounds && taker->survival.experience_level > level_before) {
+                                sounds->level_up(sound_host, Vec3d{taker->x, taker->y, taker->z},
+                                                 taker->survival.experience_level);
+                            }
                             broadcast(nullptr, net::clientbound::kTakeItem,
                                       net::encode_take_item(orb.entity_id, taker->entity_id, 1));
                             broadcast(nullptr, net::clientbound::kRemoveEntities,
@@ -6653,7 +6848,16 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         digger.delayed_dig = false;
                         std::vector<ItemEntity> dropped;
                         drop_loot(digger, where, dropped);
+                        registry::BlockStateId broken{};  // ── sound ──
+                        {
+                            const std::scoped_lock chunk_lock{chunk_mutex};
+                            broken = block_at(where);
+                        }
                         set_block_connected(where, superflat.air.air);
+                        if (sounds) {  // ── sound ── everyone but the digger
+                            sounds->block_broken(sound_host, digger.connection.get(),
+                                                 BlockPos{where.x, where.y, where.z}, broken);
+                        }
                         publish_items(dropped);
                     }
                 }

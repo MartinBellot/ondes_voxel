@@ -87,6 +87,8 @@ std::expected<BlockRegistry, RegistryError> BlockRegistry::from_bytes(std::vecto
     const auto* fluids      = pack_at<u8>(data, header.fluid_offset, fluid_bytes);
     const auto* hardness    = pack_at<f32>(data, header.hardness_offset, header.block_count);
     const auto* resistance  = pack_at<f32>(data, header.resistance_offset, header.block_count);
+    const auto* sound_records =
+        pack_at<BlockSoundRecord>(data, header.block_sounds_offset, header.block_count);
     const auto* shape_boxes =
         pack_at<BlockRegistry::Box>(data, header.boxes_offset, header.box_count);
     const auto* shape_records =
@@ -99,6 +101,7 @@ std::expected<BlockRegistry, RegistryError> BlockRegistry::from_bytes(std::vecto
 
     if (blocks == nullptr || props == nullptr || values == nullptr || states == nullptr ||
         flags == nullptr || fluids == nullptr || hardness == nullptr || resistance == nullptr ||
+        sound_records == nullptr ||
         shape_boxes == nullptr ||
         shape_records == nullptr || state_shapes == nullptr || emission == nullptr ||
         biomes == nullptr) {
@@ -124,6 +127,8 @@ std::expected<BlockRegistry, RegistryError> BlockRegistry::from_bytes(std::vecto
     registry.resistance_ =
         std::span{reinterpret_cast<const f32*>(registry.data_.data() + header.resistance_offset),
                   header.block_count};
+    registry.sounds_ = std::span{registry.data_.data() + header.block_sounds_offset,
+                                 static_cast<usize>(header.block_count) * sizeof(BlockSoundRecord)};
     registry.boxes_ = std::span{
         reinterpret_cast<const BlockRegistry::Box*>(registry.data_.data() + header.boxes_offset),
         header.box_count};
@@ -391,6 +396,35 @@ f32 BlockRegistry::hardness(BlockId block) const noexcept {
     // Unknown block: unbreakable, which stops a stray id from being mined
     // through rather than making it free to break.
     return block.value() < hardness_.size() ? hardness_[block.value()] : -1.0F;
+}
+
+std::optional<BlockRegistry::BlockSounds> BlockRegistry::sounds(BlockId block) const noexcept {
+    const usize count = sounds_.size() / sizeof(BlockSoundRecord);
+    if (block.value() >= count) {
+        return std::nullopt;
+    }
+    BlockSoundRecord record{};
+    std::memcpy(&record, sounds_.data() + static_cast<usize>(block.value()) * sizeof(record),
+                sizeof(record));
+    if (record.measured == 0) {
+        return std::nullopt;
+    }
+    BlockSounds out;
+    for (usize i = 0; i < 7; ++i) {
+        out.events[i] = record.events[i] == 0xFFFF ? -1 : static_cast<i32>(record.events[i]);
+    }
+    out.measured       = record.measured;
+    out.volume         = record.volume;
+    out.pitch          = record.pitch;
+    out.open_audience  = static_cast<BlockSounds::Audience>(record.audience & 3U);
+    out.close_audience = static_cast<BlockSounds::Audience>((record.audience >> 2U) & 3U);
+    out.open_volume    = record.open_volume;
+    out.open_pitch_lo  = record.open_pitch_lo;
+    out.open_pitch_hi  = record.open_pitch_hi;
+    out.close_volume   = record.close_volume;
+    out.close_pitch_lo = record.close_pitch_lo;
+    out.close_pitch_hi = record.close_pitch_hi;
+    return out;
 }
 
 f32 BlockRegistry::blast_resistance(BlockId block) const noexcept {

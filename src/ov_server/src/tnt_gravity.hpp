@@ -134,6 +134,10 @@ public:
         return explosions_;
     }
 
+    /// ── sound ── Called with the new entity's position every time a TNT is
+    /// primed, whatever primed it: a flint, a redstone signal, another blast.
+    void on_primed(std::function<void(Vec3d)> listener) { on_primed_ = std::move(listener); }
+
 private:
     void spawn_primed(entity::EntityWorld& world, BlockPos pos, i32 fuse, const Deliver& deliver);
     void spawn_falling(entity::EntityWorld& world, const gameplay::FallStart& start,
@@ -154,6 +158,7 @@ private:
     gameplay::FallingBlocks falling_;
     gameplay::FallingEvents falling_events_;
     gameplay::BlastEvents   blast_events_;
+    std::function<void(Vec3d)> on_primed_;  // ── sound ──
     gameplay::Detonation    detonation_;
     gameplay::DamageConstants damage_constants_{};
 

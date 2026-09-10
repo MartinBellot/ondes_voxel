@@ -173,6 +173,9 @@ public:
 
     /// Fall damage found by `note_movement` and not yet applied.
     f32 pending_fall_damage{0.0F};
+    /// ── sound ── the fall damage the last tick dealt, 0 when it dealt none —
+    /// what the landing sounds are chosen from.
+    f32 last_fall{0.0F};
 
     /// Whether the client says it is sprinting. The only movement that charges
     /// hunger, and unknowable from positions alone.

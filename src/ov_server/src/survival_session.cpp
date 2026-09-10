@@ -202,8 +202,10 @@ SurvivalOutcome SurvivalSession::tick(const SurvivalPlayer& player, const Surviv
         fall = std::max(fall - static_cast<f32>(player.jump_boost + 1), 0.0F);
     }
     // ── end effects ──
+    last_fall = 0.0F;  // ── sound ──
     if (fall > 0.0F && mortal) {
         (void)hurt(gameplay::DamageKind::Fall, fall, io, player.entity_id);
+        last_fall = fall;  // ── sound ──
     }
     pending_fall_damage = 0.0F;
 

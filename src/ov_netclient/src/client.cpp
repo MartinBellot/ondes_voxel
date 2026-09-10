@@ -4,6 +4,7 @@
 
 #include "ov/base/log.hpp"
 #include "ov/io/byte_writer.hpp"
+#include "ov/protocol/chat.hpp"
 #include "ov/protocol/client_play.hpp"
 #include "ov/protocol/entity.hpp"
 #include "ov/protocol/framing.hpp"
@@ -194,6 +195,12 @@ void ClientEvents::clear() {
     close_window.reset();
     game_mode.reset();
     entities.clear();
+    sounds.clear();
+    entity_sounds.clear();
+    stop_sounds.clear();
+    world_events.clear();
+    explosions.clear();
+    pickups.clear();
 }
 
 struct Client::Impl {
@@ -727,6 +734,80 @@ void Client::Impl::handle_play(i32 packet_id, std::span<const u8> body) {
             inbox.close_window = *window;
             break;
         }
+
+        // ── sound ───────────────────────────────────────────────────────
+        //
+        // A malformed one is skipped and said so, never a disconnect: a sound
+        // the client cannot read costs a sound, not the session.
+
+        case net::clientbound::kSoundEffect: {
+            auto sound = net::parse_sound_effect(body);
+            if (!sound) {
+                OV_LOG_WARN("malformed Sound Effect ({} bytes)", body.size());
+                return;
+            }
+            const std::lock_guard lock(mutex);
+            inbox.sounds.push_back(std::move(*sound));
+            break;
+        }
+
+        case net::clientbound::kEntitySoundEffect: {
+            auto sound = net::parse_entity_sound_effect(body);
+            if (!sound) {
+                OV_LOG_WARN("malformed Entity Sound Effect ({} bytes)", body.size());
+                return;
+            }
+            const std::lock_guard lock(mutex);
+            inbox.entity_sounds.push_back(std::move(*sound));
+            break;
+        }
+
+        case net::clientbound::kStopSound: {
+            auto stop = net::parse_stop_sound(body);
+            if (!stop) {
+                OV_LOG_WARN("malformed Stop Sound ({} bytes)", body.size());
+                return;
+            }
+            const std::lock_guard lock(mutex);
+            inbox.stop_sounds.push_back(std::move(*stop));
+            break;
+        }
+
+        case net::clientbound::kWorldEvent: {
+            const auto event = net::parse_world_event(body);
+            if (!event) {
+                OV_LOG_WARN("malformed World Event ({} bytes)", body.size());
+                return;
+            }
+            const std::lock_guard lock(mutex);
+            inbox.world_events.push_back(*event);
+            break;
+        }
+
+        case net::clientbound::kExplosion: {
+            auto explosion = net::parse_explosion(body);
+            if (!explosion) {
+                OV_LOG_WARN("malformed Explosion ({} bytes)", body.size());
+                return;
+            }
+            const std::lock_guard lock(mutex);
+            inbox.explosions.push_back(std::move(*explosion));
+            break;
+        }
+
+        case net::clientbound::kTakeItem: {
+            const auto collected = net::read_varint(reader);
+            const auto collector = net::read_varint(reader);
+            const auto count     = net::read_varint(reader);
+            if (!collected || !collector || !count) {
+                OV_LOG_WARN("malformed Take Item Entity ({} bytes)", body.size());
+                return;
+            }
+            const std::lock_guard lock(mutex);
+            inbox.pickups.push_back(ClientEvents::Pickup{*collected, *collector, *count});
+            break;
+        }
+        // ── end sound ───────────────────────────────────────────────────
 
         case net::clientbound::kDisconnect: {
             auto text = net::read_string(reader);

@@ -223,13 +223,8 @@ class Vanilla:
         #   for a "Done (" that never comes. Several agents run vanilla servers
         #   on this machine, and the first run of this script lost its port to
         #   one of them. Checked here, and named.
-        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            probe.bind(("0.0.0.0", PORT))
-        except OSError:
-            sys.exit(f"port {PORT} is taken — set OV_SOUND_PORT to a free one")
-        finally:
-            probe.close()
+        from measure_block_sounds import wait_for_port
+        wait_for_port(PORT, "OV_SOUND_PORT")
         if RUN.exists():
             shutil.rmtree(RUN)
         self.server = Server(RUN / "vanilla", port=PORT)
@@ -239,6 +234,82 @@ class Vanilla:
 
     def stop(self) -> None:
         self.server.stop()
+
+
+class Ours:
+    """Our own dedicated server, driven through its stdin console the way
+    scripts/capture_commands.py drives it: commands, then `say ovsyncN`, and
+    the batch is over when the log says `[Server] ovsyncN`.
+
+    Commands it does not implement (/playsound, /stopsound, /forceload…) fail
+    in its log and the batch goes on; the gestures that depend on them come
+    back empty, and check_sounds_e2e.py names them rather than counting them."""
+
+    BINARY = ROOT / "build" / os.environ.get("OV_PRESET", "macos-debug") / "bin" / "ov_dedicated"
+
+    def __init__(self) -> None:
+        import queue
+        if not self.BINARY.exists():
+            sys.exit(f"{self.BINARY} not built")
+        directory = RUN / "ours"
+        if directory.exists():
+            shutil.rmtree(directory)
+        directory.mkdir(parents=True)
+        from measure_block_sounds import wait_for_port
+        wait_for_port(PORT, "OV_SOUND_PORT")
+        self.lines: "queue.Queue[str]" = queue.Queue()
+        self.process = subprocess.Popen(
+            [str(self.BINARY), f"--world={directory / 'world'}", f"--port={PORT}",
+             "--log-level=info"],
+            cwd=ROOT, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1)
+        threading.Thread(target=self._pump, daemon=True).start()
+        self._token = 0
+        # Up when it accepts a connection. A Debug build takes its time to
+        # generate the spawn chunks, so the wait is generous.
+        deadline = time.monotonic() + 180.0
+        while time.monotonic() < deadline:
+            try:
+                socket.create_connection(("127.0.0.1", PORT), timeout=1.0).close()
+                break
+            except OSError:
+                time.sleep(0.5)
+        else:
+            self.process.kill()
+            raise TimeoutError("our server never opened its port")
+
+    def _pump(self) -> None:
+        assert self.process.stdout is not None
+        for raw in self.process.stdout:
+            self.lines.put(raw.rstrip("\n"))
+
+    def run(self, *commands: str) -> list[str]:
+        import queue
+        self._token += 1
+        marker = f"ovsync{self._token}"
+        assert self.process.stdin is not None
+        self.process.stdin.write("".join(c + "\n" for c in commands) + f"say {marker}\n")
+        self.process.stdin.flush()
+        seen: list[str] = []
+        deadline = time.monotonic() + 120.0
+        while time.monotonic() < deadline:
+            try:
+                line = self.lines.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            seen.append(line)
+            if f"[Server] {marker}" in line:
+                return seen
+        raise TimeoutError(f"our server never echoed {marker}; last lines {seen[-5:]}")
+
+    def stop(self) -> None:
+        try:
+            assert self.process.stdin is not None
+            self.process.stdin.write("stop\n")
+            self.process.stdin.flush()
+            self.process.wait(timeout=60)
+        except Exception:
+            self.process.kill()
 
 
 def spawn_entity_ids(records: list[tuple[float, int, bytes]]) -> list[tuple[int, int]]:
@@ -258,9 +329,8 @@ def main() -> int:
     target = sys.argv[1] if len(sys.argv) > 1 else "vanilla"
     out_path = Path(sys.argv[2]) if len(sys.argv) > 2 else \
         NORMALIZED / f"sound_packets_{target}.json"
-    if target != "vanilla":
-        sys.exit("only the vanilla target is implemented by this script; "
-                 "scripts/check_sounds_e2e.py replays the same gestures against ours")
+    if target not in ("vanilla", "ours"):
+        sys.exit(f"unknown target {target!r}: vanilla or ours")
 
     registries = json.loads((NORMALIZED / "registries.json").read_text())["registries"]
     items = registries["minecraft:item"]["entries"]
@@ -269,7 +339,7 @@ def main() -> int:
     def item(name: str) -> int:
         return items.index(f"minecraft:{name}")
 
-    server = Vanilla()
+    server = Vanilla() if target == "vanilla" else Ours()
     document: dict = {
         "$comment": "Paquets reçus par deux sondes sur un vrai serveur 1.20.1, geste par geste. "
                     "'actor' est le joueur qui fait le geste, 'ear' un joueur à quatre blocs. "
@@ -485,6 +555,20 @@ def main() -> int:
             actor.move(0.5, y, -12.5, y <= -60.0)
             time.sleep(0.05)
         record("fall.grass.5", 1.0, "survival fall of 5 blocks onto grass")
+
+        # Eight blocks: five points of damage, to see where small_fall stops.
+        server.run("effect give Actor minecraft:instant_health 1 5", "tp Actor 0.5 -52 -16.5")
+        time.sleep(0.8)
+        actor.drain()
+        ear.drain()
+        y = -52.0
+        velocity = 0.0
+        while y > -60.0:
+            velocity = (velocity - 0.08) * 0.98
+            y = max(-60.0, y + velocity)
+            actor.move(0.5, y, -16.5, y <= -60.0)
+            time.sleep(0.05)
+        record("fall.grass.8", 1.0, "survival fall of 8 blocks onto grass")
         server.run("gamemode creative Actor")
 
         print(f"  actor entity id {actor.entity_id}, ear at {ear.position}")

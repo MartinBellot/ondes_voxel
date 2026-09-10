@@ -12,11 +12,15 @@ ov_add_library(ov_client
         src/hud.cpp
         src/item_view.cpp
         src/overlay.cpp
+        src/sound_director.cpp
         src/terrain_renderer.cpp
         src/window.cpp
     DEPS
         ov_rhi
         ov_render
+        ov_audio
+        ov_netclient
+        ov_registry
     PRIVATE_DEPS
         glfw
 )
@@ -29,6 +33,7 @@ ov_add_test(test_ov_client
     SOURCES
         tests/test_creative_screen.cpp
         tests/test_interface.cpp
+        tests/test_sound_director.cpp
     DEPS ov_client
     LABELS unit
 )
