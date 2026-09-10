@@ -20,6 +20,7 @@ REBUILD=0
 FRESH=0
 SEED=""
 SERVER_ARGS=()
+OPS=()
 
 usage() {
     cat <<'USAGE'
@@ -33,6 +34,9 @@ scripts/lab.sh — serve the Ondes VOXEL test world
                     the same seed gives the same map in both games.
   --fresh           with --seed: delete that seed's world first. Chunks already on
                     disk are served as saved, so this is how a generator change is seen.
+  --op=<name>       make this player an operator (level 4) in ops.json, which /gamemode
+                    and the other level-2 commands need; repeatable. Default: OndesVoxel,
+                    our client's name. The server console also takes `op <name>`.
   -- <args>         everything after -- is passed to ov_dedicated (e.g. -- --survival)
 
   OV_LAB_WORLD      world directory (default run/lab, or run/seed-<seed> with --seed)
@@ -49,6 +53,7 @@ while [ $# -gt 0 ]; do
         --client)  CLIENT=1 ;;
         --rebuild) REBUILD=1 ;;
         --fresh)   FRESH=1 ;;
+        --op=*)    OPS+=("${1#--op=}") ;;
         --seed=*)  SEED="${1#--seed=}"
                    [ -n "$SEED" ] || { echo "--seed= is empty: name a seed" >&2; exit 2; } ;;
         --seed)
@@ -122,11 +127,34 @@ else
     KIND="test bench"
 fi
 
+# A dedicated server gives a player level 0 unless ops.json says otherwise, and
+# /gamemode, /tp, /give and the rest need level 2 — which is why a joining
+# player could run none of them. The lab is a local bench, so its players are
+# made operators here, under the same offline uuid the server computes.
+[ ${#OPS[@]} -gt 0 ] || OPS=(OndesVoxel)
+python3 - "${OPS[@]}" <<'OPS_PY' || exit 1
+import hashlib, json, os, sys, uuid
+path = "ops.json"
+entries = json.load(open(path)) if os.path.exists(path) else []
+known = {e.get("name", "").lower() for e in entries}
+for name in sys.argv[1:]:
+    digest = bytearray(hashlib.md5(("OfflinePlayer:" + name).encode()).digest())
+    digest[6] = (digest[6] & 0x0F) | 0x30
+    digest[8] = (digest[8] & 0x3F) | 0x80
+    if name.lower() not in known:
+        entries.append({"uuid": str(uuid.UUID(bytes=bytes(digest))), "name": name,
+                        "level": 4, "bypassesPlayerLimit": False})
+    print("  op     " + name)
+json.dump(entries, open(path, "w"), indent=2)
+OPS_PY
+
 printf '\n  world  %s (%s)\n  port   %s\n  join   Minecraft 1.20.1 -> Multiplayer -> Direct Connection -> localhost:%s\n\n' \
     "$WORLD" "$KIND" "$PORT" "$PORT"
 
 "$BIN/ov_dedicated" --world="$WORLD" --port="$PORT" --motd="Ondes VOXEL — banc de test" \
-    ${SERVER_ARGS[@]+"${SERVER_ARGS[@]}"} &
+    ${SERVER_ARGS[@]+"${SERVER_ARGS[@]}"} 0<&0 &
+# `0<&0`: without job control a background job's stdin is /dev/null, so the
+# console never heard `op <name>` or anything else typed here.
 SERVER=$!
 trap 'kill $SERVER 2>/dev/null' EXIT INT TERM
 

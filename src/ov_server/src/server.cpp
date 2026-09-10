@@ -1417,6 +1417,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     // the tick thread, read by the login path, which refuses with it until it
     // reaches 100 — vanilla's server does not even listen until then ──
     std::atomic<i32> spawn_ready_percent{0};
+    // ── spawn eggs: asked for on the network thread, spawned by the tick ──
+    std::mutex                                 egg_mutex;
+    std::vector<std::pair<std::string, Vec3d>> egg_requests;
 
     std::FILE* motion_log = nullptr;
     if (!options.record_motion.empty()) {
@@ -4829,6 +4832,41 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         }
                         // ── end combat and interaction ──────────────────────
 
+                        // ── spawn eggs ──────────────────────────────────────
+                        // Used on a block, an egg asks for its creature on the
+                        // face clicked. Asked for here, on the network thread,
+                        // and spawned by the tick through the path /summon takes:
+                        // the entity world has one writer. Consumed outside
+                        // creative, as vanilla does. A species this server does
+                        // not model yet is named in the log by the tick, never
+                        // spawned as something else.
+                        if (registries && item_registry) {
+                            const net::ItemStack& hand =
+                                player.inventory[36 + static_cast<usize>(player.held_slot)];
+                            const std::string_view item =
+                                hand.empty() ? std::string_view{}
+                                             : registries->entry_of(*item_registry, hand.item_id);
+                            constexpr std::string_view kEgg = "_spawn_egg";
+                            if (item.size() > kEgg.size() && item.ends_with(kEgg)) {
+                                const auto target =
+                                    net::offset_by_face(place->position, place->face);
+                                std::string type{item.substr(0, item.size() - kEgg.size())};
+                                {
+                                    const std::scoped_lock egg_lock{egg_mutex};
+                                    egg_requests.emplace_back(
+                                        std::move(type),
+                                        Vec3d{static_cast<f64>(target.x) + 0.5,
+                                              static_cast<f64>(target.y),
+                                              static_cast<f64>(target.z) + 0.5});
+                                }
+                                if (player.game_mode != 1) {
+                                    consume_one_held(player);
+                                }
+                                return true;
+                            }
+                        }
+                        // ── end spawn eggs ──────────────────────────────────
+
                         // ── agriculture ─────────────────────────────────────
                         // Bone meal and planting. After the block's own
                         // interaction — a chest clicked with seeds opens — and
@@ -6232,6 +6270,20 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             std::unique_lock command_lock{players_mutex, std::try_to_lock};
             if (command_lock.owns_lock()) {
                 commands->run(command_host);
+                // ── spawn eggs: the requests of the network thread, through
+                // /summon's own path, with the player map held as it needs ──
+                std::vector<std::pair<std::string, Vec3d>> eggs;
+                {
+                    const std::scoped_lock egg_lock{egg_mutex};
+                    eggs.swap(egg_requests);
+                }
+                for (const auto& [type, at] : eggs) {
+                    if (!command_host.summon(type, at)) {
+                        OV_LOG_INFO("spawn egg: {} is not a creature this server can "
+                                    "spawn yet",
+                                    type);
+                    }
+                }
             }
         }
         // ── end commands ────────────────────────────────────────────────────
