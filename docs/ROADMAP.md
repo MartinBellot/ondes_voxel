@@ -675,10 +675,23 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       trois tables de cuisson et non une avec un diviseur. Restent la fenêtre
       2×2 du joueur, les écrans de forge et de pierre de taille,
       `Place Recipe`, et un four qui ne tourne que pendant qu'on le regarde)*
-- [ ] **Agriculture et élevage** : toutes les cultures, terre labourée,
+- [~] **Agriculture et élevage** : toutes les cultures, terre labourée,
       hydratation, os, composteur, abeilles et pollinisation, mode amour,
       croissance, croisement de chevaux et lamas, apprivoisement, tonte, traite,
       pêche, sniffer et graines anciennes
+      *(**2026-09-10 — le random tick existe** : `randomTickSpeed` tirages par
+      section, chunks tickés à moins de 128 blocs d'un joueur. Cultures ×6,
+      verrue, baies, cacao, tiges et fruits, varech, canne, cactus, herbe et
+      mycélium, fonte, feuilles, pousses → arbres. Hydratation **676/676**,
+      décomposition des feuilles **288/288**, croissance homogène à vanilla
+      (χ² p = 0,58 à 0,82) quand un témoin à mauvaise probabilité est rejeté
+      à p ≈ 0 ; poudre d'os mesurée — la betterave prend +1 dans 3/4 des cas,
+      pas 2/3. La mesure a corrigé deux règles du wiki (torchflower, seuil de
+      la glace). Et un bug de worldgen : **toutes les feuilles générées étaient
+      à distance 7**, le premier random tick aurait rasé les forêts. Restent
+      l'élevage entier, le composteur, les abeilles, la pêche, le sniffer,
+      la météo — donc la terre qui s'humidifie sous la pluie — et le
+      piétinement. Voir `docs/provenance/agriculture.md`)*
 - [ ] **Enchantement** : table, coût XP, lapis, étagères, **39 enchantements**,
       enclume (combinaison, réparation, renommage, coûts, « trop cher »), meule,
       mending, livres enchantés
