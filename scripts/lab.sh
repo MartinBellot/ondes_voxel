@@ -12,7 +12,11 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-PRESET=${OV_PRESET:-macos-debug}
+# Release unless told otherwise: the lab is played in, and a Debug server
+# generates an order of magnitude slower — measured on seed 12345 with no
+# player, 0 chunks in the first minute against 64 in Release. The first trip
+# to the Nether waits for its chunks, and in Debug that is minutes.
+PRESET=${OV_PRESET:-macos-release}
 BIN="build/${PRESET}/bin"
 PORT=${OV_LAB_PORT:-25565}
 CLIENT=0
@@ -41,7 +45,7 @@ scripts/lab.sh — serve the Ondes VOXEL test world
 
   OV_LAB_WORLD      world directory (default run/lab, or run/seed-<seed> with --seed)
   OV_LAB_PORT       listen port    (default 25565)
-  OV_PRESET         cmake preset   (default macos-debug)
+  OV_PRESET         cmake preset   (default macos-release; macos-debug to debug)
   OV_WORLDGEN_WORKERS  generation threads (default: the machine's recommendation)
 
 Join from Minecraft 1.20.1: Multiplayer -> Direct Connection -> localhost
@@ -81,17 +85,6 @@ for unit in sys.argv[1].encode("utf-16-be").hex(" ", 2).split():
 print(h - (1 << 32) if h >= 1 << 31 else h)' "$SEED") || exit 1
     fi
     WORLD=${OV_LAB_WORLD:-run/seed-${SEED_VALUE}}
-    # Generation in a Debug build is an order of magnitude slower — measured on
-    # seed 12345 with no player: 0 chunks in the first minute against 64 in
-    # Release — so a seed world is served from the release preset unless
-    # OV_PRESET says otherwise. Configured on first use.
-    if [ -z "${OV_PRESET:-}" ]; then
-        PRESET=macos-release
-        BIN="build/${PRESET}/bin"
-    fi
-    [ -d "build/${PRESET}" ] || cmake --preset "$PRESET" >/dev/null || {
-        echo "configure of preset $PRESET failed" >&2; exit 1
-    }
     if [ "$REBUILD" = 1 ]; then
         echo "--rebuild rebuilds the bench; with --seed use --fresh" >&2; exit 2
     fi
@@ -102,6 +95,9 @@ else
     fi
 fi
 
+[ -d "build/${PRESET}" ] || cmake --preset "$PRESET" >/dev/null || {
+    echo "configure of preset $PRESET failed" >&2; exit 1
+}
 cmake --build --preset "$PRESET" --parallel 4 >/dev/null || {
     echo "build failed" >&2; exit 1
 }
