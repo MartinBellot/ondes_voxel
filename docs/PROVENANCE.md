@@ -32,6 +32,7 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`biomes-egalites.md`](provenance/biomes-egalites.md) | Le départage des égalités de climat : 100,000 % |
 | [`features.md`](provenance/features.md) | L'ensemencement de la décoration, et pourquoi `WorldgenRandom` n'est pas la source qu'il enveloppe |
 | [`pipeline-de-chunks.md`](provenance/pipeline-de-chunks.md) | La couche qui possède neuf chunks : 27,97 % des écritures franchissent une frontière |
+| [`structures.md`](provenance/structures.md) | Le placement des 19 `structure_set`, exact au chunk près — et le mineshaft comme oracle pur des réducteurs |
 | [`chunkmap.md`](provenance/chunkmap.md) | Tickets, pool de jobs, génération hors du thread de tick, déterminisme sous TSan |
 | **Jeu** | |
 | [`fluides.md`](provenance/fluides.md) | Écoulement, recherche du trou, mélanges : 3172/3172 positions |
@@ -39,6 +40,8 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`survie.md`](provenance/survie.md) | Vie, faim, expérience — et les dégâts de chute qui sont un `ceil` |
 | [`crafting-and-smelting.md`](provenance/crafting-and-smelting.md) | 1174 recettes, 2885 grilles, et trois tables de cuisson plutôt qu'un diviseur |
 | [`mobs.md`](provenance/mobs.md) | L'A\* qui prend la même route que le jeu dans le même labyrinthe |
+| [`combat.md`](provenance/combat.md) | Frapper, utiliser, manger, user : la jauge d'attaque, 34 armes, 91 tables de butin |
+| [`verbes.md`](provenance/verbes.md) | Les verbes branchés au serveur, et le levier enfin tiré |
 | [`branchement.md`](provenance/branchement.md) | Le câblage au tick, et les deux bugs qu'il a révélés |
 | **Client** | |
 | [`interface.md`](provenance/interface.md) | Police, HUD, inventaire : 2414 glyphes validés glyphe par glyphe |

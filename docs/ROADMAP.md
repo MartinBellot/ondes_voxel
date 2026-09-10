@@ -478,6 +478,15 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       arbres est à **40,5 %** de troncs au bon endroit et **43,1 %** de formes
       exactes parmi eux : les placeurs simples sont justes, les ramifiés
       (`fancy`, jungle, `giant`) ne le sont pas, et chacun est nommé)*
+- [~] **Placement** des structures : les 19 `structure_set`, grille, spreads,
+      réducteurs, tirage pondéré, tags de biome, filtre de dimension
+      *(**rappel 36/36, 5/5 et 17/17** sur trois mondes de référence, et zéro
+      faux négatif de grille sur les 18 ensembles à écartement. Le filtre de
+      dimension n'est pas cosmétique : sans lui l'Overworld place **1286
+      fossiles du Nether** sur 5092 chunks, avec une grille et un réducteur
+      pourtant justes. L'ancre jigsaw est le seul désaccord de fond, et il est
+      présenté comme tel : milieu et coin donnent des agrégats identiques et
+      des erreurs opposées)*
 - [ ] **Structures** : villages ×5 (plains, desert, savanna, taiga, snowy),
       avant-poste pillard, mine abandonnée (+ mesa), forteresse (stronghold),
       pyramide du désert, temple de la jungle, igloo, cabane de sorcière,
