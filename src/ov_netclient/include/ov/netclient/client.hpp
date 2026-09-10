@@ -271,6 +271,17 @@ struct ClientEvents {
     };
     std::vector<Pickup> pickups;
 
+    // ── screens ──
+    /// Combat Death (0x38): the death screen's cause, a chat component as
+    /// JSON. Its arrival — not a zero in Set Health — is what puts the screen
+    /// up, as in vanilla.
+    std::optional<std::string> death_message;
+    /// Respawn (0x41) arrived: the death screen comes down.
+    bool respawned{false};
+    /// Login (play)'s hardcore flag: "Game over!" instead of "You died!".
+    std::optional<bool> hardcore;
+    // ── end screens ──
+
     [[nodiscard]] bool empty() const noexcept {
         return loaded.empty() && unloaded.empty() && changed.empty() && !teleport &&
                !time_of_day && !health && !experience && containers.empty() &&
@@ -278,7 +289,8 @@ struct ClientEvents {
                !abilities && entities.empty() && chat.empty() && !chat_types &&
                !commands && suggestions.empty() && sounds.empty() &&
                entity_sounds.empty() && stop_sounds.empty() && world_events.empty() &&
-               explosions.empty() && pickups.empty();
+               explosions.empty() && pickups.empty() && !death_message && !respawned &&
+               !hardcore;  // ── screens ──
     }
     void clear();
 };
@@ -360,6 +372,12 @@ public:
     /// Command Suggestions Request: the input up to the cursor, slash included.
     void send_suggestions_request(i32 transaction, std::string_view text);
     // ── end chat ──
+
+    // ── screens ──
+    /// Client Command, action 0: the death screen's Respawn button. The
+    /// server does not bring a dead player back unasked.
+    void send_respawn();
+    // ── end screens ──
 
 private:
     struct Impl;

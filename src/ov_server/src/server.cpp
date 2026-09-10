@@ -178,6 +178,13 @@ struct Options {
     /// scripts/check_effects_e2e.py drives it — and named as one.
     std::vector<std::string> effects;
 
+    // ── screens ──
+    /// `--seed=<n>`: generate the overworld from this seed, as the client's
+    /// Create World screen asks. Wins over OV_WORLDGEN_SEED; a world whose
+    /// level.dat already declares a seeded generator needs neither.
+    std::optional<ov::i64> seed;
+    // ── end screens ──
+
     // ── player data ──
     /// The singleplayer host's name, set by ov_voxel --singleplayer. Their
     /// record also goes into level.dat's Data.Player, where vanilla looks for
@@ -1206,6 +1213,15 @@ Options parse_args(int argc, char** argv) {
             }
         } else if (arg.starts_with("--world=")) {
             options.world_dir = std::string{arg.substr(8)};
+        } else if (arg.starts_with("--seed=")) {  // ── screens ──
+            const auto value  = arg.substr(7);
+            ov::i64    parsed = 0;
+            const auto [end, ec] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+            if (ec == std::errc{} && end == value.data() + value.size()) {
+                options.seed = parsed;
+            } else {
+                OV_LOG_WARN("invalid --seed value '{}', ignoring", value);
+            }
         } else if (arg.starts_with("--motd=")) {
             options.motd = arg.substr(7);
         } else if (arg.starts_with("--log-level=")) {
@@ -1240,6 +1256,7 @@ void print_help() {
         "  --log-level=<trace|debug|info|warn|error|off>   verbosity (default: info)\n"
         "  --ticks=<n>                                     stop after n ticks\n"
         "  --survival                                      survival mode: blocks take time\n"
+        "  --seed=<n>                                      generate the overworld from a seed\n"
         "  --record-motion=<file>                          log every reported position\n"
         "  --mobs=<name,name,...>                          place mobs near the spawn point\n"
         "  --effect=<name:amp:ticks,...>                   effects given to every joining player\n"
@@ -1250,7 +1267,8 @@ void print_help() {
 
 }  // namespace
 
-int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_stop) {
+int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_stop,
+                    const std::atomic<bool>* external_pause) {
     using namespace ov;
 
     const Options options = parse_args(argc, argv);
@@ -1531,10 +1549,19 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     std::unique_ptr<GeneratedWorld>   generated;
     std::unique_ptr<AsyncChunkSource>  chunk_source;
     usize                              generation_workers = 0;
-    if (const char* seed_text = std::getenv("OV_WORLDGEN_SEED");
-        seed_text != nullptr && world_available && registries) {
-        const i64 world_seed = std::strtoll(seed_text, nullptr, 10);
-        level_settings.seed  = world_seed;  // ── commands: what /seed answers ──
+    // ── screens ── --seed, then the environment, then a level.dat that already
+    // declares a seeded overworld (reopened from the world list).
+    std::optional<i64> requested_seed = options.seed;
+    if (const char* seed_text = std::getenv("OV_WORLDGEN_SEED"); !requested_seed && seed_text) {
+        requested_seed = std::strtoll(seed_text, nullptr, 10);
+    }
+    if (!requested_seed && level_settings.generated) {
+        requested_seed = level_settings.seed;
+    }
+    if (requested_seed && world_available && registries) {
+        const i64 world_seed      = *requested_seed;
+        level_settings.seed       = world_seed;  // ── commands: what /seed answers ──
+        level_settings.generated  = true;        // ── screens ──
 
         // One worldgen stack per worker, plus one for the tick thread's own
         // synchronous fallback. Overridable because the right number depends on
@@ -6015,6 +6042,15 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     };
 
     while (!should_stop()) {
+        // ── screens ── the integrated server behind a pause menu runs no tick.
+        // The network thread still answers; the clock restarts on resume so
+        // the pause is not caught up afterwards.
+        if (external_pause != nullptr && external_pause->load(std::memory_order_relaxed)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            clock.reset();
+            continue;
+        }
+        // ── end screens ──
         const auto tick_started = std::chrono::steady_clock::now();
         const i32  ticks        = clock.advance();
         server_tick.store(clock.tick_count(), std::memory_order_relaxed);

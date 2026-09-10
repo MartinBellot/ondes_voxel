@@ -184,6 +184,11 @@ public:
 
     void close(client::Window& window, netclient::Client& client);
 
+    // ── screens ──
+    /// The Video Settings screen's GUI Scale, applied at once. Zero is auto.
+    void set_gui_scale(u32 scale) noexcept { options_.gui_scale = scale; }
+    // ── end screens ──
+
     // ── chat ──
     /// True while the chat box is open: the keys are letters, not moves.
     [[nodiscard]] bool chat_open() const noexcept { return chat_.open(); }

@@ -30,6 +30,7 @@ ov_add_test(test_ov_world
         tests/test_chunk_section.cpp
         tests/test_chunk_storage.cpp
         tests/test_heightmap.cpp
+        tests/test_level_dat.cpp
         tests/test_paletted_container.cpp
     DEPS ov_world
     LABELS unit

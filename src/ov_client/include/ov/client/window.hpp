@@ -152,6 +152,15 @@ struct InputState {
     std::vector<KeyEvent> key_events;
     // ── end chat ──
 
+    // ── screens ──
+    /// Every key that went down this poll as its GLFW code, and every mouse
+    /// button as kMouseCodeBase + button (options_file.hpp), in order. What
+    /// the key binds screen listens to while it waits for "> ??? <".
+    std::vector<i32> codes_pressed;
+    /// The left button went up this poll: a slider's drag ends here.
+    bool attack_released{false};
+    // ── end screens ──
+
     [[nodiscard]] bool held(Key key) const noexcept { return keys[static_cast<usize>(key)]; }
 
     [[nodiscard]] bool just_pressed(Key key) const noexcept {
@@ -206,6 +215,17 @@ public:
     [[nodiscard]] std::string clipboard() const;
     void                      set_clipboard(std::string_view utf8);
     // ── end chat ──
+
+    // ── screens ──
+    /// Rebind a key to a GLFW key code, as the key binds screen and
+    /// options.txt say. A mouse code (≥ kMouseCodeBase) is not a key here:
+    /// attack and use stay on their buttons, and such a binding is refused.
+    void               bind(Key key, i32 glfw_code);
+    [[nodiscard]] i32  binding(Key key) const noexcept;
+    /// What the layout prints on a GLFW key code — `key_label` for any code.
+    /// Empty when GLFW has no printable name for it (Space, F5, Shift…).
+    [[nodiscard]] std::string code_label(i32 glfw_code) const;
+    // ── end screens ──
 
     /// Forward-declared here and defined in the .cpp.
     ///
