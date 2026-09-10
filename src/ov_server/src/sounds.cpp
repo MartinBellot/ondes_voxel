@@ -40,6 +40,22 @@ Sounds::Sounds(const registry::BlockRegistry& blocks, const registry::Registries
     player_hurt_ = sound_named("minecraft:entity.player.hurt");
     chest_open_  = sound_named("minecraft:block.chest.open");
     chest_close_ = sound_named("minecraft:block.chest.close");
+    attack_crit_      = sound_named("minecraft:entity.player.attack.crit");
+    attack_sweep_     = sound_named("minecraft:entity.player.attack.sweep");
+    attack_knockback_ = sound_named("minecraft:entity.player.attack.knockback");
+    attack_strong_    = sound_named("minecraft:entity.player.attack.strong");
+    attack_weak_      = sound_named("minecraft:entity.player.attack.weak");
+}
+
+void Sounds::player_attack(const SoundHost& host, Vec3d feet, bool critical, bool swept,
+                           bool knockback, f32 strength_scale) {
+    const bool strong = strength_scale > 0.9F;
+    const i32  sound  = critical               ? attack_crit_
+                        : swept                ? attack_sweep_
+                        : knockback && strong  ? attack_knockback_
+                        : strong               ? attack_strong_
+                                               : attack_weak_;
+    play(host, nullptr, sound, kPlayerCategory, feet, 1.0F, 1.0F);
 }
 
 i32 Sounds::sound_named(std::string_view name) const noexcept {

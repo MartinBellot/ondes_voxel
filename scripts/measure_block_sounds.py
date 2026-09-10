@@ -350,6 +350,18 @@ def build_table(blocks, names, raw) -> dict:
             measured["step"] = s
         if (s := pick(entry.get("fall", []), "fall")) is not None:
             measured["fall"] = s
+        # ⚠ When the families disagree, the place wins: it is the only gesture
+        #   whose block was confirmed by the Block Update that came back. A
+        #   dry coral block dies where it is laid and is then walked on as the
+        #   dead coral it became (stone); a fence gate is walked on as the dirt
+        #   under it. Those are true sounds of something else, set aside.
+        if "place" in measured:
+            place_family = measured["place"]["sound"].rsplit(".", 1)[0]
+            for gesture in [g for g in measured if g != "place"]:
+                if measured[gesture]["sound"].rsplit(".", 1)[0] != place_family:
+                    set_aside = {**set_aside, gesture: [measured[gesture]["sound"]],
+                                 "reason": "family differs from the confirmed place"}
+                    del measured[gesture]
         for gesture in measured:
             counts[gesture] += 1
 

@@ -97,6 +97,14 @@ public:
     void mob_hurt(const SoundHost& host, i32 type, Vec3d position);
     void mob_death(const SoundHost& host, i32 type, Vec3d position);
 
+    /// A player's swing landed. Heard by everyone at the attacker, category
+    /// player, 1.0 and 1.0 — what the capture shows for a full-charge punch,
+    /// `entity.player.attack.strong`. The other variants are the wiki's
+    /// descriptions (crit, sweep, knockback, weak); which one wins when two
+    /// apply, and the 0.9 that makes a swing "full", are ours and named so.
+    void player_attack(const SoundHost& host, Vec3d feet, bool critical, bool swept,
+                       bool knockback, f32 strength_scale);
+
     /// A TNT entity was primed at `position` (the entity's, not the block's).
     void tnt_primed(const SoundHost& host, Vec3d position);
 
@@ -144,6 +152,11 @@ private:
     i32 player_hurt_{-1};
     i32 chest_open_{-1};
     i32 chest_close_{-1};
+    i32 attack_crit_{-1};
+    i32 attack_sweep_{-1};
+    i32 attack_knockback_{-1};
+    i32 attack_strong_{-1};
+    i32 attack_weak_{-1};
 };
 
 }  // namespace ov::server

@@ -4333,6 +4333,11 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
 
                         const CombatOutcome out = player.combat.on_interact(
                             *interact, combat_view(player), combat_io(player));
+                        if (sounds && out.hit) {  // ── sound ── the swing, heard by all
+                            sounds->player_attack(sound_host, Vec3d{player.x, player.y, player.z},
+                                                  out.critical, out.swept, out.sprint_knockback,
+                                                  out.strength_scale);
+                        }
                         if (!out.unsupported.empty()) {
                             OV_LOG_DEBUG("interact: {} is recognised and not carried out",
                                          out.unsupported);

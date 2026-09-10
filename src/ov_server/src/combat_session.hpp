@@ -139,6 +139,11 @@ struct CombatOutcome {
     bool             critical{false};
     bool             swept{false};
     f32              damage{0.0F};
+    /// ── sound ── how charged the swing was (0..1), and whether it was a
+    /// sprinting knockback: the two things the attacker's sound depends on
+    /// that the three fields above do not say.
+    f32  strength_scale{0.0F};
+    bool sprint_knockback{false};
     /// A primed TNT the caller must spawn.
     bool     spawn_primed_tnt{false};
     BlockPos tnt_position{};

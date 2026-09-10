@@ -223,6 +223,25 @@ TEST_CASE("server sounds: a stride is six tenths of the way, one step a unit", "
     CHECK(steps == 12);  // 21.58 * 0.6 = 12.9, first at 1: twelve crossings
 }
 
+TEST_CASE("server sounds: the swing — strong when charged, crit and weak otherwise",
+          "[server][sound]") {
+    Sounds   sounds{*loaded().blocks, *loaded().registries, 1};
+    Recorder rec;
+    const Vec3d at{0.5, -60.0, 0.5};
+    sounds.player_attack(rec.host, at, false, false, false, 1.0F);  // the captured case
+    sounds.player_attack(rec.host, at, true, false, false, 1.0F);
+    sounds.player_attack(rec.host, at, false, false, false, 0.3F);
+    REQUIRE(rec.sent.size() == 3);
+    CHECK(rec.sent[0].except == nullptr);
+    const auto strong = effect(rec.sent[0]);
+    CHECK(strong.sound.sound_id == sound_id("minecraft:entity.player.attack.strong"));
+    CHECK(strong.category == net::sound_category::kPlayer);
+    CHECK(strong.volume == 1.0F);
+    CHECK(strong.pitch == 1.0F);
+    CHECK(effect(rec.sent[1]).sound.sound_id == sound_id("minecraft:entity.player.attack.crit"));
+    CHECK(effect(rec.sent[2]).sound.sound_id == sound_id("minecraft:entity.player.attack.weak"));
+}
+
 TEST_CASE("server sounds: a cow's hurt and the TNT's fuse", "[server][sound]") {
     Sounds   sounds{*loaded().blocks, *loaded().registries, 1};
     Recorder rec;
