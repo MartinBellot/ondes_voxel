@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string>
 
 namespace ov::gameplay {
 namespace {
@@ -42,11 +43,16 @@ struct ConsumerSpec {
     std::string_view flag;
     i32              delay;
     bool             delay_off_only;
+    bool             inverted{false};
 };
 
-constexpr std::array<ConsumerSpec, 44> kConsumers{{
+constexpr std::array<ConsumerSpec, 45> kConsumers{{
     {"minecraft:redstone_lamp", "lit", 4, true},
     {"minecraft:note_block", "powered", 0, false},
+    // The hopper is the one entry whose flag reads backwards: `enabled` is
+    // false while it is powered. Nothing drove it before this campaign, so a
+    // lever on a hopper did nothing at all.
+    {"minecraft:hopper", "enabled", 0, false, true},
     {"minecraft:iron_door", "powered", 0, false},
     {"minecraft:oak_door", "powered", 0, false},
     {"minecraft:spruce_door", "powered", 0, false},
@@ -89,6 +95,39 @@ constexpr std::array<ConsumerSpec, 44> kConsumers{{
     {"minecraft:bell", "powered", 0, false},
     {"minecraft:lectern", "powered", 0, false},
     {"minecraft:big_dripleaf", "powered", 0, false},
+}};
+
+/// The wood families, in the order the registry lists them. Every one of them
+/// has a button, a plate, a door, a trapdoor and a fence gate.
+constexpr std::array<std::string_view, 11> kWoods{
+    "oak",      "spruce", "birch",  "jungle",  "acacia", "dark_oak",
+    "mangrove", "cherry", "bamboo", "crimson", "warped",
+};
+
+/// How long a switch stays on, in ticks. **Measured**, tick by tick, against a
+/// real 1.20.1 server: see `scripts/measure_redstone.py switches` and
+/// docs/provenance/redstone.md. Before that campaign these were two literals in
+/// item_use.cpp under a comment saying they had never been timed.
+constexpr i32 kStoneButtonTicks   = 20;
+constexpr i32 kWoodenButtonTicks  = 30;
+constexpr i32 kPlateTicks         = 20;
+constexpr i32 kWeightedPlateTicks = 10;
+
+struct SwitchSpec {
+    std::string_view name;
+    i32              ticks;
+    bool             rearms;
+    bool             analogue;
+};
+
+/// The two switches that are not made of a wood.
+constexpr std::array<SwitchSpec, 6> kFixedSwitches{{
+    {"minecraft:stone_button", kStoneButtonTicks, false, false},
+    {"minecraft:polished_blackstone_button", kStoneButtonTicks, false, false},
+    {"minecraft:stone_pressure_plate", kPlateTicks, true, false},
+    {"minecraft:polished_blackstone_pressure_plate", kPlateTicks, true, false},
+    {"minecraft:light_weighted_pressure_plate", kWeightedPlateTicks, true, true},
+    {"minecraft:heavy_weighted_pressure_plate", kWeightedPlateTicks, true, true},
 }};
 
 }  // namespace
@@ -155,7 +194,31 @@ Redstone::Redstone(const registry::BlockRegistry& blocks, const registry::Regist
             continue;
         }
         consumer_index_[block->value()] = static_cast<i16>(consumers_.size());
-        consumers_.push_back(ConsumerRule{*block, spec.flag, spec.delay, spec.delay_off_only});
+        consumers_.push_back(
+            ConsumerRule{*block, spec.flag, spec.delay, spec.delay_off_only, spec.inverted});
+    }
+
+    switch_index_.assign(blocks.block_count(), -1);
+    const auto add_switch = [&](std::string_view name, i32 ticks, bool rearms, bool analogue) {
+        const auto block = blocks.find_block(name);
+        if (!block.has_value()) {
+            return;
+        }
+        switch_index_[block->value()] = static_cast<i16>(switches_.size());
+        switches_.push_back(SwitchRule{*block, ticks, rearms, analogue});
+    };
+    for (const SwitchSpec& spec : kFixedSwitches) {
+        add_switch(spec.name, spec.ticks, spec.rearms, spec.analogue);
+    }
+    // The wooden families are built rather than tabulated: eleven woods times
+    // two blocks is twenty-two lines that say nothing a loop does not, and a
+    // wood added to the registry is then handled by naming it once.
+    std::string name;
+    for (const std::string_view wood : kWoods) {
+        name.assign("minecraft:").append(wood).append("_button");
+        add_switch(name, kWoodenButtonTicks, false, false);
+        name.assign("minecraft:").append(wood).append("_pressure_plate");
+        add_switch(name, kPlateTicks, true, false);
     }
 }
 
@@ -180,6 +243,80 @@ const Redstone::ConsumerRule* Redstone::consumer_rule(registry::BlockId block) c
     }
     const i16 index = consumer_index_[block.value()];
     return index < 0 ? nullptr : &consumers_[static_cast<usize>(index)];
+}
+
+const Redstone::SwitchRule* Redstone::switch_rule(registry::BlockId block) const noexcept {
+    if (block.value() >= switch_index_.size()) {
+        return nullptr;
+    }
+    const i16 index = switch_index_[block.value()];
+    return index < 0 ? nullptr : &switches_[static_cast<usize>(index)];
+}
+
+// ── Switches ────────────────────────────────────────────────────────────────
+
+bool Redstone::switch_tick(RedstoneWorld& world, BlockPos pos, const SwitchRule& rule,
+                           registry::BlockStateId state) {
+    if (!rule.rearms) {
+        // A button. Its tick has one meaning and no condition attached: pop
+        // back up. Vanilla checks `powered` first, because a button that was
+        // replaced and re-placed inside its own delay would otherwise be
+        // released by a tick meant for the old one.
+        if (!signals_.flag_of(state, "powered")) {
+            return false;
+        }
+        world.set_block(pos, signals_.with_flag(state, "powered", false));
+        return true;
+    }
+
+    // A plate. The tick asks the world again, and re-arms while the answer is
+    // still yes — which is why the delay measured from the press is the period
+    // and the delay measured from the moment the entity leaves is not.
+    const i32 pressure = world.entity_pressure(pos);
+    if (pressure > 0) {
+        wake(world, pos, blocks_->block_of(state), rule.ticks, world::TickPriority::Normal);
+        return false;
+    }
+    if (rule.analogue) {
+        if (signals_.power_of(state) == 0) {
+            return false;
+        }
+        world.set_block(pos, signals_.with_power(state, 0));
+        return true;
+    }
+    if (!signals_.flag_of(state, "powered")) {
+        return false;
+    }
+    world.set_block(pos, signals_.with_flag(state, "powered", false));
+    return true;
+}
+
+bool Redstone::plate_step(RedstoneWorld& world, BlockPos pos) {
+    const registry::BlockStateId state = world.block_at(pos);
+    const registry::BlockId      block = blocks_->block_of(state);
+    const SwitchRule*            rule  = switch_rule(block);
+    if (rule == nullptr || !rule->rearms) {
+        return false;
+    }
+    const i32 pressure = world.entity_pressure(pos);
+    if (pressure <= 0) {
+        return false;
+    }
+
+    const i32  have    = rule->analogue ? signals_.power_of(state)
+                                        : (signals_.flag_of(state, "powered") ? 15 : 0);
+    const i32  want    = rule->analogue ? std::min(pressure, 15) : 15;
+    const bool changed = have != want;
+    if (changed) {
+        world.set_block(pos, rule->analogue ? signals_.with_power(state, want)
+                                            : signals_.with_flag(state, "powered", true));
+    }
+    // Armed on every step, not only on the change: a plate that is already down
+    // and whose tick has already fired must be woken again or it never lets go.
+    if (!waking(world, pos, block)) {
+        wake(world, pos, block, rule->ticks, world::TickPriority::Normal);
+    }
+    return changed;
 }
 
 // ── Wire shape ──────────────────────────────────────────────────────────────
@@ -603,8 +740,11 @@ bool Redstone::scheduled_tick(RedstoneWorld& world, BlockPos pos, registry::Bloc
     if (block == ids_.observer) {
         return observer_tick(world, pos, state);
     }
+    if (const SwitchRule* rule = switch_rule(block)) {
+        return switch_tick(world, pos, *rule, state);
+    }
     if (const ConsumerRule* rule = consumer_rule(block)) {
-        const bool want = consumer_powered(world, pos);
+        const bool want = consumer_powered(world, pos) != rule->inverted;
         if (signals_.flag_of(state, rule->flag) != want) {
             world.set_block(pos, signals_.with_flag(state, rule->flag, want));
             return true;
@@ -695,7 +835,7 @@ bool Redstone::neighbour_changed(RedstoneWorld& world, BlockPos pos, BlockPos fr
     }
 
     if (const ConsumerRule* rule = consumer_rule(block)) {
-        const bool want = consumer_powered(world, pos);
+        const bool want = consumer_powered(world, pos) != rule->inverted;
         const bool have = signals_.flag_of(state, rule->flag);
         if (want == have) {
             return false;

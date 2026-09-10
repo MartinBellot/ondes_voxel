@@ -64,6 +64,22 @@ namespace ov::gameplay {
 class RedstoneWorld : public world::LevelWriter {
 public:
     [[nodiscard]] virtual i32 container_signal(BlockPos pos) const = 0;
+
+    /// The signal entities standing on a pressure plate at `pos` produce.
+    ///
+    /// Not pure, and the default is not a stand-in: a `RedstoneWorld` that
+    /// carries no entities — a test map, a client replica that has not been
+    /// given them — genuinely has nothing standing anywhere, and 0 is the true
+    /// answer rather than a convenient one. A world that *does* carry entities
+    /// overrides this, and a plate then behaves.
+    ///
+    /// The scale is the plate's own: 0 or 15 for the four plain plates, 0..15
+    /// for the two weighted ones. Which of the two a plate wants is decided by
+    /// the plate, not by the caller.
+    [[nodiscard]] virtual i32 entity_pressure(BlockPos pos) const {
+        (void)pos;
+        return 0;
+    }
 };
 
 /// What a block does when asked for a signal.

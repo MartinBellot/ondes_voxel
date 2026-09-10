@@ -45,6 +45,7 @@ Writes data/vanilla/1.20.1/normalized/redstone_<scenario>.json.
 from __future__ import annotations
 
 import json
+import re
 import struct
 import subprocess
 import sys
@@ -55,6 +56,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from measure_entities import Server  # noqa: E402
+from vanilla_miner import Miner, block_pos, read_varint, varint  # noqa: E402
 
 NORMALIZED = ROOT / "data" / "vanilla" / "1.20.1" / "normalized"
 GENERATED = ROOT / "data" / "vanilla" / "1.20.1" / "generated" / "reports"
@@ -1164,6 +1166,529 @@ def measure_ticks(out: Path) -> None:
     print("four seconds later:", json.dumps(later[:4]))
 
 
+# ── scenario: switches ──────────────────────────────────────────────────────
+#
+# How long a button stays down, and how long a pressure plate stays pressed,
+# tick by tick, per material.
+#
+# Both numbers were literals in `src/ov_gameplay/src/item_use.cpp` under a
+# comment saying they had never been measured. They are measured here.
+#
+# The rig is a probe client rather than the console, because a button is only
+# pressed by a *use* and the console cannot use anything. The client speaks 763
+# and nothing else, and it reads the two ticks it needs off the server's own
+# clock (`Update Time` carries the world age in ticks) rather than off a
+# stopwatch — the difference between "about a second" and 20.
+#
+# The plate is the other way round: a plate is pressed by an **entity**, so the
+# console summons an armour stand on it and kills it a few ticks later. The
+# plate depowers at its first scheduled tick after the kill, and since the kill
+# lands well inside one period, release minus press *is* the period.
+#
+#   ⚠ A plate reschedules itself while something stands on it. Timing from the
+#     moment the stand dies gives a number spread over (0, D] and looks like
+#     noise. Timing from the *press* gives D exactly.
+
+BUTTON_MATERIALS = [
+    "stone", "polished_blackstone",
+    "oak", "spruce", "birch", "jungle", "acacia", "dark_oak",
+    "mangrove", "cherry", "bamboo", "crimson", "warped",
+]
+
+PLATE_MATERIALS = BUTTON_MATERIALS + ["light_weighted", "heavy_weighted"]
+
+
+class SwitchProbe(Miner):
+    """A client whose whole job is to click a button and watch the clock."""
+
+    def __init__(self, port: int, name: str) -> None:
+        super().__init__(port, name)
+        self.sequence = 0
+        #: (x, y, z) -> [(tick, state id)], in arrival order.
+        self.updates: dict[tuple[int, int, int], list[tuple[int, int]]] = {}
+        self.anchor = None
+
+    def _note(self, pid: int, payload: bytes):
+        if pid != 0x0A or len(payload) < 8:
+            return None
+        packed = struct.unpack_from(">q", payload, 0)[0]
+        x = packed >> 38
+        y = (packed << 52) % (1 << 64) >> 52
+        z = (packed << 26) % (1 << 64) >> 38
+        x = x - (1 << 26) if x >= (1 << 25) else x
+        y = y - (1 << 12) if y >= (1 << 11) else y
+        z = z - (1 << 26) if z >= (1 << 25) else z
+        state, _ = read_varint(payload, 8)
+        self.updates.setdefault((x, y, z), []).append(
+            (self.tick_at(self.last_arrival, self.anchor), state))
+        return None
+
+    def settle(self, seconds: float) -> None:
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            self.pump(until=self._note,
+                      timeout=min(0.05, max(0.01, deadline - time.monotonic())))
+
+    def wait_for(self, pos: tuple[int, int, int], count: int, seconds: float) -> bool:
+        """Pump until `pos` has produced `count` updates, or time runs out."""
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if len(self.updates.get(pos, [])) >= count:
+                return True
+            self.pump(until=self._note, timeout=0.05)
+        return len(self.updates.get(pos, [])) >= count
+
+    def use_on(self, x: int, y: int, z: int, face: int = 1) -> None:
+        self.sequence += 1
+        self.send(0x31, varint(0) + block_pos(x, y, z) + varint(face)
+                  + struct.pack(">fff", 0.5, 1.0, 0.5) + bytes([0]) + varint(self.sequence))
+
+
+def states_by_id() -> dict[int, tuple[str, dict]]:
+    report = blocks_report()
+    out: dict[int, tuple[str, dict]] = {}
+    for name, block in report.items():
+        for state in block["states"]:
+            out[state["id"]] = (name, state.get("properties", {}))
+    return out
+
+
+def measure_switches(out: Path) -> None:
+    states = states_by_id()
+    server, _world = start("switches")
+    result: dict = {"buttons": {}, "plates": {}}
+    try:
+        forceload(server, -32, -32, 32, 32)
+        fill(server, -16, FLOOR_Y, -16, 24, FLOOR_Y, 16, "minecraft:stone")
+        fill(server, -16, Y, -16, 24, Y + 3, 16, "minecraft:air")
+        server.batch(["gamerule fallDamage false", "gamerule doImmediateRespawn true"])
+
+        probe = SwitchProbe(PORT, "switches")
+        # Pump before speaking. The server finishes the join with a
+        # `Synchronize Player Position` that has to be confirmed, and a movement
+        # packet sent before that confirmation is decoded against the wrong
+        # expectation — the first run of this scenario lost its client to an
+        # `IndexOutOfBoundsException` in the server's own decoder.
+        probe.settle(3.0)
+        probe.stand(0.5, Y, 0.5)
+        probe.settle(2.0)
+        if probe.clock is None:
+            raise RuntimeError("no Update Time from the server; cannot count ticks")
+        probe.anchor = probe.clock
+
+        # ── buttons ─────────────────────────────────────────────────────────
+        #
+        # One at a time, each within arm's reach of the one standing spot. A
+        # `face=floor` button sits on the stone, so the position clicked is the
+        # button's own.
+        for index, material in enumerate(BUTTON_MATERIALS):
+            name = f"minecraft:{material}_button"
+            bx, bz = (index % 5) - 2, (index // 5) - 2
+            if (bx, bz) == (0, 0):
+                bx = 2
+            pos = (bx, Y, bz)
+            server.batch([f"setblock {bx} {Y} {bz} "
+                          f"{name}[face=floor,facing=north,powered=false] replace"])
+            probe.settle(0.4)
+            probe.updates.pop(pos, None)
+
+            probe.use_on(*pos)
+            # Both edges, and in order. Searching by *index* rather than by tick
+            # is what makes this robust: the press and the update that placed
+            # the button can land in the same tick, and a tick comparison then
+            # finds the release before the press.
+            deadline = time.monotonic() + 12.0
+            pressed = released = None
+            seen = 0
+            while time.monotonic() < deadline and released is None:
+                probe.pump(until=probe._note, timeout=0.05)
+                trail = probe.updates.get(pos, [])
+                while seen < len(trail):
+                    tick, state = trail[seen]
+                    seen += 1
+                    flag = states.get(state, ("?", {}))[1].get("powered")
+                    if pressed is None:
+                        if flag == "true":
+                            pressed = tick
+                    elif flag == "false":
+                        released = tick
+                        break
+            if pressed is None or released is None:
+                trail = probe.updates.get(pos, [])
+                result["buttons"][name] = {
+                    "error": "never both edges",
+                    "trail": [[t, states.get(s, ("?", {}))[0],
+                               states.get(s, ("?", {}))[1].get("powered")] for t, s in trail]}
+                print(f"  {name:44s} never both edges: "
+                      f"{[states.get(s, ('?', {}))[1].get('powered') for _t, s in trail]}")
+                continue
+            result["buttons"][name] = {"ticks": released - pressed,
+                                       "pressed_tick": pressed, "released_tick": released}
+            print(f"  {name:44s} {released - pressed:3d} ticks")
+
+        # ── plates ──────────────────────────────────────────────────────────
+        for index, material in enumerate(PLATE_MATERIALS):
+            name = f"minecraft:{material}_pressure_plate"
+            px, pz = 8 + (index % 5) * 2, -4 + (index // 5) * 2
+            pos = (px, Y, pz)
+            server.batch([f"setblock {px} {Y} {pz} {name} replace"])
+            probe.settle(0.3)
+            probe.updates.pop(pos, None)
+
+            tag = f"plate{index}"
+            server.batch([f"summon minecraft:armor_stand {px + 0.5} {Y} {pz + 0.5} "
+                          f'{{Tags:["{tag}"],Invisible:1b}}'])
+            if not probe.wait_for(pos, 1, 8.0):
+                result["plates"][name] = {"error": "never pressed",
+                                          "stands": server.batch(
+                                              [f"execute if entity @e[tag={tag}]"])}
+                server.batch([f"kill @e[tag={tag}]"])
+                print(f"  {name:44s} never pressed")
+                continue
+            server.batch([f"kill @e[tag={tag}]"])
+            if not probe.wait_for(pos, 2, 12.0):
+                result["plates"][name] = {"error": "never released",
+                                          "updates": len(probe.updates.get(pos, []))}
+                print(f"  {name:44s} never released")
+                continue
+            trail = probe.updates[pos]
+            pressed, released = trail[0][0], trail[-1][0]
+            result["plates"][name] = {"ticks": released - pressed,
+                                      "pressed_tick": pressed, "released_tick": released,
+                                      "updates": len(trail)}
+            print(f"  {name:44s} {released - pressed:3d} ticks")
+
+        # ── the plate's scheduled delay, off the disk ────────────────────────
+        #
+        # The two edges above are separated by 19 ticks for a plain plate and 9
+        # for a weighted one, while every button lands on an exact 20 or 30 by
+        # the same method. A bias that shows on one family and not the other is
+        # not a bias, so the number is confirmed a second way, with no network
+        # timing in it at all: `block_ticks` on disk carries `t`, the delay
+        # **relative to the save's own gameTime** (docs/provenance/redstone.md
+        # §7). Caught in the same tick as the press, `t` is the whole delay;
+        # caught later it is less. So the run takes the **maximum** over many
+        # attempts, which converges from below and can never overshoot.
+        result["scheduled"] = {}
+        for name in ("minecraft:stone_pressure_plate",
+                     "minecraft:light_weighted_pressure_plate"):
+            best = -1
+            samples = []
+            for attempt in range(14):
+                tag = f"sched{attempt}"
+                server.batch([f"kill @e[type=armor_stand]",
+                              f"setblock 5 {Y} 5 {name} replace"])
+                probe.settle(0.2)
+                server.send(f"summon minecraft:armor_stand 5.5 {Y} 5.5 "
+                            f'{{Tags:["{tag}"],Invisible:1b}}')
+                # Long enough for the stand to tick and press, short enough that
+                # the schedule has barely moved.
+                time.sleep(0.05 + 0.01 * attempt)
+                server.batch(["save-all flush"], timeout=600.0)
+                chunk = region_chunk(RUN / "switches" / "world" / "region" / "r.0.0.mca", 0, 0)
+                entries = nbt_read(chunk).get("block_ticks", []) if chunk else []
+                for entry in entries:
+                    if entry.get("i") == name and entry.get("x") == 5 and entry.get("z") == 5:
+                        samples.append(entry.get("t"))
+                        best = max(best, int(entry.get("t", -1)))
+            result["scheduled"][name] = {"delay": best, "samples": samples}
+            print(f"  {name:44s} scheduled delay {best} (samples {samples})")
+        server.batch(["kill @e[type=armor_stand]"])
+    finally:
+        server.stop()
+
+    with open(out, "w") as f:
+        json.dump(result, f, indent=1)
+
+
+# ── scenario: note blocks ───────────────────────────────────────────────────
+#
+# Which instrument a note block plays is decided by the block **underneath**
+# it, and in 1.20.1 the answer is not a sound but a **block state**: a note
+# block carries `instrument`, the server recomputes it whenever its support
+# changes, and the client plays whatever the state says. So the whole rule can
+# be read off a save, exhaustively, for every block in the game — no audio and
+# no guessing about families.
+#
+# The grid is the conductors grid with one block on top:
+#
+#     y=-59   note block          <- placed last, so it computes its own state
+#     y=-60   candidate
+#     y=-61   stone floor
+#
+# ⚠ The note block must go down **after** the candidate. `/setblock` notifies
+#   six neighbours and stops; a candidate placed under an existing note block
+#   does reach it — it is a direct neighbour — but placing the note block last
+#   is what the rest of this file does for the same reason and costs nothing.
+
+NOTE_COLUMNS = 40
+NOTE_DX = 2
+NOTE_DZ = 2
+
+
+def measure_noteblock(out: Path) -> None:
+    report = blocks_report()
+    names = sorted(n for n in report if n not in DYNAMIC and n not in FLOODS)
+    dry = {n for n, b in report.items() if "waterlogged" in b.get("properties", {})}
+    width = NOTE_COLUMNS * NOTE_DX + 4
+    depth = (len(names) // NOTE_COLUMNS + 2) * NOTE_DZ
+
+    def cell_of(index: int) -> tuple[int, int]:
+        return ((index % NOTE_COLUMNS) * NOTE_DX, (index // NOTE_COLUMNS) * NOTE_DZ)
+
+    def placed(name: str) -> str:
+        return f"{name}[waterlogged=false]" if name in dry else name
+
+    server, world = start("noteblock")
+    try:
+        forceload(server, -16, -16, width + 16, depth + 16)
+        fill(server, -8, FLOOR_Y, -8, width + 8, FLOOR_Y, depth + 8, "minecraft:stone")
+        fill(server, -8, Y, -8, width + 8, Y + 3, depth + 8, "minecraft:air")
+
+        for step in (0, 1):
+            commands = []
+            for index, name in enumerate(names):
+                x, z = cell_of(index)
+                if step == 0:
+                    commands.append(f"setblock {x} {Y} {z} {placed(name)} replace")
+                else:
+                    commands.append(f"setblock {x} {Y + 1} {z} minecraft:note_block replace")
+                if len(commands) >= 400:
+                    server.batch(commands, timeout=600.0)
+                    commands = []
+            if commands:
+                server.batch(commands, timeout=600.0)
+
+        save(server)
+        states = read_states(world, [(cell_of(i)[0], Y + 1, cell_of(i)[1])
+                                     for i in range(len(names))])
+    finally:
+        server.stop()
+
+    table: dict[str, str] = {}
+    refused = []
+    for name, text in zip(names, states):
+        if name_of(text) != "minecraft:note_block":
+            refused.append([name, text])
+            continue
+        table[name] = properties_of(text).get("instrument", "?")
+
+    families: dict[str, list[str]] = {}
+    for block, instrument in table.items():
+        families.setdefault(instrument, []).append(block)
+    with open(out, "w") as f:
+        json.dump({"$comment": "instrument d'un note block selon le bloc du dessous, lu "
+                               "dans l'etat de bloc sauvegarde",
+                   "instrument": table,
+                   "by_instrument": {k: sorted(v) for k, v in sorted(families.items())},
+                   "refused": refused}, f, indent=1)
+    for instrument, blocks in sorted(families.items(), key=lambda kv: -len(kv[1])):
+        print(f"  {instrument:18s} {len(blocks):5d}")
+    print(f"  refused (note block did not survive): {len(refused)}")
+
+
+# ── scenario: hoppers ───────────────────────────────────────────────────────
+#
+# How fast a hopper moves items, and what a redstone signal does to it.
+#
+# The rate is not read one item at a time — a console round trip is worth
+# several ticks and the answer would be the round trip. It is read as a **slope**:
+# fill a chest, let the hopper run for a span the server itself measures with
+# `time query gametime`, count what arrived, and divide. Over hundreds of ticks
+# the two round trips at the ends are worth less than a percent.
+#
+# The lock is read the same way over the same span, with a lever on the hopper:
+# a rate of exactly zero, and the `enabled` property of the hopper state, which
+# is what our side has to reproduce.
+#
+#   ⚠ `/setblock` notifies six neighbours and stops. The lever goes down **last**,
+#     and it goes down next to the hopper — not diagonally — or nothing tells the
+#     hopper anything.
+
+def container_count(server: Server, x: int, y: int, z: int) -> int:
+    """How many items a container holds, summed over its slots."""
+    lines = server.batch([f"data get block {x} {y} {z} Items"])
+    total = 0
+    for line in lines:
+        for match in re.finditer(r"Count:\s*(\d+)b", line):
+            total += int(match.group(1))
+    return total
+
+
+def gametime(server: Server) -> int:
+    for line in server.batch(["time query gametime"]):
+        match = re.search(r"time is (\d+)", line)
+        if match:
+            return int(match.group(1))
+    raise RuntimeError("the server would not say what time it is")
+
+
+def measure_hopper(out: Path) -> None:
+    server, world = start("hopper")
+    result: dict = {}
+    try:
+        forceload(server, -16, -16, 32, 32)
+        fill(server, -8, FLOOR_Y, -8, 24, FLOOR_Y, 24, "minecraft:stone")
+        fill(server, -8, Y, -8, 24, Y + 4, 24, "minecraft:air")
+
+        # Two stacks, one rig each: free, and locked by a lever.
+        #
+        #   y+1  chest (source)
+        #   y    hopper facing down
+        #   y-1  chest (destination)
+        #
+        # The destination is dug into the floor so the hopper can face down into
+        # it without a second column.
+        for tag, locked in (("free", False), ("locked", True)):
+            x = 2 if not locked else 8
+            server.batch([
+                f"setblock {x} {Y - 1} 2 minecraft:chest replace",
+                f"setblock {x} {Y} 2 minecraft:hopper[facing=down,enabled=true] replace",
+                f"setblock {x} {Y + 1} 2 minecraft:chest replace",
+            ])
+            # 64 of something that stacks to 64, one slot, so the count is a
+            # single number and the rate is not confused by stack splitting.
+            server.batch([f"item replace block {x} {Y + 1} 2 container.0 "
+                          "with minecraft:cobblestone 64"])
+            if locked:
+                # Last, and adjacent. See the warning above.
+                server.batch([f"setblock {x + 1} {Y} 2 "
+                              "minecraft:lever[face=floor,facing=north,powered=true] replace"])
+            start_tick = gametime(server)
+            before = container_count(server, x, Y - 1, 2)
+            time.sleep(12.0)
+            end_tick = gametime(server)
+            after = container_count(server, x, Y - 1, 2)
+            moved = after - before
+            span = end_tick - start_tick
+            result[tag] = {
+                "moved": moved, "ticks": span,
+                "ticks_per_item": round(span / moved, 3) if moved else None,
+                "source_left": container_count(server, x, Y + 1, 2),
+            }
+            print(f"  {tag:8s} {moved:3d} items in {span:5d} ticks"
+                  f"  -> {result[tag]['ticks_per_item']} ticks/item")
+
+        # The hopper's own state under the lever, read off the save. This is the
+        # property our redstone has to drive; nothing drove it before.
+        save(server)
+        result["locked_state"] = read_states(world, [(8, Y, 2)])[0]
+        result["free_state"] = read_states(world, [(2, Y, 2)])[0]
+        print(f"  free   state {result['free_state']}")
+        print(f"  locked state {result['locked_state']}")
+    finally:
+        server.stop()
+
+    with open(out, "w") as f:
+        json.dump(result, f, indent=1)
+
+
+# ── scenario: dispensers ────────────────────────────────────────────────────
+#
+# What a dispenser does with each item, and what a dropper does with the same
+# one. The dropper is the control: it **always** ejects, so any cell where the
+# two agree is a cell where the dispenser fell through to its default, and any
+# cell where they differ is a per-item behaviour with a name.
+#
+# One cell per item, twenty-four blocks apart so that a bucket of water in one
+# cannot reach the next — water spreads seven blocks and lava four, and a cell
+# flooded by its neighbour reads exactly like a dispenser that did nothing.
+#
+#     y      [redstone block] [dispenser facing east] [air, the target square]
+#
+# The redstone block goes down **last** and **adjacent**: `/setblock` notifies
+# six neighbours and stops, so a trigger two blocks away triggers nothing. This
+# is trap 9 of the briefing and it has cost this repository three campaigns.
+#
+# Three things are read back per cell:
+#
+#   * what the dispenser still holds — consumed, replaced (a water bucket
+#     becomes an empty one) or untouched;
+#   * the block on the target square — water, lava, fire, a carved pumpkin;
+#   * the nearest entity — an arrow, an egg, a primed tnt, or a plain
+#     `minecraft:item`, which is the default behaviour and not a behaviour.
+
+DISPENSE_ITEMS = [
+    "minecraft:water_bucket", "minecraft:lava_bucket", "minecraft:flint_and_steel",
+    "minecraft:arrow", "minecraft:egg", "minecraft:snowball", "minecraft:fire_charge",
+    "minecraft:bone_meal", "minecraft:tnt", "minecraft:splash_potion",
+    "minecraft:cobblestone", "minecraft:shears", "minecraft:firework_rocket",
+    "minecraft:leather_helmet", "minecraft:pig_spawn_egg", "minecraft:glass_bottle",
+    "minecraft:oak_boat", "minecraft:ender_pearl",
+]
+
+DISPENSE_DX = 24
+DISPENSE_DZ = 16
+
+
+def measure_dispenser(out: Path) -> None:
+    server, world = start("dispenser")
+    result: dict = {}
+    width = len(DISPENSE_ITEMS) * DISPENSE_DX + 8
+    try:
+        forceload(server, -16, -16, width + 16, DISPENSE_DZ * 2 + 16)
+        fill(server, -8, FLOOR_Y, -8, width, FLOOR_Y, DISPENSE_DZ * 2 + 8, "minecraft:stone")
+        fill(server, -8, Y, -8, width, Y + 3, DISPENSE_DZ * 2 + 8, "minecraft:air")
+
+        cells = []
+        for row, block in enumerate(("minecraft:dispenser", "minecraft:dropper")):
+            z = row * DISPENSE_DZ
+            for index, item in enumerate(DISPENSE_ITEMS):
+                x = index * DISPENSE_DX
+                cells.append((block, item, x, z))
+
+        # 1. the machines, 2. the payload, 3. the trigger. In that order and no
+        #    other: a redstone block already in place when the dispenser
+        #    arrives fires it before it has anything to fire.
+        server.batch([f"setblock {x} {Y} {z} {block}[facing=east,triggered=false] replace"
+                      for block, _item, x, z in cells], timeout=600.0)
+        server.batch([f"item replace block {x} {Y} {z} container.0 with {item} 1"
+                      for _block, item, x, z in cells], timeout=600.0)
+        server.batch([f"setblock {x - 1} {Y} {z} minecraft:redstone_block replace"
+                      for _block, _item, x, z in cells], timeout=600.0)
+        time.sleep(3.0)
+
+        # The nearest entity to each target square, if any.
+        entities: dict[tuple[int, int], str] = {}
+        for block, item, x, z in cells:
+            lines = server.batch([f"execute positioned {x + 2} {Y} {z + 0.5} run "
+                                  "data get entity @e[distance=..6,limit=1,sort=nearest,"
+                                  "type=!player] id"])
+            found = "-"
+            for line in lines:
+                match = re.search(r'"(minecraft:[a-z_]+)"', line)
+                if match:
+                    found = match.group(1)
+            entities[(x, z)] = found
+
+        contents: dict[tuple[int, int], str] = {}
+        for block, item, x, z in cells:
+            lines = server.batch([f"data get block {x} {Y} {z} Items"])
+            contents[(x, z)] = " ".join(lines)[-400:] if lines else "-"
+
+        save(server)
+        fronts = read_states(world, [(x + 1, Y, z) for _b, _i, x, z in cells])
+
+        for (block, item, x, z), front in zip(cells, fronts):
+            key = f"{block.split(':')[1]}/{item.split(':')[1]}"
+            result[key] = {"front": front, "entity": entities[(x, z)],
+                           "contents": contents[(x, z)]}
+    finally:
+        server.stop()
+
+    with open(out, "w") as f:
+        json.dump(result, f, indent=1)
+
+    for item in DISPENSE_ITEMS:
+        short = item.split(":")[1]
+        disp = result.get(f"dispenser/{short}", {})
+        drop = result.get(f"dropper/{short}", {})
+        same = (disp.get("front") == drop.get("front")
+                and disp.get("entity") == drop.get("entity"))
+        print(f"  {short:20s} front={disp.get('front', '-'):34s} "
+              f"entity={disp.get('entity', '-'):26s} {'default' if same else 'SPECIAL'}")
+
+
 SCENARIOS = {
     "conductors": measure_conductors,
     "conductor_gaps": measure_conductor_gaps,
@@ -1177,6 +1702,10 @@ SCENARIOS = {
     "piston": measure_piston,
     "qc": measure_qc,
     "ticks": measure_ticks,
+    "hopper": measure_hopper,
+    "dispenser": measure_dispenser,
+    "switches": measure_switches,
+    "noteblock": measure_noteblock,
 }
 
 
