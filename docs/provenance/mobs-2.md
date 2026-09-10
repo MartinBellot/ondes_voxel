@@ -266,7 +266,19 @@ Tailles tirées : 20 / 8 / 12 sur 40 (un tiers chacune attendu, 13,3 ; χ² = 4,
 le petit échantillon ne distingue rien). L'indice 16 **n'est pas relevé sur un vrai serveur** : il est
 pris à la place que le protocole de Mob laisse au premier champ de Slime.
 
-*(Mesure vanilla de la division : § rempli à la mesure.)*
+**Le vrai serveur** (`measure_mobs2.py slime`) : un slime invoqué avec un `Size` explicite, tué par
+`/kill`, et les slimes comptés une fois le corps retiré — la division a lieu **à la fin de
+l'animation de mort** (20 ticks), pas au coup fatal, et le premier comptage fait trop tôt lirait zéro.
+
+| `Size` du parent (taille) | tués | enfants 2 / 3 / 4 | `Size` des enfants |
+|---|---|---|---|
+| 1 (2) | 45 | 13 / 15 / 17 | 0 (taille 1), tous |
+| 3 (4) | 30 | 10 / 10 / 10 | 1 (taille 2), tous |
+
+Uniforme sur {2, 3, 4} (χ² 0,53 à 2 ddl, p ≈ 0,77 ; puis exactement 10 / 10 / 10), moitié de la
+taille : c'est `2 + next_int(3)` et `size / 2`, ce que fait notre serveur. Les enfants de notre
+serveur apparaissent un tick après la mort, pas vingt : écart nommé, sans conséquence sur les
+comptes.
 
 ---
 
