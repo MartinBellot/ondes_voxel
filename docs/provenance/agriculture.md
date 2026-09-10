@@ -401,7 +401,59 @@ enracinée labourée.
 
 ---
 
-## 9. Fichiers
+## 9. De bout en bout, sur notre serveur
+
+`ov_dedicated` en Debug, monde généré (graine 1234567890), un client sonde au spawn, 3000 ticks,
+deux fois : `OV_RANDOM_TICK_SPEED=0` puis `200`.
+
+* **Le client doit frapper plusieurs fois.** En Debug, le chunk du spawn met plus que les 20 s
+  que le serveur accorde à une connexion : la sonde a été refusée deux fois (trois pour la
+  seconde manche) avant d'entrer, 83 s après le démarrage. Un banc qui ne réessaie pas n'a
+  **aucun joueur**, donc aucun random tick — et mesure un serveur qui ne fait rien pousser.
+* **Le monde à vitesse 0 n'a rien écrit** sur le disque : ce serveur ne sauve que les chunks
+  modifiés, et rien ne les a modifiés. **À vitesse 200, 25 à 29 chunks par sauvegarde** : ceux
+  que les random ticks ont écrits. C'est la preuve la plus directe que le tirage passe bien par le
+  vrai serveur — et c'est aussi ce qui a rendu la comparaison des deux mondes impossible telle
+  qu'elle était prévue, puisque le premier est vide.
+* **Coût.** 7 « can't keep up » sur 3000 ticks à vitesse 0, **31** à vitesse 200 — en Debug, et
+  à une vitesse soixante-sept fois celle du jeu. Chaque écriture d'une règle rallume le voisinage
+  3 × 3 de son chunk (`flush_tick_writes`) ; c'est ce coût-là, et non le tirage, qu'une vitesse
+  élevée multiplie. À la vitesse par défaut il n'a pas été mesuré séparément.
+
+**Les forêts tiennent.** Relu dans les 29 chunks sauvés du monde à vitesse 200 (environ 146
+random ticks par bloc sur la durée, en supposant la sonde présente) : 8 184 feuilles de chêne,
+toutes à distance 1..6 — **aucune à 7** ; 9 347 feuilles d'acajou dont 445 à 7. Avant la passe
+de distance de `TreeFeature`, toutes auraient été à 7 et tombées.
+
+Pour savoir si les distances stockées sont **vraies**, `scripts/locate_leaves.py` (lecture directe
+des régions par `scripts/anvil_read.py`, quelques secondes au lieu de 25 minutes d'`ov_inspect`)
+refait un parcours en largeur depuis toutes les bûches à travers les feuilles, sur les seuls
+blocs sauvés. Au bord de la zone sauvée ce parcours ne voit pas les bûches des chunks non sauvés ;
+on ne lit donc que les **11 chunks intérieurs**, ceux dont les huit voisins sont sauvés :
+
+| feuilles non persistantes, chunks intérieurs | nombre |
+|---|---:|
+| distance stockée = distance vraie | **6 746 / 7 447** (90,6 %) |
+| stockée à 7 alors qu'un chemin ≤ 6 existe — tomberait à tort | **0** |
+| stockée **plus haut** que la vraie (ex. 3 pour 2 : 139) | 590 |
+| stockée plus bas que la vraie | 111, dont **71** « tenues » sans aucun chemin |
+
+* Les 590 trop hautes sont sans effet sur la décomposition. Elles s'expliquent par la boîte : la
+  passe d'un arbre ne voit pas la bûche d'un arbre posé après lui. Si le jeu fait pareil **n'est
+  pas mesuré**.
+* Les **71 feuilles tenues sans chemin** sont un écart nommé : le jeu les ferait tomber, nous non.
+  Cause non trouvée — une écriture postérieure à la passe (une autre feature) est le candidat,
+  non vérifié.
+* 440 des 445 feuilles à 7 sont dans les chunks du bord de la zone sauvée. Qu'elles n'aient pas
+  été décomposées s'explique le plus probablement par la règle du tirage : un chunk dont les
+  huit voisins ne sont pas résidents n'est pas tické (§ 2). **Probable, non prouvé** : la sonde n'a
+  été présente que 65 s d'horloge sur les 3000 ticks, pendant lesquels le serveur en Debug a
+  sauté des ticks (31 surcharges, piège 22 du briefing), et le journal ne dit pas quels chunks
+  ont été tirés.
+
+---
+
+## 10. Fichiers
 
 | fichier | rôle |
 |---|---|
@@ -413,3 +465,4 @@ enracinée labourée.
 | `src/ov_server/src/server.cpp` | trois blocs `// ── agriculture ──` et une ligne dans `placed_state` |
 | `src/ov_worldgen/src/tree_feature.cpp` | la passe de distance des feuilles |
 | `scripts/measure_agriculture.py` | l'oracle et l'analyse (`analyse <json…>`) |
+| `scripts/locate_leaves.py` | distance stockée contre distance vraie des feuilles d'un monde sauvé |
