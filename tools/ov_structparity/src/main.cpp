@@ -38,7 +38,14 @@
 #include "ov/base/log.hpp"
 #include "ov/nbt/region.hpp"
 #include "ov/registry/block_states.hpp"
+#include "ov/registry/registries.hpp"
+#include "ov/world/chunk.hpp"
 #include "ov/worldgen/biome_source.hpp"
+#include "ov/worldgen/carver.hpp"
+#include "ov/worldgen/decoration.hpp"
+#include "ov/worldgen/feature.hpp"
+#include "ov/worldgen/pipeline.hpp"
+#include "ov/worldgen/surface_system.hpp"
 #include "ov/worldgen/chunk_generator.hpp"
 #include "ov/worldgen/density.hpp"
 #include "ov/worldgen/structure.hpp"
@@ -47,6 +54,7 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <map>
@@ -83,6 +91,22 @@ struct Options {
 
     /// Print the first few disagreements per structure.
     i32 show{4};
+
+    /// Instead of comparing, time the pipeline over this many chunks with the
+    /// structure step off and then on. Zero means no benchmark.
+    ///
+    /// Both arms in one process, on one sample, because the project has been
+    /// caught before taking a before from one build and an after from another.
+    i32 bench{0};
+
+    std::filesystem::path registries{"data/vanilla/1.20.1/registry.ovpack"};
+
+    /// Print every set's verdict for one chunk and stop. `--probe=3006,10`.
+    ///
+    /// A disagreement is a single chunk, and the only thing that makes it
+    /// actionable is seeing which gate said no, at which column, at which
+    /// height, in which biome. Deducing that from an aggregate is how hours go.
+    std::string probe;
 };
 
 [[nodiscard]] Options parse(int argc, char** argv) {
@@ -110,6 +134,12 @@ struct Options {
             options.biomes = false;
         } else if (argument == "--patches-only") {
             options.patches_only = true;
+        } else if (argument.starts_with("--bench=")) {
+            options.bench = std::atoi(value("--bench=", argument).c_str());
+        } else if (argument.starts_with("--registries=")) {
+            options.registries = value("--registries=", argument);
+        } else if (argument.starts_with("--probe=")) {
+            options.probe = value("--probe=", argument);
         }
     }
     return options;
@@ -174,12 +204,20 @@ public:
     }
 
     [[nodiscard]] i32 surface_height(i32 x, i32 z) const override {
-        // The first free y from the top. Our noise stage fills every non-solid
-        // cell below the sea level with water, so "free" and "not solid" are
-        // the same question at this stage — which is exactly why the ocean
-        // floor below needs a different rule.
+        // WORLD_SURFACE_WG: the first y with nothing in it, counting **water**
+        // as something. That is the whole difference from the ocean floor, and
+        // it is not cosmetic — it was measured. Our noise stage fills every
+        // non-solid cell below the sea level with water, so a river column is
+        // occupied up to the sea level whatever the bed is doing.
+        //
+        // Reading the sea bed here instead sampled the biome twenty blocks too
+        // low in the river that runs through chunk (3006, 10), named it
+        // `minecraft:river` where the game's anchor is in `minecraft:plains`,
+        // and refused the plains village the game put there. One column, one
+        // structure, and the only symptom was a single false negative.
+        const i32 sea = generator_->sea_level();
         for (i32 y = max_y_ - 1; y >= min_y_; --y) {
-            if (generator_->is_solid(x, y, z)) {
+            if (generator_->is_solid(x, y, z) || y < sea) {
                 return y + 1;
             }
         }
@@ -187,11 +225,13 @@ public:
     }
 
     [[nodiscard]] i32 ocean_floor_height(i32 x, i32 z) const override {
-        // Identical at this stage: the noise says solid or not, and water is
-        // not solid. The two are kept apart anyway because the day an aquifer
-        // lands they stop being the same, and a single function would then be
-        // wrong for one of the two callers with nothing to show it.
-        return surface_height(x, z);
+        // OCEAN_FLOOR_WG: water is not something. The sea bed.
+        for (i32 y = max_y_ - 1; y >= min_y_; --y) {
+            if (generator_->is_solid(x, y, z)) {
+                return y + 1;
+            }
+        }
+        return min_y_;
     }
 
 private:
@@ -281,12 +321,123 @@ int main(int argc, char** argv) {
     const worldgen::StructureWorldSampler* world =
         sampler ? &sampler.value() : static_cast<const worldgen::StructureWorldSampler*>(nullptr);
 
+    if (options.bench > 0) {
+        // The whole stack, and the two arms in one process on one sample. The
+        // question is narrow: what does adding the structure step cost a chunk
+        // that is already paying for noise, surface, carvers and features.
+        auto registries = registry::Registries::load(options.registries);
+        if (!registries) {
+            OV_LOG_ERROR("registries {}: run tools/ov_datagen first", options.registries.string());
+            return 1;
+        }
+        auto surface =
+            worldgen::SurfaceSystem::load(options.data, "overworld", options.seed, *blocks);
+        if (!surface) {
+            OV_LOG_ERROR("surface rules: {}", worldgen::to_string(surface.error()));
+            return 1;
+        }
+        auto features = worldgen::FeatureRegistry::load(options.data, *blocks);
+        if (!features) {
+            OV_LOG_ERROR("features: {}", worldgen::to_string(features.error()));
+            return 1;
+        }
+        auto decorator = worldgen::Decorator::load(options.data, *blocks, *features, *biomes);
+        if (!decorator) {
+            OV_LOG_ERROR("decorator: {}", worldgen::to_string(decorator.error()));
+            return 1;
+        }
+
+        const worldgen::CarvingContext carving{router->min_y(), router->height()};
+        const worldgen::CarverStage    carvers{options.seed, carving};
+        generator->set_surface_system(&*surface);
+        if (auto attached = generator->set_carvers(&carvers, *registries); !attached) {
+            OV_LOG_ERROR("carvers: {}", worldgen::to_string(attached.error()));
+            return 1;
+        }
+
+        const auto run = [&](bool with_structures) {
+            worldgen::ChunkPipeline pipeline{*generator, &*decorator, *blocks,
+                                             world::WorldShape::overworld(), options.seed};
+            if (with_structures) {
+                pipeline.set_structures(&*placer, world);
+            }
+            const auto started = std::chrono::steady_clock::now();
+            for (i32 index = 0; index < options.bench; ++index) {
+                // A strip rather than a square: the pipeline caches, and a
+                // square would let one chunk's twenty-five neighbours serve the
+                // next. A strip pays for a fresh column every step, which is
+                // the honest per-chunk cost.
+                (void)pipeline.take(index, 0);
+            }
+            const auto elapsed = std::chrono::duration<f64>(
+                                     std::chrono::steady_clock::now() - started)
+                                     .count();
+            return std::pair<f64, u64>{elapsed, pipeline.stats().structure_starts};
+        };
+
+        // Warm arm first and discarded: the first chunk pays for every lazily
+        // built noise table in the stack, and charging that to whichever arm
+        // ran first would be a difference between the arms that is not the
+        // thing being measured.
+        (void)run(false);
+
+        const auto [without, ignored] = run(false);
+        const auto [with, starts]     = run(true);
+        (void)ignored;
+        fmt::print("\npipeline over {} chunks to Full, debug build\n", options.bench);
+        fmt::print("  without structures  {:.3f} s  ({:.3f} s/chunk)\n", without,
+                   without / options.bench);
+        fmt::print("  with structures     {:.3f} s  ({:.3f} s/chunk)  {} starts\n", with,
+                   with / options.bench, starts);
+        fmt::print("  structure step      {:+.3f} s/chunk  ({:+.2f} %)\n",
+                   (with - without) / options.bench, 100.0 * (with - without) / without);
+        return 0;
+    }
+
+    if (!options.probe.empty()) {
+        i32 probe_x = 0;
+        i32 probe_z = 0;
+        if (std::sscanf(options.probe.c_str(), "%d,%d", &probe_x, &probe_z) != 2) {
+            OV_LOG_ERROR("--probe wants two chunk coordinates, as --probe=3006,10");
+            return 1;
+        }
+        fmt::print("chunk {} {}  seed {}\n", probe_x, probe_z, options.seed);
+        for (const auto& result : placer->decide(options.seed, probe_x, probe_z, world)) {
+            fmt::print("  {:<30} {:<28} {:<16} {} @y{}\n", result.set,
+                       result.structure.empty() ? std::string_view{"-"} : result.structure,
+                       worldgen::to_string(result.decision),
+                       result.biome.empty() ? std::string_view{"-"} : result.biome,
+                       result.anchor_y);
+        }
+        if (world != nullptr) {
+            // The biome column at both candidate anchors. A disagreement whose
+            // reason is the biome is usually not the biome table at all: it is
+            // our terrain being a few blocks lower than the game's, which moves
+            // the anchor down through a boundary that really is at that height.
+            // Seeing the column is what tells the two apart.
+            fmt::print("\n  our surface {} at corner, {} at centre\n",
+                       world->surface_height(probe_x * 16, probe_z * 16),
+                       world->surface_height(probe_x * 16 + 8, probe_z * 16 + 8));
+            for (const i32 y : {50, 55, 60, 63, 67, 70, 75, 80}) {
+                fmt::print("  y{:<4} corner {:<28} centre {}\n", y,
+                           world->biome_at(probe_x * 16, y, probe_z * 16),
+                           world->biome_at(probe_x * 16 + 8, y, probe_z * 16 + 8));
+            }
+        }
+        return 0;
+    }
+
     // Every structure the pack has, so that a type that never appears in either
     // world still shows up as a row of zeroes rather than vanishing.
     std::map<std::string, Tally> tallies;
     for (const worldgen::StructureDefinition& definition : placer->structures()) {
         tallies.emplace(definition.name, Tally{});
     }
+
+    /// What our sampler named at each chunk's anchor, for the disagreement
+    /// report. A false negative whose reason is the biome is only actionable
+    /// once the biome and the height it was read at are on the page.
+    std::map<std::string, std::map<u64, std::string>> biome_seen;
 
     i32 chunks_read = 0;
     i32 chunks_skipped_status = 0;
@@ -366,6 +517,11 @@ int main(int argc, char** argv) {
                     }
                     ours.emplace(std::string{result.structure},
                                  std::string{worldgen::to_string(result.decision)});
+                    if (options.show > 0 && !result.biome.empty()) {
+                        biome_seen[std::string{result.structure}]
+                                  [ChunkPos{chunk_x, chunk_z}.packed()] =
+                                      fmt::format("{} @y{}", result.biome, result.anchor_y);
+                    }
                 }
 
                 for (auto& [name, tally] : tallies) {
@@ -453,7 +609,10 @@ int main(int argc, char** argv) {
             }
             fmt::print("  {}\n", strip(name));
             for (const ChunkPos& at : tally.false_negative_at) {
-                fmt::print("    theirs-not-ours  chunk {} {}\n", at.x, at.z);
+                const auto& seen  = biome_seen[name];
+                const auto  entry = seen.find(at.packed());
+                fmt::print("    theirs-not-ours  chunk {} {}  our anchor {}\n", at.x, at.z,
+                           entry == seen.end() ? std::string{"-"} : entry->second);
             }
             for (const auto& [reason, count] : tally.false_positive_reason) {
                 fmt::print("    theirs-not-ours  our reason {} x{}\n", reason, count);

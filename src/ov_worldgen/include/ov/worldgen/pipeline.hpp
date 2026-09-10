@@ -36,6 +36,7 @@
 #include "ov/world/chunk.hpp"
 #include "ov/worldgen/chunk_generator.hpp"
 #include "ov/worldgen/decoration.hpp"
+#include "ov/worldgen/structure.hpp"
 
 #include <array>
 #include <cstddef>
@@ -54,9 +55,18 @@ namespace ov::worldgen {
 enum class ChunkStatus : u8 {
     /// Allocated, empty, the world's shape and nothing else.
     Empty = 0,
-    /// Where the structure starts would be chosen. Nothing happens here yet;
-    /// `docs/provenance/features.md` records that no structure belongs to the
-    /// ore step, which is why the ores do not wait for this.
+    /// Which structures start in this chunk.
+    ///
+    /// Before the noise, before the biomes, before anything is written — which
+    /// is not an ordering quirk but the point: a structure's decision is a
+    /// function of the seed and the *noise field*, never of the chunk, because
+    /// the game has to be able to answer "is there a village at (x, z)" for a
+    /// chunk it has not generated and never will. Our placer takes a
+    /// `StructureWorldSampler` for exactly that reason: it reads the generator,
+    /// not the chunk.
+    ///
+    /// A no-op when no placer is attached, and `structure_starts()` then says
+    /// so by answering empty for every chunk rather than pretending.
     StructureStarts = 1,
     /// The 4x4x4 biome grid.
     Biomes = 2,
@@ -100,6 +110,10 @@ struct PipelineStats {
     /// dropped. Not a bug: the game drops them too, and generating the
     /// neighbour is what puts them back. A number rather than a shrug.
     u64 dropped_writes{0};
+
+    /// Structure starts decided, in total, across every chunk that reached the
+    /// `StructureStarts` step. Zero with no placer attached.
+    u64 structure_starts{0};
 
     /// Chunks resident in the cache right now, and the high-water mark.
     u64 resident{0};
@@ -148,6 +162,24 @@ public:
     /// the new copy, so a caller that keeps chunks — the server does — must
     /// consult its own store first.
     [[nodiscard]] world::Chunk take(i32 chunk_x, i32 chunk_z);
+
+    /// Give the pipeline the structure placer, and the view of the world its
+    /// biome filter needs.
+    ///
+    /// Both borrowed and both optional as a pair: a pipeline with no placer
+    /// drives chunks past `StructureStarts` and reports no starts, which is the
+    /// honest way to say "this world has terrain and no structures yet". The
+    /// sampler may be null on its own, and the placer then reports
+    /// `BiomeUnknown` for every set — a state worth being able to reach,
+    /// because it isolates the grid from the biomes.
+    void set_structures(const StructurePlacer* placer,
+                        const StructureWorldSampler* sampler) noexcept;
+
+    /// The structures that start in a chunk, in set order.
+    ///
+    /// Drives the chunk to `StructureStarts` if it has not got there, which is
+    /// the whole cost of the question: no block is generated.
+    [[nodiscard]] std::vector<std::string_view> structure_starts(i32 chunk_x, i32 chunk_z);
 
     /// Drop cached chunks that no chunk within `keep` of `centre` needs.
     ///

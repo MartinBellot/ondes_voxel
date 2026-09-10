@@ -33,6 +33,7 @@
 #include "ov/base/types.hpp"
 #include "ov/worldgen/structure_set.hpp"
 
+#include <array>
 #include <expected>
 #include <filesystem>
 #include <memory>
@@ -100,6 +101,24 @@ struct StructureDefinition {
 
     GenerationAnchor anchor{GenerationAnchor::SurfaceCentre};
     i32              anchor_height{0};
+
+    /// Sample the anchor column at the chunk's *corner* rather than its middle.
+    ///
+    /// Only ever true for the jigsaw structures, and only when
+    /// `OV_STRUCT_JIGSAW_ANCHOR=corner` asks for it. It is a measuring
+    /// instrument, not a supported setting.
+    ///
+    /// The reason it exists: a jigsaw structure's start piece is a *template*
+    /// chosen from a pool, placed so that its own bounding box straddles the
+    /// start position, and the biome is read where that piece lands — not at a
+    /// fixed column of the chunk. Neither the corner nor the middle reproduces
+    /// that. Measured, on the same two worlds: the middle gets the plains
+    /// village of chunk (3006, 10) right and the pillager outpost of chunk
+    /// (-84, 105) wrong, the corner gets exactly the opposite, and our biome
+    /// field agrees with the game's to the block at all four columns — so the
+    /// residual is the anchor rule and nothing else. See
+    /// docs/provenance/structures.md § 5.
+    bool anchor_at_corner{false};
 };
 
 /// Biome tags, `tags/worldgen/biome/`, with `#other` references resolved.
@@ -223,10 +242,28 @@ public:
     [[nodiscard]] std::vector<StructurePlacementResult> decide(
         i64 level_seed, i32 chunk_x, i32 chunk_z, const StructureWorldSampler* sampler) const;
 
+    /// The four anchor columns of one chunk, computed at most once each.
+    ///
+    /// Not an optimisation that happens to be visible — it is the difference
+    /// between a usable step and an unusable one. Nineteen sets ask about the
+    /// same two columns, and answering each of them separately means nineteen
+    /// scans of a 384-block column with a full density evaluation per block.
+    /// Measured, debug build: **+72,6 s per chunk** without this, +0,05 s with
+    /// it. See docs/provenance/structures.md § 8.
+    struct AnchorColumns {
+        /// Indexed [corner ? 1 : 0]. -1 means "not computed yet".
+        std::array<i32, 2> surface{-1, -1};
+        std::array<i32, 2> ocean_floor{-1, -1};
+    };
+
     /// One set's verdict. The set must belong to the registry given to `load`.
+    ///
+    /// `columns` is reused across the sets of one chunk and must not be carried
+    /// to another chunk; pass null and the call allocates its own.
     [[nodiscard]] StructurePlacementResult decide_set(const StructureSet& set, i64 level_seed,
                                                       i32 chunk_x, i32 chunk_z,
-                                                      const StructureWorldSampler* sampler) const;
+                                                      const StructureWorldSampler* sampler,
+                                                      AnchorColumns* columns = nullptr) const;
 
     [[nodiscard]] const StructureDefinition* find(std::string_view name) const noexcept;
     [[nodiscard]] const std::vector<StructureDefinition>& structures() const noexcept;

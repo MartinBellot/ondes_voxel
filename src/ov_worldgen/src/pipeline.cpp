@@ -162,6 +162,13 @@ struct ChunkPipeline::Impl {
     struct Entry {
         world::Chunk chunk;
         ChunkStatus  status{ChunkStatus::Empty};
+        /// The structures that start here, decided at `StructureStarts`.
+        ///
+        /// Owned by the chunk's entry rather than by a side table, because a
+        /// chunk that is taken out of the cache takes its answer with it and a
+        /// side table would leak one row per chunk generated for the life of
+        /// the world.
+        std::vector<std::string_view> starts;
     };
 
     const ChunkGenerator*          generator;
@@ -171,6 +178,11 @@ struct ChunkPipeline::Impl {
     world::AirStates               air;
     i64                            level_seed;
     i32                            sea_level;
+
+    /// Both borrowed, both optional, and independently so. See
+    /// `ChunkPipeline::set_structures`.
+    const StructurePlacer*       placer{nullptr};
+    const StructureWorldSampler* sampler{nullptr};
 
     /// Node-based on purpose: `promote()` holds a reference to one entry while
     /// driving its neighbours, and `unordered_map` keeps references valid
@@ -186,7 +198,8 @@ struct ChunkPipeline::Impl {
         auto& entry = cache
                           .emplace(key, Entry{world::Chunk{ChunkPos{chunk_x, chunk_z}, shape, air,
                                                            blocks},
-                                              ChunkStatus::Empty})
+                                              ChunkStatus::Empty,
+                                              {}})
                           .first->second;
         stats.reached[static_cast<usize>(ChunkStatus::Empty)] += 1;
         stats.resident   = cache.size();
@@ -217,8 +230,21 @@ struct ChunkPipeline::Impl {
             case ChunkStatus::Empty:
                 break;
             case ChunkStatus::StructureStarts:
-                // Nothing yet. Present so the ladder is the game's and the gap
-                // is visible; no feature of the ore step waits on a structure.
+                // Before the noise, and reading the generator rather than the
+                // chunk — the chunk is still empty here and must stay that way.
+                // A structure decision that needed generated blocks could not
+                // answer for a chunk the world has not made, and the game
+                // answers for those constantly (`/locate`, a village's own
+                // jigsaw reaching four chunks away).
+                if (placer != nullptr) {
+                    for (const StructurePlacementResult& result :
+                         placer->decide(level_seed, chunk_x, chunk_z, sampler)) {
+                        if (result.decision == PlacementDecision::PlacedByPlacement) {
+                            entry.starts.push_back(result.structure);
+                        }
+                    }
+                    stats.structure_starts += entry.starts.size();
+                }
                 break;
             case ChunkStatus::Biomes:
                 generator->generate_biomes(entry.chunk);
@@ -344,6 +370,16 @@ void ChunkPipeline::trim(i32 centre_x, i32 centre_z, i32 keep) {
 void ChunkPipeline::clear() {
     impl_->cache.clear();
     impl_->stats.resident = 0;
+}
+
+void ChunkPipeline::set_structures(const StructurePlacer*       placer,
+                                   const StructureWorldSampler* sampler) noexcept {
+    impl_->placer  = placer;
+    impl_->sampler = sampler;
+}
+
+std::vector<std::string_view> ChunkPipeline::structure_starts(i32 chunk_x, i32 chunk_z) {
+    return impl_->advance(chunk_x, chunk_z, ChunkStatus::StructureStarts).starts;
 }
 
 const PipelineStats& ChunkPipeline::stats() const noexcept { return impl_->stats; }

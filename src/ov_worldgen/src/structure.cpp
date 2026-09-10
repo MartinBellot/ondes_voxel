@@ -2,10 +2,12 @@
 
 #include "ov/base/log.hpp"
 #include "ov/math/block_pos.hpp"
+#include "ov/math/random.hpp"
 
 #include <simdjson.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <map>
 #include <set>
 #include <string>
@@ -242,11 +244,26 @@ struct StructurePlacer::Impl {
 
 namespace {
 
+/// Read once, at load: `OV_STRUCT_JIGSAW_ANCHOR=corner` moves the jigsaw
+/// structures' biome sample from the chunk's middle column to its corner.
+///
+/// A measuring instrument. Neither column is what the game uses — see
+/// `StructureDefinition::anchor_at_corner` — and holding both in one binary is
+/// the only honest way to say which of two wrong rules is less wrong on a given
+/// sample, since taking the before from one build and the after from another is
+/// a mistake this repository has already paid for.
+[[nodiscard]] bool jigsaw_anchor_is_corner() {
+    const char* choice = std::getenv("OV_STRUCT_JIGSAW_ANCHOR");
+    return choice != nullptr && std::string_view{choice} == "corner";
+}
+
 struct KindRow {
     std::string_view name;
     StructureKind    kind;
     GenerationAnchor anchor;
     i32              height;
+    /// Sample at the chunk corner rather than its middle.
+    bool corner;
 };
 
 /// The type name to the kind, and with it the anchor the biome check uses.
@@ -257,25 +274,35 @@ struct KindRow {
 /// in the data to catch it. The mineshaft's fixed y = 50 is the one value here
 /// that is a bare constant, and it is the game's.
 constexpr KindRow kKinds[] = {
-    {"minecraft:desert_pyramid", StructureKind::DesertPyramid, GenerationAnchor::SurfaceCentre, 0},
-    {"minecraft:jungle_temple", StructureKind::JungleTemple, GenerationAnchor::SurfaceCentre, 0},
-    {"minecraft:swamp_hut", StructureKind::SwampHut, GenerationAnchor::SurfaceCentre, 0},
-    {"minecraft:igloo", StructureKind::Igloo, GenerationAnchor::SurfaceCentre, 0},
-    {"minecraft:mineshaft", StructureKind::Mineshaft, GenerationAnchor::FixedHeight, 50},
+    {"minecraft:desert_pyramid", StructureKind::DesertPyramid, GenerationAnchor::SurfaceCentre, 0,
+     false},
+    {"minecraft:jungle_temple", StructureKind::JungleTemple, GenerationAnchor::SurfaceCentre, 0,
+     false},
+    {"minecraft:swamp_hut", StructureKind::SwampHut, GenerationAnchor::SurfaceCentre, 0, false},
+    {"minecraft:igloo", StructureKind::Igloo, GenerationAnchor::SurfaceCentre, 0, false},
+    {"minecraft:mineshaft", StructureKind::Mineshaft, GenerationAnchor::FixedHeight, 50, false},
     {"minecraft:ocean_monument", StructureKind::OceanMonument, GenerationAnchor::OceanFloorCentre,
-     0},
-    {"minecraft:ocean_ruin", StructureKind::OceanRuin, GenerationAnchor::OceanFloorCentre, 0},
-    {"minecraft:shipwreck", StructureKind::Shipwreck, GenerationAnchor::OceanFloorCentre, 0},
+     0, false},
+    {"minecraft:ocean_ruin", StructureKind::OceanRuin, GenerationAnchor::OceanFloorCentre, 0,
+     false},
+    {"minecraft:shipwreck", StructureKind::Shipwreck, GenerationAnchor::OceanFloorCentre, 0,
+     false},
     {"minecraft:buried_treasure", StructureKind::BuriedTreasure,
-     GenerationAnchor::OceanFloorCentre, 0},
-    {"minecraft:ruined_portal", StructureKind::RuinedPortal, GenerationAnchor::SurfaceCentre, 0},
+     GenerationAnchor::OceanFloorCentre, 0, false},
+    {"minecraft:ruined_portal", StructureKind::RuinedPortal, GenerationAnchor::SurfaceCentre, 0,
+     false},
     {"minecraft:woodland_mansion", StructureKind::WoodlandMansion,
-     GenerationAnchor::SurfaceCentre, 0},
-    {"minecraft:stronghold", StructureKind::Stronghold, GenerationAnchor::None, 0},
-    {"minecraft:fortress", StructureKind::Fortress, GenerationAnchor::SurfaceCentre, 0},
-    {"minecraft:nether_fossil", StructureKind::NetherFossil, GenerationAnchor::SurfaceCentre, 0},
-    {"minecraft:end_city", StructureKind::EndCity, GenerationAnchor::SurfaceCentre, 0},
-    {"minecraft:jigsaw", StructureKind::Jigsaw, GenerationAnchor::SurfaceCentre, 0},
+     GenerationAnchor::SurfaceCentre, 0, false},
+    {"minecraft:stronghold", StructureKind::Stronghold, GenerationAnchor::None, 0, false},
+    {"minecraft:fortress", StructureKind::Fortress, GenerationAnchor::SurfaceCentre, 0, false},
+    {"minecraft:nether_fossil", StructureKind::NetherFossil, GenerationAnchor::SurfaceCentre, 0,
+     false},
+    {"minecraft:end_city", StructureKind::EndCity, GenerationAnchor::SurfaceCentre, 0, false},
+    // The jigsaw structures' true anchor is the start template's own bounding
+    // box, which this layer cannot compute yet. `corner` is the other simple
+    // approximation and is reachable through OV_STRUCT_JIGSAW_ANCHOR so the two
+    // can be measured in one binary on one sample.
+    {"minecraft:jigsaw", StructureKind::Jigsaw, GenerationAnchor::SurfaceCentre, 0, false},
 };
 
 }  // namespace
@@ -334,9 +361,11 @@ std::expected<StructurePlacer, StructureSetError> StructurePlacer::load(
             OV_LOG_ERROR("worldgen: {} has type {}, which we do not know", definition.name, type);
             return std::unexpected(StructureSetError::UnknownPlacement);
         }
-        definition.kind          = row->kind;
-        definition.anchor        = row->anchor;
-        definition.anchor_height = row->height;
+        definition.kind             = row->kind;
+        definition.anchor           = row->anchor;
+        definition.anchor_height    = row->height;
+        definition.anchor_at_corner = row->corner || (row->kind == StructureKind::Jigsaw &&
+                                                      jigsaw_anchor_is_corner());
 
         std::string_view biomes;
         if (document.at_key("biomes").get(biomes) == simdjson::SUCCESS) {
@@ -456,7 +485,10 @@ void StructurePlacer::restrict_to_biomes(const std::vector<std::string_view>& bi
 
 StructurePlacementResult StructurePlacer::decide_set(const StructureSet& set, i64 level_seed,
                                                      i32 chunk_x, i32 chunk_z,
-                                                     const StructureWorldSampler* sampler) const {
+                                                     const StructureWorldSampler* sampler,
+                                                     AnchorColumns* columns) const {
+    AnchorColumns    own;
+    AnchorColumns&   cache = columns != nullptr ? *columns : own;
     StructurePlacementResult result;
     result.set = set.name;
 
@@ -494,71 +526,92 @@ StructurePlacementResult StructurePlacer::decide_set(const StructureSet& set, i6
         }
     }
 
-    result.structure = set.choose(level_seed, chunk_x, chunk_z);
-
-    const StructureDefinition* definition = find(result.structure);
-    if (definition == nullptr) {
-        result.decision = PlacementDecision::Unsupported;
-        return result;
-    }
-
-    if (definition->anchor == GenerationAnchor::None) {
-        result.decision = PlacementDecision::PlacedByPlacement;
-        return result;
-    }
-    if (sampler == nullptr) {
-        result.decision = PlacementDecision::BiomeUnknown;
-        return result;
-    }
-
-    // The middle block of the chunk, which is the corner plus eight — not plus
-    // seven and not the corner. Every anchor uses the same column.
-    const i32 block_x = chunk_x * kSectionSize + 8;
-    const i32 block_z = chunk_z * kSectionSize + 8;
-    switch (definition->anchor) {
-        case GenerationAnchor::SurfaceCentre:
-            result.anchor_y = sampler->surface_height(block_x, block_z);
-            break;
-        case GenerationAnchor::OceanFloorCentre:
-            result.anchor_y = sampler->ocean_floor_height(block_x, block_z);
-            break;
-        case GenerationAnchor::FixedHeight:
-            result.anchor_y = definition->anchor_height;
-            break;
-        case GenerationAnchor::None:
-            break;
-    }
-
-    result.biome = sampler->biome_at(block_x, result.anchor_y, block_z);
-    if (result.biome.empty()) {
-        result.decision = PlacementDecision::BiomeUnknown;
-        return result;
-    }
-
-    // A set of several structures tries them in turn: the weighted choice picks
-    // the first, and if its biome refuses it the game falls back to the others.
-    // Mineshaft and mineshaft_mesa are the case that matters — their tags are
-    // disjoint, so without the fallback exactly one half of the world would
-    // have no mineshafts at all.
-    if (biome_allowed(impl_->tags, definition->biomes, result.biome)) {
-        result.decision = PlacementDecision::PlacedByPlacement;
-        return result;
-    }
+    // The set's members are tried by repeated weighted draw from one stream,
+    // the failed one removed each time — not scanned in order. The difference
+    // only shows on a set of more than two: with the five village variants, a
+    // scan takes the first whose biome allows it and the game takes the one its
+    // second draw names. Measured: the plains village of chunk (3006, 10) is a
+    // false negative under a scan and correct under the loop.
+    std::vector<const StructureSetEntry*> remaining;
+    remaining.reserve(set.entries.size());
     for (const StructureSetEntry& entry : set.entries) {
-        if (entry.structure == result.structure) {
-            continue;
+        remaining.push_back(&entry);
+    }
+    i32 total = set.total_weight();
+
+    math::LegacyRandomSource random{0};
+    random.set_seed(large_feature_seed(level_seed, chunk_x, chunk_z));
+
+    PlacementDecision last = PlacementDecision::BiomeRejected;
+    while (!remaining.empty() && total > 0) {
+        usize index = 0;
+        i32   roll  = random.next_int(total);
+        for (usize candidate = 0; candidate < remaining.size(); ++candidate) {
+            roll -= remaining[candidate]->weight;
+            if (roll < 0) {
+                index = candidate;
+                break;
+            }
         }
-        const StructureDefinition* other = find(entry.structure);
-        if (other == nullptr) {
-            continue;
-        }
-        if (biome_allowed(impl_->tags, other->biomes, result.biome)) {
-            result.structure = other->name;
-            result.decision  = PlacementDecision::PlacedByPlacement;
+        const StructureSetEntry* entry = remaining[index];
+        result.structure               = entry->structure;
+
+        const StructureDefinition* definition = find(entry->structure);
+        if (definition == nullptr) {
+            result.decision = PlacementDecision::Unsupported;
             return result;
         }
+
+        if (definition->anchor == GenerationAnchor::None) {
+            result.decision = PlacementDecision::PlacedByPlacement;
+            return result;
+        }
+        if (sampler == nullptr) {
+            result.decision = PlacementDecision::BiomeUnknown;
+            return result;
+        }
+
+        // The column the biome is read from: the chunk's middle for the
+        // scattered structures, its minimum corner for the jigsaw ones.
+        const usize slot    = definition->anchor_at_corner ? 1u : 0u;
+        const i32   offset  = definition->anchor_at_corner ? 0 : 8;
+        const i32   block_x = chunk_x * kSectionSize + offset;
+        const i32   block_z = chunk_z * kSectionSize + offset;
+        switch (definition->anchor) {
+            case GenerationAnchor::SurfaceCentre:
+                if (cache.surface[slot] < 0) {
+                    cache.surface[slot] = sampler->surface_height(block_x, block_z);
+                }
+                result.anchor_y = cache.surface[slot];
+                break;
+            case GenerationAnchor::OceanFloorCentre:
+                if (cache.ocean_floor[slot] < 0) {
+                    cache.ocean_floor[slot] = sampler->ocean_floor_height(block_x, block_z);
+                }
+                result.anchor_y = cache.ocean_floor[slot];
+                break;
+            case GenerationAnchor::FixedHeight:
+                result.anchor_y = definition->anchor_height;
+                break;
+            case GenerationAnchor::None:
+                break;
+        }
+        result.biome = sampler->biome_at(block_x, result.anchor_y, block_z);
+        if (result.biome.empty()) {
+            result.decision = PlacementDecision::BiomeUnknown;
+            return result;
+        }
+        if (biome_allowed(impl_->tags, definition->biomes, result.biome)) {
+            result.decision = PlacementDecision::PlacedByPlacement;
+            return result;
+        }
+
+        last = PlacementDecision::BiomeRejected;
+        total -= entry->weight;
+        remaining.erase(remaining.begin() + static_cast<std::ptrdiff_t>(index));
     }
-    result.decision = PlacementDecision::BiomeRejected;
+
+    result.decision = last;
     return result;
 }
 
@@ -566,8 +619,10 @@ std::vector<StructurePlacementResult> StructurePlacer::decide(
     i64 level_seed, i32 chunk_x, i32 chunk_z, const StructureWorldSampler* sampler) const {
     std::vector<StructurePlacementResult> out;
     out.reserve(impl_->sets->sets().size());
+    // One cache for the whole chunk: the nineteen sets ask about two columns.
+    AnchorColumns columns;
     for (const StructureSet& set : impl_->sets->sets()) {
-        out.push_back(decide_set(set, level_seed, chunk_x, chunk_z, sampler));
+        out.push_back(decide_set(set, level_seed, chunk_x, chunk_z, sampler, &columns));
     }
     return out;
 }

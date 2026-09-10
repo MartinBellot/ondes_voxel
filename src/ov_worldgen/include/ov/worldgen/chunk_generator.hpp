@@ -37,6 +37,7 @@
 #include "ov/worldgen/surface_system.hpp"
 
 #include <expected>
+#include <string_view>
 #include <vector>
 
 namespace ov::worldgen {
@@ -129,6 +130,17 @@ public:
 
     /// What fills a position that is not solid: water, lava or air.
     [[nodiscard]] registry::BlockStateId fluid_at(i32 y) const;
+
+    /// The biome at a *block* position, `minecraft:plains` shaped.
+    ///
+    /// The uncached lookup, deliberately. `BiomeSource`'s cache decides ties by
+    /// the order the questions were asked, so a caller that asks in its own
+    /// order — a structure placer walking chunks, a harness walking regions —
+    /// would get answers that depend on its traversal. The structure layer asks
+    /// exactly one question per chunk and must get the same answer whoever asks
+    /// it, which is why this exists next to `generate_biomes` rather than
+    /// inside it.
+    [[nodiscard]] std::string_view biome_name_at(i32 x, i32 y, i32 z) const;
 
     /// The dimension's sea level, as the noise settings give it.
     ///
