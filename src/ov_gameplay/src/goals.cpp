@@ -1,5 +1,7 @@
 #include "ov/gameplay/goals.hpp"
 
+#include "ov/gameplay/breeding.hpp"  // ── husbandry ──
+
 #include <algorithm>
 #include <cmath>
 
@@ -631,7 +633,7 @@ void AvoidSunGoal::stop(GoalContext& context) {
 // ── FollowParentGoal ────────────────────────────────────────────────────────
 
 bool FollowParentGoal::can_use(GoalContext& context) {
-    if (context.brain == nullptr || !context.brain->baby || context.entities == nullptr) {
+    if (context.brain == nullptr || !context.brain->animal.baby() || context.entities == nullptr) {
         return false;
     }
     const entity::EntityState* self = context.state();
@@ -676,39 +678,77 @@ void FollowParentGoal::stop(GoalContext& context) {
 
 // ── BreedGoal ───────────────────────────────────────────────────────────────
 
-bool BreedGoal::can_use(GoalContext& context) {
-    if (context.brain == nullptr || context.brain->love_ticks <= 0 || context.brain->baby) {
-        return false;
-    }
+// ── husbandry ──
+namespace {
+
+/// A mate for `self`: same type, adult, in love, not `self`, and whose box
+/// meets `self`'s grown by `reach` on every axis. The nearest wins; ties go to
+/// the earliest spawned, so the choice does not depend on storage order.
+[[nodiscard]] entity::EntityHandle find_mate(GoalContext& context, f64 reach) {
     const entity::EntityState* self = context.state();
-    if (self == nullptr || context.entities == nullptr) {
+    if (self == nullptr || context.entities == nullptr || context.brain_of == nullptr) {
+        return entity::kNoEntity;
+    }
+    entity::EntityHandle best          = entity::kNoEntity;
+    f64                  best_distance = 0.0;
+    for (const entity::EntityHandle handle : context.entities->handles()) {
+        if (handle == context.self) {
+            continue;
+        }
+        const entity::EntityState* other = context.entities->state(handle);
+        if (other == nullptr || other->removed || other->health <= 0.0F ||
+            other->type != self->type) {
+            continue;
+        }
+        const f64 gap_x = std::abs(other->position.x - self->position.x);
+        const f64 gap_y = other->position.y + static_cast<f64>(other->height) * 0.5 -
+                          (self->position.y + static_cast<f64>(self->height) * 0.5);
+        const f64 gap_z = std::abs(other->position.z - self->position.z);
+        const f64 reach_xz =
+            reach + (static_cast<f64>(self->width) + static_cast<f64>(other->width)) * 0.5;
+        const f64 reach_y =
+            reach + (static_cast<f64>(self->height) + static_cast<f64>(other->height)) * 0.5;
+        if (gap_x >= reach_xz || gap_z >= reach_xz || std::abs(gap_y) >= reach_y) {
+            continue;
+        }
+        const MobBrain* mate = context.brain_of(*context.entities, handle);
+        if (mate == nullptr || !mate->animal.in_love() || mate->animal.age != 0) {
+            continue;
+        }
+        const f64 d = distance_sq(self->position, other->position);
+        if (best == entity::kNoEntity || d < best_distance) {
+            best          = handle;
+            best_distance = d;
+        }
+    }
+    return best;
+}
+
+}  // namespace
+
+bool BreedGoal::can_use(GoalContext& context) {
+    if (context.brain == nullptr || !context.brain->animal.in_love() ||
+        context.brain->animal.age != 0) {
         return false;
     }
-    // A mate is an animal of the same type, in love, and not this one. The
-    // "in love" half cannot be seen from an EntityState, so the caller keeps
-    // the brains and the goal is told about the mate through `set_mate`-shaped
-    // discovery: the nearest same-type animal within the radius, which the
-    // caller only puts in love when it has been fed.
-    const entity::EntityHandle found =
-        nearest_entity(*context.entities, context.self, self->type, radius_);
-    if (found == entity::kNoEntity) {
-        return false;
-    }
-    mate_ = found;
-    return true;
+    mate_ = find_mate(context, reach_);
+    return mate_ != entity::kNoEntity;
 }
 
 bool BreedGoal::can_continue_to_use(GoalContext& context) {
-    if (context.brain == nullptr || context.brain->love_ticks <= 0) {
+    if (context.brain == nullptr || !context.brain->animal.in_love() ||
+        context.entities == nullptr || context.brain_of == nullptr) {
         return false;
     }
-    return context.entities != nullptr && context.entities->state(mate_) != nullptr;
+    const entity::EntityState* mate = context.entities->state(mate_);
+    if (mate == nullptr || mate->removed || mate->health <= 0.0F) {
+        return false;
+    }
+    const MobBrain* brain = context.brain_of(*context.entities, mate_);
+    return brain != nullptr && brain->animal.in_love() && loops_ < kMateTicks;
 }
 
-void BreedGoal::start(GoalContext&) {
-    loops_ = 0;
-    bred_  = false;
-}
+void BreedGoal::start(GoalContext&) { loops_ = 0; }
 
 void BreedGoal::stop(GoalContext& context) {
     mate_  = entity::kNoEntity;
@@ -730,24 +770,39 @@ void BreedGoal::tick(GoalContext& context) {
                                    mate->position.z};
     context.brain->has_look = true;
 
-    if (distance_sq(self->position, mate->position) > 9.0) {
-        (void)move_to(context, feet_block(*mate), speed_, 32.0F);
-        return;
-    }
-    // Close enough. Sixty ticks together and there is a calf, put down between
-    // the two parents rather than inside either — a birth on top of the mother
-    // makes the newborn's first act a collision resolution.
+    // Walk to the mate, and count: sixty ticks of the goal running and the two
+    // within three blocks is a birth. Measured: fed side by side, the calf
+    // came 59 to 60 ticks later, five trials out of five. The three-block
+    // condition is not measured separately — an adjacent pair cannot test it.
+    (void)move_to(context, feet_block(*mate), speed_, 32.0F);
+    keep_walking(context, speed_);
     ++loops_;
-    if (loops_ < 60) {
+    if (loops_ < kMateTicks || distance_sq(self->position, mate->position) >= 9.0) {
         return;
     }
-    birth_ = Vec3d{(self->position.x + mate->position.x) * 0.5,
-                   (self->position.y + mate->position.y) * 0.5,
-                   (self->position.z + mate->position.z) * 0.5};
-    bred_                     = true;
-    context.brain->love_ticks = 0;
-    context.brain->breed_cooldown = 6000;
-    loops_                    = 0;
+    MobBrain* other = context.brain_of == nullptr
+                          ? nullptr
+                          : context.brain_of(*context.entities, mate_);
+    if (other == nullptr) {
+        return;
+    }
+    // Both parents: love spent, six thousand ticks before either can again.
+    context.brain->animal.love = 0;
+    context.brain->animal.age  = kParentCooldown;
+    other->animal.love         = 0;
+    other->animal.age          = kParentCooldown;
+    if (context.animal_events != nullptr) {
+        AnimalEvent birth;
+        birth.kind  = AnimalEventKind::Birth;
+        birth.self  = context.self;
+        birth.other = mate_;
+        // Where this parent stands. Which parent, and whether vanilla offsets
+        // it, is not measured.
+        birth.at = self->position;
+        context.animal_events->push_back(birth);
+    }
+    loops_ = 0;
 }
+// ── end husbandry ──
 
 }  // namespace ov::gameplay

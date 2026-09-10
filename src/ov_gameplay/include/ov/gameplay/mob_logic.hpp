@@ -9,6 +9,7 @@
 
 #include "ov/entity/logic.hpp"
 #include "ov/entity/world.hpp"
+#include "ov/gameplay/animal.hpp"
 #include "ov/gameplay/collision.hpp"
 #include "ov/gameplay/entity_physics.hpp"
 #include "ov/gameplay/goals.hpp"
@@ -38,6 +39,12 @@ struct MobContext {
     /// True while the sky would burn an undead mob. Supplied by the caller
     /// because a LevelView knows blocks and not the time of day.
     bool daylight{false};
+
+    // ── husbandry ──
+    /// The players an animal may follow for their food. Empty is legal.
+    std::span<const Tempter> tempters{};
+    /// Births, eggs and eaten grass, for the caller to finish. Null is legal.
+    std::vector<AnimalEvent>* animal_events{nullptr};
 };
 
 /// Recover the context, or null if the caller did not provide one.
@@ -145,13 +152,33 @@ public:
     /// to be told about it.
     [[nodiscard]] entity::EntityHandle target() const noexcept { return brain_.target; }
 
+    // ── husbandry ──
+    /// The brain, for the server to feed, shear or saddle what is in it.
+    [[nodiscard]] MobBrain& mutable_brain() noexcept { return brain_; }
+    /// Make this mob a newborn: `Age` -24000 and half its box. `state` is its
+    /// own state, still at the adult size the registry gave it.
+    void make_baby(entity::EntityState& state) noexcept;
+    /// Set an age read from anywhere (a test, an NBT one day). Resizes.
+    void set_age(entity::EntityState& state, i32 age) noexcept;
+
 private:
+    /// Age, love and eggs, once per tick. breeding.cpp.
+    void tick_husbandry(entity::EntityState& state, entity::EntityHandle self,
+                        const MobContext& context);
+
     const MobKind*           kind_{nullptr};
     GoalSelector             goals_;
     MobBrain                 brain_;
     math::LegacyRandomSource random_;
     EntityMotionConstants    motion_{};
     PanicGoal*               panic_{nullptr};
+    /// The size the registry gave this type, which a baby grows back to.
+    f32 adult_width_{0.0F};
+    f32 adult_height_{0.0F};
+    f32 adult_eye_{-1.0F};
+    /// The box is a baby's. Separate from `age < 0` because food and grass
+    /// can move the age to 0 between two ticks, and the box must follow.
+    bool baby_box_{false};
 };
 
 /// Build the goal list for a kind.

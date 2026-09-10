@@ -70,6 +70,7 @@
 // ── tnt and gravity ─────────────────────────────────────────────────
 #include "tnt_gravity.hpp"
 #include "projectiles.hpp"  // ── projectiles ──
+#include "husbandry.hpp"    // ── husbandry ──
 
 #include <fmt/format.h>
 
@@ -2137,6 +2138,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     std::optional<TntGravity> tnt_gravity;
     // ── projectiles ──
     std::optional<Projectiles> projectiles;
+    // ── husbandry ──
+    std::optional<Husbandry> husbandry;
 
     /// The packets that make one mob appear.
     ///
@@ -2184,6 +2187,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
 
         net::MetadataWriter fields;
         fields.float_value(net::metadata::kHealth, state.health);
+        // ── husbandry: baby, fleece, saddle ──
+        if (husbandry && mobs) {
+            husbandry->spawn_metadata(*mobs, state, fields);
+        }
         deliver(net::clientbound::kEntityMetadata,
                 net::encode_entity_metadata(state.network_id, fields.take()));
 
@@ -2572,6 +2579,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         world_ticks->set_extension(&*tnt_gravity);
         // ── projectiles ──
         projectiles.emplace(*registries, *blocks, mob_combat ? &*mob_combat : nullptr);
+        // ── husbandry ──
+        husbandry.emplace(*registries, *blocks);
         tick_broadcasts.reserve(4096);
     } else {
         OV_LOG_WARN("no block registry — fluids and redstone stay inert");
@@ -4342,6 +4351,13 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         // Player Command.
                         player.sneaking = interact->sneaking;
 
+                        // ── husbandry: a right-click on an entity, for the tick ──
+                        if (husbandry && interact->kind == net::InteractKind::Interact) {
+                            husbandry->queue_interact(player.entity_id, interact->entity_id,
+                                                      interact->hand.value_or(net::Hand::Main));
+                            return true;
+                        }
+
                         const CombatOutcome out = player.combat.on_interact(
                             *interact, combat_view(player), combat_io(player));
                         if (!out.unsupported.empty()) {
@@ -5688,6 +5704,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         } else {
             mobs->set_logic(*spawned, std::make_unique<gameplay::FallingMob>());
         }
+        // ── husbandry: an egg hatches a chick — measured, Age -24000 ──
+        if (husbandry) {
+            husbandry->make_baby(*mobs, *spawned);
+        }
         mob_packets(*state, [&](i32 id, std::span<const u8> payload) {
             broadcast(nullptr, id, payload);
         });
@@ -5708,6 +5728,85 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     projectile_host.drop_item                 = tnt_host.drop_item;
     const ProjectileDeliver projectile_deliver = tnt_deliver;
     // ── end projectiles ─────────────────────────────────────────────────────
+
+    // ── husbandry ───────────────────────────────────────────────────────────
+    // Everything here runs on the tick thread with players_mutex held (the
+    // entity block takes it), which is what lets it touch an inventory.
+    HusbandryHost          husbandry_host;
+    const HusbandryDeliver husbandry_deliver = tnt_deliver;
+    husbandry_host.with_hand = [&](i32 id, net::Hand hand,
+                                   const std::function<void(HusbandryHand&)>& visit) {
+        for (auto& [key, who] : players) {
+            if (who.entity_id != id || !who.connection || who.survival.awaiting_respawn) {
+                continue;
+            }
+            HusbandryHand lent;
+            lent.entity_id = who.entity_id;
+            lent.eyes      = Vec3d{who.x, who.y + 1.62, who.z};
+            lent.creative  = who.game_mode == 1;
+            lent.inventory = who.inventory;
+            lent.slot = hand == net::Hand::Main ? 36 + static_cast<usize>(who.held_slot) : 45;
+            lent.send_slot = [&](usize slot) { send_slot(who, slot); };
+            lent.give      = [&](const net::ItemStack& stack) { return give_to_player(who, stack); };
+            lent.wear      = [&, hand](i32 amount) {
+                // The main hand only: the damage helpers read the held slot.
+                // Shears in the off hand are sheared with and not worn — named.
+                if (hand != net::Hand::Main) {
+                    return;
+                }
+                const i32 worn = held_damage(who) + amount;
+                const auto max = gameplay::max_damage(held_name(who));
+                if (max && worn >= *max) {
+                    break_held_item(who);
+                } else {
+                    set_held_damage(who, worn);
+                }
+            };
+            visit(lent);
+            return true;
+        }
+        return false;
+    };
+    husbandry_host.tempters = [&](std::vector<gameplay::Tempter>& out) {
+        for (const auto& [key, who] : players) {
+            if (!who.connection || !who.confirmed || who.game_mode == 3 ||
+                who.survival.awaiting_respawn) {
+                continue;
+            }
+            const net::ItemStack& off = who.inventory[45];
+            out.push_back(gameplay::Tempter{
+                Vec3d{who.x, who.y, who.z}, held_name(who),
+                off.item_id != 0 && off.count > 0 && registries && item_registry
+                    ? registries->entry_of(*item_registry, off.item_id)
+                    : std::string_view{}});
+        }
+    };
+    husbandry_host.create_mob = [&](std::string_view type, Vec3d at) -> entity::EntityHandle {
+        if (!mobs || !registries) {
+            return entity::kNoEntity;
+        }
+        const auto spawned = mobs->spawn(type, at, net::Uuid{});
+        const gameplay::MobKind* kind = gameplay::mob_kind(type);
+        if (!spawned || kind == nullptr) {
+            return entity::kNoEntity;
+        }
+        entity::EntityState* state = mobs->mutable_state(*spawned);
+        state->uuid                = uuid_for_entity(state->network_id);
+        state->broadcast_position  = state->position;
+        state->broadcast_valid     = true;
+        mobs->set_logic(*spawned, std::make_unique<gameplay::Mob>(
+                                      *kind, state->width, state->height, state->network_id,
+                                      gameplay::kNoQuarry));
+        return *spawned;
+    };
+    husbandry_host.announce = [&](const entity::EntityState& state) {
+        mob_packets(state, [&](i32 id, std::span<const u8> payload) {
+            broadcast(nullptr, id, payload);
+        });
+    };
+    husbandry_host.drop_item = tnt_host.drop_item;
+    husbandry_host.spawn_orb = projectile_host.spawn_orb;
+    // ── end husbandry ───────────────────────────────────────────────────────
 
     const auto should_stop = [&]() {
         return g_stop_requested.load(std::memory_order_relaxed) ||
@@ -6362,7 +6461,22 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     projectiles->before_entity_tick(*mobs, projectile_host);
                     projectiles->tick_skeletons(*mobs, collisions, 2, projectile_deliver);
                 }
+                // ── husbandry: clicks and tempters before, births and eggs after ──
+                if (husbandry) {
+                    (void)husbandry->before_entity_tick(*mobs, mob_context, husbandry_host,
+                                                       husbandry_deliver);
+                }
                 mobs->tick(entity::TickContext{clock.tick_count(), &mob_context});
+                if (husbandry) {
+                    const HusbandryStats bred = husbandry->after_entity_tick(
+                        *mobs, level ? &*level : nullptr, husbandry_host, husbandry_deliver);
+                    if (bred.births + bred.eggs + bred.grazed + bred.grown > 0) {
+                        OV_LOG_DEBUG("tick {}: {} born, {} grown, {} eggs, {} grazed",
+                                     clock.tick_count(), bred.births, bred.grown, bred.eggs,
+                                     bred.grazed);
+                    }
+                }
+                // ── end husbandry ──
                 // ── tnt and gravity: creepers, landings, explosions ──
                 if (tnt_gravity && level && world_ticks) {
                     tnt_gravity->tick_creepers(*mobs, mob_level, tnt_host, tnt_deliver);
