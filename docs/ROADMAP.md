@@ -444,7 +444,17 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       mesuré** — `40k + 20 + 3j`, décalage `3·⌊S·spread⌋` avec `spread` lu à
       l'**index de la grille** : 89,3 % contre 31,4 % au centre du bloc, et
       quatre témoins. La barrière, le cas noyé jusqu'au niveau de la mer et le
-      départage eau/lave sont **refusés et nommés**)*
+      départage eau/lave sont **refusés et nommés**. **2026-09-10 : implémentés**
+      — grille décalée, barrière, cas noyé, lave profonde, dans l'étage de bruit
+      et dans les carvers : l'oracle entier passe de **71,747 % à 99,954 %**
+      cellule par cellule (eau 99,983, lave 99,998, air 99,946), contre 90,678 %
+      pour un témoin au mauvais nom de hachage ; sur chunks `full` par
+      `generate()`, intérieurs des grottes 76,2 → 97,6 %, déterminisme 0 écart
+      sur 1 572 864 cellules. Restent : les fluides à réveiller — règle trouvée,
+      98,3 % des marques `PostProcessing` — ne sont livrés à aucune file, donc
+      une cascade générée ne coule pas ; un tiers de la lave des carvers sous
+      −56 est marqué par une règle inconnue ; coût ≈ ×2,5 en debug. Voir
+      `docs/provenance/aquiferes.md` § 10)*
 - [x] Minerais par couche, distributions triangulaires
       *(**99,509 % des positions au bloc près** en rejouant sur le terrain du
       jeu, et **82,406 % sur notre propre terrain généré de bout en bout** —
