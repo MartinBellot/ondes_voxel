@@ -20,7 +20,7 @@ struct Binding {
     int glfw_code;
 };
 
-constexpr std::array<Binding, 12> kBindings{{
+constexpr std::array<Binding, 15> kBindings{{
     {Key::Forward, GLFW_KEY_W},
     {Key::Back, GLFW_KEY_S},
     {Key::Left, GLFW_KEY_A},
@@ -33,7 +33,35 @@ constexpr std::array<Binding, 12> kBindings{{
     {Key::Inventory, GLFW_KEY_E},
     {Key::Drop, GLFW_KEY_Q},
     {Key::Backspace, GLFW_KEY_BACKSPACE},
+    {Key::SaveToolbar, GLFW_KEY_C},
+    {Key::LoadToolbar, GLFW_KEY_X},
+    {Key::Chat, GLFW_KEY_T},
 }};
+
+/// A key's label as the layout prints it, upper-cased, or `fallback`.
+[[nodiscard]] std::string label_of(int glfw_key, std::string_view fallback) {
+    const char* name = glfwGetKeyName(glfw_key, 0);
+    if (name == nullptr || name[0] == '\0') {
+        return std::string(fallback);
+    }
+    std::string out(name);
+    for (char& c : out) {
+        if (c >= 'a' && c <= 'z') {
+            c = static_cast<char>(c - 'a' + 'A');
+        }
+    }
+    // Non-ASCII labels (É on AZERTY) come as UTF-8 lower case; vanilla
+    // upper-cases them with the root locale. The two a French layout has on
+    // its number row are folded here; anything else is shown as GLFW gives it.
+    for (const auto& [lower, upper] : {std::pair<std::string_view, std::string_view>{"\xC3\xA9", "\xC3\x89"},
+                                       {"\xC3\xA8", "\xC3\x88"}, {"\xC3\xA7", "\xC3\x87"},
+                                       {"\xC3\xA0", "\xC3\x80"}}) {
+        for (usize at = out.find(lower); at != std::string::npos; at = out.find(lower, at)) {
+            out.replace(at, lower.size(), upper);
+        }
+    }
+    return out;
+}
 
 /// The number row, in hotbar order.
 constexpr std::array<int, 9> kHotbarKeys{GLFW_KEY_1, GLFW_KEY_2, GLFW_KEY_3,
@@ -153,6 +181,27 @@ void* Window::native_handle() const noexcept {
     return impl_->window;
 }
 
+std::string Window::key_label(Key key) const {
+    for (const auto& binding : kBindings) {
+        if (binding.key == key) {
+            const char fallback[2] = {binding.glfw_code >= 32 && binding.glfw_code < 127
+                                          ? static_cast<char>(binding.glfw_code)
+                                          : '?',
+                                      '\0'};
+            return label_of(binding.glfw_code, fallback);
+        }
+    }
+    return "?";
+}
+
+std::string Window::hotbar_key_label(i32 index) const {
+    if (index < 0 || index >= static_cast<i32>(kHotbarKeys.size())) {
+        return "?";
+    }
+    const char fallback[2] = {static_cast<char>('1' + index), '\0'};
+    return label_of(kHotbarKeys[static_cast<usize>(index)], fallback);
+}
+
 bool Window::should_close() const {
     return glfwWindowShouldClose(impl_->window) == GLFW_TRUE;
 }
@@ -191,6 +240,13 @@ const InputState& Window::poll() {
     input.shift_held =
         glfwGetKey(impl_->window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
         glfwGetKey(impl_->window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
+#if defined(__APPLE__)
+    input.control_held = glfwGetKey(impl_->window, GLFW_KEY_LEFT_SUPER) == GLFW_PRESS ||
+                         glfwGetKey(impl_->window, GLFW_KEY_RIGHT_SUPER) == GLFW_PRESS;
+#else
+    input.control_held = glfwGetKey(impl_->window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
+                         glfwGetKey(impl_->window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
+#endif
 
     const bool attack     = glfwGetMouseButton(impl_->window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
     const bool use        = glfwGetMouseButton(impl_->window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;

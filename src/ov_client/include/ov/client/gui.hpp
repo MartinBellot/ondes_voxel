@@ -206,6 +206,10 @@ private:
 
     f32      width_{0.0F};
     f32      height_{0.0F};
+    /// The framebuffer in real pixels, which is what the projection divides
+    /// by — not width_ × scale_, which is larger when the size does not divide.
+    f32      framebuffer_width_{1.0F};
+    f32      framebuffer_height_{1.0F};
     u32      scale_{1};
     GuiStats stats_;
 };

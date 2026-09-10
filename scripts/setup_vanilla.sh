@@ -191,5 +191,33 @@ else
 EOF
 fi
 
+# ── The creative catalogue ───────────────────────────────────────────────────
+# Without it the client has no creative inventory at all: E in creative falls
+# back to the survival inventory, and the only trace is a line in the log.
+# That is exactly what happened on this machine — the file had been generated
+# in a git worktree and vanished with it. So it is generated here, where every
+# checkout passes, whenever it is missing or stale.
+head_ "Creative catalogue"
+CATALOGUE="data/vanilla/1.20.1/creative_tabs.json"
+if [ -n "$FOUND_SERVER" ] || [ -f tools/vanilla/server.jar ]; then
+    if command -v javac >/dev/null 2>&1; then
+        if python3 scripts/measure_creative_tabs.py --check >/tmp/ov_creative_tabs.log 2>&1; then
+            ok "$CATALOGUE (sha256 matches the committed one)"
+        else
+            miss "$CATALOGUE could not be generated — see /tmp/ov_creative_tabs.log"
+        fi
+    else
+        miss "no javac: $CATALOGUE cannot be generated (install a JDK 17)"
+    fi
+else
+    miss "no server.jar: $CATALOGUE cannot be generated"
+fi
+if [ -f data/vanilla/1.20.1/creative_items.json ]; then
+    ok "data/vanilla/1.20.1/creative_items.json (tooltips, tints)"
+else
+    echo "      data/vanilla/1.20.1/creative_items.json is absent: creative tooltips show names only."
+    echo "      scripts/measure_creative_screen.py asks the vanilla client for them (opens a window)."
+fi
+
 # Not an error: M0 is fully buildable without any of this.
 exit 0

@@ -199,9 +199,21 @@ const Gui::Texture* Gui::lookup(GuiTexture texture) const noexcept {
 }
 
 void Gui::begin(u32 framebuffer_width, u32 framebuffer_height, u32 scale) {
-    scale_  = std::max(1U, scale);
-    width_  = static_cast<f32>(framebuffer_width) / static_cast<f32>(scale_);
-    height_ = static_cast<f32>(framebuffer_height) / static_cast<f32>(scale_);
+    scale_ = std::max(1U, scale);
+    // Vanilla's rule, not a float: the scaled size is an integer, rounded
+    // *up* when the framebuffer does not divide. 2560 at scale 3 is 854, which
+    // is what the running 1.20.1 client reports, and every centred panel's
+    // origin is (854 − w) / 2 in integers. A float 853.33 gave the same origin
+    // at that size by luck and a different one at others.
+    const u32 gui_width  = framebuffer_width / scale_ + (framebuffer_width % scale_ != 0 ? 1U : 0U);
+    const u32 gui_height = framebuffer_height / scale_ + (framebuffer_height % scale_ != 0 ? 1U : 0U);
+    width_  = static_cast<f32>(gui_width);
+    height_ = static_cast<f32>(gui_height);
+    // The projection uses the framebuffer itself: 854 × 3 is 2562, two pixels
+    // wider than the 2560 it draws into, and projecting with it would squash
+    // the whole interface by that much.
+    framebuffer_width_  = static_cast<f32>(framebuffer_width);
+    framebuffer_height_ = static_cast<f32>(framebuffer_height);
     scratch_.clear();
     batches_.clear();
     stats_.quads     = 0;
@@ -387,8 +399,8 @@ void Gui::flush(rhi::CommandList& cmd) {
     }
     std::memcpy(mapped, scratch_.data(), scratch_.size() * sizeof(Vertex));
 
-    const std::array<f32, 4> push{2.0F / (width_ * static_cast<f32>(scale_)),
-                                  2.0F / (height_ * static_cast<f32>(scale_)), 0.0F, 0.0F};
+    const std::array<f32, 4> push{2.0F / framebuffer_width_, 2.0F / framebuffer_height_, 0.0F,
+                                  0.0F};
     cmd.bind_pipeline(pipeline_);
     cmd.push_constants(pipeline_, push.data(), sizeof(push));
     cmd.bind_vertex_buffer(0, vertices_[slot]);

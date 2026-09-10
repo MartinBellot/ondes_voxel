@@ -32,6 +32,10 @@ constexpr f32 kDamageFlashSeconds = 0.5F;
 /// 250 ms; this is the same, in the unit the frame loop counts in.
 constexpr f32 kDoubleClickSeconds = 0.25F;
 
+/// The search field's cursor: on for 300 ms, off for 300 ms, from the moment
+/// the screen opened — vanilla's edit box blink.
+constexpr f32 kBlinkSeconds = 0.3F;
+
 /// The plain text of a chat component, as far as the interface needs it.
 ///
 /// Only `text`, and only at the top level. That is what the server sends for a
@@ -119,9 +123,6 @@ std::expected<std::unique_ptr<Interface>, std::string> Interface::create(
     self->textures_.widgets = *widgets;
     self->textures_.icons   = *icons;
 
-    // The four backgrounds a window can have, uploaded up front. Four textures
-    // of a quarter of a megabyte each is nothing next to the block atlas, and
-    // uploading one in the middle of a frame is a stall.
     for (const std::string_view location :
          {"minecraft:gui/container/inventory", "minecraft:gui/container/generic_54",
           "minecraft:gui/container/crafting_table", "minecraft:gui/container/furnace"}) {
@@ -146,20 +147,27 @@ std::expected<std::unique_ptr<Interface>, std::string> Interface::create(
                     render::to_string(language.error()));
     }
 
-    // ── The creative catalogue ──────────────────────────────────────────────
+    // ── The creative inventory ──────────────────────────────────────────────
     //
-    // Refused and named when it is missing rather than replaced by a guess.
-    // The order of the tabs is Mojang's and there is no way to state it here:
-    // see docs/provenance/inventaire-creatif.md.
+    // Refused and named when the catalogue is missing rather than replaced by
+    // a guess — and named *on screen* as well as here, since the log is where
+    // the original "there is no creative inventory" hid.
     auto tabs = render::CreativeTabs::load(options.creative_tabs);
     if (tabs) {
-        usize cells = 0;
-        for (const render::CreativeTab& tab : tabs->tabs()) {
-            cells += tab.stacks.size();
-        }
-        OV_LOG_INFO("interface: creative catalogue {} — {} tabs, {} cells",
-                    options.creative_tabs, tabs->tabs().size(), cells);
         self->creative_tabs_ = std::move(*tabs);
+
+        auto described = render::CreativeItems::load(options.creative_items, self->language_);
+        if (described) {
+            self->creative_items_ = std::move(*described);
+        } else {
+            OV_LOG_WARN("creative items {}: {} — tooltips show names only, and nothing is "
+                        "tinted. scripts/measure_creative_screen.py asks the vanilla client.",
+                        options.creative_items, render::to_string(described.error()));
+        }
+        self->item_tags_ = render::load_item_tags(options.item_tags);
+        if (self->item_tags_.empty()) {
+            OV_LOG_WARN("no item tags under {}: a '#' search finds nothing", options.item_tags);
+        }
 
         for (const std::string_view location :
              {"minecraft:gui/container/creative_inventory/tabs",
@@ -178,16 +186,59 @@ std::expected<std::unique_ptr<Interface>, std::string> Interface::create(
             }
         }
         if (self->creative_sheet_ != client::GuiTexture::Invalid) {
-            self->creative_screen_.emplace(*self->creative_tabs_, self->language_);
+            self->creative_screen_.emplace(
+                *self->creative_tabs_, self->language_,
+                self->creative_items_ ? &*self->creative_items_ : nullptr,
+                client::CreativeScreenOptions{options.operator_tab});
+            self->creative_screen_->set_item_tags(&self->item_tags_);
+            usize cells = 0;
+            for (const render::CreativeTab* tab : self->creative_screen_->tabs()) {
+                cells += tab->stacks.size();
+            }
+            OV_LOG_INFO("interface: creative catalogue {} — {} tabs shown, {} cells, {} described",
+                        options.creative_tabs, self->creative_screen_->tab_count(), cells,
+                        self->creative_items_ ? self->creative_items_->size() : 0);
         }
     } else {
         OV_LOG_WARN("creative catalogue {}: {}. The creative inventory is refused; "
-                    "generate it with scripts/measure_creative_tabs.py.",
+                    "generate it with scripts/measure_creative_tabs.py (or "
+                    "scripts/setup_vanilla.sh).",
                     options.creative_tabs, render::to_string(tabs.error()));
     }
 
+    auto hotbars = client::SavedHotbars::load(options.hotbar_file);
+    if (hotbars) {
+        self->saved_hotbars_ = std::move(*hotbars);
+    } else {
+        OV_LOG_WARN("{}: {}; saved hotbars start empty", options.hotbar_file,
+                    client::to_string(hotbars.error()));
+    }
+    self->creative_textures_.tabs       = self->creative_sheet_;
+    self->creative_textures_.slot_icons = options.slot_icons;
+
+    // The gesture model's two rules that depend on data: the stack limit from
+    // the registry, the armour slot from what the real client said.
+    Interface* raw = self.get();
+    self->creative_model_.set_rules(
+        [raw](i32 item) -> i32 {
+            if (raw->registries_ == nullptr || item <= 0) {
+                return 64;
+            }
+            return raw->registries_->max_stack_size(static_cast<registry::ProtocolId>(item));
+        },
+        [raw](const client::SlotStack& stack) -> i32 {
+            if (!raw->creative_items_) {
+                // No data: the armour slots refuse nothing rather than
+                // everything, and that is named in the provenance document.
+                return -2;
+            }
+            const render::CreativeItemInfo* info = raw->creative_items_->first(raw->item_name(stack.item));
+            return info != nullptr ? info->armour_slot : -1;
+        });
+
     self->inventory_.assign(kPlayerSlots, net::ItemStack{});
     self->views_.reserve(128);
+    self->tooltip_lines_.reserve(16);
     return self;
 }
 
@@ -198,30 +249,38 @@ std::string_view Interface::item_name(i32 item_id) const noexcept {
     return registries_->entry_of(*item_registry_, static_cast<registry::ProtocolId>(item_id));
 }
 
+client::ItemStackView Interface::view_of(const net::ItemStack& stack) const {
+    if (stack.empty()) {
+        return {};
+    }
+    client::ItemStackView view{item_name(stack.item_id), stack.count};
+    if (creative_items_) {
+        if (const render::CreativeItemInfo* info = creative_items_->first(view.item)) {
+            view.tints      = info->tints;
+            view.has_tints  = true;
+            view.max_damage = info->max_damage;
+            view.damage     = client::nbt_damage(stack.nbt);
+        }
+    }
+    return view;
+}
+
 void Interface::build_views(const std::vector<net::ItemStack>& slots) {
     views_.clear();
     for (const net::ItemStack& stack : slots) {
-        views_.push_back(client::ItemStackView{stack.empty() ? std::string_view{}
-                                                             : item_name(stack.item_id),
-                                               stack.count});
+        views_.push_back(view_of(stack));
     }
 }
 
 void Interface::refresh_hotbar() {
     for (usize i = 0; i < hud_.hotbar.size(); ++i) {
-        const net::ItemStack& stack = inventory_[kHotbarFirst + i];
-        hud_.hotbar[i] = client::ItemStackView{
-            stack.empty() ? std::string_view{} : item_name(stack.item_id), stack.count};
+        hud_.hotbar[i] = view_of(inventory_[kHotbarFirst + i]);
     }
-    const net::ItemStack& off = inventory_[kOffHandSlot];
-    hud_.off_hand                 = client::ItemStackView{
-        off.empty() ? std::string_view{} : item_name(off.item_id), off.count};
+    hud_.off_hand = view_of(inventory_[kOffHandSlot]);
 
     std::array<client::ItemStackView, 4> armour{};
     for (usize i = 0; i < armour.size(); ++i) {
-        const net::ItemStack& piece = inventory_[kArmourFirst + i];
-        armour[i]                       = client::ItemStackView{
-            piece.empty() ? std::string_view{} : item_name(piece.item_id), piece.count};
+        armour[i] = view_of(inventory_[kArmourFirst + i]);
     }
     hud_.armour = client::armour_points(armour);
 }
@@ -246,12 +305,8 @@ void Interface::apply(const netclient::ClientEvents& events) {
         hud_.experience_level = events.experience->level;
     }
 
-    // Open Screen first, and *before* the slot packets. A server sends the
-    // window and its contents in one breath, and both arrive in the same poll:
-    // applying the contents first means dropping every one of them, because the
-    // window they name does not exist yet. That is exactly what happened, and
-    // the symptom was a chest that opened empty and filled itself one click
-    // later.
+    // Open Screen first, and *before* the slot packets: both arrive in the
+    // same poll, and contents applied before their window are dropped.
     if (events.open_screen) {
         auto screen = client::ContainerScreen::from_menu(
             events.open_screen->type, static_cast<u8>(events.open_screen->window_id),
@@ -269,8 +324,6 @@ void Interface::apply(const netclient::ClientEvents& events) {
             OV_LOG_INFO("interface: opened {} ({} slots, window {})", screen_->title(),
                         screen_->slot_count(), screen_->window_id());
         } else {
-            // Refused and named by ContainerScreen::from_menu. The window is
-            // left closed; the caller's next Close Container tells the server.
             screen_.reset();
         }
     }
@@ -283,9 +336,6 @@ void Interface::apply(const netclient::ClientEvents& events) {
         } else if (screen_ && content.window_id == screen_->window_id()) {
             window_slots_ = content.slots;
             state_id_     = content.state_id;
-            // The player's own section of an open window is a *view* of window
-            // 0, and the server sends it here rather than twice. Copying it
-            // back keeps the hotbar under the screen correct.
             const usize container = window_slots_.size() >= 36 ? window_slots_.size() - 36 : 0;
             for (usize i = 0; i + container < window_slots_.size() && i + 9 < kPlayerSlots; ++i) {
                 inventory_[9 + i] = window_slots_[container + i];
@@ -298,8 +348,6 @@ void Interface::apply(const netclient::ClientEvents& events) {
     for (const net::ContainerSlotUpdate& update : events.container_slots) {
         state_id_ = update.state_id;
         if (update.window_id == -1 && update.slot == -1) {
-            // The cursor. Not a window: reading the id as unsigned turns this
-            // into window 255 and the stack on the cursor never appears.
             carried_ = update.stack;
             continue;
         }
@@ -341,9 +389,6 @@ void Interface::toggle_inventory(client::Window& window, netclient::Client& clie
 
 void Interface::close(client::Window& window, netclient::Client& client) {
     if (screen_ && !own_inventory_) {
-        // Not optional. A server that still believes a container is open
-        // refuses the next one, and the symptom is a chest that will not open
-        // a second time.
         client.send_close_container(screen_->window_id());
     }
     screen_.reset();
@@ -359,30 +404,144 @@ void Interface::note_creative(i16 slot, i32 item_id, i8 count) {
     refresh_hotbar();
 }
 
+// ── The creative model ──────────────────────────────────────────────────────
+
+client::SlotStack Interface::slot_of(const net::ItemStack& stack) const {
+    if (stack.empty()) {
+        return {};
+    }
+    return client::SlotStack{stack.item_id, stack.count, stack.nbt};
+}
+
+net::ItemStack Interface::stack_of(const client::SlotStack& stack) const {
+    if (stack.empty()) {
+        return {};
+    }
+    return net::ItemStack{stack.item, static_cast<i8>(std::clamp(stack.count, 1, 127)), stack.nbt};
+}
+
+client::SlotStack Interface::cell_stack(const client::CreativeCell& cell) const {
+    if (cell.hint || registries_ == nullptr || !item_registry_) {
+        return {};
+    }
+    const auto id = registries_->protocol_id(*item_registry_, cell.item);
+    if (!id) {
+        // Refused and named: an item the registry does not know has no wire
+        // id, and sending zero would hand the player air.
+        OV_LOG_WARN("creative: {} is not in minecraft:item; refused", cell.item);
+        return {};
+    }
+    return client::SlotStack{static_cast<i32>(*id), cell.count, {cell.nbt.begin(), cell.nbt.end()}};
+}
+
+void Interface::load_model() {
+    for (usize i = 0; i < kPlayerSlots; ++i) {
+        creative_model_.slots()[i] = slot_of(inventory_[i]);
+    }
+    creative_model_.carried() = slot_of(carried_);
+    effects_.clear();
+}
+
+void Interface::store_model(netclient::Client& client) {
+    for (const auto& [slot, stack] : effects_.slots) {
+        const net::ItemStack wire = stack_of(stack);
+        client.send_creative_slot(slot, wire.item_id, wire.count, wire.nbt);
+    }
+    // A throw is the same packet with slot −1: vanilla's own creative drop.
+    for (const client::SlotStack& drop : effects_.drops) {
+        const net::ItemStack wire = stack_of(drop);
+        client.send_creative_slot(-1, wire.item_id, wire.count, wire.nbt);
+    }
+    for (usize i = 0; i < kPlayerSlots; ++i) {
+        inventory_[i] = stack_of(creative_model_.slots()[i]);
+    }
+    carried_ = stack_of(creative_model_.carried());
+    refresh_hotbar();
+    effects_.clear();
+}
+
+void Interface::save_hotbar(usize row) {
+    client::SavedHotbars::Row saved{};
+    for (usize column = 0; column < saved.size(); ++column) {
+        const net::ItemStack& stack = inventory_[kHotbarFirst + column];
+        if (!stack.empty()) {
+            saved[column] = client::SavedStack{std::string(item_name(stack.item_id)), stack.count,
+                                               stack.nbt};
+        }
+    }
+    saved_hotbars_.set_row(row, saved);
+    if (auto written = saved_hotbars_.save(options_.hotbar_file); !written) {
+        OV_LOG_WARN("{}: {}", options_.hotbar_file, client::to_string(written.error()));
+    }
+    if (creative_screen_) {
+        creative_screen_->refresh_saved_hotbars();
+    }
+    // Vanilla says so in the chat, which this client does not draw yet; the
+    // line over the hotbar is where this client says things.
+    hud_.name_flash      = fmt::format("Saved toolbar {}", row + 1);
+    hud_.name_flash_life = 1.0F;
+    OV_LOG_INFO("saved hotbar {} to {}", row + 1, options_.hotbar_file);
+}
+
+void Interface::load_hotbar(netclient::Client& client, usize row) {
+    if (registries_ == nullptr || !item_registry_) {
+        return;
+    }
+    const client::SavedHotbars::Row& saved = saved_hotbars_.row(row);
+    for (usize column = 0; column < saved.size(); ++column) {
+        net::ItemStack stack;
+        if (!saved[column].empty()) {
+            if (const auto id = registries_->protocol_id(*item_registry_, saved[column].item)) {
+                stack = net::ItemStack{static_cast<i32>(*id),
+                                       static_cast<i8>(std::clamp(saved[column].count, 1, 127)),
+                                       saved[column].nbt};
+            } else {
+                OV_LOG_WARN("saved hotbar: {} is not an item here; slot left empty",
+                            saved[column].item);
+            }
+        }
+        client.send_creative_slot(static_cast<i16>(kHotbarFirst + column), stack.item_id,
+                                  stack.count, stack.nbt);
+        inventory_[kHotbarFirst + column] = std::move(stack);
+    }
+    refresh_hotbar();
+}
+
 // ── The creative inventory ──────────────────────────────────────────────────
 
 void Interface::toggle_creative(client::Window& window, netclient::Client& client) {
     if (creative_visible_) {
-        creative_visible_ = false;
+        creative_visible_   = false;
         creative_scrolling_ = false;
         window.set_cursor_captured(true);
         return;
     }
     if (!creative_screen_) {
+        refusal_ = fmt::format("No creative inventory: {} is missing (scripts/setup_vanilla.sh)",
+                               options_.creative_tabs);
+        hud_.name_flash      = refusal_;
+        hud_.name_flash_life = 1.0F;
         OV_LOG_WARN("no creative catalogue loaded; the screen is refused");
         return;
     }
     if (!hud_.creative) {
-        // Not a cosmetic guard. A survival server *ignores* Set Creative Slot
-        // — vanilla's own behaviour, measured — so the screen would be a
-        // catalogue that hands out nothing and looks broken.
         OV_LOG_INFO("the creative inventory needs creative mode; the server is in survival");
         return;
+    }
+    if (!hint_labels_set_) {
+        std::array<std::string, 9> keys;
+        for (i32 i = 0; i < 9; ++i) {
+            keys[static_cast<usize>(i)] = window.hotbar_key_label(i);
+        }
+        creative_screen_->set_saved_hotbars(&saved_hotbars_,
+                                            window.key_label(client::Key::SaveToolbar), keys);
+        hint_labels_set_ = true;
     }
     if (screen_) {
         close(window, client);
     }
-    creative_visible_ = true;
+    creative_visible_   = true;
+    creative_opened_at_ = clock_;
     window.set_cursor_captured(false);
 }
 
@@ -402,37 +561,30 @@ bool Interface::creative_take(i32 cell) {
     if (!creative_screen_) {
         return false;
     }
-    const render::CreativeStack* stack = creative_screen_->cell(cell);
+    const client::CreativeCell* stack = creative_screen_->cell(cell);
     if (stack == nullptr) {
         return false;
     }
-    if (registries_ == nullptr || !item_registry_) {
-        OV_LOG_WARN("no item registry; {} cannot be named to the server", stack->item);
+    const client::SlotStack taken = cell_stack(*stack);
+    if (taken.empty()) {
         return false;
     }
-    const auto id = registries_->protocol_id(*item_registry_, stack->item);
-    if (!id) {
-        // Refused and named. An item the registry does not know has no wire id
-        // and sending zero would hand the player air.
-        OV_LOG_WARN("creative: {} is not in minecraft:item; refused", stack->item);
-        return false;
-    }
-    // A click takes a *full* stack, which is the item's own limit and not
-    // always 64: a bucket is 16 and a sword is 1.
-    carried_.item_id = static_cast<i32>(*id);
-    carried_.count   = registries_->max_stack_size(*id);
-    carried_.nbt.assign(stack->nbt.begin(), stack->nbt.end());
+    load_model();
+    creative_model_.click_cell(taken, 2, false, effects_);
+    carried_ = stack_of(creative_model_.carried());
+    effects_.clear();
     return true;
 }
 
 void Interface::creative_put(netclient::Client& client, i16 slot) {
-    if (slot < 0 || static_cast<usize>(slot) >= inventory_.size()) {
-        return;
-    }
-    client.send_creative_slot(slot, carried_.item_id, carried_.count, carried_.nbt);
-    inventory_[static_cast<usize>(slot)] = carried_;
-    refresh_hotbar();
-    carried_ = net::ItemStack{};
+    load_model();
+    creative_model_.click_slot(slot, 0, false,
+                               creative_screen_ && creative_screen_->tab().type ==
+                                                           render::CreativeTabType::Inventory
+                                   ? client::CreativePage::Survival
+                                   : client::CreativePage::Items,
+                               effects_);
+    store_model(client);
 }
 
 std::string Interface::describe_creative() const {
@@ -445,12 +597,20 @@ std::string Interface::describe_creative() const {
                                   screen.page().size(), screen.scroll_row(),
                                   screen.scroll_range());
     for (i32 i = 0; i < client::creative_layout::kPageCells; ++i) {
-        const render::CreativeStack* stack = screen.cell(i);
+        const client::CreativeCell* stack = screen.cell(i);
         if (stack != nullptr) {
-            out += fmt::format("\n  cell {:2}  {}", i, stack->item);
+            out += fmt::format("\n  cell {:2}  {}{}", i, stack->item, stack->hint ? " (hint)" : "");
         }
     }
     return out;
+}
+
+client::GuiPoint Interface::creative_pointer() const {
+    if (pointer_override_ && creative_screen_) {
+        return client::GuiPoint{creative_screen_->origin_x(gui_->width()) + pointer_override_->x,
+                                creative_screen_->origin_y(gui_->height()) + pointer_override_->y};
+    }
+    return client::GuiPoint{mouse_x_, mouse_y_};
 }
 
 u8 Interface::window_id() const noexcept {
@@ -461,10 +621,6 @@ void Interface::drag_over(netclient::Client& client, std::span<const i16> slots,
     if (slots.empty()) {
         return;
     }
-    // The three phases, and the button values that name them: 0/1/2 for a left
-    // drag, 4/5/6 for a right one, 8/9/10 for the middle. Start and end carry
-    // slot −999 — they are not clicks on anything — and only the middle phase
-    // names slots.
     const i8 base = right ? i8{4} : i8{0};
     client.send_container_click(window_id(), state_id_, -999, base,
                                 client::click_mode::kQuickCraft, carried_);
@@ -495,12 +651,21 @@ bool Interface::update(const client::InputState& input, netclient::Client& clien
     mouse_x_        = static_cast<f32>(input.mouse_x) / scale;
     mouse_y_        = static_cast<f32>(input.mouse_y) / scale;
 
-    if (input.just_pressed(client::Key::Inventory)) {
+    // E on the search page is a letter, not a key: measured, the running
+    // client keeps the screen open and the letter goes into the box.
+    const bool typing = creative_visible_ && creative_screen_ && creative_screen_->searching();
+    if (input.just_pressed(client::Key::Inventory) && !typing) {
         // E opens the creative inventory in creative and the player's own
-        // inventory otherwise, which is what vanilla binds it to. The creative
-        // screen already refuses itself in survival, so this is one branch and
-        // not two rules that can disagree.
-        if (hud_.creative && creative_screen_ && !screen_) {
+        // inventory otherwise — and says so on screen when the catalogue that
+        // the creative one needs is missing, instead of silently opening the
+        // survival inventory in creative. That silence was the whole of the
+        // "our client has no creative inventory" report.
+        if (hud_.creative && !screen_) {
+            toggle_creative(window, client);
+            if (!creative_visible_ && !creative_screen_) {
+                toggle_inventory(window, client);
+            }
+        } else if (creative_visible_) {
             toggle_creative(window, client);
         } else {
             toggle_inventory(window, client);
@@ -513,14 +678,23 @@ bool Interface::update(const client::InputState& input, netclient::Client& clien
     }
 
     if (!screen_) {
-        // The hotbar. Number keys and the wheel, and both tell the server:
-        // which slot is held decides what a placement places.
+        // C or X held with a number key: save or load a hotbar row, in
+        // creative, instead of selecting the slot.
+        if (hud_.creative && input.hotbar_pressed >= 0 &&
+            (input.held(client::Key::SaveToolbar) || input.held(client::Key::LoadToolbar))) {
+            const auto row = static_cast<usize>(input.hotbar_pressed);
+            if (input.held(client::Key::LoadToolbar)) {
+                load_hotbar(client, row);
+            } else {
+                save_hotbar(row);
+            }
+            return false;
+        }
+
         i32 selection = hud_.selected;
         if (input.hotbar_pressed >= 0) {
             selection = input.hotbar_pressed;
         } else if (input.scroll != 0.0) {
-            // Away from the player is the *previous* slot, which is vanilla's
-            // direction and the opposite of what the sign suggests.
             const auto steps = static_cast<i32>(std::lround(input.scroll));
             selection        = ((selection - steps) % 9 + 9) % 9;
         }
@@ -554,7 +728,6 @@ bool Interface::update(const client::InputState& input, netclient::Client& clien
                                     carried_);
         return true;
     }
-    // ── The drag, in three phases ───────────────────────────────────────────
     const bool button_held = input.attack_held || input.use_held;
 
     if (dragging_) {
@@ -573,8 +746,6 @@ bool Interface::update(const client::InputState& input, netclient::Client& clien
 
     if (press_pending_) {
         if (button_held) {
-            // The pointer left the slot it was pressed on: this is a drag, not
-            // a click.
             if (hovered != nullptr && hovered->index != press_slot_) {
                 dragging_ = true;
                 drag_slots_.clear();
@@ -583,7 +754,6 @@ bool Interface::update(const client::InputState& input, netclient::Client& clien
             }
             return true;
         }
-        // Released without moving: an ordinary click after all.
         click_slot(client, press_slot_, press_right_ ? 1 : 0, input.shift_held, -1);
         press_pending_ = false;
         return true;
@@ -593,18 +763,12 @@ bool Interface::update(const client::InputState& input, netclient::Client& clien
         const i32 button = input.middle_pressed ? 2 : (input.use_pressed ? 1 : 0);
         if (hovered == nullptr) {
             if (!carried_.empty()) {
-                // Outside every slot with a full cursor: vanilla throws it, as
-                // a click on slot −999.
                 client.send_container_click(window_id(), state_id_, -999,
                                             static_cast<i8>(button),
                                             client::click_mode::kPickup, carried_);
             }
             return true;
         }
-        // Two left clicks on the same slot in a quarter of a second, with
-        // something in hand: mode 6, which gathers every matching stack in the
-        // window onto the cursor. It has to be checked before the drag, or the
-        // second click of a double-click starts one.
         if (button == 0 && !carried_.empty() && hovered->index == last_click_slot_ &&
             clock_ - last_click_time_ < kDoubleClickSeconds) {
             client.send_container_click(window_id(), state_id_, hovered->index, 0,
@@ -615,9 +779,6 @@ bool Interface::update(const client::InputState& input, netclient::Client& clien
         last_click_slot_ = hovered->index;
         last_click_time_ = clock_;
 
-        // A press with something in hand waits to see whether the pointer
-        // moves; a press with an empty hand is a pickup and acts at once.
-        // Shift and the middle button are never drags.
         if (!carried_.empty() && button != 2 && !input.shift_held) {
             press_pending_ = true;
             press_right_   = button == 1;
@@ -638,7 +799,53 @@ bool Interface::update_creative(const client::InputState& input, netclient::Clie
         toggle_creative(window, client);
         return true;
     }
-    if (!input.typed.empty()) {
+
+    const client::GuiPoint       pointer = creative_pointer();
+    const client::CreativeTarget target =
+        screen.hit_test(gui_->width(), gui_->height(), pointer.x, pointer.y);
+    const client::CreativePage page = screen.tab().type == render::CreativeTabType::Inventory
+                                          ? client::CreativePage::Survival
+                                          : client::CreativePage::Items;
+
+    // Keys first. A number key over a stack acts on it and is then *not*
+    // typed; T on a category page jumps to the search tab and is not typed
+    // either — both measured on the running client.
+    bool swallow_text = false;
+    if (input.hotbar_pressed >= 0) {
+        if (target.kind == client::CreativeHit::Cell) {
+            if (const client::CreativeCell* cell = screen.cell(target.index)) {
+                load_model();
+                creative_model_.hotbar_key_on_cell(cell_stack(*cell), input.hotbar_pressed, effects_);
+                store_model(client);
+                swallow_text = true;
+            }
+        } else if (target.kind == client::CreativeHit::PlayerSlot) {
+            load_model();
+            creative_model_.hotbar_key_on_slot(static_cast<i16>(target.index), input.hotbar_pressed,
+                                               effects_);
+            store_model(client);
+            swallow_text = true;
+        }
+    }
+    if (!screen.searching()) {
+        if (input.just_pressed(client::Key::Chat)) {
+            (void)screen.select("minecraft:search");
+            swallow_text = true;
+        } else if (input.just_pressed(client::Key::Drop)) {
+            // Q throws one, Ctrl+Q a stack — a copy of a cell, or out of a
+            // slot. On the search page Q is a letter.
+            load_model();
+            if (target.kind == client::CreativeHit::Cell) {
+                if (const client::CreativeCell* cell = screen.cell(target.index)) {
+                    creative_model_.throw_cell(cell_stack(*cell), input.control_held, effects_);
+                }
+            } else if (target.kind == client::CreativeHit::PlayerSlot) {
+                creative_model_.throw_slot(static_cast<i16>(target.index), input.control_held,
+                                           effects_);
+            }
+            store_model(client);
+        }
+    } else if (!swallow_text && !input.typed.empty()) {
         screen.type(input.typed);
     }
     if (input.just_pressed(client::Key::Backspace)) {
@@ -648,21 +855,16 @@ bool Interface::update_creative(const client::InputState& input, netclient::Clie
         screen.scroll_by(static_cast<f32>(input.scroll));
     }
 
-    const client::CreativeTarget target =
-        screen.hit_test(gui_->width(), gui_->height(), mouse_x_, mouse_y_);
-
-    // The scrollbar drag holds across frames, so it is answered before the
-    // press: a pointer that leaves the groove mid-drag still scrolls, which is
-    // what every scrollbar in the game does.
     if (creative_scrolling_) {
-        screen.drag_scroll(gui_->height(), mouse_y_);
+        screen.drag_scroll(gui_->height(), pointer.y);
         creative_scrolling_ = input.attack_held;
         return true;
     }
 
-    if (!input.attack_pressed && !input.use_pressed) {
+    if (!input.attack_pressed && !input.use_pressed && !input.middle_pressed) {
         return true;
     }
+    const i32 button = input.middle_pressed ? 2 : (input.use_pressed ? 1 : 0);
 
     switch (target.kind) {
         case client::CreativeHit::Tab:
@@ -671,68 +873,51 @@ bool Interface::update_creative(const client::InputState& input, netclient::Clie
 
         case client::CreativeHit::Scrollbar:
             creative_scrolling_ = true;
-            screen.drag_scroll(gui_->height(), mouse_y_);
+            screen.drag_scroll(gui_->height(), pointer.y);
             return true;
 
         case client::CreativeHit::Cell: {
-            if (!creative_take(target.index)) {
+            const client::CreativeCell* cell = screen.cell(target.index);
+            if (cell == nullptr || cell->hint) {
                 return true;
             }
-            if (input.shift_held) {
-                // Shift-click puts the stack straight into the inventory: the
-                // first empty slot of the hotbar, then of the three rows. That
-                // is where vanilla's own quick-move ends up, and it is done
-                // here rather than asked of the server because Set Creative
-                // Slot names a slot and has no "anywhere" form.
-                for (usize slot = kHotbarFirst; slot < kOffHandSlot; ++slot) {
-                    if (inventory_[slot].empty()) {
-                        creative_put(client, static_cast<i16>(slot));
-                        return true;
-                    }
-                }
-                for (usize slot = 9; slot < kHotbarFirst; ++slot) {
-                    if (inventory_[slot].empty()) {
-                        creative_put(client, static_cast<i16>(slot));
-                        return true;
-                    }
-                }
-                // Full. Named rather than silently dropped: the stack stays on
-                // the cursor, which is what vanilla does too.
-                OV_LOG_INFO("creative: the inventory is full; the stack stays on the cursor");
-            }
+            load_model();
+            creative_model_.click_cell(cell_stack(*cell), button, input.shift_held, effects_);
+            store_model(client);
             return true;
         }
 
         case client::CreativeHit::PlayerSlot:
-            if (carried_.empty()) {
-                // Picking a slot's contents back up. Its own Set Creative Slot
-                // with an empty stack, or the server keeps the copy.
-                const auto index = static_cast<usize>(target.index);
-                if (index < inventory_.size() && !inventory_[index].empty()) {
-                    carried_ = inventory_[index];
-                    client.send_creative_slot(static_cast<i16>(index), 0, 0, {});
-                    inventory_[index] = net::ItemStack{};
-                    refresh_hotbar();
-                }
-            } else {
-                creative_put(client, static_cast<i16>(target.index));
-            }
+            load_model();
+            creative_model_.click_slot(static_cast<i16>(target.index), button, input.shift_held,
+                                       page, effects_);
+            store_model(client);
             return true;
 
         case client::CreativeHit::Destroy:
-            carried_ = net::ItemStack{};
+            load_model();
+            creative_model_.click_destroy(input.shift_held, effects_);
+            store_model(client);
             return true;
 
         case client::CreativeHit::SearchField:
+            return true;
+
         case client::CreativeHit::None:
             break;
     }
 
-    // Outside every cell with a full cursor: the stack is dropped, which in
-    // creative means it simply stops existing. No packet: the server never had
-    // it, because a cell of the catalogue is not a slot.
-    if (target.kind == client::CreativeHit::None && !carried_.empty()) {
-        carried_ = net::ItemStack{};
+    // Outside the panel (and off every button): the stack in hand is thrown.
+    // Inside it, over nothing, nothing happens.
+    const f32  ox      = screen.origin_x(gui_->width());
+    const f32  oy      = screen.origin_y(gui_->height());
+    const bool outside = pointer.x < ox || pointer.y < oy ||
+                         pointer.x >= ox + client::creative_layout::kPanelWidth ||
+                         pointer.y >= oy + client::creative_layout::kPanelHeight;
+    if (outside && button != 2) {
+        load_model();
+        creative_model_.click_outside(button, effects_);
+        store_model(client);
     }
     return true;
 }
@@ -751,25 +936,30 @@ void Interface::draw(rhi::CommandList& cmd, u32 framebuffer_width, u32 framebuff
     if (creative_visible_ && creative_screen_) {
         client::draw_screen_dim(*gui_);
         build_views(inventory_);
+        const client::GuiPoint       pointer = creative_pointer();
         const client::CreativeTarget hovered =
-            creative_screen_->hit_test(gui_->width(), gui_->height(), mouse_x_, mouse_y_);
-        client::GuiTexture background = client::GuiTexture::Invalid;
+            creative_screen_->hit_test(gui_->width(), gui_->height(), pointer.x, pointer.y);
+        creative_textures_.background = client::GuiTexture::Invalid;
         for (const auto& [location, handle] : backgrounds_) {
             if (location == creative_screen_->background_texture()) {
-                background = handle;
+                creative_textures_.background = handle;
             }
         }
-        if (background != client::GuiTexture::Invalid) {
-            creative_screen_->draw(*gui_, *items_, background, creative_sheet_, views_, hovered);
-            const std::string_view name = creative_screen_->hovered_name(hovered, views_);
-            if (!name.empty()) {
-                (void)gui_->text(mouse_x_ + 8.0F, mouse_y_ - 12.0F, name);
-            }
+        if (creative_textures_.background != client::GuiTexture::Invalid) {
+            const bool cursor_on =
+                static_cast<i64>((clock_ - creative_opened_at_) / kBlinkSeconds) % 2 == 0;
+            creative_screen_->draw(*gui_, *items_, creative_textures_, views_, hovered, cursor_on);
         }
         if (!carried_.empty()) {
-            const client::ItemStackView held{item_name(carried_.item_id), carried_.count};
-            items_->draw(*gui_, mouse_x_ - 8.0F, mouse_y_ - 8.0F, held);
-            items_->draw_count(*gui_, mouse_x_ - 8.0F, mouse_y_ - 8.0F, held);
+            const client::ItemStackView held = view_of(carried_);
+            items_->draw(*gui_, pointer.x - 8.0F, pointer.y - 8.0F, held);
+            items_->draw_count(*gui_, pointer.x - 8.0F, pointer.y - 8.0F, held);
+        }
+        // A stack's tooltip only with nothing in hand, as vanilla; a tab's
+        // name always.
+        if (carried_.empty() || hovered.kind == client::CreativeHit::Tab) {
+            creative_screen_->tooltip(hovered, views_, tooltip_lines_);
+            client::draw_tooltip(*gui_, tooltip_lines_, pointer.x, pointer.y);
         }
         gui_->flush(cmd);
         return;
@@ -781,11 +971,8 @@ void Interface::draw(rhi::CommandList& cmd, u32 framebuffer_width, u32 framebuff
         const client::SlotRect* hovered =
             screen_->slot_at(gui_->width(), gui_->height(), mouse_x_, mouse_y_);
         screen_->draw(*gui_, *items_, background_, views_, hovered);
-
-        // The cursor's stack, drawn last and centred on the pointer, exactly
-        // eight pixels up and left of it — a cell is sixteen.
         if (!carried_.empty()) {
-            const client::ItemStackView held{item_name(carried_.item_id), carried_.count};
+            const client::ItemStackView held = view_of(carried_);
             items_->draw(*gui_, mouse_x_ - 8.0F, mouse_y_ - 8.0F, held);
             items_->draw_count(*gui_, mouse_x_ - 8.0F, mouse_y_ - 8.0F, held);
         }

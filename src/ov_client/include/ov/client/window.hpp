@@ -41,6 +41,13 @@ enum class Key : u8 {
     Drop,
     /// Backspace. Only a text field reads it.
     Backspace,
+    /// C: with a number key, saves the hotbar into that saved-hotbar row.
+    SaveToolbar,
+    /// X: with a number key, loads that saved-hotbar row into the hotbar.
+    LoadToolbar,
+    /// T: opens the chat — and, on a creative category page, jumps to the
+    /// search tab, which is the one thing it does in this client so far.
+    Chat,
     Count,
 };
 
@@ -93,6 +100,11 @@ struct InputState {
     /// sneaking.
     bool shift_held{false};
 
+    /// Vanilla's "control" modifier, the one Ctrl+Q throws a whole stack
+    /// with: either Control key — and on macOS either *Command* key, which is
+    /// what the game reads there instead.
+    bool control_held{false};
+
     [[nodiscard]] bool held(Key key) const noexcept { return keys[static_cast<usize>(key)]; }
 
     [[nodiscard]] bool just_pressed(Key key) const noexcept {
@@ -131,6 +143,16 @@ public:
     /// displays. Rendering has to be skipped rather than producing a zero-sized
     /// swapchain.
     [[nodiscard]] bool minimised() const;
+
+    /// What the keyboard layout prints on a key, as vanilla shows it in a
+    /// tooltip: GLFW's key name, so the "1" of the hotbar is "&" on a French
+    /// AZERTY keyboard — which is exactly what the real 1.20.1 client showed
+    /// on this machine. Upper-cased like vanilla; the US label when the layout
+    /// has none.
+    [[nodiscard]] std::string key_label(Key key) const;
+
+    /// The same for the number key of hotbar slot `index` (0..8).
+    [[nodiscard]] std::string hotbar_key_label(i32 index) const;
 
     /// Forward-declared here and defined in the .cpp.
     ///
