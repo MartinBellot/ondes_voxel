@@ -213,8 +213,12 @@ public final class CreativeTabsOracle {
         method("net.minecraft.SharedConstants", "tryDetectVersion", 0).invoke(null);
         method("net.minecraft.server.Bootstrap", "bootStrap", 0).invoke(null);
 
-        Object flags = method("net.minecraft.world.flag.FeatureFlagRegistry", "allFlags", 0)
-                           .invoke(staticField("net.minecraft.world.flag.FeatureFlags", "REGISTRY"));
+        // The flags a vanilla world has, not every flag the registry knows.
+        // allFlags() was used first, and it switched on the experimental
+        // "bundle" feature: the catalogue then carried a Bundle that the real
+        // 1.20.1 client does not show — measured by
+        // scripts/measure_creative_screen.py, whose search tab lacks it.
+        Object flags = staticField("net.minecraft.world.flag.FeatureFlags", "DEFAULT_FLAGS");
 
         // Tags first: createLookup() wraps the built-in registries themselves,
         // so binding into them is what the lookup will see.

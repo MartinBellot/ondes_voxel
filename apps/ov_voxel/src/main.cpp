@@ -19,6 +19,7 @@
 
 #include "ov/base/log.hpp"
 #include "ov/base/time.hpp"
+#include "ov/client/creative_screen.hpp"
 #include "ov/client/entity_renderer.hpp"
 #include "ov/client/overlay.hpp"
 #include "ov/client/terrain_renderer.hpp"
@@ -34,6 +35,9 @@
 #include "ov/render/entity_pose.hpp"
 #include "ov/render/environment.hpp"
 #include "ov/render/chunk_mesher.hpp"
+#include "ov/render/creative_items.hpp"
+#include "ov/render/creative_tabs.hpp"
+#include "ov/render/language.hpp"
 #include "ov/render/font.hpp"
 #include "ov/render/item_model.hpp"
 #include "ov/gameplay/physics.hpp"
@@ -187,6 +191,21 @@ struct Options {
     std::string creative_take;
     /// Print the visible page at the end.
     bool dump_creative{false};
+    /// Tooltips, tints, durability and armour slots, asked of the real client
+    /// by scripts/measure_creative_screen.py.
+    std::string creative_items{"data/vanilla/1.20.1/creative_items.json"};
+    /// The data generator's datapack, for '#' searches.
+    std::string item_tags{"data/vanilla/1.20.1/generated/data"};
+    /// The saved hotbars, vanilla's file format.
+    std::string hotbar_file{"run/hotbar.nbt"};
+    /// Vanilla's "Operator Items Tab" setting; off by default, as in vanilla.
+    bool operator_tab{false};
+    /// x,y: hold the pointer there, relative to the creative panel's corner,
+    /// for a scripted capture of a hover and its tooltip.
+    std::string creative_pointer;
+    /// Compare our search page and the oracle's queries with the real
+    /// client's answers, print the numbers, and exit. No window, no device.
+    bool creative_parity{false};
     /// Dump the font's advances and exit, for scripts/measure_font_widths.py.
     std::string font_widths;
 
@@ -311,6 +330,18 @@ struct Options {
             options.creative_take = value("--creative-take=");
         } else if (argument == "--dump-creative") {
             options.dump_creative = true;
+        } else if (argument.starts_with("--creative-items=")) {
+            options.creative_items = value("--creative-items=");
+        } else if (argument.starts_with("--item-tags=")) {
+            options.item_tags = value("--item-tags=");
+        } else if (argument.starts_with("--hotbar-file=")) {
+            options.hotbar_file = value("--hotbar-file=");
+        } else if (argument == "--operator-tab") {
+            options.operator_tab = true;
+        } else if (argument.starts_with("--creative-pointer=")) {
+            options.creative_pointer = value("--creative-pointer=");
+        } else if (argument == "--creative-parity") {
+            options.creative_parity = true;
         } else if (argument == "--dump-window") {
             options.dump_window = true;
         } else if (argument.starts_with("--font-widths=")) {
@@ -575,6 +606,82 @@ int main(int argc, char** argv) {
     }
     const render::DirectoryAssetSource source(assets_root);
 
+    // ── The creative parity check: no window, no device ─────────────────────
+    //
+    // Our search page, and the page our filter gives for each query the
+    // oracle typed, against what the real 1.20.1 client showed. Item and
+    // occurrence, in order: a list that has the right stacks in a different
+    // order is a failure, because the order is what the player sees.
+    if (options.creative_parity) {
+        auto language = render::Language::load(source, options.language);
+        auto tabs     = render::CreativeTabs::load(options.creative_tabs);
+        if (!language || !tabs) {
+            fmt::print("creative parity: language or catalogue missing\n");
+            return 1;
+        }
+        auto items = render::CreativeItems::load(options.creative_items, *language);
+        if (!items) {
+            fmt::print("creative parity: {}: {}\n", options.creative_items,
+                       render::to_string(items.error()));
+            return 1;
+        }
+        const auto tags = render::load_item_tags(options.item_tags);
+        client::CreativeScreen screen(*tabs, *language, &*items,
+                                      client::CreativeScreenOptions{options.operator_tab});
+        screen.set_item_tags(&tags);
+        if (!screen.select("minecraft:search")) {
+            fmt::print("creative parity: no search tab\n");
+            return 1;
+        }
+        // The occurrence of each stack, from the unfiltered search page.
+        std::map<std::string, u32> occurrence_of;
+        {
+            std::map<std::string, u32, std::less<>> seen;
+            for (const client::CreativeCell& cell : screen.page()) {
+                std::string key(cell.item);
+                key.push_back('\0');
+                key.append(reinterpret_cast<const char*>(cell.nbt.data()), cell.nbt.size());
+                occurrence_of.emplace(key, seen[std::string(cell.item)]++);
+            }
+        }
+        const auto listed = [&](std::span<const client::CreativeCell> page) {
+            std::vector<std::pair<std::string, u32>> out;
+            for (const client::CreativeCell& cell : page) {
+                std::string key(cell.item);
+                key.push_back('\0');
+                key.append(reinterpret_cast<const char*>(cell.nbt.data()), cell.nbt.size());
+                out.emplace_back(std::string(cell.item), occurrence_of[key]);
+            }
+            return out;
+        };
+        const auto ours = listed(screen.page());
+        usize      same_prefix = 0;
+        while (same_prefix < ours.size() && same_prefix < items->order().size() &&
+               ours[same_prefix] == items->order()[same_prefix]) {
+            ++same_prefix;
+        }
+        fmt::print("search page: ours {} stacks, client {}; identical in order: {}\n", ours.size(),
+                   items->order().size(), ours == items->order() ? "yes" : "no");
+        if (ours != items->order()) {
+            fmt::print("  first difference at {}\n", same_prefix);
+        }
+        usize exact = 0;
+        for (const render::CreativeQuery& query : items->queries()) {
+            while (!screen.query().empty()) {
+                screen.backspace();
+            }
+            screen.type(query.query);
+            const auto mine = listed(screen.page());
+            const bool same = mine == query.results;
+            exact += same ? 1 : 0;
+            fmt::print("  {:<18} client {:>5}  ours {:>5}  {}\n", fmt::format("\"{}\"", query.query),
+                       query.results.size(), mine.size(), same ? "identical" : "DIFFERENT");
+        }
+        fmt::print("queries identical to the client's, in order: {} of {}\n", exact,
+                   items->queries().size());
+        return 0;
+    }
+
     // Two ways to get a world. Reading it off the disk is a viewer; asking a
     // server for it is the game — and the second is the one the project's
     // second principle is about, because the bytes on that socket are the same
@@ -650,6 +757,16 @@ int main(int argc, char** argv) {
     }
     for (const auto& sprite : item_models.sprites()) {
         builder.add(sprite);
+    }
+    // The survival page's empty-slot silhouettes. No model names them — the
+    // game draws them straight from the block atlas — so they are added by
+    // name, in the order the creative screen wants them.
+    constexpr std::array<std::string_view, 5> kSlotIcons{
+        "minecraft:item/empty_armor_slot_helmet", "minecraft:item/empty_armor_slot_chestplate",
+        "minecraft:item/empty_armor_slot_leggings", "minecraft:item/empty_armor_slot_boots",
+        "minecraft:item/empty_armor_slot_shield"};
+    for (const std::string_view icon : kSlotIcons) {
+        builder.add(icon);
     }
     auto atlas = builder.build();
     if (!atlas) {
@@ -941,6 +1058,17 @@ int main(int argc, char** argv) {
     interface_options.gui_scale = options.gui_scale;
     interface_options.language  = options.language;
     interface_options.creative_tabs = options.creative_tabs;
+    interface_options.creative_items = options.creative_items;
+    interface_options.item_tags      = options.item_tags;
+    interface_options.hotbar_file    = options.hotbar_file;
+    interface_options.operator_tab   = options.operator_tab;
+    for (usize i = 0; i < kSlotIcons.size(); ++i) {
+        if (const render::AtlasSprite* sprite = atlas->find(kSlotIcons[i])) {
+            interface_options.slot_icons[i] = sprite->uv;
+        } else {
+            OV_LOG_WARN("{} is not in the atlas; that slot is drawn bare", kSlotIcons[i]);
+        }
+    }
 
     // The tint a grass or leaf face takes in a GUI cell. Vanilla samples the
     // colormap at (0.5, 1.0) for an item, which is not any biome's point; this
@@ -1481,6 +1609,16 @@ int main(int argc, char** argv) {
                     }
                     if (!options.creative_search.empty()) {
                         (*interface)->creative_search(options.creative_search);
+                    }
+                    if (!options.creative_pointer.empty()) {
+                        const auto comma = options.creative_pointer.find(',');
+                        (*interface)->set_creative_pointer(client::GuiPoint{
+                            static_cast<f32>(std::atof(
+                                options.creative_pointer.substr(0, comma).c_str())),
+                            comma == std::string::npos
+                                ? 0.0F
+                                : static_cast<f32>(std::atof(
+                                      options.creative_pointer.substr(comma + 1).c_str()))});
                     }
                 }
                 creative_opened = true;

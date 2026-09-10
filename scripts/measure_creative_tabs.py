@@ -51,9 +51,14 @@ MAPPINGS_URL = ("https://piston-data.mojang.com/v1/objects/"
                 "0b4dba049482496c507b2387a73a913230ebbd76/server.txt")
 MAPPINGS_SHA1 = "0b4dba049482496c507b2387a73a913230ebbd76"
 
-# Le hash de la sortie de l'oracle, avec `op_permissions = true`. C'est la
-# seule chose de cette mesure qui entre dans le dépôt.
-EXPECTED_SHA256 = "e53d702cacaec6f85995c22b1ba98000a916c841b0ac918b608f35d0302f80c4"
+# Le hash de la sortie de l'oracle, avec `op_permissions = true` et les
+# drapeaux de fonctionnalité *par défaut* d'un monde vanilla. C'est la seule
+# chose de cette mesure qui entre dans le dépôt.
+#
+# L'ancien hash (e53d702c…) venait de `allFlags()`, qui active la
+# fonctionnalité expérimentale « bundle » : le catalogue portait alors un
+# Sac que le vrai client 1.20.1 ne montre pas (1689 cases au lieu de 1688).
+EXPECTED_SHA256 = "c7fb0e048ba3dc2c429d7d788a63df66f2de7862824350c38771ef3c3ddb26b1"
 
 CACHE = os.path.join(ROOT, "data", "vanilla", "1.20.1", "generated", "creative")
 OUTPUT = os.path.join(ROOT, "data", "vanilla", "1.20.1", "creative_tabs.json")

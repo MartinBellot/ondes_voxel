@@ -12,6 +12,7 @@
 #include "ov/client/gui.hpp"
 #include "ov/render/item_model.hpp"
 
+#include <array>
 #include <string_view>
 
 namespace ov::client {
@@ -22,9 +23,28 @@ namespace ov::client {
 struct ItemStackView {
     std::string_view item;
     i32              count{0};
+    /// The tint of each layer as 0xRRGGBB, -1 for none — what the real
+    /// client's item colour handlers answered (render::CreativeItemInfo).
+    /// Without them a tinted face falls back to the one foliage colour the
+    /// renderer was built with, and a flat layer is drawn untinted.
+    std::array<i32, 3> tints{-1, -1, -1};
+    bool               has_tints{false};
+    /// Durability: the bar is drawn when both are positive.
+    i32 damage{0};
+    i32 max_damage{0};
 
     [[nodiscard]] bool empty() const noexcept { return item.empty() || count <= 0; }
 };
+
+/// Vanilla's durability bar for a damaged stack: its width in pixels (0..13)
+/// and its colour, 0xRRGGBB. The hue runs from green at full health to red
+/// at none, a third of the colour wheel.
+struct DurabilityBar {
+    i32 width{0};
+    u32 rgb{0};
+};
+
+[[nodiscard]] DurabilityBar durability_bar(i32 damage, i32 max_damage) noexcept;
 
 /// Draws item stacks through a Gui.
 ///
@@ -46,6 +66,10 @@ public:
     /// screen is drawn before any count is: it saves a batch change per slot,
     /// and it is the only way a count is never hidden by the next item's quads.
     void draw_count(Gui& gui, f32 x, f32 y, const ItemStackView& stack) const;
+
+    /// A bare sprite of the block atlas in a cell: the silhouettes vanilla
+    /// draws in an empty armour slot are atlas sprites, not items.
+    void draw_sprite(Gui& gui, f32 x, f32 y, const render::SpriteUv& uv) const;
 
     /// True when the item resolved to something drawable. False means the icon
     /// is missing, which is worth reporting rather than showing an empty slot.
