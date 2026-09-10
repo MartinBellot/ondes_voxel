@@ -264,15 +264,18 @@ def measure_resistance(out: Path, trials: int, gap: int = 0) -> None:
                 for k, state in enumerate(after[name]):
                     if state != name:
                         counts[name][k] += 1
+            # Flushed every pass, for the same reason the crater bench is: a
+            # run of this length dies of something eventually — a heap filled by
+            # another scenario sharing the machine, most recently — and it must
+            # leave the passes it did finish behind rather than nothing.
+            result["counts"] = counts
+            result["refused"] = sorted(refused)
+            result["trials"] = trial + 1
+            with open(out, "w") as f:
+                json.dump(result, f, indent=1)
             print(f"  trial {trial + 1}/{trials}")
-
-        result["counts"] = counts
-        result["refused"] = sorted(refused)
     finally:
         server.stop()
-
-    with open(out, "w") as f:
-        json.dump(result, f, indent=1)
     print(f"  measured {len(result.get('counts', {}))} blocks, "
           f"refused {len(result.get('refused', []))}")
 
@@ -458,8 +461,10 @@ def measure_damage(out: Path, trials: int) -> None:
 def measure_drops(out: Path, trials: int) -> None:
     y = BENCH_Y
     check_y(y - 5)
-    server, world = start("drops")
-    result: dict = {"trials": trials}
+    half, up = 8, 5
+    total = (2 * half + 1) ** 2 * (2 * up + 1)
+    server, _ = start("drops")
+    result: dict = {"trials": trials, "total": total}
     try:
         forceload(server, -48, -48, 48, 48)
         server.batch(["gamerule doTileDrops true",
@@ -467,11 +472,7 @@ def measure_drops(out: Path, trials: int) -> None:
         broken, dropped = [], []
         for trial in range(trials):
             server.batch(["kill @e[type=minecraft:item]"])
-            # Dirt, not stone. A charge at the centre of **solid** stone barely
-            # scratches it — the first block a ray is inside already costs more
-            # than the ray carries — and a yield read off two broken blocks is
-            # not a measurement. Dirt gives a crater of a hundred and something.
-            fill(server, -8, y - 5, -8, 8, y + 5, 8, "minecraft:dirt")
+            fill(server, -half, y - up, -half, half, y + up, half, "minecraft:dirt")
             server.batch([f"summon minecraft:tnt 0.5 {y}.0 0.5 "
                           "{Fuse:0,NoGravity:1b,Motion:[0.0,0.0,0.0]}"])
             wait_ticks(server, 20)
@@ -488,25 +489,33 @@ def measure_drops(out: Path, trials: int) -> None:
                 if match:
                     count = int(match.group(1))
             server.batch(["kill @e[type=minecraft:item]"])
-            save(server)
-            cells = [(dx, y + dy, dz) for dy in range(-5, 6)
-                     for dz in range(-8, 9) for dx in range(-8, 9)]
-            states = read_states(world, cells)
-            gone = sum(1 for state in states if name_of(state) != "minecraft:dirt")
+            # How many survived, counted by the server itself. Reading three
+            # thousand cells back out of the region files needs a save and a
+            # second process; `fill ... replace` answers "Successfully filled N
+            # blocks" in one command and one tick.
+            left = None
+            for line in server.batch([f"fill {-half} {y - up} {-half} {half} {y + up} {half} "
+                                      "minecraft:air replace minecraft:dirt"]):
+                match = re.search(r"filled (\d+) block", line)
+                if match:
+                    left = int(match.group(1))
+            gone = None if left is None else total - left
             broken.append(gone)
             dropped.append(count)
+            result["broken"] = broken
+            result["dropped"] = dropped
+            with open(out, "w") as f:
+                json.dump(result, f, indent=1)
             print(f"  trial {trial + 1}/{trials}: broke {gone}, dropped {count}")
-        result["broken"] = broken
-        result["dropped"] = dropped
-        pairs = [(b, d) for b, d in zip(broken, dropped) if d is not None]
+        pairs = [(b, d) for b, d in zip(broken, dropped) if b is not None and d is not None]
         total_b = sum(b for b, _ in pairs)
         total_d = sum(d for _, d in pairs)
         result["yield"] = round(total_d / total_b, 4) if total_b else None
+        with open(out, "w") as f:
+            json.dump(result, f, indent=1)
         print(f"  {total_d}/{total_b} = {result['yield']}")
     finally:
         server.stop()
-    with open(out, "w") as f:
-        json.dump(result, f, indent=1)
 
 
 # ── scenario: sources ───────────────────────────────────────────────────────

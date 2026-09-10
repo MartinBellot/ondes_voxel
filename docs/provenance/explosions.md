@@ -370,6 +370,28 @@ estimées à huit tirs de chaque côté. Les autres puissances de la table
 telles : ghast et tête de wither à 1, lit et ancre de résurrection à 5, cristal
 de l'End à 6.
 
+### Le butin : la TNT rend tout
+
+Dix charges au centre d'une boîte de terre pleine, les objets comptés par la
+**somme de leurs `Item.Count`** — pas par le nombre d'entités : la terre lâchée
+fusionne en piles, et « 7 entités tuées » ce sont sept piles, pas sept mottes.
+
+| | |
+|---|---|
+| blocs cassés, 10 tirs | **1754** |
+| objets lâchés | **1754** |
+| rendement | **1,000** |
+
+Dix tirs sur dix exacts. La TNT de 1.20.1 lâche **tout** ce qu'elle casse ; le
+`1 / puissance` que documente l'article existe dans le jeu mais **aucune source
+mesurée ici ne l'utilise**, et le dire est plus honnête que de l'attribuer au
+hasard. Le défaut d'`ExplosionSpec` est donc `Destroy`.
+
+Le comptage des survivants passe par `fill … replace`, qui répond
+« Successfully filled N blocks » en une commande et un tick. La première version
+relisait trois mille cellules dans les fichiers de région après une sauvegarde,
+et le serveur est mort de contention avant la fin du premier tir.
+
 **La mèche du creeper vaut 30 ticks.** Lue sur le `Fuse` de l'entité pendant
 qu'elle gonfle, dix captures, **dix fois 30** — sans la convergence par en
 dessous qu'ont les autres délais de ce dépôt, parce que le compteur du creeper

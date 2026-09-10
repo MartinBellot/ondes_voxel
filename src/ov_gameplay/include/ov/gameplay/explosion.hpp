@@ -94,6 +94,11 @@ enum class BlockInteraction : u8 {
     /// Blocks break and drop everything they would drop when mined.
     Destroy,
     /// Blocks break and each drops with probability `1 / power`.
+    ///
+    /// **No source in this campaign was measured using it.** A TNT charge in a
+    /// solid box of dirt broke 1754 blocks over ten shots and dropped 1754
+    /// items — a yield of exactly one, ten times out of ten. The variant stays
+    /// because the game has it; attributing it to a source would be a guess.
     DestroyWithDecay,
 };
 
@@ -106,7 +111,8 @@ struct ExplosionSpec {
 
     f32 power{4.0F};
 
-    BlockInteraction interaction{BlockInteraction::DestroyWithDecay};
+    /// Measured for TNT, and it is `Destroy`: everything it breaks drops.
+    BlockInteraction interaction{BlockInteraction::Destroy};
 
     /// Beds, respawn anchors and ghast fireballs leave fire behind.
     bool fire{false};
@@ -181,8 +187,11 @@ public:
 
     /// The chance one broken block has of dropping, for this charge.
     ///
-    /// `1 / power` for a decaying explosion, 1 for a plain one. Measured, not
-    /// assumed — see docs/provenance/explosions.md.
+    /// `1 / power` for a decaying explosion, 1 for a plain one.
+    ///
+    /// Which one a TNT charge uses is measured, not assumed: 1754 blocks broken
+    /// and 1754 items dropped over ten shots, so a plain one. See
+    /// docs/provenance/explosions.md § 5.
     [[nodiscard]] f32 drop_chance(const ExplosionSpec& spec) const noexcept;
 
     /// Roll `drop_chance` for one block.
