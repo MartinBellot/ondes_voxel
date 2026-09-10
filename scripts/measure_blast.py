@@ -274,12 +274,39 @@ def measure_resistance(out: Path, trials: int, gap: int = 0) -> None:
 
 # ── scenario: crater ────────────────────────────────────────────────────────
 
-CRATER_MATERIALS = ["minecraft:glass", "minecraft:dirt", "minecraft:sand",
-                    "minecraft:oak_planks", "minecraft:stone", "minecraft:end_stone",
-                    "minecraft:obsidian"]
+# ⚠ No sand, and no gravel. A box of sand turns into five thousand falling
+#   block entities per shot, which fills a 2 GB heap in eighteen trials and
+#   kills the server mid-run — and the ones that land change the box before the
+#   next shot reads it. The first crater run died exactly that way, after 18 of
+#   24 trials and with nothing written out, which is why the results below are
+#   flushed after every trial.
+CRATER_MATERIALS = ["minecraft:glass", "minecraft:dirt", "minecraft:oak_planks",
+                    "minecraft:stone", "minecraft:end_stone", "minecraft:obsidian"]
 CRATER_HALF = 8
 CRATER_UP = 6
 CRATER_SPACING = 40
+
+
+def write_crater(out: Path, result: dict) -> None:
+    """Flush the crater tables after every trial.
+
+    A run that dies at trial 18 of 24 must leave 18 usable trials behind rather
+    than nothing, which is what the first one did.
+    """
+    with open(out, "w") as f:
+        json.dump(result, f, indent=1)
+    # The same thing again as flat text, because the C++ parity test reads it
+    # and ov_gameplay has no JSON parser — the crafting parity table is written
+    # the same way for the same reason.
+    with open(NORMALIZED / "blast_crater.txt", "w") as f:
+        cx, cy, cz = result["centre"]
+        f.write(f"# trials {result['trials']} half {CRATER_HALF} up {CRATER_UP} power 4 "
+                f"centre {cx} {cy} {cz}\n")
+        for material, cells in sorted(result["counts"].items()):
+            for cell, count in sorted(cells.items(),
+                                      key=lambda kv: tuple(int(v) for v in kv[0].split(","))):
+                dx, dy, dz = cell.split(",")
+                f.write(f"{material} {dx} {dy} {dz} {count}\n")
 
 
 def measure_crater(out: Path, trials: int) -> None:
@@ -317,28 +344,16 @@ def measure_crater(out: Path, trials: int) -> None:
                     if name_of(state) != material:
                         key = f"{bx - cx},{by - y},{bz}"
                         counts[material][key] = counts[material].get(key, 0) + 1
+            result["counts"] = counts
+            result["trials"] = trial + 1
+            write_crater(out, result)
             print(f"  trial {trial + 1}/{trials}")
-        result["counts"] = counts
         for material in CRATER_MATERIALS:
-            always = sum(1 for v in counts[material].values() if v == trials)
+            always = sum(1 for v in counts[material].values() if v == result["trials"])
             ever = len(counts[material])
             print(f"  {material:24s} union {ever:5d}  intersection {always:5d}")
     finally:
         server.stop()
-    with open(out, "w") as f:
-        json.dump(result, f, indent=1)
-    # The same thing again as flat text, because the C++ parity test reads it
-    # and ov_gameplay has no JSON parser — the crafting parity table is written
-    # the same way for the same reason.
-    with open(NORMALIZED / "blast_crater.txt", "w") as f:
-        cx, cy, cz = result["centre"]
-        f.write(f"# trials {trials} half {CRATER_HALF} up {CRATER_UP} power 4 "
-                f"centre {cx} {cy} {cz}\n")
-        for material in CRATER_MATERIALS:
-            for cell, count in sorted(result["counts"][material].items(),
-                                      key=lambda kv: tuple(int(v) for v in kv[0].split(","))):
-                dx, dy, dz = cell.split(",")
-                f.write(f"{material} {dx} {dy} {dz} {count}\n")
 
 
 # ── scenario: damage ────────────────────────────────────────────────────────

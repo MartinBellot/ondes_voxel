@@ -355,9 +355,13 @@ TEST_CASE("the crater a real server made, cell by cell", "[explosion][parity]") 
     const Explosions rules{registry};
 
     usize total_cells = 0;
-    usize union_agree = 0;
-    usize ours_only   = 0;
-    usize theirs_only = 0;
+    usize union_agree  = 0;
+    usize union_ours   = 0;
+    usize union_theirs = 0;
+    usize core_agree   = 0;
+    usize core_ours    = 0;
+    usize core_theirs  = 0;
+    f64   frequency_gap = 0.0;
 
     for (const auto& [material, cells] : table->counts) {
         const BoxLevel level{registry, state_of(registry, material), table->half + 1,
@@ -372,7 +376,12 @@ TEST_CASE("the crater a real server made, cell by cell", "[explosion][parity]") 
             std::vector<BlockPos> taken;
             rules.collect_blocks(level, spec, rng, taken);
             for (const BlockPos pos : taken) {
-                ++mine[key_of(pos.x, pos.y, pos.z)];
+                // Only the window the measurement read back exists on both
+                // sides; a cell outside it was never looked at over there.
+                if (std::abs(pos.x) <= table->half && std::abs(pos.z) <= table->half &&
+                    std::abs(pos.y) <= table->up) {
+                    ++mine[key_of(pos.x, pos.y, pos.z)];
+                }
             }
         }
 
@@ -386,27 +395,53 @@ TEST_CASE("the crater a real server made, cell by cell", "[explosion][parity]") 
         usize agree = 0;
         usize only_us = 0;
         usize only_them = 0;
+        usize core_a = 0;
+        usize core_u = 0;
+        usize core_t = 0;
+        f64   gap = 0.0;
         for (const i64 key : keys) {
-            const bool theirs = cells.count(key) != 0;
-            const bool ours   = mine.count(key) != 0;
-            if (theirs == ours) {
+            const auto theirs_it = cells.find(key);
+            const auto ours_it   = mine.find(key);
+            const i32  theirs    = theirs_it == cells.end() ? 0 : theirs_it->second;
+            const i32  ours      = ours_it == mine.end() ? 0 : ours_it->second;
+            if ((theirs != 0) == (ours != 0)) {
                 ++agree;
-            } else if (ours) {
+            } else if (ours != 0) {
                 ++only_us;
             } else {
                 ++only_them;
             }
+            const bool theirs_always = theirs == table->trials;
+            const bool ours_always   = ours == table->trials;
+            if (theirs_always == ours_always) {
+                ++core_a;
+            } else if (ours_always) {
+                ++core_u;
+            } else {
+                ++core_t;
+            }
+            gap += std::abs(static_cast<f64>(theirs - ours)) / static_cast<f64>(table->trials);
         }
         total_cells += keys.size();
         union_agree += agree;
-        ours_only += only_us;
-        theirs_only += only_them;
-        WARN("crater " << material << ": union " << keys.size() << " cells, " << agree
-                       << " agree, " << only_us << " ours only, " << only_them << " theirs only");
+        union_ours += only_us;
+        union_theirs += only_them;
+        core_agree += core_a;
+        core_ours += core_u;
+        core_theirs += core_t;
+        frequency_gap += gap;
+        WARN("crater " << material << ": " << keys.size() << " cells | union " << agree
+                       << " agree / " << only_us << " ours / " << only_them
+                       << " theirs | core " << core_a << " agree / " << core_u << " ours / "
+                       << core_t << " theirs | mean |df| "
+                       << gap / static_cast<f64>(keys.size()));
     }
 
-    WARN("crater total: " << total_cells << " cells, " << union_agree << " agree, " << ours_only
-                          << " ours only, " << theirs_only << " theirs only");
+    WARN("crater total: " << total_cells << " cells | union " << union_agree << " agree / "
+                          << union_ours << " ours only / " << union_theirs
+                          << " theirs only | core " << core_agree << " agree / " << core_ours
+                          << " ours only / " << core_theirs << " theirs only | mean |df| "
+                          << frequency_gap / static_cast<f64>(total_cells));
     REQUIRE(total_cells > 0);
     // The union over K shots is a converging estimate on both sides, so a
     // handful of rim cells can differ. Anything worse than this is a shape
