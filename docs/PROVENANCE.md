@@ -42,6 +42,7 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`mobs.md`](provenance/mobs.md) | L'A\* qui prend la même route que le jeu dans le même labyrinthe |
 | [`combat.md`](provenance/combat.md) | Frapper, utiliser, manger, user : la jauge d'attaque, 34 armes, 91 tables de butin |
 | [`verbes.md`](provenance/verbes.md) | Les verbes branchés au serveur, et le levier enfin tiré |
+| [`explosions.md`](provenance/explosions.md) | La résistance au souffle des 987 blocs, mesurée — et le plafond au-delà duquel aucune explosion ne peut plus distinguer deux valeurs |
 | [`branchement.md`](provenance/branchement.md) | Le câblage au tick, et les deux bugs qu'il a révélés |
 | **Client** | |
 | [`interface.md`](provenance/interface.md) | Police, HUD, inventaire : 2414 glyphes validés glyphe par glyphe |

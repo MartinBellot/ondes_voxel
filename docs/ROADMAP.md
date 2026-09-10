@@ -699,6 +699,18 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       clic, cinq vaches lâchent 14 bœufs et 3 cuirs, et manger fait remonter la
       faim de 13 à 16. Le **seau** est refusé et nommé : il n'agit pas par
       `Use Item On` mais par `Use Item` avec un lancer de rayon serveur)*
+- [~] **Explosions et résistance des blocs**
+      *(la résistance au souffle des **987 blocs mesurée** — elle n'est dans
+      aucun rapport du data generator : 959 blocs debout sur le banc, 947 dans
+      leur propre classe, 1885 lectures sur 1900 en croisant deux bancs,
+      **0 inversion** sur 31 valeurs, et les 15 écarts nommés. Le **plafond est
+      démontré** : au-delà de R ≈ 30 aucune explosion du jeu ne sépare deux
+      valeurs, donc obsidienne 1200 et bedrock 3,6 M sont indiscernables par
+      construction. Cratère **97,5 % d'accord** cellule par cellule, tout le
+      résidu sur le bord ; dégâts **10/10 exacts**, et le facteur 0,984 des PV
+      relus est l'armure du zombie, ce qui prouve que la formule plancherie
+      avant l'armure. **Rien n'est branché** : la TNT ne saute pas et le creeper
+      ne siffle pas)*
 - [ ] **Divers** : explosions et résistance des blocs, feu et propagation,
       foudre et conversions, météo, cycle jour / nuit, sommeil et phantoms,
       gel (poudreuse), noyade, gravité, **archéologie** (brosse, sable et

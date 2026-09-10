@@ -69,7 +69,7 @@
       "name": "Contenu complet",
       "status": "in_progress",
       "done": 13,
-      "total": 78,
+      "total": 79,
       "exit_criterion": "Une batterie world_test par sous-système ; parité statistique worldgen sur 1000 seeds ; matrice protocole à 100 %.",
       "blocked": [],
       "notes": "Vague d'agents parallèles du 2026-09-09 : carvers, règles de surface, départage des biomes (100,000 %), ordre des étages, fluides, redstone, survie, et le cadre des features. Le blocage unique de l'étage des features est la formule d'ensemencement de la décoration : tout le reste est mesuré et en place, et l'étage est exposé sans être câblé plutôt qu'allumé faux."
