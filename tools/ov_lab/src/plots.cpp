@@ -29,6 +29,13 @@ void plot_sign(Canvas& canvas, i32 x, i32 z, std::string_view zone, std::string_
 
 /// A source, sixteen blocks of dust, and a lamp. The reference measurement is
 /// the level at every position: 15 next to the source, 0 past the sixteenth.
+///
+/// Note on `facing` throughout this file: for a repeater and a comparator it is
+/// the side the **output** leaves by, so the input sits behind it. These rigs
+/// were built the other way round and were therefore measuring nothing — the
+/// comparators were reading the wire and outputting into the container. Found
+/// by the container agent, which had measured the property against the real
+/// server for its own work.
 void redstone_dust_line(Canvas& canvas, i32 x, i32 z) {
     canvas.set(x + 1, kFloor, z + 8, "minecraft:redstone_block");
     for (i32 step = 2; step <= 14; ++step) {
@@ -55,7 +62,7 @@ void redstone_repeater_delays(Canvas& canvas, i32 x, i32 z) {
         canvas.set(x + 1, kFloor, lane, "minecraft:redstone_block");
         canvas.set(x + 2, kFloor, lane, "minecraft:redstone_wire");
         canvas.set(x + 3, kFloor, lane, "minecraft:repeater",
-                   {{"delay", delay_value}, {"facing", "west"}, {"locked", "false"}});
+                   {{"delay", delay_value}, {"facing", "east"}, {"locked", "false"}});
         for (i32 step = 4; step <= 13; ++step) {
             canvas.set(x + step, kFloor, lane, "minecraft:redstone_wire");
         }
@@ -69,7 +76,7 @@ void redstone_locked_repeater(Canvas& canvas, i32 x, i32 z) {
     canvas.set(x + 1, kFloor, z + 8, "minecraft:redstone_block");
     canvas.set(x + 2, kFloor, z + 8, "minecraft:redstone_wire");
     canvas.set(x + 3, kFloor, z + 8, "minecraft:repeater",
-               {{"delay", "1"}, {"facing", "west"}, {"locked", "false"}});
+               {{"delay", "1"}, {"facing", "east"}, {"locked", "false"}});
     canvas.set(x + 4, kFloor, z + 8, "minecraft:redstone_wire");
     canvas.set(x + 5, kFloor, z + 8, "minecraft:redstone_lamp");
 
@@ -85,13 +92,13 @@ void redstone_locked_repeater(Canvas& canvas, i32 x, i32 z) {
 void redstone_comparators(Canvas& canvas, i32 x, i32 z) {
     canvas.set(x + 1, kFloor, z + 3, "minecraft:redstone_block");
     canvas.set(x + 2, kFloor, z + 3, "minecraft:comparator",
-               {{"facing", "west"}, {"mode", "compare"}, {"powered", "false"}});
+               {{"facing", "east"}, {"mode", "compare"}, {"powered", "false"}});
     canvas.set(x + 3, kFloor, z + 3, "minecraft:redstone_wire");
     canvas.set(x + 4, kFloor, z + 3, "minecraft:redstone_lamp");
 
     canvas.set(x + 1, kFloor, z + 7, "minecraft:redstone_block");
     canvas.set(x + 2, kFloor, z + 7, "minecraft:comparator",
-               {{"facing", "west"}, {"mode", "subtract"}, {"powered", "false"}});
+               {{"facing", "east"}, {"mode", "subtract"}, {"powered", "false"}});
     canvas.set(x + 3, kFloor, z + 7, "minecraft:redstone_wire");
     canvas.set(x + 4, kFloor, z + 7, "minecraft:redstone_lamp");
 
@@ -99,14 +106,14 @@ void redstone_comparators(Canvas& canvas, i32 x, i32 z) {
     canvas.container(x + 1, kFloor, z + 11, "minecraft:barrel", "minecraft:barrel",
                      {{"facing", "up"}, {"open", "false"}});
     canvas.set(x + 2, kFloor, z + 11, "minecraft:comparator",
-               {{"facing", "west"}, {"mode", "compare"}, {"powered", "false"}});
+               {{"facing", "east"}, {"mode", "compare"}, {"powered", "false"}});
     canvas.set(x + 3, kFloor, z + 11, "minecraft:redstone_wire");
     canvas.set(x + 4, kFloor, z + 11, "minecraft:redstone_lamp");
 
     canvas.container(x + 8, kFloor, z + 11, "minecraft:chest", "minecraft:chest",
                      {{"facing", "north"}, {"type", "single"}});
     canvas.set(x + 9, kFloor, z + 11, "minecraft:comparator",
-               {{"facing", "west"}, {"mode", "compare"}, {"powered", "false"}});
+               {{"facing", "east"}, {"mode", "compare"}, {"powered", "false"}});
     canvas.set(x + 10, kFloor, z + 11, "minecraft:redstone_wire");
     canvas.set(x + 11, kFloor, z + 11, "minecraft:redstone_lamp");
 }
