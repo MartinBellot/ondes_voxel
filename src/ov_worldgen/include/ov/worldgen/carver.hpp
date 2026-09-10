@@ -30,6 +30,8 @@
 #include "ov/math/random.hpp"
 #include "ov/worldgen/carving_mask.hpp"
 
+#include <string_view>
+
 namespace ov::worldgen {
 
 /// The dimension's vertical extent, which is all a carver needs to know about
@@ -43,11 +45,27 @@ namespace ov::worldgen {
 /// this module.
 struct CarvingContext {
     i32 min_y{-64};
+    /// The chunk's height, which sizes the mask.
     i32 height{384};
 
-    /// The lowest level the carvers may turn into lava rather than air —
-    /// `lava_level: {above_bottom: 8}` in every overworld carver.
-    [[nodiscard]] constexpr i32 lava_level() const noexcept { return min_y + 8; }
+    // ── nether ──
+    /// How far above the bottom the carvers turn a cell into lava rather than
+    /// air. Eight in the overworld (`lava_level: {above_bottom: 8}`); 31 in the
+    /// Nether, whose carver ignores its own `lava_level` field and uses a
+    /// fixed 31 — measured, see docs/provenance/nether.md.
+    i32 lava_offset{8};
+    /// The generator's depth — the noise settings' `height` — when it differs
+    /// from the chunk's. The Nether's chunks are 256 tall and its noise 128,
+    /// and `below_top` and the carvers' top margin count from the second.
+    /// Zero means "the chunk height".
+    i32 gen_depth{0};
+
+    [[nodiscard]] constexpr i32 depth() const noexcept {
+        return gen_depth > 0 ? gen_depth : height;
+    }
+
+    /// The lowest level the carvers may turn into lava rather than air.
+    [[nodiscard]] constexpr i32 lava_level() const noexcept { return min_y + lava_offset; }
 };
 
 // ── The game's trigonometry ─────────────────────────────────────────────────
@@ -92,6 +110,13 @@ struct CaveCarverConfig {
     i32 y_min{-56};
     /// `y.max_inclusive`, resolved against the dimension.
     i32 y_max{180};
+    /// ── nether ── `minecraft:nether_cave`: `NetherWorldCarver`, which is the
+    /// cave carver with four things changed — at most 10 rather than 15 in the
+    /// outer draw, a thicker tunnel (`(f * 2 + f) * 2`, never the one-in-ten
+    /// widening), a vertical-to-horizontal ratio of 5, and every shape
+    /// provider in its JSON a *constant*, so the three multipliers and the
+    /// room's y-scale draw nothing.
+    bool nether{false};
 };
 
 /// `minecraft:cave`: the common one, anywhere from just above bedrock to y=180.
@@ -101,6 +126,10 @@ struct CaveCarverConfig {
 /// at y=47, which is what makes the deep layers denser than the shallow ones.
 [[nodiscard]] CaveCarverConfig cave_extra_underground_config(
     const CarvingContext& context) noexcept;
+
+/// `minecraft:nether_cave`: probability 0.2, y uniform from absolute 0 to
+/// `below_top 1` of the generator's depth — 126 in a 128-deep Nether.
+[[nodiscard]] CaveCarverConfig nether_cave_config(const CarvingContext& context) noexcept;
 
 /// The cave carver of 1.18 and later.
 ///
@@ -161,11 +190,36 @@ private:
 /// every chunk within 8 in each direction, itself included: 17 x 17 x 3 = 867
 /// seedings per chunk, each replaying its own chunk's carvers and keeping only
 /// what lands here.
+/// Which dimension's carver list a stage runs.
+///
+/// ── nether ── Every Nether biome lists exactly one carver, `nether_cave`, at
+/// index 0 — checked across all five, as the overworld's three were across 53.
+enum class CarverPreset : u8 {
+    /// `cave`, `cave_extra_underground`, `canyon`; cut cells become `air`.
+    Overworld,
+    /// `nether_cave`; cut cells become `cave_air`, lava at and below y = 31.
+    Nether,
+};
+
 class CarverStage {
 public:
-    CarverStage(i64 seed, CarvingContext context);
+    CarverStage(i64 seed, CarvingContext context, CarverPreset preset = CarverPreset::Overworld);
+
+    /// The Nether's stage for a world seed: min y 0, 256-block chunks, a
+    /// 128-deep generator, lava at 31.
+    [[nodiscard]] static CarverStage nether(i64 seed);
 
     [[nodiscard]] const CarvingContext& context() const noexcept { return context_; }
+    [[nodiscard]] CarverPreset          preset() const noexcept { return preset_; }
+
+    /// The block tag that says what these carvers may cut —
+    /// `#minecraft:overworld_carver_replaceables` or
+    /// `#minecraft:nether_carver_replaceables`.
+    [[nodiscard]] std::string_view replaceables_tag() const noexcept;
+
+    /// What a cut cell above the lava level becomes: `minecraft:air` for the
+    /// overworld's carvers, `minecraft:cave_air` for the Nether's.
+    [[nodiscard]] std::string_view carved_air() const noexcept;
 
     /// The mask for one chunk. Depends on nothing but the seed, the chunk and
     /// the world's height.
@@ -178,6 +232,7 @@ public:
 private:
     i64               seed_;
     CarvingContext    context_;
+    CarverPreset      preset_;
     CaveWorldCarver   cave_;
     CaveWorldCarver   cave_extra_;
     CanyonWorldCarver canyon_;

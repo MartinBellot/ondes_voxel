@@ -149,6 +149,12 @@ public:
     /// of the generator is the only way to be sure the two agree.
     [[nodiscard]] i32 sea_level() const noexcept { return sea_level_; }
 
+    /// ── nether ── The generator's own vertical extent — the noise settings'
+    /// `min_y` and `height`. What `above_bottom` / `below_top` resolve against
+    /// when a feature is placed: 0 and 128 in the Nether, whose chunks are 256.
+    [[nodiscard]] i32 gen_min_y() const noexcept { return router_->min_y(); }
+    [[nodiscard]] i32 gen_depth() const noexcept { return router_->height(); }
+
     /// Attach the carvers, and with them the tag that says what they may cut.
     ///
     /// The two arrive together and cannot be separated, which is deliberate.

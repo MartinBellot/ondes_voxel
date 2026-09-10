@@ -47,7 +47,11 @@ struct SurfaceSystem::Impl final : public SurfaceResources {
     /// Two factories from the same seed are the same factory, which is the
     /// point: vanilla has one, and a noise named here and named there has to
     /// come out identical.
-    math::XoroshiroPositionalFactory factory{0, 0};
+    ///
+    /// ── nether ── Legacy when the settings say `legacy_random_source`, as the
+    /// router's is: the Nether's surface noises, its bedrock gradients and its
+    /// per-column depth all come from a `java.util.Random` factory.
+    PositionalRandomFactory factory{math::XoroshiroPositionalFactory{0, 0}};
 
     std::unordered_map<std::string, std::shared_ptr<const NormalNoise>> noises;
 
@@ -87,8 +91,7 @@ struct SurfaceSystem::Impl final : public SurfaceResources {
                         : surface_noise->value(static_cast<f64>(x), 0.0, static_cast<f64>(z));
         value = value * kSurfaceDepthScale + kSurfaceDepthOffset;
         if (depth_jitter) {
-            auto random = factory.at(x, 0, z);
-            value += random.next_double() * kSurfaceDepthJitter;
+            value += factory.next_double_at(x, 0, z) * kSurfaceDepthJitter;
         }
         // Truncation towards zero, as the cast to int is. The distinction only
         // shows for a negative depth, and a negative depth is exactly what the
@@ -110,14 +113,12 @@ struct SurfaceSystem::Impl final : public SurfaceResources {
         return built ? built->get() : nullptr;
     }
 
-    [[nodiscard]] math::XoroshiroPositionalFactory random_factory(
-        std::string_view name) override {
+    [[nodiscard]] PositionalRandomFactory random_factory(std::string_view name) override {
         // A factory under a name is a fork of the generator that name hashes
         // to, not that generator itself. One level of forking either way gives
         // a different bedrock floor, and the floor is checkable a block at a
         // time — which is how this was settled.
-        auto source = factory.from_hash_of(name);
-        return source.fork_positional();
+        return factory.fork_named(name);
     }
 
     [[nodiscard]] std::optional<registry::BlockStateId> block_state(
@@ -189,9 +190,8 @@ std::expected<std::shared_ptr<const NormalNoise>, SurfaceError> SurfaceSystem::I
         amplitudes.push_back(amplitude);
     }
 
-    auto source = factory.from_hash_of(name);
-    auto built  = std::make_shared<const NormalNoise>(
-        NormalNoise::create(source, static_cast<i32>(first_octave), amplitudes));
+    auto built = std::make_shared<const NormalNoise>(
+        factory.normal_noise(name, static_cast<i32>(first_octave), amplitudes));
     noises.emplace(key, built);
     return built;
 }
@@ -299,9 +299,6 @@ std::expected<SurfaceSystem, SurfaceError> SurfaceSystem::load(
     impl.root          = data_root;
     impl.blocks        = &blocks;
 
-    math::XoroshiroRandomSource source{seed};
-    impl.factory = source.fork_positional();
-
     if (const char* setting = std::getenv("OV_SURFACE_DEPTH_JITTER"); setting != nullptr) {
         impl.depth_jitter = std::string_view(setting) != "0";
     }
@@ -325,6 +322,12 @@ std::expected<SurfaceSystem, SurfaceError> SurfaceSystem::load(
         if (document.error() != simdjson::SUCCESS) {
             return std::unexpected(SurfaceError::Malformed);
         }
+        // ── nether ── Seeded only once the settings have said which generator
+        // the dimension uses.
+        bool legacy = false;
+        (void)document.at_key("legacy_random_source").get(legacy);
+        impl.factory = PositionalRandomFactory::for_world(seed, legacy);
+
         i64 value = 0;
         if (document.at_key("sea_level").get(value) == simdjson::SUCCESS) {
             impl.sea_level = static_cast<i32>(value);
@@ -397,8 +400,13 @@ std::expected<SurfaceSystem, SurfaceError> SurfaceSystem::load(
             }
             *slot = *state;
         }
-        auto random     = impl.factory.from_hash_of("minecraft:clay_bands");
-        impl.clay_bands = generate_clay_bands(random, colours);
+        if (const auto* legacy_factory = impl.factory.legacy_factory()) {
+            auto random     = legacy_factory->from_hash_of("minecraft:clay_bands");
+            impl.clay_bands = generate_clay_bands(random, colours);
+        } else {
+            auto random     = impl.factory.xoroshiro()->from_hash_of("minecraft:clay_bands");
+            impl.clay_bands = generate_clay_bands(random, colours);
+        }
     }
 
     auto rule = load_surface_rule(settings_file, impl);

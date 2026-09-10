@@ -164,7 +164,7 @@ struct Anchor {
 /// without generating anything around it.
 class VerticalGradient final : public SurfaceCondition {
 public:
-    VerticalGradient(math::XoroshiroPositionalFactory factory, Anchor true_at_and_below,
+    VerticalGradient(PositionalRandomFactory factory, Anchor true_at_and_below,
                      Anchor false_at_and_above)
         : factory_(factory), below_(true_at_and_below), above_(false_at_and_above) {}
 
@@ -179,14 +179,13 @@ public:
         }
         const f64 chance = map_range(static_cast<f64>(at.y), static_cast<f64>(low),
                                      static_cast<f64>(high), 1.0, 0.0);
-        auto      random = factory_.at(at.x, at.y, at.z);
-        return static_cast<f64>(random.next_float()) < chance;
+        return static_cast<f64>(factory_.next_float_at(at.x, at.y, at.z)) < chance;
     }
 
 private:
-    math::XoroshiroPositionalFactory factory_;
-    Anchor                           below_;
-    Anchor                           above_;
+    PositionalRandomFactory factory_;
+    Anchor                  below_;
+    Anchor                  above_;
 };
 
 class YAbove final : public SurfaceCondition {
@@ -637,8 +636,9 @@ i32 resolve_anchor_below_top(i32 value, i32 min_y, i32 height) noexcept {
     return min_y + height - 1 - value;
 }
 
-std::array<registry::BlockStateId, kClayBandCount> generate_clay_bands(
-    math::XoroshiroRandomSource& random, const ClayBandColours& colours) {
+template<typename Random>
+std::array<registry::BlockStateId, kClayBandCount> clay_bands_from(Random&                random,
+                                                                   const ClayBandColours& colours) {
     std::array<registry::BlockStateId, kClayBandCount> bands{};
     bands.fill(colours.terracotta);
 
@@ -686,6 +686,16 @@ std::array<registry::BlockStateId, kClayBandCount> generate_clay_bands(
         ++placed;
     }
     return bands;
+}
+
+std::array<registry::BlockStateId, kClayBandCount> generate_clay_bands(
+    math::XoroshiroRandomSource& random, const ClayBandColours& colours) {
+    return clay_bands_from(random, colours);
+}
+
+std::array<registry::BlockStateId, kClayBandCount> generate_clay_bands(
+    math::LegacyRandomSource& random, const ClayBandColours& colours) {
+    return clay_bands_from(random, colours);
 }
 
 std::expected<SurfaceRuleRef, SurfaceError> load_surface_rule(

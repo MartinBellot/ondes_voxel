@@ -600,21 +600,32 @@ std::expected<FeatureRef, FeatureError> parse_feature(
         if (!fluid) {
             return std::unexpected(fluid.error());
         }
-        simdjson::dom::array valid_blocks;
-        if (config.at_key("valid_blocks").get(valid_blocks) != simdjson::SUCCESS) {
-            return std::unexpected(FeatureError::Malformed);
-        }
         std::vector<u16> valid;
-        for (auto value : valid_blocks) {
-            std::string_view name;
-            if (value.get(name) != simdjson::SUCCESS) {
-                return std::unexpected(FeatureError::Malformed);
-            }
-            const auto block = blocks.find_block(qualify(name));
+        // A holder set: a list of names, or — the Nether's springs — one bare
+        // name, which is the same set with a single member.
+        std::string_view single_block;
+        if (config.at_key("valid_blocks").get(single_block) == simdjson::SUCCESS) {
+            const auto block = blocks.find_block(qualify(single_block));
             if (!block) {
                 return std::unexpected(FeatureError::Malformed);
             }
             valid.push_back(block->value());
+        } else {
+            simdjson::dom::array valid_blocks;
+            if (config.at_key("valid_blocks").get(valid_blocks) != simdjson::SUCCESS) {
+                return std::unexpected(FeatureError::Malformed);
+            }
+            for (auto value : valid_blocks) {
+                std::string_view name;
+                if (value.get(name) != simdjson::SUCCESS) {
+                    return std::unexpected(FeatureError::Malformed);
+                }
+                const auto block = blocks.find_block(qualify(name));
+                if (!block) {
+                    return std::unexpected(FeatureError::Malformed);
+                }
+                valid.push_back(block->value());
+            }
         }
         std::ranges::sort(valid);
         bool requires_below = false;

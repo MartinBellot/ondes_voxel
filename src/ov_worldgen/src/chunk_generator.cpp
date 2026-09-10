@@ -50,8 +50,10 @@ ChunkGenerator::ChunkGenerator(const NoiseRouter& router, const BiomeSource& bio
         const auto block = blocks.find_block(name);
         return block ? blocks.default_state(*block) : registry::kAirState;
     };
-    stone_ = resolve("minecraft:stone");
-    water_ = resolve("minecraft:water");
+    // ── nether ── The settings' default block and fluid: stone and water in
+    // the overworld, netherrack and lava in the Nether.
+    stone_ = resolve(router.default_block());
+    water_ = resolve(router.default_fluid());
     lava_  = resolve("minecraft:lava");
     dirt_  = resolve("minecraft:dirt");
 
@@ -115,7 +117,11 @@ std::expected<void, CarverAttachError> ChunkGenerator::set_carvers(
         OV_LOG_ERROR("worldgen: {}", to_string(CarverAttachError::NoBlockRegistry));
         return std::unexpected(CarverAttachError::NoBlockRegistry);
     }
-    const auto tag = registries.find_tag(*block_registry, kReplaceablesTag);
+    // ── nether ── The stage names its own tag: the Nether's carvers cut
+    // `#minecraft:nether_carver_replaceables`.
+    const std::string_view replaceables =
+        carvers != nullptr ? carvers->replaceables_tag() : kReplaceablesTag;
+    const auto tag = registries.find_tag(*block_registry, replaceables);
     if (!tag) {
         OV_LOG_ERROR("worldgen: {}", to_string(CarverAttachError::NoReplaceablesTag));
         return std::unexpected(CarverAttachError::NoReplaceablesTag);
@@ -167,6 +173,14 @@ std::expected<void, CarverAttachError> ChunkGenerator::set_carvers(
 void ChunkGenerator::apply_carving(world::Chunk& chunk, const CarvingMask& mask,
                                    i32 lava_level) const {
     const auto shape = chunk.shape();
+    // ── nether ── `air` for the overworld's carvers, `cave_air` for the
+    // Nether's. One lookup per chunk.
+    registry::BlockStateId carved_air = registry::kAirState;
+    if (carvers_ != nullptr) {
+        if (const auto block = blocks_->find_block(carvers_->carved_air())) {
+            carved_air = blocks_->default_state(*block);
+        }
+    }
 
     for (usize local_z = 0; local_z < 16; ++local_z) {
         for (usize local_x = 0; local_x < 16; ++local_x) {
@@ -191,8 +205,7 @@ void ChunkGenerator::apply_carving(world::Chunk& chunk, const CarvingMask& mask,
                     continue;
                 }
 
-                chunk.set_block(local_x, y, local_z,
-                                y <= lava_level ? lava_ : registry::kAirState);
+                chunk.set_block(local_x, y, local_z, y <= lava_level ? lava_ : carved_air);
 
                 // The grass above a cell that has just been cut becomes dirt.
                 // Without it a cave eating into a hillside from underneath
@@ -215,6 +228,12 @@ void ChunkGenerator::generate_noise(world::Chunk& chunk) const {
     const i32  origin_x = chunk.position().x * 16;
     const i32  origin_z = chunk.position().z * 16;
 
+    // ── nether ── Only the noise's own height is filled. The Nether's chunks
+    // are 256 tall and its noise 128: above it the world is air, and the
+    // density there — a clamped gradient past its end — would say stone.
+    const i32 noise_low  = std::max(shape.min_y, router_->min_y());
+    const i32 noise_high = std::min(shape.max_y(), router_->min_y() + router_->height() - 1);
+
     // Stone, water, lava, air. Nothing is cut here: the carvers run after the
     // surface rules, which is the game's order and the reason this file was
     // rewritten. See the header.
@@ -222,7 +241,7 @@ void ChunkGenerator::generate_noise(world::Chunk& chunk) const {
         for (usize local_x = 0; local_x < 16; ++local_x) {
             const i32 world_x = origin_x + static_cast<i32>(local_x);
             const i32 world_z = origin_z + static_cast<i32>(local_z);
-            for (i32 y = shape.min_y; y <= shape.max_y(); ++y) {
+            for (i32 y = noise_low; y <= noise_high; ++y) {
                 const auto state = is_solid(world_x, y, world_z) ? stone_ : fluid_at(y);
                 if (state != registry::kAirState) {
                     chunk.set_block(local_x, y, local_z, state);

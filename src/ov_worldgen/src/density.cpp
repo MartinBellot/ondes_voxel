@@ -1,6 +1,7 @@
 #define OV_LOG_CATEGORY "worldgen"
 
 #include "ov/worldgen/density.hpp"
+#include "ov/worldgen/random_factory.hpp"
 
 #include "ov/base/log.hpp"
 
@@ -645,11 +646,24 @@ struct NoiseRouter::Impl {
     std::vector<std::unique_ptr<simdjson::dom::parser>>   parsers;
     std::vector<std::unique_ptr<simdjson::padded_string>> documents;
 
-    math::XoroshiroPositionalFactory factory{0, 0};
+    /// Xoroshiro for the overworld, `java.util.Random` for a settings file that
+    /// says `legacy_random_source: true` — the Nether's. See random_factory.hpp.
+    PositionalRandomFactory factory{math::XoroshiroPositionalFactory{0, 0}};
     /// The blended noise gets a generator forked from the world seed's own
     /// stream, not from the positional factory. Kept here because the fork
     /// consumes state and must happen exactly once.
     math::XoroshiroRandomSource blended_random{0};
+
+    // ── nether ──
+    /// `legacy_random_source`, read from the settings before anything is
+    /// seeded.
+    bool legacy{false};
+    i64  seed{0};
+    /// `default_block` and `default_fluid`, by name. The noise stage fills
+    /// with them: stone and water in the overworld, netherrack and lava in the
+    /// Nether.
+    std::string default_block{"minecraft:stone"};
+    std::string default_fluid{"minecraft:water"};
     /// The blended noise this router built, kept so a harness can read the
     /// selector stack on its own. Nothing in generation reads it; it is the
     /// handle `NoiseRouter::blended_noise()` hands out.
@@ -739,11 +753,38 @@ std::expected<std::shared_ptr<const NormalNoise>, DensityError> NoiseRouter::Imp
         amplitudes.push_back(amplitude);
     }
 
+    // ── nether ──
+    // A legacy-seeded world overrides three noises in its density graph,
+    // whatever their files say. Temperature and vegetation are the pre-1.18
+    // Nether biome noises — two octaves at -7, the *old* initialisation, from
+    // `new LegacyRandomSource(seed)` and `seed + 1` — and `offset`, which the
+    // shift functions read, is a single zero-amplitude octave: the Nether's
+    // biome noises are not shifted at all. Confirmed cell by cell against the
+    // game's Nether, 100 % of biomes (docs/provenance/nether.md); with the
+    // files' own parameters the agreement is at chance.
+    if (legacy) {
+        const bool temperature = name == "minecraft:temperature";
+        if (temperature || name == "minecraft:vegetation") {
+            constexpr std::array<f64, 2> kNetherBiomeAmplitudes{1.0, 1.0};
+            math::LegacyRandomSource     source{seed + (temperature ? 0 : 1)};
+            auto built = std::make_shared<const NormalNoise>(
+                NormalNoise::create_legacy_nether_biome(source, -7, kNetherBiomeAmplitudes));
+            noises.emplace(key, built);
+            return built;
+        }
+        if (name == "minecraft:offset") {
+            constexpr std::array<f64, 1> kSilent{0.0};
+            auto built = std::make_shared<const NormalNoise>(
+                factory.normal_noise(name, 0, kSilent));
+            noises.emplace(key, built);
+            return built;
+        }
+    }
+
     // Seeded by name, from the world seed's positional factory. This is why
     // adding a noise to a datapack does not disturb the others.
-    auto source = factory.from_hash_of(name);
-    auto built  = std::make_shared<const NormalNoise>(
-        NormalNoise::create(source, static_cast<i32>(first_octave), amplitudes));
+    auto built = std::make_shared<const NormalNoise>(
+        factory.normal_noise(name, static_cast<i32>(first_octave), amplitudes));
     noises.emplace(key, built);
     return built;
 }
@@ -1021,7 +1062,20 @@ std::expected<DensityRef, DensityError> NoiseRouter::Impl::parse(Json node) {
         // Its own generator, forked from the world seed's — not the positional
         // factory the named noises use. The fork consumes two draws, so its
         // position in the sequence is part of what the seed decides.
-        auto forked = std::make_shared<BlendedNoise>(BlendedNoise::create(
+        //
+        // ── nether ── A legacy-seeded world builds it from a fresh
+        // `new LegacyRandomSource(seed)` instead, every time it is named.
+        std::shared_ptr<BlendedNoise> forked;
+        if (legacy) {
+            math::LegacyRandomSource fresh{seed};
+            forked = std::make_shared<BlendedNoise>(BlendedNoise::create(
+                fresh, number_at("xz_scale", 1.0), number_at("y_scale", 1.0),
+                number_at("xz_factor", 80.0), number_at("y_factor", 160.0),
+                number_at("smear_scale_multiplier", 8.0)));
+            blended = forked;
+            return wrap(std::make_shared<const BlendedNoiseNode>(std::move(forked)));
+        }
+        forked = std::make_shared<BlendedNoise>(BlendedNoise::create(
             blended_random, number_at("xz_scale", 1.0), number_at("y_scale", 1.0),
             number_at("xz_factor", 80.0), number_at("y_factor", 160.0),
             number_at("smear_scale_multiplier", 8.0)));
@@ -1079,17 +1133,45 @@ std::expected<NoiseRouter, DensityError> NoiseRouter::load(const std::filesystem
     Impl&       impl = *router.impl_;
     impl.root        = data_root;
 
-    // Every noise the world uses is seeded from one factory forked from the
-    // world seed. That fork is the whole of "the same seed gives the same
-    // world".
-    math::XoroshiroRandomSource source{seed};
-    impl.factory        = source.fork_positional();
-    impl.blended_random = source.fork();
-
     auto document = impl.read(data_root / "worldgen" / "noise_settings" /
                               (std::string(settings) + ".json"));
     if (!document) {
         return std::unexpected(document.error());
+    }
+
+    // ── nether ── Which generator the dimension is seeded from, read before
+    // anything is seeded, and the blocks the noise stage fills with.
+    impl.seed = seed;
+    {
+        bool legacy = false;
+        if (document->at_key("legacy_random_source").get(legacy) == simdjson::SUCCESS) {
+            impl.legacy = legacy;
+        }
+        std::string_view name;
+        if (document->at_key("default_block").at_key("Name").get(name) == simdjson::SUCCESS) {
+            impl.default_block = std::string(name);
+        }
+        if (document->at_key("default_fluid").at_key("Name").get(name) == simdjson::SUCCESS) {
+            impl.default_fluid = std::string(name);
+        }
+    }
+
+    // Every noise the world uses is seeded from one factory forked from the
+    // world seed. That fork is the whole of "the same seed gives the same
+    // world".
+    if (impl.legacy) {
+        impl.factory = PositionalRandomFactory::for_world(seed, true);
+    } else {
+        math::XoroshiroRandomSource source{seed};
+        impl.factory = PositionalRandomFactory{source.fork_positional()};
+        // `old_blended_noise` is seeded from the factory under the name
+        // `minecraft:terrain` — not from a second fork of the world seed,
+        // which is what this line used to do. Neither this nor the octave
+        // order in noise.cpp moves the overworld's agreement on its own (each
+        // alone makes it *worse*); the two together take solid/air from
+        // 99.141 % to 99.763 % and put the surface-offset mode at 0 for 96 %
+        // of dry columns. See docs/provenance/nether.md § 3.
+        impl.blended_random = impl.factory.xoroshiro()->from_hash_of("minecraft:terrain");
     }
 
     i64 value = 0;
@@ -1167,6 +1249,15 @@ const BlendedNoise* NoiseRouter::blended_noise() const noexcept {
 
 i32 NoiseRouter::sea_level() const noexcept {
     return impl_->sea_level;
+}
+bool NoiseRouter::legacy_random_source() const noexcept {
+    return impl_->legacy;
+}
+std::string_view NoiseRouter::default_block() const noexcept {
+    return impl_->default_block;
+}
+std::string_view NoiseRouter::default_fluid() const noexcept {
+    return impl_->default_fluid;
 }
 i32 NoiseRouter::min_y() const noexcept {
     return impl_->min_y;

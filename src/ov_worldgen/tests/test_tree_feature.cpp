@@ -171,9 +171,13 @@ TEST_CASE("a survival rule is named or refused, never guessed", "[worldgen][tree
     CHECK(plant_survival_rule("minecraft:lily_pad") == PlantSurvivalRule::Waterlily);
     CHECK(plant_survival_rule("minecraft:azalea") == PlantSurvivalRule::DirtOrClay);
     // The two mushrooms read the light level, which worldgen does not compute,
-    // and fire asks what is flammable nearby. Both are absent on purpose.
+    // and are absent on purpose.
     CHECK(!plant_survival_rule("minecraft:brown_mushroom").has_value());
-    CHECK(!plant_survival_rule("minecraft:fire").has_value());
+    // Fire has the narrower rule its patches can reach: `patch_fire` and
+    // `patch_soul_fire` already demand netherrack / soul soil underneath, so a
+    // sturdy face below always holds. Measured: 43/43 fire and 6/6 soul fire
+    // blocks where the game put them in 25 full Nether chunks.
+    CHECK(plant_survival_rule("minecraft:fire") == PlantSurvivalRule::NotAirBelow);
     CHECK(!plant_survival_rule("minecraft:stone").has_value());
 
     CHECK(is_double_plant("minecraft:tall_grass"));

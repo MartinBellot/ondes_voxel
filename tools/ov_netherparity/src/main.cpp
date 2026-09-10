@@ -1,0 +1,713 @@
+// Nether parity: our Nether against a Nether the real 1.20.1 server generated.
+//
+// Three questions, each against the artefact the game keeps for it:
+//
+//   * **biomes**, cell by cell on the 4x4x4 grid, in every chunk the game took
+//     at least to `minecraft:biomes` (a chunk below that holds the default
+//     array and lies — pitfall 4 of the briefing);
+//   * **carving masks**, bit by bit, in chunks the game stopped at
+//     `minecraft:carvers`: those still carry `CarvingMasks.AIR`, the exact set
+//     of cells the Nether's carver considered;
+//   * **blocks**, name by name, in the same `carvers`-status chunks. Such a
+//     chunk is exactly noise + surface rules + carvers and nothing more — no
+//     feature has run — which is precisely what `ChunkGenerator::generate()`
+//     produces. The block comparison goes through `generate()` itself, so the
+//     probe exercises the code path the server runs (pitfall 13).
+//
+// The Nether is seeded from the legacy random source; before
+// `PositionalRandomFactory` existed this comparison could only be made as a
+// distribution (docs/provenance/amplitude-old-blended-noise.md). See
+// docs/provenance/nether.md for the numbers.
+#define OV_LOG_CATEGORY "netherparity"
+
+#include "ov/base/log.hpp"
+#include "ov/nbt/binary.hpp"
+#include "ov/nbt/region.hpp"
+#include "ov/registry/block_states.hpp"
+#include "ov/registry/registries.hpp"
+#include "ov/world/chunk.hpp"
+#include "ov/worldgen/biome_source.hpp"
+#include "ov/worldgen/carver.hpp"
+#include "ov/worldgen/carving_mask.hpp"
+#include "ov/worldgen/chunk_generator.hpp"
+#include "ov/worldgen/decoration.hpp"
+#include "ov/worldgen/density.hpp"
+#include "ov/worldgen/feature.hpp"
+#include "ov/worldgen/pipeline.hpp"
+#include "ov/worldgen/surface_system.hpp"
+
+#include <fmt/format.h>
+
+#include <algorithm>
+#include <array>
+#include <bit>
+#include <cstdlib>
+#include <filesystem>
+#include <map>
+#include <string>
+#include <vector>
+
+using namespace ov;
+
+namespace {
+
+constexpr i32 kMinY   = 0;
+constexpr i32 kHeight = 256;
+
+struct Options {
+    std::filesystem::path world{"run/reference-nether-1234567890/world/DIM-1"};
+    std::filesystem::path data{"data/vanilla/1.20.1/generated/data/minecraft"};
+    std::filesystem::path reports{"data/vanilla/1.20.1/generated"};
+    std::filesystem::path pack{"data/vanilla/1.20.1/registry.ovpack"};
+    i64                   seed{1234567890};
+    /// `carvers`-status chunks to run through generate(). Each costs a full
+    /// chunk of noise, so this is the knob that sets the run time.
+    i32 chunks{200};
+    /// Chunks of any finished-enough status to compare biomes on.
+    i32 biome_chunks{3000};
+    i32 show{6};
+    /// `minecraft:full` chunks to run through the pipeline with the Nether's
+    /// decorator: the features' parity, and the list of what is not built.
+    i32 full_chunks{0};
+    /// Print this many surface-block disagreements in full: position, biome,
+    /// and the column around it on both sides. Only pairs of blocks the
+    /// surface rules place, so a feature's neighbour write does not crowd out
+    /// the rules' own errors.
+    i32 pairs{0};
+    /// Restrict `--pairs` to one game block and/or one of ours.
+    std::string pair_game;
+    std::string pair_ours;
+};
+
+[[nodiscard]] Options parse(int argc, char** argv) {
+    Options options;
+    for (int i = 1; i < argc; ++i) {
+        const std::string argument(argv[i]);
+        const auto value = [&](std::string_view prefix) { return argument.substr(prefix.size()); };
+        if (argument.starts_with("--world=")) {
+            options.world = value("--world=");
+        } else if (argument.starts_with("--data=")) {
+            options.data = value("--data=");
+        } else if (argument.starts_with("--reports=")) {
+            options.reports = value("--reports=");
+        } else if (argument.starts_with("--pack=")) {
+            options.pack = value("--pack=");
+        } else if (argument.starts_with("--seed=")) {
+            options.seed = std::atoll(value("--seed=").c_str());
+        } else if (argument.starts_with("--chunks=")) {
+            options.chunks = std::atoi(value("--chunks=").c_str());
+        } else if (argument.starts_with("--biome-chunks=")) {
+            options.biome_chunks = std::atoi(value("--biome-chunks=").c_str());
+        } else if (argument.starts_with("--show=")) {
+            options.show = std::atoi(value("--show=").c_str());
+        } else if (argument.starts_with("--full=")) {
+            options.full_chunks = std::atoi(value("--full=").c_str());
+        } else if (argument.starts_with("--pairs=")) {
+            options.pairs = std::atoi(value("--pairs=").c_str());
+        } else if (argument.starts_with("--pair-game=")) {
+            options.pair_game = value("--pair-game=");
+        } else if (argument.starts_with("--pair-ours=")) {
+            options.pair_ours = value("--pair-ours=");
+        }
+    }
+    return options;
+}
+
+/// One chunk of the reference Nether, decoded.
+struct ReferenceChunk {
+    i32                      chunk_x{0};
+    i32                      chunk_z{0};
+    std::string              status;
+    std::vector<std::string> names;   ///< [(y - kMinY) * 256 + z * 16 + x]
+    std::vector<std::string> biomes;  ///< [(qy * 4 + qz) * 4 + qx]
+    std::vector<i64>         mask;    ///< CarvingMasks.AIR, empty if absent
+
+    [[nodiscard]] const std::string& block(i32 x, i32 y, i32 z) const {
+        return names[static_cast<usize>(y - kMinY) * 256 + static_cast<usize>(z) * 16 +
+                     static_cast<usize>(x)];
+    }
+};
+
+void unpack(const nbt::Tag* data, usize bits, usize cells, std::vector<usize>& out) {
+    out.assign(cells, 0);
+    if (bits == 0 || data == nullptr) {
+        return;
+    }
+    const auto* longs = data->get_if<nbt::Tag::LongArray>();
+    if (longs == nullptr) {
+        return;
+    }
+    const usize per_word = 64 / bits;
+    for (usize cell = 0; cell < cells; ++cell) {
+        const usize word = cell / per_word;
+        if (word >= longs->size()) {
+            return;
+        }
+        out[cell] = static_cast<usize>((static_cast<u64>((*longs)[word]) >>
+                                        ((cell % per_word) * bits)) &
+                                       ((1ULL << bits) - 1));
+    }
+}
+
+[[nodiscard]] bool decode(const nbt::Document& document, ReferenceChunk& chunk, bool blocks) {
+    const nbt::Tag* x_pos  = document.root.find("xPos");
+    const nbt::Tag* z_pos  = document.root.find("zPos");
+    const nbt::Tag* status = document.root.find("Status");
+    const nbt::Tag* list   = document.root.find("sections");
+    if (x_pos == nullptr || z_pos == nullptr || status == nullptr || list == nullptr ||
+        list->type() != nbt::TagType::List) {
+        return false;
+    }
+    chunk.chunk_x = static_cast<i32>(x_pos->as_i64());
+    chunk.chunk_z = static_cast<i32>(z_pos->as_i64());
+    chunk.status  = std::string(status->as_string());
+    chunk.biomes.assign(static_cast<usize>(kHeight / 4) * 16, "");
+    chunk.names.clear();
+    if (blocks) {
+        chunk.names.assign(static_cast<usize>(kHeight) * 256, "minecraft:air");
+    }
+    chunk.mask.clear();
+    if (const nbt::Tag* masks = document.root.find("CarvingMasks")) {
+        if (const nbt::Tag* air = masks->find("AIR")) {
+            if (const auto* words = air->get_if<nbt::Tag::LongArray>()) {
+                chunk.mask.assign(words->begin(), words->end());
+            }
+        }
+    }
+
+    std::vector<usize> indices;
+    for (const nbt::Tag& section : *list->list()) {
+        const nbt::Tag* y_tag = section.find("Y");
+        if (y_tag == nullptr) {
+            continue;
+        }
+        const auto section_y = static_cast<i32>(y_tag->as_i64());
+        if (section_y < (kMinY >> 4) || section_y >= ((kMinY + kHeight) >> 4)) {
+            continue;
+        }
+        if (const nbt::Tag* states = section.find("block_states"); states != nullptr && blocks) {
+            const nbt::Tag* palette = states->find("palette");
+            if (palette != nullptr && palette->type() == nbt::TagType::List &&
+                !palette->list()->empty()) {
+                std::vector<std::string> names;
+                for (const nbt::Tag& entry : *palette->list()) {
+                    const nbt::Tag* name = entry.find("Name");
+                    names.emplace_back(name == nullptr ? "minecraft:air" : name->as_string());
+                }
+                const usize bits =
+                    names.size() <= 1
+                        ? 0
+                        : std::max<usize>(4, static_cast<usize>(std::bit_width(names.size() - 1)));
+                unpack(states->find("data"), bits, 4096, indices);
+                for (usize cell = 0; cell < 4096; ++cell) {
+                    const usize which   = indices[cell] < names.size() ? indices[cell] : 0;
+                    const i32   local_x = static_cast<i32>(cell % 16);
+                    const i32   local_z = static_cast<i32>((cell / 16) % 16);
+                    const i32   y       = section_y * 16 + static_cast<i32>(cell / 256);
+                    chunk.names[static_cast<usize>(y - kMinY) * 256 +
+                                static_cast<usize>(local_z) * 16 + static_cast<usize>(local_x)] =
+                        names[which];
+                }
+            }
+        }
+        if (const nbt::Tag* biomes = section.find("biomes")) {
+            const nbt::Tag* palette = biomes->find("palette");
+            if (palette != nullptr && palette->type() == nbt::TagType::List &&
+                !palette->list()->empty()) {
+                std::vector<std::string> names;
+                for (const nbt::Tag& entry : *palette->list()) {
+                    names.emplace_back(entry.as_string());
+                }
+                const usize bits =
+                    names.size() <= 1 ? 0 : static_cast<usize>(std::bit_width(names.size() - 1));
+                unpack(biomes->find("data"), bits, 64, indices);
+                for (usize cell = 0; cell < 64; ++cell) {
+                    const usize which = indices[cell] < names.size() ? indices[cell] : 0;
+                    const i32   qx    = static_cast<i32>(cell % 4);
+                    const i32   qz    = static_cast<i32>((cell / 4) % 4);
+                    const i32   qy    = section_y * 4 + static_cast<i32>(cell / 16) - (kMinY >> 2);
+                    chunk.biomes[(static_cast<usize>(qy) * 4 + static_cast<usize>(qz)) * 4 +
+                                 static_cast<usize>(qx)] = names[which];
+                }
+            }
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] std::string_view canonical(std::string_view name) {
+    if (name == "minecraft:void_air") {
+        return "minecraft:air";
+    }
+    return name;
+}
+
+[[nodiscard]] bool is_empty(std::string_view name) {
+    return name == "minecraft:air" || name == "minecraft:cave_air" ||
+           name == "minecraft:void_air" || name == "minecraft:lava";
+}
+
+/// The blocks the Nether's surface rules — and nothing else before the
+/// features — put down.
+[[nodiscard]] bool is_surface_block(std::string_view name) {
+    constexpr std::array<std::string_view, 8> kSurface{
+        "minecraft:netherrack",     "minecraft:soul_sand",      "minecraft:soul_soil",
+        "minecraft:gravel",         "minecraft:basalt",         "minecraft:blackstone",
+        "minecraft:crimson_nylium", "minecraft:warped_nylium"};
+    return std::ranges::find(kSurface, name) != kSurface.end();
+}
+
+/// Statuses at or past `minecraft:biomes`: the biome array is the game's.
+[[nodiscard]] bool biomes_final(std::string_view status) {
+    return status != "minecraft:empty" && status != "minecraft:structure_starts" &&
+           status != "minecraft:structure_references";
+}
+
+struct Count {
+    usize compared{0};
+    usize agreed{0};
+};
+
+[[nodiscard]] f64 percent(usize part, usize whole) {
+    return whole == 0 ? 0.0 : 100.0 * static_cast<f64>(part) / static_cast<f64>(whole);
+}
+
+/// Finished chunks, through the pipeline and the Nether's decorator.
+///
+/// What a `full` chunk has that a `carvers` one has not is the features — and
+/// the structures, which this server does not place at all (fortresses,
+/// bastions, fossils). The report says per game block how much we reproduce,
+/// and lists the placed features a Nether biome names that are not built.
+int compare_full(const Options& options, const registry::BlockRegistry& blocks,
+                 const worldgen::ChunkGenerator& generator, const worldgen::BiomeSource& source,
+                 const std::vector<std::filesystem::path>& files) {
+    auto features = worldgen::FeatureRegistry::load(options.data, blocks);
+    if (!features) {
+        OV_LOG_ERROR("features: {}", worldgen::to_string(features.error()));
+        return 1;
+    }
+    auto decorator = worldgen::Decorator::load(options.data, blocks, *features, source);
+    if (!decorator) {
+        OV_LOG_ERROR("decorator: {}", worldgen::to_string(decorator.error()));
+        return 1;
+    }
+    fmt::print("\nNether decorator: {} biomes, {} placed features named but not built:\n",
+               decorator->biome_count(), decorator->missing_count());
+    for (const auto& name : decorator->missing()) {
+        fmt::print("  {}\n", name);
+    }
+
+    worldgen::ChunkPipeline pipeline{generator, &*decorator, blocks, world::WorldShape::nether(),
+                                     options.seed};
+    const auto name_of = [&](registry::BlockStateId state) -> std::string_view {
+        return state == registry::kAirState ? std::string_view("minecraft:air")
+                                            : blocks.block_name(blocks.block_of(state));
+    };
+
+    usize                        compared_chunks = 0;
+    Count                        cells;
+    std::map<std::string, Count> by_game_block;
+    std::map<std::pair<std::string, std::string>, usize> confusion;
+    ReferenceChunk               reference;
+    for (const auto& file : files) {
+        if (compared_chunks >= static_cast<usize>(options.full_chunks)) {
+            break;
+        }
+        auto region = nbt::RegionFile::open(file);
+        if (!region) {
+            continue;
+        }
+        for (u32 index = 0; index < 1024 && compared_chunks < static_cast<usize>(options.full_chunks);
+             ++index) {
+            const u32 local_x = index % 32;
+            const u32 local_z = index / 32;
+            if (!region->has_chunk(local_x, local_z)) {
+                continue;
+            }
+            auto document = region->read_chunk(local_x, local_z);
+            if (!document || !decode(*document, reference, true) ||
+                reference.status != "minecraft:full") {
+                continue;
+            }
+            const world::Chunk& ours =
+                pipeline.promote(reference.chunk_x, reference.chunk_z, worldgen::ChunkStatus::Full);
+            ++compared_chunks;
+            for (i32 y = kMinY; y < kMinY + kHeight; ++y) {
+                for (i32 z = 0; z < 16; ++z) {
+                    for (i32 x = 0; x < 16; ++x) {
+                        const std::string_view game = canonical(reference.block(x, y, z));
+                        const std::string_view mine = name_of(
+                            ours.get_block(static_cast<usize>(x), y, static_cast<usize>(z)));
+                        ++cells.compared;
+                        auto& per = by_game_block[std::string(game)];
+                        ++per.compared;
+                        if (game == mine) {
+                            ++cells.agreed;
+                            ++per.agreed;
+                        } else {
+                            ++confusion[{std::string(game), std::string(mine)}];
+                        }
+                    }
+                }
+            }
+            pipeline.trim(reference.chunk_x, reference.chunk_z, 3);
+        }
+    }
+
+    fmt::print("\nfull chunks through the pipeline: {} chunks, {} / {} blocks agree ({:.3f} %)\n",
+               compared_chunks, cells.agreed, cells.compared, percent(cells.agreed, cells.compared));
+    for (const auto& [name, count] : by_game_block) {
+        fmt::print("    {:<36} {:>9} / {:<9} {:.3f} %\n", name, count.agreed, count.compared,
+                   percent(count.agreed, count.compared));
+    }
+    std::vector<std::pair<usize, std::pair<std::string, std::string>>> ranked;
+    for (const auto& [pair, n] : confusion) {
+        ranked.emplace_back(n, pair);
+    }
+    std::ranges::sort(ranked, std::greater{});
+    fmt::print("  largest disagreements:\n");
+    for (usize i = 0; i < std::min<usize>(ranked.size(), 25); ++i) {
+        fmt::print("    game {:<34} ours {:<30} {}\n", ranked[i].second.first,
+                   ranked[i].second.second, ranked[i].first);
+    }
+    return 0;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    const Options options = parse(argc, argv);
+    const auto    regions = options.world / "region";
+    if (!std::filesystem::is_directory(regions)) {
+        OV_LOG_ERROR("{} has no region/. Generate one with scripts/reference_nether.sh.",
+                     options.world.string());
+        return 1;
+    }
+
+    auto blocks = registry::BlockRegistry::load(options.pack);
+    auto packs  = registry::Registries::load(options.pack);
+    if (!blocks || !packs) {
+        OV_LOG_ERROR("registry {}: run tools/ov_datagen first", options.pack.string());
+        return 1;
+    }
+    auto router = worldgen::NoiseRouter::load(options.data, "nether", options.seed);
+    if (!router) {
+        OV_LOG_ERROR("router: {}", worldgen::to_string(router.error()));
+        return 1;
+    }
+    auto source = worldgen::BiomeSource::load(options.reports, "nether");
+    if (!source) {
+        OV_LOG_ERROR("biome source: {}", worldgen::to_string(source.error()));
+        return 1;
+    }
+    auto surface = worldgen::SurfaceSystem::load(options.data, "nether", options.seed, *blocks);
+    if (!surface) {
+        OV_LOG_ERROR("surface rules: {}", worldgen::to_string(surface.error()));
+        return 1;
+    }
+    const worldgen::CarverStage carvers = worldgen::CarverStage::nether(options.seed);
+    worldgen::ChunkGenerator    generator{*router, *source, *blocks};
+    generator.set_surface_system(&*surface);
+    if (auto attached = generator.set_carvers(&carvers, *packs); !attached) {
+        OV_LOG_ERROR("carvers: {}", worldgen::to_string(attached.error()));
+        return 1;
+    }
+    const auto air = world::AirStates::from(*blocks);
+
+    const auto name_of = [&](registry::BlockStateId state) -> std::string_view {
+        return state == registry::kAirState ? std::string_view("minecraft:air")
+                                            : blocks->block_name(blocks->block_of(state));
+    };
+
+    std::vector<std::filesystem::path> files;
+    for (const auto& entry : std::filesystem::directory_iterator(regions)) {
+        if (entry.path().extension() == ".mca") {
+            files.push_back(entry.path());
+        }
+    }
+    std::ranges::sort(files);
+
+    // Biomes.
+    Count                                    biome_cells;
+    usize                                    biome_chunks = 0;
+    std::map<std::pair<std::string, std::string>, usize> biome_confusion;
+    std::map<std::string, Count>             biome_by_name;
+    // Masks.
+    usize mask_chunks = 0, mask_exact = 0, mask_both = 0, mask_ours = 0, mask_theirs = 0;
+    // Blocks.
+    usize                        block_chunks = 0;
+    Count                        block_cells;
+    Count                        solid_cells;
+    std::map<std::string, Count> by_game_block;
+    std::map<std::pair<std::string, std::string>, usize> confusion;
+    std::array<Count, 16>        by_band{};
+    // The lava level of the carvers: what the game left in its own carved
+    // cells, by height.
+    std::map<i32, std::array<usize, 3>> carved_by_y;  // [lava, cave_air, other]
+    std::vector<std::string>            reports;
+    i32                                 pairs_shown = 0;
+    std::vector<std::string>            pair_lines;
+
+    ReferenceChunk reference;
+    for (const auto& file : files) {
+        auto region = nbt::RegionFile::open(file);
+        if (!region) {
+            continue;
+        }
+        for (u32 index = 0; index < 1024; ++index) {
+            const u32 local_x = index % 32;
+            const u32 local_z = index / 32;
+            if (!region->has_chunk(local_x, local_z)) {
+                continue;
+            }
+            auto document = region->read_chunk(local_x, local_z);
+            if (!document) {
+                continue;
+            }
+            const nbt::Tag* status_tag = document->root.find("Status");
+            if (status_tag == nullptr) {
+                continue;
+            }
+            const std::string status{status_tag->as_string()};
+            const bool        carvers_status = status == "minecraft:carvers";
+            const bool        want_blocks =
+                carvers_status && block_chunks < static_cast<usize>(options.chunks);
+            const bool want_biomes =
+                biomes_final(status) && biome_chunks < static_cast<usize>(options.biome_chunks);
+            if (!want_blocks && !want_biomes) {
+                continue;
+            }
+            if (!decode(*document, reference, want_blocks)) {
+                continue;
+            }
+
+            world::Chunk ours{ChunkPos{reference.chunk_x, reference.chunk_z},
+                              world::WorldShape::nether(), air, &*blocks};
+            if (want_blocks) {
+                generator.generate(ours);
+            } else {
+                generator.generate_biomes(ours);
+            }
+
+            if (want_biomes) {
+                ++biome_chunks;
+                for (i32 qy = 0; qy < kHeight / 4; ++qy) {
+                    for (i32 qz = 0; qz < 4; ++qz) {
+                        for (i32 qx = 0; qx < 4; ++qx) {
+                            const std::string& game =
+                                reference.biomes[(static_cast<usize>(qy) * 4 +
+                                                  static_cast<usize>(qz)) *
+                                                     4 +
+                                                 static_cast<usize>(qx)];
+                            if (game.empty()) {
+                                continue;
+                            }
+                            const std::string_view mine = blocks->biome_name(ours.get_biome(
+                                static_cast<usize>(qx * 4), qy * 4, static_cast<usize>(qz * 4)));
+                            ++biome_cells.compared;
+                            ++biome_by_name[game].compared;
+                            if (mine == game) {
+                                ++biome_cells.agreed;
+                                ++biome_by_name[game].agreed;
+                            } else {
+                                ++biome_confusion[{game, std::string(mine)}];
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (!want_blocks) {
+                continue;
+            }
+            ++block_chunks;
+
+            // The mask.
+            if (!reference.mask.empty()) {
+                const auto theirs = worldgen::CarvingMask::from_long_array(
+                    reference.mask, carvers.context().min_y, carvers.context().height);
+                const auto mine  = carvers.carve(reference.chunk_x, reference.chunk_z);
+                const auto a     = theirs.words();
+                const auto b     = mine.words();
+                usize      both  = 0;
+                usize      only1 = 0;
+                usize      only2 = 0;
+                for (usize word = 0; word < b.size(); ++word) {
+                    const u64 other = word < a.size() ? a[word] : 0ULL;
+                    both += static_cast<usize>(std::popcount(b[word] & other));
+                    only1 += static_cast<usize>(std::popcount(b[word] & ~other));
+                    only2 += static_cast<usize>(std::popcount(other & ~b[word]));
+                }
+                ++mask_chunks;
+                mask_both += both;
+                mask_ours += only1;
+                mask_theirs += only2;
+                if (only1 == 0 && only2 == 0) {
+                    ++mask_exact;
+                }
+                for (i32 y = kMinY; y < kMinY + kHeight; ++y) {
+                    for (i32 z = 0; z < 16; ++z) {
+                        for (i32 x = 0; x < 16; ++x) {
+                            if (!theirs.get(x, y, z)) {
+                                continue;
+                            }
+                            const std::string& game = reference.block(x, y, z);
+                            auto&              row  = carved_by_y[y];
+                            if (game == "minecraft:lava") {
+                                ++row[0];
+                            } else if (game == "minecraft:cave_air") {
+                                ++row[1];
+                            } else {
+                                ++row[2];
+                            }
+                        }
+                    }
+                }
+            }
+
+            usize chunk_wrong = 0;
+            for (i32 y = kMinY; y < kMinY + kHeight; ++y) {
+                for (i32 z = 0; z < 16; ++z) {
+                    for (i32 x = 0; x < 16; ++x) {
+                        const std::string_view game = canonical(reference.block(x, y, z));
+                        const std::string_view mine = name_of(
+                            ours.get_block(static_cast<usize>(x), y, static_cast<usize>(z)));
+                        ++block_cells.compared;
+                        auto& per = by_game_block[std::string(game)];
+                        ++per.compared;
+                        auto& band = by_band[static_cast<usize>((y - kMinY) / 16)];
+                        ++band.compared;
+                        if (game == mine) {
+                            ++block_cells.agreed;
+                            ++per.agreed;
+                            ++band.agreed;
+                        } else {
+                            ++confusion[{std::string(game), std::string(mine)}];
+                            ++chunk_wrong;
+                            if (pairs_shown < options.pairs && is_surface_block(game) &&
+                                is_surface_block(mine) &&
+                                (options.pair_game.empty() || game == options.pair_game) &&
+                                (options.pair_ours.empty() || mine == options.pair_ours)) {
+                                ++pairs_shown;
+                                std::string line = fmt::format(
+                                    "  ({}, {}, {}) {}  game {} ours {}  surface depth {}\n    "
+                                    "column y-4..y+4:",
+                                    reference.chunk_x * 16 + x, y, reference.chunk_z * 16 + z,
+                                    reference.biomes[(static_cast<usize>(y >> 2) * 4 +
+                                                      static_cast<usize>(z >> 2)) *
+                                                         4 +
+                                                     static_cast<usize>(x >> 2)],
+                                    game, mine,
+                                    surface->surface_depth(reference.chunk_x * 16 + x,
+                                                           reference.chunk_z * 16 + z));
+                                for (i32 dy = 4; dy >= -4; --dy) {
+                                    const i32 yy = y + dy;
+                                    if (yy < kMinY || yy >= kMinY + kHeight) {
+                                        continue;
+                                    }
+                                    const auto short_name = [](std::string_view n) {
+                                        return n.substr(n.find(':') + 1);
+                                    };
+                                    line += fmt::format(
+                                        "\n      {:>3}  {:<16} {:<16}", yy,
+                                        short_name(canonical(reference.block(x, yy, z))),
+                                        short_name(name_of(ours.get_block(
+                                            static_cast<usize>(x), yy, static_cast<usize>(z)))));
+                                }
+                                pair_lines.push_back(std::move(line));
+                            }
+                        }
+                        ++solid_cells.compared;
+                        if (is_empty(game) == is_empty(mine)) {
+                            ++solid_cells.agreed;
+                        }
+                    }
+                }
+            }
+            if (chunk_wrong != 0 && reports.size() < static_cast<usize>(options.show)) {
+                reports.push_back(fmt::format("  chunk ({:>5},{:>5})  {} blocks differ",
+                                              reference.chunk_x, reference.chunk_z, chunk_wrong));
+            }
+        }
+    }
+
+    fmt::print("seed {}, reference {}\n", options.seed, options.world.string());
+
+    fmt::print("\nbiomes: {} chunks, {} / {} cells agree ({:.3f} %)\n", biome_chunks,
+               biome_cells.agreed, biome_cells.compared,
+               percent(biome_cells.agreed, biome_cells.compared));
+    for (const auto& [name, count] : biome_by_name) {
+        fmt::print("  {:<28} {:>9} / {:<9} {:.3f} %\n", name, count.agreed, count.compared,
+                   percent(count.agreed, count.compared));
+    }
+    {
+        std::vector<std::pair<usize, std::pair<std::string, std::string>>> ranked;
+        for (const auto& [pair, n] : biome_confusion) {
+            ranked.emplace_back(n, pair);
+        }
+        std::ranges::sort(ranked, std::greater{});
+        for (usize i = 0; i < std::min<usize>(ranked.size(), 8); ++i) {
+            fmt::print("  game {:<26} ours {:<26} {}\n", ranked[i].second.first,
+                       ranked[i].second.second, ranked[i].first);
+        }
+    }
+
+    fmt::print("\ncarving masks: {} chunks, {} bit-exact ({:.3f} %); cells both {}, ours only {}, "
+               "game only {}\n",
+               mask_chunks, mask_exact, percent(mask_exact, mask_chunks), mask_both, mask_ours,
+               mask_theirs);
+    fmt::print("what the game left in its carved cells, by height (lava / cave_air / other):\n");
+    for (const auto& [y, row] : carved_by_y) {
+        if (y > 40 && y % 16 != 0) {
+            continue;
+        }
+        fmt::print("  y {:>3}: {:>6} {:>6} {:>6}\n", y, row[0], row[1], row[2]);
+    }
+
+    fmt::print("\nblocks through generate(): {} carvers-status chunks, {} / {} blocks agree "
+               "({:.3f} %)\n",
+               block_chunks, block_cells.agreed, block_cells.compared,
+               percent(block_cells.agreed, block_cells.compared));
+    fmt::print("  solid / empty (air, cave air, lava) agreement: {:.3f} %\n",
+               percent(solid_cells.agreed, solid_cells.compared));
+    fmt::print("  by game block, recall:\n");
+    for (const auto& [name, count] : by_game_block) {
+        fmt::print("    {:<32} {:>9} / {:<9} {:.3f} %\n", name, count.agreed, count.compared,
+                   percent(count.agreed, count.compared));
+    }
+    fmt::print("  by height:\n");
+    for (usize band = 0; band < by_band.size(); ++band) {
+        if (by_band[band].compared == 0) {
+            continue;
+        }
+        fmt::print("    y {:>3} .. {:>3}  {:.3f} %\n", kMinY + static_cast<i32>(band) * 16,
+                   kMinY + static_cast<i32>(band) * 16 + 15,
+                   percent(by_band[band].agreed, by_band[band].compared));
+    }
+    {
+        std::vector<std::pair<usize, std::pair<std::string, std::string>>> ranked;
+        for (const auto& [pair, n] : confusion) {
+            ranked.emplace_back(n, pair);
+        }
+        std::ranges::sort(ranked, std::greater{});
+        fmt::print("  largest disagreements:\n");
+        for (usize i = 0; i < std::min<usize>(ranked.size(), 15); ++i) {
+            fmt::print("    game {:<30} ours {:<30} {}\n", ranked[i].second.first,
+                       ranked[i].second.second, ranked[i].first);
+        }
+    }
+    for (const auto& line : reports) {
+        fmt::print("{}\n", line);
+    }
+    if (!pair_lines.empty()) {
+        fmt::print("\nsurface disagreements, in full (game left, ours right):\n");
+        for (const auto& line : pair_lines) {
+            fmt::print("{}\n", line);
+        }
+    }
+
+    if (options.full_chunks > 0) {
+        return compare_full(options, *blocks, generator, *source, files);
+    }
+    return 0;
+}

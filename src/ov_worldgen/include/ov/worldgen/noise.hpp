@@ -70,6 +70,27 @@ public:
     [[nodiscard]] static PerlinNoise create(math::XoroshiroRandomSource& random, i32 first_octave,
                                             std::span<const f64> amplitudes);
 
+    /// The same "new" initialisation — every octave seeded by name from a
+    /// positional factory forked off `random` — for a world whose settings say
+    /// `legacy_random_source: true`. The Nether's are. The fork takes one long
+    /// rather than two and the names hash with Java's string hash rather than
+    /// MD5, which is all that differs; the octave layout is the same.
+    [[nodiscard]] static PerlinNoise create(math::LegacyRandomSource& random, i32 first_octave,
+                                            std::span<const f64> amplitudes);
+
+    /// The *old* initialisation: octaves drawn in sequence from `random` itself,
+    /// the one at octave zero first and then downwards, with 262 draws skipped
+    /// for every octave that is out of range or has a zero amplitude.
+    ///
+    /// Only one thing in 1.20.1 still asks for it through a named noise: the
+    /// Nether's temperature and vegetation, which the game builds from
+    /// `new LegacyRandomSource(seed)` and `seed + 1` rather than from their JSON
+    /// files. The skip is not an optimisation: the first `ImprovedNoise` is
+    /// constructed — and consumes its draws — even when its octave is not kept.
+    [[nodiscard]] static PerlinNoise create_legacy(math::LegacyRandomSource& random,
+                                                   i32 first_octave,
+                                                   std::span<const f64> amplitudes);
+
     [[nodiscard]] f64 value(f64 x, f64 y, f64 z) const noexcept {
         return value(x, y, z, 0.0, 0.0, false);
     }
@@ -90,6 +111,13 @@ public:
     [[nodiscard]] static f64 wrap(f64 value) noexcept;
 
 private:
+    /// Everything but the octaves: the input and value factors and the bound.
+    /// Shared by the three constructors, which differ only in how the octaves
+    /// were seeded.
+    [[nodiscard]] static PerlinNoise from_octaves(
+        std::vector<std::unique_ptr<ImprovedNoise>> octaves, i32 first_octave,
+        std::span<const f64> amplitudes);
+
     std::vector<std::unique_ptr<ImprovedNoise>> octaves_;
     std::vector<f64>                            amplitudes_;
     i32                                         first_octave_{0};
@@ -112,11 +140,25 @@ public:
     [[nodiscard]] static NormalNoise create(math::XoroshiroRandomSource& random, i32 first_octave,
                                             std::span<const f64> amplitudes);
 
+    /// The same for a legacy-seeded world: both stacks by the new
+    /// initialisation, drawn from a legacy generator. See PerlinNoise.
+    [[nodiscard]] static NormalNoise create(math::LegacyRandomSource& random, i32 first_octave,
+                                            std::span<const f64> amplitudes);
+
+    /// `createLegacyNetherBiome`: both stacks by the *old* initialisation.
+    /// What the Nether's temperature and vegetation are, whatever their JSON
+    /// files say.
+    [[nodiscard]] static NormalNoise create_legacy_nether_biome(
+        math::LegacyRandomSource& random, i32 first_octave, std::span<const f64> amplitudes);
+
     [[nodiscard]] f64 value(f64 x, f64 y, f64 z) const noexcept;
 
     [[nodiscard]] f64 max_value() const noexcept { return max_value_; }
 
 private:
+    [[nodiscard]] static NormalNoise from_stacks(PerlinNoise first, PerlinNoise second,
+                                                 std::span<const f64> amplitudes);
+
     PerlinNoise first_;
     PerlinNoise second_;
     f64         value_factor_{0.0};
@@ -150,6 +192,12 @@ public:
                                              f64 y_scale, f64 xz_factor, f64 y_factor,
                                              f64 smear_scale_multiplier);
 
+    /// The same three stacks drawn from a legacy generator — the Nether's,
+    /// which the game seeds as `new LegacyRandomSource(seed)` and nothing else.
+    [[nodiscard]] static BlendedNoise create(math::LegacyRandomSource& random, f64 xz_scale,
+                                             f64 y_scale, f64 xz_factor, f64 y_factor,
+                                             f64 smear_scale_multiplier);
+
     [[nodiscard]] f64 value(i32 x, i32 y, i32 z) const noexcept;
 
     /// The selector stack's raw sum, before the blend maps it to [0, 1].
@@ -178,9 +226,14 @@ private:
         std::vector<std::unique_ptr<ImprovedNoise>> octaves;
         i32                                         first_octave{0};
 
-        [[nodiscard]] static LegacyStack create(math::XoroshiroRandomSource& random,
-                                                i32 first_octave, usize count);
+        template<typename Random>
+        [[nodiscard]] static LegacyStack create(Random& random, i32 first_octave, usize count);
     };
+
+    template<typename Random>
+    [[nodiscard]] static BlendedNoise build(Random& random, f64 xz_scale, f64 y_scale,
+                                            f64 xz_factor, f64 y_factor,
+                                            f64 smear_scale_multiplier);
 
     LegacyStack min_limit_;
     LegacyStack max_limit_;

@@ -24,6 +24,7 @@
 #include "ov/math/random.hpp"
 #include "ov/registry/block_states.hpp"
 #include "ov/worldgen/noise.hpp"
+#include "ov/worldgen/random_factory.hpp"
 
 #include <array>
 #include <expected>
@@ -176,8 +177,8 @@ public:
     [[nodiscard]] virtual const NormalNoise* noise(std::string_view name) = 0;
 
     /// A positional generator factory under a name, for `vertical_gradient`.
-    [[nodiscard]] virtual math::XoroshiroPositionalFactory random_factory(
-        std::string_view name) = 0;
+    /// Xoroshiro or legacy, as the settings' `legacy_random_source` says.
+    [[nodiscard]] virtual PositionalRandomFactory random_factory(std::string_view name) = 0;
 
     /// Resolve a `result_state` to a block state id.
     [[nodiscard]] virtual std::optional<registry::BlockStateId> block_state(
@@ -227,5 +228,10 @@ inline constexpr usize kClayBandCount = 192;
 
 [[nodiscard]] std::array<registry::BlockStateId, kClayBandCount> generate_clay_bands(
     math::XoroshiroRandomSource& random, const ClayBandColours& colours);
+
+/// The same table drawn from a legacy generator. A legacy-seeded dimension has
+/// no badlands, but the table is built at load whatever the rules name.
+[[nodiscard]] std::array<registry::BlockStateId, kClayBandCount> generate_clay_bands(
+    math::LegacyRandomSource& random, const ClayBandColours& colours);
 
 }  // namespace ov::worldgen

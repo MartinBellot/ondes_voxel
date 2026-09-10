@@ -42,6 +42,11 @@ constexpr std::array kSurvival{
     SurvivalEntry{"minecraft:dark_oak_sapling", PlantSurvivalRule::DirtOrFarmland},
     SurvivalEntry{"minecraft:dead_bush", PlantSurvivalRule::DeadBush},
     SurvivalEntry{"minecraft:fern", PlantSurvivalRule::DirtOrFarmland},
+    // ── nether ── Fire survives on a sturdy face below or beside something
+    // flammable. `NotAirBelow` is the part `patch_fire` can reach: its own
+    // predicate already demands netherrack underneath. Named as the narrower
+    // rule it is, not as fire's.
+    SurvivalEntry{"minecraft:fire", PlantSurvivalRule::NotAirBelow},
     SurvivalEntry{"minecraft:flowering_azalea", PlantSurvivalRule::DirtOrClay},
     SurvivalEntry{"minecraft:grass", PlantSurvivalRule::DirtOrFarmland},
     SurvivalEntry{"minecraft:jack_o_lantern", PlantSurvivalRule::Always},
@@ -65,6 +70,9 @@ constexpr std::array kSurvival{
     SurvivalEntry{"minecraft:red_tulip", PlantSurvivalRule::DirtOrFarmland},
     SurvivalEntry{"minecraft:rose_bush", PlantSurvivalRule::DirtOrFarmland},
     SurvivalEntry{"minecraft:seagrass", PlantSurvivalRule::Seagrass},
+    // ── nether ── Soul fire needs `#soul_fire_base_blocks` below, which is
+    // what `patch_soul_fire`'s predicate already checks.
+    SurvivalEntry{"minecraft:soul_fire", PlantSurvivalRule::NotAirBelow},
     SurvivalEntry{"minecraft:spore_blossom", PlantSurvivalRule::HangingFromAbove},
     SurvivalEntry{"minecraft:spruce_sapling", PlantSurvivalRule::DirtOrFarmland},
     SurvivalEntry{"minecraft:sugar_cane", PlantSurvivalRule::SugarCane},
