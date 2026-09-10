@@ -60,6 +60,8 @@
 #include "ov/gameplay/food.hpp"
 #include "ov/gameplay/item_use.hpp"
 #include "ov/protocol/interaction.hpp"
+// ── tnt and gravity ─────────────────────────────────────────────────
+#include "tnt_gravity.hpp"
 
 #include <fmt/format.h>
 
@@ -2010,6 +2012,11 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         }
     };
 
+    // ── tnt and gravity ─────────────────────────────────────────────────────
+    // Declared here and emplaced once the world ticks exist: the join path
+    // below hands it the entities it spawned, and the drain hands it blocks.
+    std::optional<TntGravity> tnt_gravity;
+
     /// The packets that make one mob appear.
     ///
     /// Three, in this order, and the order is what a real server sends: the
@@ -2019,6 +2026,13 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     /// from the two that follow.
     const auto mob_packets = [&](const entity::EntityState& state,
                                  const auto&                deliver) {
+        // ── tnt and gravity: a primed TNT and a falling block are not mobs ──
+        if (tnt_gravity && mobs && tnt_gravity->owns(state.type)) {
+            tnt_gravity->spawn_packets(*mobs, state, [&](i32 id, std::span<const u8> payload) {
+                deliver(id, payload);
+            });
+            return;
+        }
         net::SpawnEntity spawn;
         spawn.entity_id = state.network_id;
         spawn.uuid      = state.uuid;
@@ -2423,6 +2437,11 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
 
         level.emplace(*blocks, std::move(hooks));
         world_ticks.emplace(*blocks, *registries);
+        // ── tnt and gravity ──
+        tnt_gravity.emplace(*blocks, *registries, loot_tables ? &*loot_tables : nullptr,
+                            mob_combat ? &*mob_combat : nullptr);
+        tnt_gravity->set_redstone(&world_ticks->redstone());
+        world_ticks->set_extension(&*tnt_gravity);
         tick_broadcasts.reserve(4096);
     } else {
         OV_LOG_WARN("no block registry — fluids and redstone stay inert");
@@ -2781,6 +2800,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         entity::EntityState* state = mobs->mutable_state(handle);
         if (state == nullptr || state->removed) {
             return false;
+        }
+        // ── tnt and gravity: a primed TNT or a falling block takes no damage ──
+        if (tnt_gravity && tnt_gravity->owns(state->type)) {
+            return true;
         }
 
         const MobHurt result = mob_combat->hurt(*state, damage, mob_damage_constants);
@@ -3766,11 +3789,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                              used.screen_position.x, used.screen_position.y,
                                              used.screen_position.z);
                             }
-                            if (used.spawn_primed_tnt) {
-                                OV_LOG_DEBUG("use on block: primed TNT at ({}, {}, {}) is not "
-                                             "spawned by this server yet",
-                                             used.tnt_position.x, used.tnt_position.y,
-                                             used.tnt_position.z);
+                            // ── tnt and gravity: spawned by the next tick ──
+                            if (used.spawn_primed_tnt && tnt_gravity) {
+                                tnt_gravity->request_prime(used.tnt_position,
+                                                           gameplay::kTntFuseTicks);
                             }
                             if (used.result != gameplay::UseResult::Pass) {
                                 return true;
@@ -4540,6 +4562,86 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     bool      mobs_placed   = false;
     auto      last_autosave = std::chrono::steady_clock::now();
 
+    // ── tnt and gravity ─────────────────────────────────────────────────────
+    // What an explosion reaches outside the module for. Built once, before the
+    // loop: five std::functions built per tick would allocate in the tick.
+    // Every callback runs inside the entity pass, which holds players_mutex
+    // and chunk_mutex.
+    const Deliver tnt_deliver = [&](i32 id, std::span<const u8> payload) {
+        broadcast(nullptr, id, payload);
+    };
+    TntGravityHost tnt_host;
+    tnt_host.broadcast   = tnt_deliver;
+    tnt_host.each_player = [&](const std::function<void(BlastPlayer&)>& visit) {
+        for (auto& [blast_key, who] : players) {
+            if (!who.connection || !who.confirmed) {
+                continue;
+            }
+            BlastPlayer view;
+            view.feet     = Vec3d{who.x, who.y, who.z};
+            view.creative = !options.survival;
+            view.send     = [&who](i32 id, std::span<const u8> payload) {
+                if (const auto framed = net::encode_packet(id, payload); framed && who.connection) {
+                    who.connection->send(*framed);
+                }
+            };
+            if (options.survival) {
+                view.hurt = [&](f32 amount) {
+                    const SurvivalIo io{
+                        .send =
+                            [&](i32 id, std::span<const u8> payload) {
+                                if (const auto framed = net::encode_packet(id, payload);
+                                    framed && who.connection) {
+                                    who.connection->send(*framed);
+                                }
+                            },
+                        .broadcast = [&](i32 id, std::span<const u8> payload) {
+                            broadcast(who.connection.get(), id, payload);
+                        }};
+                    (void)who.survival.hurt(gameplay::DamageKind::Explosion, amount, io,
+                                            who.entity_id);
+                };
+            }
+            visit(view);
+        }
+    };
+    tnt_host.drop_item = [&](Vec3d at, const net::ItemStack& stack) {
+        ItemEntity item;
+        item.entity_id = next_entity_id.fetch_add(1);
+        item.uuid      = uuid_for_entity(item.entity_id);
+        item.x         = at.x;
+        item.y         = at.y;
+        item.z         = at.z;
+        item.stack     = stack;
+        item.born      = server_tick.load(std::memory_order_relaxed);
+        std::vector<ItemEntity> one;
+        one.push_back(std::move(item));
+        publish_items(one);
+    };
+    tnt_host.sweep_items = [&](const std::function<bool(Vec3d)>& destroyed) {
+        for (usize i = ground_items.size(); i-- > 0;) {
+            const ItemEntity& item = ground_items[i];
+            if (!destroyed(Vec3d{item.x, item.y, item.z})) {
+                continue;
+            }
+            broadcast(nullptr, net::clientbound::kRemoveEntities,
+                      net::encode_remove_entity(item.entity_id));
+            ground_items.erase(ground_items.begin() + static_cast<isize>(i));
+        }
+    };
+    tnt_host.creeper_targets = [&](std::vector<Vec3d>& out) {
+        // A creative player is never a creeper's target.
+        if (!options.survival) {
+            return;
+        }
+        for (const auto& [target_key, who] : players) {
+            if (who.connection && who.confirmed && !who.survival.awaiting_respawn) {
+                out.push_back(Vec3d{who.x, who.y, who.z});
+            }
+        }
+    };
+    // ── end tnt and gravity ─────────────────────────────────────────────────
+
     const auto should_stop = [&]() {
         return g_stop_requested.load(std::memory_order_relaxed) ||
                (external_stop != nullptr && external_stop->load(std::memory_order_relaxed));
@@ -5046,7 +5148,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // Mobs: gravity, collision, and only the movement that actually
         // happened. A delta packet when the move fits in one — six bytes rather
         // than twenty-eight — and a teleport when it does not.
-        if (mobs && blocks && !mobs->handles().empty()) {
+        if (mobs && blocks &&
+            (!mobs->handles().empty() || (tnt_gravity && tnt_gravity->has_pending()))) {
             std::unique_lock mob_lock{players_mutex, std::try_to_lock};
             if (mob_lock.owns_lock()) {
                 const std::scoped_lock chunk_lock{chunk_mutex};
@@ -5086,7 +5189,22 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 mob_level.registry = &*blocks;
 
                 gameplay::MobContext mob_context{&collisions, &mob_level, false};
+                // ── tnt and gravity: what the drain and the network asked for ──
+                if (tnt_gravity) {
+                    tnt_gravity->spawn_pending(*mobs, tnt_deliver);
+                }
                 mobs->tick(entity::TickContext{clock.tick_count(), &mob_context});
+                // ── tnt and gravity: creepers, landings, explosions ──
+                if (tnt_gravity && level && world_ticks) {
+                    tnt_gravity->tick_creepers(*mobs, mob_level, tnt_host, tnt_deliver);
+                    const TntGravityStats tnt_stats = tnt_gravity->after_entity_tick(
+                        *mobs, *level, *world_ticks, tnt_host, tnt_deliver);
+                    if (tnt_stats.blasts > 0) {
+                        OV_LOG_DEBUG("tick {}: {} explosions, {} blocks, {} TNT lit",
+                                     clock.tick_count(), tnt_stats.blasts,
+                                     tnt_stats.blocks_destroyed, tnt_stats.primed);
+                    }
+                }
 
                 for (const i32 gone : mobs->removed_ids()) {
                     broadcast(nullptr, net::clientbound::kRemoveEntities,
@@ -5146,6 +5264,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 }
             }
         }
+        // ── tnt and gravity: the craters and landings, sent and relit ──
+        flush_tick_writes();
 
         // Les piles au sol : elles se ramassent, et au bout de cinq minutes
         // elles s'en vont. Sans cette seconde moitié un monde de test finit

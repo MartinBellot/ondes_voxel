@@ -98,6 +98,18 @@ bool Explosions::resistance_measured(registry::BlockStateId state) const noexcep
 
 void Explosions::collect_blocks(const world::LevelView& level, const ExplosionSpec& spec,
                                 math::LegacyRandomSource& rng, std::vector<BlockPos>& out) const {
+    collect(level, spec, rng, out, nullptr);
+}
+
+void Explosions::collect_cells(const world::LevelView& level, const ExplosionSpec& spec,
+                               math::LegacyRandomSource& rng, std::vector<BlockPos>& blocks,
+                               std::vector<BlockPos>& air) const {
+    collect(level, spec, rng, blocks, &air);
+}
+
+void Explosions::collect(const world::LevelView& level, const ExplosionSpec& spec,
+                         math::LegacyRandomSource& rng, std::vector<BlockPos>& out,
+                         std::vector<BlockPos>* air) const {
     if (spec.interaction == BlockInteraction::Keep) {
         return;
     }
@@ -114,6 +126,12 @@ void Explosions::collect_blocks(const world::LevelView& level, const ExplosionSp
     // set is identical either way.
     std::vector<i64> keys;
     keys.reserve(1024);
+    // The air cells, kept apart so that `out` stays exactly what it was
+    // before this list existed. Only filled when a caller asked.
+    std::vector<i64> air_keys;
+    if (air != nullptr) {
+        air_keys.reserve(2048);
+    }
 
     for (i32 j = 0; j < n; ++j) {
         for (i32 k = 0; k < n; ++k) {
@@ -168,6 +186,9 @@ void Explosions::collect_blocks(const world::LevelView& level, const ExplosionSp
                     if (energy > 0.0F && !blocks_->is_air(block) &&
                         blocks_->blast_resistance(block) >= 0.0F) {
                         keys.push_back(packed(pos));
+                    } else if (air != nullptr && energy > 0.0F && blocks_->is_air(block) &&
+                               !blocks_->holds_fluid(state)) {
+                        air_keys.push_back(packed(pos));
                     }
                     x += dir_x * widened(constants_.step);
                     y += dir_y * widened(constants_.step);
@@ -182,6 +203,14 @@ void Explosions::collect_blocks(const world::LevelView& level, const ExplosionSp
     out.reserve(out.size() + keys.size());
     for (const i64 key : keys) {
         out.push_back(unpacked(key));
+    }
+    if (air != nullptr) {
+        std::sort(air_keys.begin(), air_keys.end());
+        air_keys.erase(std::unique(air_keys.begin(), air_keys.end()), air_keys.end());
+        air->reserve(air->size() + air_keys.size());
+        for (const i64 key : air_keys) {
+            air->push_back(unpacked(key));
+        }
     }
 }
 
