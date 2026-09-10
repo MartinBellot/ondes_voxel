@@ -968,14 +968,19 @@ int main(int argc, char** argv) {
     std::thread       server_thread;
     if (options.singleplayer) {
         const std::string port_argument = "--port=" + std::to_string(options.singleplayer_port);
-        server_thread = std::thread([&stop_server, port_argument]() {
+        // The host's name, so their record also goes into level.dat's
+        // Data.Player — where vanilla looks for a singleplayer world's player.
+        const std::string host_argument = "--host-player=" + options.username;
+        server_thread = std::thread([&stop_server, port_argument, host_argument]() {
             // Argv-shaped because that is the server's own interface, and
             // giving it a second one would leave two ways to configure the
             // same thing.
-            std::array<const char*, 2> arguments{"ov_voxel", port_argument.c_str()};
-            std::array<char*, 2>       argv_copy{const_cast<char*>(arguments[0]),
-                                           const_cast<char*>(arguments[1])};
-            (void)ov::server::run(2, argv_copy.data(), &stop_server);
+            std::array<const char*, 3> arguments{"ov_voxel", port_argument.c_str(),
+                                                 host_argument.c_str()};
+            std::array<char*, 3>       argv_copy{const_cast<char*>(arguments[0]),
+                                           const_cast<char*>(arguments[1]),
+                                           const_cast<char*>(arguments[2])};
+            (void)ov::server::run(3, argv_copy.data(), &stop_server);
         });
     }
 

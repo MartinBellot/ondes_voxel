@@ -95,6 +95,12 @@ public:
     /// Remove Entity Effect arrived at a vanilla death.
     void on_death();
 
+    // ── player data ──
+    /// Send what is pending now, before any tick: a player whose effects were
+    /// read from their file is told at the join with the durations the file
+    /// holds, not one tick later with one tick less.
+    void announce(SurvivalSession& survival, const EffectIo& io, const EffectBearer& bearer);
+
     // ── What the other systems read ─────────────────────────────────────────
 
     /// Haste and mining fatigue for the break timer. Conduit power digs like

@@ -323,6 +323,12 @@ void EffectSession::on_death() {
     sent_flags_      = 0;
 }
 
+void EffectSession::announce(SurvivalSession& survival, const EffectIo& io,
+                             const EffectBearer& bearer) {
+    sync(survival);
+    flush(survival, io, bearer);
+}
+
 gameplay::Stance EffectSession::dig_stance(bool on_ground) const noexcept {
     gameplay::Stance stance;
     stance.on_ground = on_ground;
