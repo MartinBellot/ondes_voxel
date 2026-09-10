@@ -804,7 +804,15 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       mesurés (un clic donne 1 objet, pas une pile) ; barres sauvegardées
       `hotbar.nbt`. Pixels identiques 69 à 96 % selon l'onglet ; restent
       l'éclairage directionnel des blocs, le mélange sRGB, le joueur en
-      miniature et le reflet d'enchantement*
+      miniature et le reflet d'enchantement. **Le chat aussi** (2026-09-10) :
+      T et `/`, champ de texte partagé avec la recherche créative, historique,
+      320 px et 10/20 lignes, fondu **mesuré sur le vrai client** — 9 s opaque
+      puis une seconde, et non les 3 s du wiki —, composants traduits et
+      stylés, barre d'action, titres, complétion des commandes par l'arbre
+      `Commands` et Command Suggestions ; coïncidence au pixel avec le vrai
+      client sur les boîtes, le champ et les suggestions ; +0,09 ms p50
+      d'enregistrement pour 10 lignes. Restent la complétion des noms dans un
+      message, les erreurs d'analyse côté client, les clics dans le chat*
 - [ ] Écrans : menu principal, création et sélection de monde, options
       (contrôles, vidéo, son, langue, accessibilité, packs), pause, mort,
       inventaire, établi, fours ×3, coffres ×4, entonnoir, distributeur,
