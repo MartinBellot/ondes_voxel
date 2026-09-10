@@ -31,6 +31,8 @@ std::string_view CombatSession::tick(const CombatPlayer& player, f64 step) {
     attacker.on_climbable               = player.on_climbable;
     attacker.blind                      = player.blind;
     attacker.riding                     = player.riding;
+    attacker.strength                   = player.strength;  // ── effects ──
+    attacker.weakness                   = player.weakness;  // ── effects ──
     // A walking player covers about 0.215 blocks a tick, a sprinting one about
     // 0.28. The sweep wants a *standing* attacker, so the threshold sits below
     // a walk rather than between a walk and a sprint.

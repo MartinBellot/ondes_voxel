@@ -135,9 +135,10 @@ void SurvivalSession::note_movement(f64 y, bool on_ground, f64 horizontal_distan
 }
 
 gameplay::DamageResult SurvivalSession::hurt(gameplay::DamageKind kind, f32 amount,
-                                             const SurvivalIo& io, i32 entity_id) {
-    const gameplay::DamageResult result =
-        gameplay::apply_damage(health, kind, amount, constants_damage);
+                                             const SurvivalIo& io, i32 entity_id,
+                                             const gameplay::DamageConstants* window) {
+    const gameplay::DamageResult result = gameplay::apply_damage(
+        health, kind, amount, window != nullptr ? *window : constants_damage, mitigation);
     if (!result.applied) {
         return result;
     }
@@ -193,13 +194,23 @@ SurvivalOutcome SurvivalSession::tick(const SurvivalPlayer& player, const Surviv
     // applies what it found. The split is so that the accumulation sees every
     // packet — a fall sampled once a tick loses whichever updates shared a tick
     // with another — while every packet still leaves from the tick thread.
-    if (pending_fall_damage > 0.0F && mortal) {
-        (void)hurt(gameplay::DamageKind::Fall, pending_fall_damage, io, player.entity_id);
+    // ── effects: jump boost and slow falling ──
+    f32 fall = pending_fall_damage;
+    if (player.slow_falling) {
+        fall = 0.0F;
+    } else if (player.jump_boost >= 0) {
+        fall = std::max(fall - static_cast<f32>(player.jump_boost + 1), 0.0F);
+    }
+    // ── end effects ──
+    if (fall > 0.0F && mortal) {
+        (void)hurt(gameplay::DamageKind::Fall, fall, io, player.entity_id);
     }
     pending_fall_damage = 0.0F;
 
     // ── Breath ──────────────────────────────────────────────────────────────
-    if (mortal) {
+    if (mortal && player.submerged && player.breathes_underwater) {
+        // ── effects: water breathing freezes the air, it does not refill it ──
+    } else if (mortal) {
         const f32 drown = gameplay::tick_air(health, player.submerged, constants_damage);
         if (drown > 0.0F) {
             (void)hurt(gameplay::DamageKind::Drown, drown, io, player.entity_id);

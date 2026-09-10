@@ -196,6 +196,11 @@ struct HealthState {
     /// Ticks of breath left. Counts down under water and back up in air.
     i32 air{kMaxAir};
 
+    /// The yellow hearts. Spent before health by every hit that gets through
+    /// the window, and granted by the Absorption effect — see effects.hpp.
+    /// Zero by default, which leaves every rule below exactly as it was.
+    f32 absorption{0.0F};
+
     bool dead{false};
 
     static constexpr i32 kMaxAir = 300;
@@ -268,6 +273,34 @@ struct DamageConstants {
 ///   4. Outside a window, the hit lands whole and opens one.
 [[nodiscard]] DamageResult apply_damage(HealthState& state, DamageKind kind, f32 amount,
                                         const DamageConstants& constants) noexcept;
+
+// ── Between the window and the health bar ───────────────────────────────────
+
+/// What reduces a hit after the window has decided how much gets through.
+struct DamageMitigation {
+    /// The Resistance amplifier, -1 for none.
+    i32 resistance{-1};
+};
+
+/// A hit after Resistance.
+///
+/// Measured on cows, amplifiers 0..5, hits of 10, 7 and 3: each level takes a
+/// fifth, `amount * (25 - 5 * (amp + 1)) / 25` in float, and level V and above
+/// take everything. `out_of_world` (#bypasses_resistance) and `starve`
+/// (#bypasses_effects) passed whole at every level. 36 cells of 36.
+[[nodiscard]] f32 after_resistance(DamageKind kind, f32 amount, i32 resistance) noexcept;
+
+/// Apply one hit with mitigation and absorption.
+///
+/// The window rules are the ones above, unchanged and applied to the raw
+/// amount — a window compares hits, not what was left of them. What gets
+/// through is then reduced by Resistance and spent from `absorption` before
+/// `health`. `dealt` is what came off the health bar. Measured: a cow with
+/// four points of absorption hit for three kept its health and one point of
+/// absorption.
+[[nodiscard]] DamageResult apply_damage(HealthState& state, DamageKind kind, f32 amount,
+                                        const DamageConstants&  constants,
+                                        const DamageMitigation& mitigation) noexcept;
 
 /// One tick of the counters: invulnerability, the hurt flash.
 ///
