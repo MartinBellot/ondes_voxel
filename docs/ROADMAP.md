@@ -714,7 +714,12 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       items en icône plate ou en modèle 3D. Coût : **+0,02 ms p50** et
       +0,05 ms p99 d'enregistrement CPU, 0,3 % de la frame. Le serveur reste
       autoritatif — une pile déposée survit à une reconnexion **et** à un
-      redémarrage du processus)*
+      redémarrage du processus). **L'inventaire créatif** est là aussi : les 14
+      onglets de la 1.20.1 obtenus en **exécutant** `CreativeModeTabs` du jar
+      serveur — 1689 cases, 1248 items distincts, et exactement 7 items du
+      registre qui n'apparaissent dans aucun onglet, nommés. Recherche,
+      défilement, et +0,27 ms d'enregistrement CPU : les 45 modèles d'items en
+      3D n'ajoutent rien de mesurable au GPU*
 - [ ] Écrans : menu principal, création et sélection de monde, options
       (contrôles, vidéo, son, langue, accessibilité, packs), pause, mort,
       inventaire, établi, fours ×3, coffres ×4, entonnoir, distributeur,

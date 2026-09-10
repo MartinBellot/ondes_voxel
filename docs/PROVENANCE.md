@@ -45,6 +45,7 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`branchement.md`](provenance/branchement.md) | Le câblage au tick, et les deux bugs qu'il a révélés |
 | **Client** | |
 | [`interface.md`](provenance/interface.md) | Police, HUD, inventaire : 2414 glyphes validés glyphe par glyphe |
+| [`inventaire-creatif.md`](provenance/inventaire-creatif.md) | Les 14 onglets demandés au jar serveur, 1689 cases, et la géométrie comptée dans les pixels |
 | [`rendu-entites.md`](provenance/rendu-entites.md) | Modèles d'entités, leur source, et le chest refusé faute de source permise |
 
 ---
