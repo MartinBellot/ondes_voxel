@@ -14,6 +14,8 @@ ov_add_library(ov_server
         src/generation_check.cpp
         src/husbandry.cpp
         src/natural_spawning.cpp
+        src/slimes.cpp
+        src/drowning.cpp
         src/player_inventory.cpp
         src/server.cpp
         src/combat_session.cpp

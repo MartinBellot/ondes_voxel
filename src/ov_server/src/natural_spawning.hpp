@@ -37,6 +37,7 @@
 
 #include <filesystem>
 #include <functional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -84,5 +85,32 @@ private:
 [[nodiscard]] bool load_biome_spawners(const std::filesystem::path& generated_root,
                                        std::string_view biome_name, gameplay::NaturalSpawner& into,
                                        std::vector<std::string>& name_storage);
+
+// ── mobs-2 ──────────────────────────────────────────────────────────────────
+//
+// The limitation named above is lifted: every biome's lists are loaded, keyed
+// by the index the chunk stores (the registry codec's order), and the spawner
+// asks the biome **of each position** through `ChunkBiomes`.
+
+/// The biome at a position, over the server's chunks. One callback, built
+/// once — constructing a std::function inside the tick would allocate there.
+class ChunkBiomes final : public gameplay::BiomeLookup {
+public:
+    explicit ChunkBiomes(std::function<u16(BlockPos)> at) : at_{std::move(at)} {}
+    [[nodiscard]] u16 biome_at(BlockPos pos) const override { return at_ ? at_(pos) : u16{0}; }
+
+private:
+    std::function<u16(BlockPos)> at_;
+};
+
+/// Every biome's `spawners`, by codec index, and the surface-slime tag.
+///
+/// Returns how many biomes carried a list. Biomes whose file is missing get no
+/// list and spawn nothing — refused, never given another biome's list.
+[[nodiscard]] usize load_all_biome_spawners(const std::filesystem::path&      generated_root,
+                                            std::span<const std::string_view> biome_names,
+                                            gameplay::NaturalSpawner&         into,
+                                            std::vector<std::string>&         name_storage);
+// ── end mobs-2 ──
 
 }  // namespace ov::server

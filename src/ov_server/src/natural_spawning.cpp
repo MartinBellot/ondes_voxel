@@ -171,4 +171,118 @@ bool load_biome_spawners(const std::filesystem::path& generated_root, std::strin
     return true;
 }
 
+// ── mobs-2 ──────────────────────────────────────────────────────────────────
+
+usize load_all_biome_spawners(const std::filesystem::path&      generated_root,
+                              std::span<const std::string_view> biome_names,
+                              gameplay::NaturalSpawner& into, std::vector<std::string>& name_storage) {
+    struct Raw {
+        u16                   biome{0};
+        gameplay::MobCategory category{};
+        usize                 name_index{0};
+        i32                   weight{1};
+        i32                   min_group{1};
+        i32                   max_group{1};
+    };
+    std::vector<Raw> raw;
+    name_storage.clear();
+    const auto biome_dir = generated_root / "data" / "minecraft" / "worldgen" / "biome";
+
+    simdjson::dom::parser parser;
+    usize                 with_lists = 0;
+    for (usize index = 0; index < biome_names.size(); ++index) {
+        std::string_view bare = biome_names[index];
+        if (const auto colon = bare.find(':'); colon != std::string_view::npos) {
+            bare = bare.substr(colon + 1);
+        }
+        const auto path = biome_dir / (std::string{bare} + ".json");
+        if (!std::filesystem::exists(path)) {
+            OV_LOG_WARN("natural spawning: no biome file for {} — it spawns nothing",
+                        biome_names[index]);
+            continue;
+        }
+        const auto document = parser.load(path.string());
+        simdjson::dom::element spawners;
+        if (document.error() != simdjson::SUCCESS ||
+            document.value_unsafe()["spawners"].get(spawners) != simdjson::SUCCESS) {
+            OV_LOG_WARN("natural spawning: {} has no readable `spawners`", path.string());
+            continue;
+        }
+        bool any = false;
+        for (const auto& [key, category] : kCategoryNames) {
+            simdjson::dom::array list;
+            if (spawners[key].get(list) != simdjson::SUCCESS) {
+                continue;
+            }
+            for (const simdjson::dom::element entry : list) {
+                std::string_view type;
+                if (entry["type"].get(type) != simdjson::SUCCESS) {
+                    continue;
+                }
+                i64 weight = 1;
+                i64 min_c  = 1;
+                i64 max_c  = 1;
+                (void)entry["weight"].get(weight);
+                (void)entry["minCount"].get(min_c);
+                (void)entry["maxCount"].get(max_c);
+                raw.push_back(Raw{static_cast<u16>(index), category, name_storage.size(),
+                                  static_cast<i32>(weight), static_cast<i32>(min_c),
+                                  static_cast<i32>(max_c)});
+                name_storage.emplace_back(type);
+                any = true;
+            }
+        }
+        with_lists += any ? 1 : 0;
+    }
+
+    // Views are taken only now: `name_storage` never grows again.
+    std::vector<gameplay::SpawnerEntry> entries;
+    for (usize index = 0; index < biome_names.size(); ++index) {
+        for (const auto& [key, category] : kCategoryNames) {
+            entries.clear();
+            for (const Raw& one : raw) {
+                if (one.biome == index && one.category == category) {
+                    entries.push_back(gameplay::SpawnerEntry{name_storage[one.name_index],
+                                                             one.weight, one.min_group,
+                                                             one.max_group});
+                }
+            }
+            if (!entries.empty()) {
+                into.set_biome_entries(static_cast<u16>(index), category, entries);
+            }
+        }
+    }
+
+    // `#minecraft:allows_surface_slime_spawns`: the swamps a slime may appear
+    // on at the surface. Read from the generated tag, not listed here.
+    const auto tag_path = generated_root / "data" / "minecraft" / "tags" / "worldgen" / "biome" /
+                          "allows_surface_slime_spawns.json";
+    usize slimy = 0;
+    if (const auto tag = parser.load(tag_path.string()); tag.error() == simdjson::SUCCESS) {
+        simdjson::dom::array values;
+        if (tag.value_unsafe()["values"].get(values) == simdjson::SUCCESS) {
+            for (const simdjson::dom::element value : values) {
+                std::string_view name;
+                if (value.get(name) != simdjson::SUCCESS) {
+                    continue;
+                }
+                for (usize index = 0; index < biome_names.size(); ++index) {
+                    if (biome_names[index] == name) {
+                        into.set_surface_slimes(static_cast<u16>(index), true);
+                        ++slimy;
+                    }
+                }
+            }
+        }
+    } else {
+        OV_LOG_WARN("natural spawning: no {} — no surface slimes", tag_path.string());
+    }
+
+    OV_LOG_INFO("natural spawning: {} entries over {} biomes, drawn from the biome of each "
+                "position; {} surface-slime biomes",
+                raw.size(), with_lists, slimy);
+    return with_lists;
+}
+// ── end mobs-2 ──
+
 }  // namespace ov::server

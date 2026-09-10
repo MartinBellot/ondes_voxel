@@ -23,10 +23,14 @@ ov_add_library(ov_gameplay
         src/item_use.cpp
         src/food.cpp
         src/mob_logic.cpp
+        src/mob_species.cpp
         src/breeding.cpp
         src/pathfinding.cpp
         src/goals.cpp
         src/spawning.cpp
+        src/spawn_rules.cpp
+        src/slime.cpp
+        src/conversion.cpp
         src/physics.cpp
         src/connections.cpp
         src/signal.cpp
@@ -68,6 +72,7 @@ ov_add_test(test_ov_gameplay
         tests/test_item_use.cpp
         tests/test_food.cpp
         tests/test_mob_logic.cpp
+        tests/test_mobs2.cpp
         tests/test_breeding.cpp
         tests/test_pathfinding.cpp
         tests/test_goals.cpp

@@ -15,6 +15,7 @@
 #include "ov/gameplay/goals.hpp"
 #include "ov/gameplay/pathfinding.hpp"
 #include "ov/gameplay/spawning.hpp"
+#include "ov/gameplay/walk_speed.hpp"  // ── mobs-2 ──
 #include "ov/math/random.hpp"
 #include "ov/world/level.hpp"
 
@@ -85,17 +86,25 @@ struct MobKind {
     std::string_view type_name;
     MobCategory      category{MobCategory::Monster};
 
-    /// Blocks per tick at full walking speed.
-    ///
-    /// **Not** the `movement_speed` attribute. Measured on a real 1.20.1
-    /// server: a chasing zombie covers 0.11419 blocks a tick while its measured
-    /// attribute is 0.23, so the attribute is roughly twice the speed and is
-    /// not in blocks per tick at all. Each species' number here is its measured
-    /// attribute halved — which reproduces the zombie to within 0.7 % — and
-    /// only the zombie's has actually been measured. See
-    /// docs/provenance/mobs.md; the other seven are stated as derived, not
-    /// measured.
-    f64 walk_speed{0.1};
+    // ── mobs-2 ── The walk, as the game computes it (walk_speed.hpp): the
+    // `movement_speed` attribute times the running goal's modifier, then the
+    // law `2.15859 · s²`. Every attribute is the measured one
+    // (normalized/entities.json) and every modifier was read off a real server
+    // goal by goal — docs/provenance/mobs-2.md § 1. This replaces the old
+    // `walk_speed`, which was the attribute halved and 16 % fast for a cow.
+    f64 movement_speed{0.25};
+    f64 stroll{1.0};
+    f64 chase{1.0};
+    f64 panic{1.25};
+    f64 follow_parent{1.1};
+    f64 avoid_sun{1.0};
+    /// A ranged attacker stops approaching inside this many blocks. 0: melee.
+    f64 hold_at{0.0};
+
+    /// Blocks per tick under a goal with this modifier, on ordinary ground.
+    [[nodiscard]] constexpr f64 speed(f64 modifier) const noexcept {
+        return walk_blocks_per_tick(movement_speed * modifier);
+    }
 
     bool opens_doors{false};
     bool avoids_sun{false};

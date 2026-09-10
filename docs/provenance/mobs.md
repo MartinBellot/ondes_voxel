@@ -124,6 +124,10 @@ tel quel donnerait des mobs deux fois trop rapides.
 La relation retenue est `blocs/tick = movement_speed / 2`, qui prédit 0,115
 contre 0,11419 mesuré — un écart de 0,7 %.
 
+> **Remplacé** par `mobs-2.md` § 1 : la vraie loi est `v = 0,98·s²·(0,6/f)³ / (1 − 0,91·f)`,
+> soit `2,15859·s²` sur l'herbe, vérifiée sur 19 espèces et trois sols. La moitié n'est juste que
+> près de 0,23 ; une vache qui erre allait 16 % trop vite, un creeper 45 %.
+
 **Un deuxième piège, du côté de notre code.** `step_entity` applique la traînée
 horizontale *après* que le but a posé la vitesse. Un mob poussé à la vitesse
 mesurée ne parcourait que 0,546 de celle-ci, soit 0,062 bloc par tick : 45 % trop

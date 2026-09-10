@@ -17,6 +17,7 @@
 #include "ov/entity/world.hpp"
 #include "ov/gameplay/animal.hpp"
 #include "ov/gameplay/goals.hpp"
+#include "ov/gameplay/walk_speed.hpp"  // ── mobs-2 ──
 #include "ov/math/random.hpp"
 
 #include <array>
@@ -47,20 +48,9 @@ inline constexpr i8 kLoveEventStatus = 18;
 /// axis. See BreedGoal and docs/provenance/elevage.md for what was measured.
 inline constexpr f64 kMateReach = 8.0;
 
-/// Blocks per tick of a mob walking on level ground, from its speed — the
-/// `movement_speed` attribute times the goal's modifier.
-///
-/// Measured as a law, not a ratio: seven walking speeds on a real server (a
-/// chasing zombie, a strolling cow, five tempted animals from 0.20 to 0.30)
-/// all fit `v = 2.1586 · s²` within 0.5 %. The halving mobs.md uses for the
-/// walk (`v = attribute / 2`) is this law's tangent at the zombie's 0.23, and
-/// it is 16 % fast for a strolling cow — which is why the husbandry goals take
-/// their speed from here.
-inline constexpr f64 kWalkLaw = 2.1586;
-
-[[nodiscard]] constexpr f64 walk_blocks_per_tick(f64 attribute_times_modifier) noexcept {
-    return kWalkLaw * attribute_times_modifier * attribute_times_modifier;
-}
+// `walk_blocks_per_tick` — the walk law, `v = 2.1586 · s²`, measured here on
+// seven speeds — lives in walk_speed.hpp (── mobs-2 ──), where every goal of
+// every species takes its speed from it.
 
 // ── Species ─────────────────────────────────────────────────────────────────
 
