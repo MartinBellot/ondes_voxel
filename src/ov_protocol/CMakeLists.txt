@@ -7,6 +7,7 @@ ov_add_library(ov_protocol
     LAYER 7
     SOURCES
         src/blast.cpp
+        src/chat.cpp
         src/client_play.cpp
         src/effect_packets.cpp
         src/entity.cpp
@@ -34,6 +35,7 @@ ov_add_library(ov_protocol
 ov_add_test(test_ov_protocol
     SOURCES
         tests/test_blast_packets.cpp
+        tests/test_chat.cpp
         tests/test_chunk_roundtrip.cpp
         tests/test_client_play.cpp
         tests/test_effect_packets.cpp

@@ -56,6 +56,10 @@
 #include "generated_world.hpp"
 #include "survival_session.hpp"
 #include "effect_session.hpp"  // ── effects ──
+// ── commands and chat ──
+#include "commands/console.hpp"
+#include "commands/service.hpp"
+#include "ov/protocol/chat.hpp"
 // ── combat and interaction ───────────────────────────────────────────
 #include "combat_session.hpp"
 #include "mob_combat.hpp"
@@ -1060,6 +1064,17 @@ struct Player {
     EffectSession effects;
     /// `--effect=` has been applied to this player.
     bool effects_started{false};
+
+    // ── commands ─────────────────────────────────────────────────────────
+    /// 0 survival, 1 creative, 2 adventure, 3 spectator. Per player, set by
+    /// /gamemode; `--survival` only chooses the world's default.
+    u8 game_mode{1};
+    /// 0..4, from ops.json, set when the command engine greets the player.
+    i32 permission{0};
+    /// Survival and adventure take damage, get hungry and break blocks in
+    /// time; creative and spectator do none of it.
+    [[nodiscard]] bool mortal() const noexcept { return game_mode == 0 || game_mode == 2; }
+    // ── end commands ─────────────────────────────────────────────────────
     // ── end effects ──────────────────────────────────────────────────────
 
     // ── combat and interaction ───────────────────────────────────────────
@@ -1458,6 +1473,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 spawn_of("SpawnX", level_settings.spawn_x);
                 spawn_of("SpawnY", level_settings.spawn_y);
                 spawn_of("SpawnZ", level_settings.spawn_z);
+                // ── commands: the clock, weather, difficulty and rules too ──
+                world::read_level_settings(*data, level_settings);
             }
         }
         if (stored != world::kDataVersion1201) {
@@ -1507,6 +1524,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     if (const char* seed_text = std::getenv("OV_WORLDGEN_SEED");
         seed_text != nullptr && world_available && registries) {
         const i64 world_seed = std::strtoll(seed_text, nullptr, 10);
+        level_settings.seed  = world_seed;  // ── commands: what /seed answers ──
 
         // One worldgen stack per worker, plus one for the tick thread's own
         // synchronous fallback. Overridable because the right number depends on
@@ -1526,6 +1544,35 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         chunk_source = std::make_unique<AsyncChunkSource>(*generated, generation_workers);
     }
     // ────────────────────────────────────────────────────────────────────────
+
+    // ── commands ────────────────────────────────────────────────────────────
+    //
+    // The command engine, and the world state it owns: the clock, the weather,
+    // the difficulty and the gamerules, read from level.dat above and written
+    // back by save_world. See commands/service.hpp for who may call what from
+    // which thread. `--survival` makes survival the world's default game mode.
+    if (options.survival) {
+        level_settings.game_type = 0;
+    }
+    std::unique_ptr<cmd::CommandService> commands;
+    if (blocks && registries) {
+        cmd::ServiceConfig command_config;
+        command_config.blocks     = &*blocks;
+        command_config.registries = &*registries;
+        command_config.integrated = external_stop != nullptr;
+        // ops.json beside the server, where vanilla keeps it. An integrated
+        // server has none: its players are the owner, at level 4.
+        command_config.ops_file =
+            command_config.integrated ? std::filesystem::path{} : std::filesystem::path{"ops.json"};
+        command_config.lang_file = data_dir.parent_path() / "run" / "assets" / "assets" /
+                                   "minecraft" / "lang" / "en_us.json";
+        command_config.max_players = options.max_players;
+        command_config.motd        = options.motd;
+        commands = std::make_unique<cmd::CommandService>(std::move(command_config));
+        commands->load_world(level_settings);
+        commands->console = [](std::string_view line) { OV_LOG_INFO("{}", line); };
+    }
+    // ── end commands ────────────────────────────────────────────────────────
 
     /// What `chunk_mutex` still protects, and what it no longer does.
     ///
@@ -1746,6 +1793,16 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     const auto save_world = [&] {
         const std::scoped_lock lock{chunk_mutex};
         if (dirty_chunks.empty()) {
+            // ── commands: level.dat still, when only the rules changed ──
+            // A /time or /gamerule dirties no chunk; returning before this
+            // lost them at the next restart, which a restart test caught.
+            if (commands) {
+                commands->store_world(level_settings);
+                if (!io::write_file_atomic(level_dir / "level.dat",
+                                           world::encode_level_dat(level_settings))) {
+                    OV_LOG_WARN("could not write level.dat");
+                }
+            }
             return;
         }
 
@@ -1796,6 +1853,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // level.dat every time, not once at creation: it is small, and a world
         // whose regions are newer than its level.dat is the state a crash
         // leaves behind.
+        if (commands) {
+            commands->store_world(level_settings);  // ── commands ──
+        }
         if (!io::write_file_atomic(level_dir / "level.dat",
                                    // ── player data: with Data.Player when there is one ──
                                    player_data.encode_level_dat(level_settings))) {
@@ -2928,7 +2988,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     const auto effect_bearer_for = [&](const Player& who) {
         return EffectBearer{
             .entity_id    = who.entity_id,
-            .mortal       = options.survival,
+            .mortal       = who.mortal(),  // ── commands: per player ──
             .shared_flags = static_cast<u8>((who.sneaking ? 0x02 : 0) |
                                             (who.survival.sprinting ? 0x08 : 0))};
     };
@@ -2993,7 +3053,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         view.on_climbable = false;
         view.blind        = who.effects.blind();  // ── effects ──
         view.riding       = false;
-        view.game_mode    = options.survival ? u8{0} : u8{1};
+        view.game_mode    = who.game_mode;  // ── commands: per player ──
         view.food         = who.survival.food.food;
         // Twenty. `FoodState` has no maximum of its own — the bar is
             // always twenty haunches — and `begin_use` compares against
@@ -3199,6 +3259,391 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         return io;
     };
     // ── end combat and interaction ──────────────────────────────────────────
+
+    // ── commands ────────────────────────────────────────────────────────────
+    //
+    // What the command engine reaches outside itself for. Every callback runs
+    // on the tick thread with `players_mutex` held — `CommandService::run` is
+    // only ever called that way — and takes `chunk_mutex` itself, in the
+    // order every other path here takes the two.
+    cmd::CommandHost command_host;
+    /// A container placed by a command needs its block entity, as one placed
+    /// by hand does. Caller holds chunk_mutex.
+    const auto command_block_entity = [&](net::WirePosition at, registry::BlockStateId state) {
+        if (!blocks || !registries || !block_entity_registry) {
+            return;
+        }
+        const ContainerSpec* spec =
+            container_spec_for_block(blocks->block_name(blocks->block_of(state)));
+        if (spec == nullptr) {
+            return;
+        }
+        chunk_at(at.x >> 4, at.z >> 4)
+            .set_block_entity(
+                new_container_entity(*spec, at.x, at.y, at.z, &*registries, block_entity_registry));
+        dirty_chunks.insert(chunk_key(at.x >> 4, at.z >> 4));
+    };
+    command_host.for_each_player = [&](const std::function<void(cmd::PlayerRef&)>& visit) {
+        for (auto& [key, who] : players) {
+            if (!who.connection) {
+                continue;
+            }
+            cmd::PlayerRef ref;
+            ref.entity_id     = who.entity_id;
+            ref.name          = who.name;
+            ref.uuid          = who.uuid;
+            ref.x             = &who.x;
+            ref.y             = &who.y;
+            ref.z             = &who.z;
+            ref.yaw           = &who.yaw;
+            ref.pitch         = &who.pitch;
+            ref.game_mode     = &who.game_mode;
+            ref.permission    = &who.permission;
+            ref.inventory     = &who.inventory;
+            ref.held_slot     = who.held_slot;
+            ref.carried       = &who.carried;
+            ref.survival      = &who.survival;
+            ref.effects       = &who.effects;
+            ref.effect_bearer = effect_bearer_for(who);
+            ref.send          = [&who](i32 id, std::span<const u8> payload) {
+                if (const auto framed = net::encode_packet(id, payload); framed && who.connection) {
+                    who.connection->send(*framed);
+                }
+            };
+            ref.broadcast_others = [&broadcast, &who](i32 id, std::span<const u8> payload) {
+                broadcast(who.connection.get(), id, payload);
+            };
+            visit(ref);
+        }
+    };
+    command_host.entities = [&](std::vector<cmd::EntityInfo>& out) {
+        const auto types = registries ? registries->find("minecraft:entity_type") : std::nullopt;
+        if (mobs && types) {
+            for (const entity::EntityHandle handle : mobs->handles()) {
+                const entity::EntityState* state = mobs->state(handle);
+                if (state == nullptr || state->removed) {
+                    continue;
+                }
+                cmd::EntityInfo info;
+                info.id         = state->network_id;
+                info.type       = std::string{registries->entry_of(*types, state->type)};
+                info.uuid       = state->uuid;
+                info.position   = state->position;
+                info.yaw        = state->yaw;
+                info.pitch      = state->pitch;
+                info.width      = state->width;
+                info.height     = state->height;
+                info.eye_height = state->eye_height;
+                out.push_back(std::move(info));
+            }
+        }
+        for (const ItemEntity& item : ground_items) {
+            cmd::EntityInfo info;
+            info.id       = item.entity_id;
+            info.type     = "minecraft:item";
+            info.uuid     = item.uuid;
+            info.position = Vec3d{item.x, item.y, item.z};
+            info.width    = 0.25F;
+            info.height   = 0.25F;
+            if (registries && item_registry) {
+                info.item = std::string{registries->entry_of(*item_registry, item.stack.item_id)};
+            }
+            out.push_back(std::move(info));
+        }
+        for (const GroundOrb& orb : ground_orbs) {
+            cmd::EntityInfo info;
+            info.id       = orb.entity_id;
+            info.type     = "minecraft:experience_orb";
+            info.uuid     = uuid_for_entity(orb.entity_id);
+            info.position = Vec3d{orb.x, orb.y, orb.z};
+            info.width    = 0.5F;
+            info.height   = 0.5F;
+            out.push_back(std::move(info));
+        }
+    };
+    command_host.broadcast = [&](i32 id, std::span<const u8> payload) {
+        broadcast(nullptr, id, payload);
+    };
+    command_host.teleport_player = [&](i32 id, Vec3d to, f32 yaw, f32 pitch, u8 relative) {
+        for (auto& [key, who] : players) {
+            if (who.entity_id != id || !who.connection) {
+                continue;
+            }
+            // A relative field travels as the offset from where the server
+            // believes the player is — vanilla's `tp ~ ~5 ~` is flags 0x1F and
+            // a y of 5.
+            const auto offset = [&](u8 flag, f64 target, f64 now) {
+                return (relative & flag) != 0 ? target - now : target;
+            };
+            const f64 dx     = offset(cmd::teleport_flags::kX, to.x, who.x);
+            const f64 dy     = offset(cmd::teleport_flags::kY, to.y, who.y);
+            const f64 dz     = offset(cmd::teleport_flags::kZ, to.z, who.z);
+            const f32 dyaw   = (relative & cmd::teleport_flags::kYaw) != 0 ? yaw - who.yaw : yaw;
+            const f32 dpitch = (relative & cmd::teleport_flags::kPitch) != 0 ? pitch - who.pitch : pitch;
+            who.x                = to.x;
+            who.y                = to.y;
+            who.z                = to.z;
+            who.yaw              = yaw;
+            who.pitch            = pitch;
+            who.pending_teleport = who.pending_teleport + 1;
+            if (const auto framed = net::encode_packet(
+                    net::clientbound::kSynchronizePosition,
+                    net::encode_synchronize_position_relative(dx, dy, dz, dyaw, dpitch, relative,
+                                                              who.pending_teleport))) {
+                who.connection->send(*framed);
+            }
+            saved_players[who.identity] = SavedPlayer{who.x, who.y, who.z, who.yaw, who.pitch};
+            stream_chunks(who.connection, who);
+            broadcast(who.connection.get(), net::clientbound::kEntityTeleport,
+                      net::encode_entity_teleport(who.entity_id, who.x, who.y, who.z, who.yaw,
+                                                  who.pitch, false));
+        }
+    };
+    command_host.teleport_entity = [&](i32 id, Vec3d to, f32 yaw, f32 pitch) -> bool {
+        if (mobs) {
+            if (const entity::EntityHandle handle = mobs->find(id); handle != entity::kNoEntity) {
+                if (entity::EntityState* state = mobs->mutable_state(handle)) {
+                    state->position           = to;
+                    state->yaw                = yaw;
+                    state->pitch              = pitch;
+                    state->velocity           = Vec3d{0.0, 0.0, 0.0};
+                    state->broadcast_position = to;
+                    state->broadcast_valid    = true;
+                    broadcast(nullptr, net::clientbound::kEntityTeleport,
+                              net::encode_entity_teleport(id, to.x, to.y, to.z, yaw, pitch, false));
+                    return true;
+                }
+            }
+        }
+        for (ItemEntity& item : ground_items) {
+            if (item.entity_id == id) {
+                item.x = to.x;
+                item.y = to.y;
+                item.z = to.z;
+                broadcast(nullptr, net::clientbound::kEntityTeleport,
+                          net::encode_entity_teleport(id, to.x, to.y, to.z, 0.0F, 0.0F, false));
+                return true;
+            }
+        }
+        return false;
+    };
+    command_host.kill_entity = [&](i32 id) -> bool {
+        if (mobs && mob_combat) {
+            if (const entity::EntityHandle handle = mobs->find(id); handle != entity::kNoEntity) {
+                entity::EntityState* state = mobs->mutable_state(handle);
+                if (state == nullptr || state->removed) {
+                    return false;
+                }
+                // The death animation, then the loot a death without a player
+                // behind it draws, then gone at the end of the entity tick.
+                broadcast(nullptr, net::clientbound::kEntityEvent, net::encode_entity_event(id, 3));
+                std::vector<gameplay::Drop> drops;
+                (void)mob_combat->loot(*state, false, 0, mob_loot_random, drops);
+                std::vector<ItemEntity> dropped;
+                for (const gameplay::Drop& drop : drops) {
+                    ItemEntity item;
+                    item.entity_id = next_entity_id.fetch_add(1);
+                    item.uuid      = uuid_for_entity(item.entity_id);
+                    item.x         = state->position.x;
+                    item.y         = state->position.y + static_cast<f64>(state->height) * 0.5;
+                    item.z         = state->position.z;
+                    item.stack = net::ItemStack{drop.item, static_cast<i8>(std::min(drop.count, 64)), {}};
+                    item.born  = server_tick.load(std::memory_order_relaxed);
+                    dropped.push_back(std::move(item));
+                }
+                publish_items(dropped);
+                state->removed = true;
+                mob_combat->forget(id);
+                return true;
+            }
+        }
+        for (usize i = 0; i < ground_items.size(); ++i) {
+            if (ground_items[i].entity_id == id) {
+                broadcast(nullptr, net::clientbound::kRemoveEntities, net::encode_remove_entity(id));
+                ground_items.erase(ground_items.begin() + static_cast<isize>(i));
+                return true;
+            }
+        }
+        for (usize i = 0; i < ground_orbs.size(); ++i) {
+            if (ground_orbs[i].entity_id == id) {
+                broadcast(nullptr, net::clientbound::kRemoveEntities, net::encode_remove_entity(id));
+                ground_orbs.erase(ground_orbs.begin() + static_cast<isize>(i));
+                return true;
+            }
+        }
+        return false;
+    };
+    command_host.summon = [&](std::string_view type, Vec3d at) -> std::optional<cmd::EntityInfo> {
+        if (!mobs || !registries) {
+            return std::nullopt;
+        }
+        const auto spawned = mobs->spawn(type, at, net::Uuid{});
+        if (!spawned) {
+            OV_LOG_DEBUG("summon {}: {}", type, entity::to_string(spawned.error()));
+            return std::nullopt;
+        }
+        entity::EntityState* state = mobs->mutable_state(*spawned);
+        state->uuid                = uuid_for_entity(state->network_id);
+        state->broadcast_position  = state->position;
+        state->broadcast_valid     = true;
+        // The same behaviour a natural spawn gets: a brain for a species with
+        // goals, the falling floor for one without — refused, not invented.
+        if (const gameplay::MobKind* kind = gameplay::mob_kind(type)) {
+            const auto entity_types = registries->find("minecraft:entity_type");
+            const auto player_type =
+                entity_types ? registries->protocol_id(*entity_types, "minecraft:player") : std::nullopt;
+            mobs->set_logic(*spawned, std::make_unique<gameplay::Mob>(
+                                          *kind, state->width, state->height, state->network_id,
+                                          player_type ? *player_type : gameplay::kNoQuarry));
+        } else {
+            mobs->set_logic(*spawned, std::make_unique<gameplay::FallingMob>());
+        }
+        mob_packets(*state, [&](i32 id, std::span<const u8> payload) { broadcast(nullptr, id, payload); });
+        cmd::EntityInfo info;
+        info.id       = state->network_id;
+        info.type     = std::string{type};
+        info.uuid     = state->uuid;
+        info.position = state->position;
+        info.width    = state->width;
+        info.height   = state->height;
+        return info;
+    };
+    command_host.drop_item = [&](i32 id, const net::ItemStack& stack) {
+        for (auto& [key, who] : players) {
+            if (who.entity_id != id) {
+                continue;
+            }
+            ItemEntity item;
+            item.entity_id    = next_entity_id.fetch_add(1);
+            item.uuid         = uuid_for_entity(item.entity_id);
+            item.x            = who.x;
+            item.y            = who.y + 1.32;
+            item.z            = who.z;
+            item.stack        = stack;
+            item.born         = server_tick.load(std::memory_order_relaxed);
+            item.pickup_delay = 0;
+            std::vector<ItemEntity> one;
+            one.push_back(std::move(item));
+            publish_items(one);
+        }
+    };
+    command_host.is_loaded = [&](i32 cx, i32 cz) {
+        // A superflat is generated on demand in microseconds, so every chunk
+        // of one counts as loaded; a generated world's must be resident.
+        const std::scoped_lock chunk_lock{chunk_mutex};
+        return !chunk_source || chunk_if_resident(cx, cz) != nullptr;
+    };
+    command_host.block_at = [&](BlockPos at) {
+        const std::scoped_lock chunk_lock{chunk_mutex};
+        return block_at({at.x, at.y, at.z});
+    };
+    command_host.set_block = [&](BlockPos at, registry::BlockStateId state) {
+        set_block_and_broadcast({at.x, at.y, at.z}, state);
+        const std::scoped_lock chunk_lock{chunk_mutex};
+        command_block_entity({at.x, at.y, at.z}, state);
+    };
+    command_host.destroy_block = [&](BlockPos at) {
+        const net::WirePosition where{at.x, at.y, at.z};
+        registry::BlockStateId  state{0};
+        {
+            const std::scoped_lock chunk_lock{chunk_mutex};
+            state = block_at(where);
+        }
+        if (!blocks || blocks->is_air(blocks->block_of(state))) {
+            return;
+        }
+        // Broken as by a player with an empty hand: the particles (World
+        // Event 2001 with the state), the loot, then air.
+        const Player            breaker{};
+        std::vector<ItemEntity> dropped;
+        drop_loot(breaker, where, dropped);
+        broadcast(nullptr, net::clientbound::kWorldEvent,
+                  net::encode_world_event(net::kWorldEventBlockBreak, where,
+                                          static_cast<i32>(state.value()), false));
+        set_block_and_broadcast(where, superflat.air.air);
+        publish_items(dropped);
+    };
+    command_host.set_blocks = [&](std::span<const cmd::BlockChange> changes) {
+        // One write each under one lock, one relight per chunk touched, one
+        // Update Section Blocks per section — a 32768-block fill must not
+        // relight a neighbourhood per block.
+        std::map<std::tuple<i32, i32, i32>, std::vector<net::SectionBlock>> sections;
+        std::unordered_set<i64>                                             touched;
+        {
+            const std::scoped_lock chunk_lock{chunk_mutex};
+            for (const cmd::BlockChange& change : changes) {
+                const net::WirePosition at{change.pos.x, change.pos.y, change.pos.z};
+                apply_block_change(at, change.state, false);
+                command_block_entity(at, change.state);
+                touched.insert(chunk_key(at.x >> 4, at.z >> 4));
+                sections[{at.x >> 4, at.y >> 4, at.z >> 4}].push_back(
+                    net::SectionBlock{static_cast<u8>(at.x & 15), static_cast<u8>(at.y & 15),
+                                      static_cast<u8>(at.z & 15),
+                                      static_cast<i32>(change.state.value())});
+            }
+            for (const i64 key : touched) {
+                const auto cx = static_cast<i32>(key >> 32);
+                const auto cz = static_cast<i32>(static_cast<u32>(key & 0xFFFFFFFF));
+                relight_neighbourhood(
+                    [&](i32 nx, i32 nz) -> world::Chunk* { return chunks.find(ChunkPos{nx, nz}); },
+                    cx, cz);
+                for (i32 dz = -1; dz <= 1 && blocks; ++dz) {
+                    for (i32 dx = -1; dx <= 1; ++dx) {
+                        if (world::Chunk* found = chunks.find(ChunkPos{cx + dx, cz + dz})) {
+                            relight_blocks(*found, *blocks);
+                        }
+                    }
+                }
+            }
+        }
+        for (const auto& [section, list] : sections) {
+            broadcast(nullptr, net::clientbound::kUpdateSectionBlocks,
+                      net::encode_update_section_blocks(std::get<0>(section), std::get<1>(section),
+                                                        std::get<2>(section), list));
+        }
+        for (const cmd::BlockChange& change : changes) {
+            notify_change({change.pos.x, change.pos.y, change.pos.z});
+        }
+    };
+    command_host.break_blocks = [&](std::span<const BlockPos> positions) {
+        std::vector<ItemEntity> dropped;
+        const Player            breaker{};
+        for (const BlockPos& at : positions) {
+            const net::WirePosition where{at.x, at.y, at.z};
+            registry::BlockStateId  state{0};
+            {
+                const std::scoped_lock chunk_lock{chunk_mutex};
+                state = block_at(where);
+            }
+            drop_loot(breaker, where, dropped);
+            broadcast(nullptr, net::clientbound::kWorldEvent,
+                      net::encode_world_event(net::kWorldEventBlockBreak, where,
+                                              static_cast<i32>(state.value()), false));
+        }
+        publish_items(dropped);
+    };
+    command_host.kick = [&](i32 id, std::string_view reason_json) {
+        for (auto& [key, who] : players) {
+            if (who.entity_id == id && who.connection) {
+                if (const auto framed = net::encode_packet(net::clientbound::kDisconnect,
+                                                           net::encode_component_packet(reason_json))) {
+                    who.connection->send(*framed);
+                }
+                who.connection->close();
+            }
+        }
+    };
+    command_host.save = [&] { save_world(); };
+    command_host.stop = [] { g_stop_requested.store(true, std::memory_order_relaxed); };
+    command_host.set_world_spawn = [&](i32 x, i32 y, i32 z, f32 angle) {
+        level_settings.spawn_x     = x;
+        level_settings.spawn_y     = y;
+        level_settings.spawn_z     = z;
+        level_settings.spawn_angle = angle;
+        broadcast(nullptr, net::clientbound::kSetDefaultSpawn,
+                  net::encode_set_default_spawn(x, y, z, angle));
+    };
+    // ── end commands ────────────────────────────────────────────────────────
 
     // Per-connection protocol state. A packet id means different things in
     // different states, so this cannot be global.
@@ -3491,14 +3936,17 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 join.entity_id = player.entity_id;
                 // Survival is what makes the break timings apply at all; creative
                 // stays the default so flight works without food or damage.
-                join.game_mode           = options.survival ? 0 : 1;
+                // ── commands: the world's default, per player from here on ──
+                player.game_mode = commands ? commands->default_game_mode()
+                                            : (options.survival ? u8{0} : u8{1});
+                join.game_mode           = player.game_mode;
                 join.registry_codec      = *codec_bytes;
                 join.view_distance       = 10;
                 join.simulation_distance = 10;
                 send_packet(net::clientbound::kLoginPlay, net::encode_login_play(join));
 
                 send_packet(net::clientbound::kPlayerAbilities,
-                            net::encode_player_abilities(true, false, true, true, 0.05F, 0.1F));
+                            cmd::CommandService::abilities_for(player.game_mode));  // ── commands ──
 
                 player.pending_teleport = 1;
                 send_packet(
@@ -3506,8 +3954,15 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     net::encode_synchronize_position(player.x, player.y, player.z, player.yaw,
                                                      player.pitch, player.pending_teleport));
 
-                send_packet(net::clientbound::kSetDefaultSpawn,
-                            net::encode_set_default_spawn(0, Superflat::kSurfaceY + 1, 0, 0.0F));
+                {
+                    // ── commands: the world's spawn, which /setworldspawn moves ──
+                    const std::scoped_lock spawn_lock{players_mutex};
+                    send_packet(net::clientbound::kSetDefaultSpawn,
+                                net::encode_set_default_spawn(level_settings.spawn_x,
+                                                              level_settings.spawn_y,
+                                                              level_settings.spawn_z,
+                                                              level_settings.spawn_angle));
+                }
 
                 // The centre has to arrive before the chunks: a client that
                 // receives chunks with no centre keeps them and renders
@@ -3529,7 +3984,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     // only the first leaves the new player alone in a world
                     // other people are walking around in.
                     broadcast(nullptr, net::clientbound::kPlayerInfoUpdate,
-                              net::encode_player_info_add(player.uuid, player.name, 1));
+                              net::encode_player_info_add(player.uuid, player.name, player.game_mode));
                     broadcast(
                         nullptr, net::clientbound::kSpawnPlayer,
                         net::encode_spawn_player(player.entity_id, player.uuid, player.x, player.y,
@@ -3537,7 +3992,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
 
                     for (const auto& [key, other] : players) {
                         send_packet(net::clientbound::kPlayerInfoUpdate,
-                                    net::encode_player_info_add(other.uuid, other.name, 1));
+                                    net::encode_player_info_add(other.uuid, other.name, other.game_mode));
                         send_packet(
                             net::clientbound::kSpawnPlayer,
                             net::encode_spawn_player(other.entity_id, other.uuid, other.x, other.y,
@@ -3669,7 +4124,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         // accumulated per movement packet: two updates in one
                         // tick would otherwise count as one, and a nine-block
                         // fall came out at five points instead of six.
-                        if (options.survival && movement->x) {
+                        if (player.mortal() && movement->x) {  // ── commands: per player ──
                             const f64 dx = *movement->x - before_x;
                             const f64 dz = *movement->z - before_z;
                             player.survival.note_movement(player.y, player.on_ground,
@@ -3844,7 +4299,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     // ── end combat and interaction ─────────────────────────
 
                     case net::serverbound::kSetCreativeSlot: {
-                        if (options.survival) {
+                        if (player.game_mode != 1) {  // ── commands: per player ──
                             // In survival the server owns the inventory. Vanilla
                             // ignores this packet outside creative, and honouring
                             // it would let any client hand itself anything.
@@ -3881,7 +4336,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         }
                         // ── end combat and interaction ──────────────────────
 
-                        if (!options.survival) {
+                        if (player.game_mode == 1) {  // ── commands: per player ──
                             // Creative breaks on the first packet: the block is
                             // already gone on the client when it arrives.
                             if (action->status == 0 || action->status == 2) {
@@ -4739,6 +5194,68 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         return true;
                     }
 
+                    // ── commands and chat ──────────────────────────────────
+                    //
+                    // A command is queued, never run here: it changes the
+                    // world, and the tick thread runs the queue. A chat line
+                    // is relayed at once, unsigned, as an offline vanilla
+                    // server relays it; a completion is answered at once from
+                    // the tree, which nothing changes after start-up.
+                    case net::serverbound::kChatCommand: {
+                        const auto command = net::parse_chat_command(body);
+                        if (!command) {
+                            return false;
+                        }
+                        if (commands) {
+                            commands->enqueue(player.entity_id, command->command, command->timestamp,
+                                              command->salt);
+                        }
+                        return true;
+                    }
+                    case net::serverbound::kChatMessage: {
+                        const auto chat = net::parse_chat_message(body);
+                        if (!chat) {
+                            return false;
+                        }
+                        broadcast(nullptr, net::clientbound::kPlayerChat,
+                                  cmd::CommandService::chat_packet(player.name, player.uuid,
+                                                                   chat->message, chat->timestamp,
+                                                                   chat->salt, cmd::kChatTypeChat));
+                        OV_LOG_INFO("[Not Secure] <{}> {}", player.name, chat->message);
+                        return true;
+                    }
+                    case net::serverbound::kCommandSuggestionsRequest: {
+                        const auto request = net::parse_suggestions_request(body);
+                        if (!request) {
+                            return false;
+                        }
+                        if (commands) {
+                            cmd::CommandSource source;
+                            source.kind       = cmd::CommandSource::Kind::Player;
+                            source.entity_id  = player.entity_id;
+                            source.name       = player.name;
+                            source.uuid       = player.uuid;
+                            source.position   = Vec3d{player.x, player.y, player.z};
+                            source.yaw        = player.yaw;
+                            source.pitch      = player.pitch;
+                            source.permission = player.permission;
+                            std::vector<std::string> names;
+                            for (const auto& [other_key, other] : players) {
+                                names.push_back(other.name);
+                            }
+                            send_packet(net::clientbound::kCommandSuggestions,
+                                        net::encode_suggestions_response(commands->suggest(
+                                            source, request->transaction, request->text, names)));
+                        }
+                        return true;
+                    }
+                    case net::serverbound::kMessageAcknowledgment:
+                    case net::serverbound::kPlayerSession:
+                        // Signatures are not checked in offline mode, and this
+                        // server relays nothing signed: read and dropped.
+                        return true;
+                    // ── end commands and chat ──────────────────────────────
+
                     case net::serverbound::kClientInformation:
                     case net::serverbound::kPluginMessage:
                         // Read and ignored: neither changes anything the server
@@ -4854,7 +5371,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                             static_cast<usize>(pos.z & 15)));
         };
         hooks.sky_darken = [&] {
-            return sky_darken_for(server_tick.load(std::memory_order_relaxed));
+            // ── commands: the sun the spawner sees is the clock /time sets ──
+            return sky_darken_for(commands ? commands->world().day_time
+                                           : server_tick.load(std::memory_order_relaxed));
         };
         return hooks;
     }()};
@@ -4915,13 +5434,13 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             }
             BlastPlayer view;
             view.feet     = Vec3d{who.x, who.y, who.z};
-            view.creative = !options.survival;
+            view.creative = !who.mortal();  // ── commands: per player ──
             view.send     = [&who](i32 id, std::span<const u8> payload) {
                 if (const auto framed = net::encode_packet(id, payload); framed && who.connection) {
                     who.connection->send(*framed);
                 }
             };
-            if (options.survival) {
+            if (who.mortal()) {  // ── commands: per player ──
                 view.hurt = [&](f32 amount) {
                     const SurvivalIo io{
                         .send =
@@ -4967,16 +5486,23 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     };
     tnt_host.creeper_targets = [&](std::vector<Vec3d>& out) {
         // A creative player is never a creeper's target.
-        if (!options.survival) {
-            return;
-        }
         for (const auto& [target_key, who] : players) {
-            if (who.connection && who.confirmed && !who.survival.awaiting_respawn) {
+            if (who.mortal() && who.connection && who.confirmed &&  // ── commands: per player ──
+                !who.survival.awaiting_respawn) {
                 out.push_back(Vec3d{who.x, who.y, who.z});
             }
         }
     };
     // ── end tnt and gravity ─────────────────────────────────────────────────
+
+    // ── commands: the dedicated server's console ────────────────────────────
+    // Lines typed on stdin run at level 4. Only when nobody else owns the
+    // process — an integrated server's window has no console.
+    std::optional<cmd::ConsoleReader> console;
+    if (external_stop == nullptr && commands) {
+        console.emplace([&commands](std::string line) { commands->enqueue_console(std::move(line)); });
+    }
+    // ── end commands ────────────────────────────────────────────────────────
 
     const auto should_stop = [&]() {
         return g_stop_requested.load(std::memory_order_relaxed) ||
@@ -5076,10 +5602,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         if (clock.tick_count() % 20 == 0) {
             std::unique_lock time_lock{players_mutex, std::try_to_lock};
             if (time_lock.owns_lock()) {
-                const auto frozen_noon = i64{-6000};
-                if (const auto framed = net::encode_packet(
-                        net::clientbound::kUpdateTime,
-                        net::encode_update_time(clock.tick_count(), frozen_noon))) {
+                // ── commands: the world's own clock, which /time sets ──
+                const std::vector<u8> time_payload =
+                    commands ? commands->world().update_time_payload()
+                             : net::encode_update_time(clock.tick_count(), i64{-6000});
+                if (const auto framed =
+                        net::encode_packet(net::clientbound::kUpdateTime, time_payload)) {
                     for (auto& [clock_key, watcher] : players) {
                         if (watcher.connection) {
                             watcher.connection->send(*framed);
@@ -5153,6 +5681,20 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 }
             }
         }
+
+        // ── commands ────────────────────────────────────────────────────────
+        // The clock and the weather move every tick. The queue runs at the
+        // first tick the player map is free, as every other pass here waits
+        // for it; before the scheduled ticks, so a /setblock is settled on
+        // the tick it ran.
+        if (commands) {
+            commands->tick_world();
+            std::unique_lock command_lock{players_mutex, std::try_to_lock};
+            if (command_lock.owns_lock()) {
+                commands->run(command_host);
+            }
+        }
+        // ── end commands ────────────────────────────────────────────────────
 
         // ── Scheduled ticks ─────────────────────────────────────────
         //
@@ -5368,7 +5910,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // read out of the same arrays the client is sent. Everything the rule
         // needs that a `LevelView` cannot answer — the light, the players, the
         // ticking set, the live counts — is assembled here and nowhere else.
-        if (spawning_ready && level && mobs && registries && blocks) {
+        if (spawning_ready && level && mobs && registries && blocks &&
+            (!commands || commands->world().rules.flag("doMobSpawning"))) {  // ── commands ──
             const auto spawn_started = std::chrono::steady_clock::now();
             spawn_players.clear();
             {
@@ -5749,7 +6292,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     if (!value && finished == "minecraft:milk_bucket") {
                         (void)who.effects.on_consumed(finished, who.survival, effect_io_for(who),
                                                       effect_bearer_for(who));
-                        if (options.survival && registries && item_registry) {
+                        if (who.mortal() && registries && item_registry) {  // ── commands ──
                             const usize slot = 36 + static_cast<usize>(who.held_slot);
                             if (const auto bucket =
                                     registries->protocol_id(*item_registry, "minecraft:bucket")) {
@@ -5776,7 +6319,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     // nutrition, in the game's order ──
                     (void)who.effects.on_consumed(finished, who.survival, effect_io_for(who),
                                                   effect_bearer_for(who));
-                    if (options.survival) {
+                    if (who.mortal()) {  // ── commands: per player ──
                         consume_one_held(who);
                     }
                     who.survival.send_state(SurvivalIo{
@@ -5835,7 +6378,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // packets, ov_gameplay owns the rules. What is here is the part that
         // needs the server — the inventory to drop, the orbs to place, and the
         // teleport that puts a respawned player back on the ground.
-        if (options.survival) {
+        {  // ── commands: every player, by their own game mode ──
             std::unique_lock survival_lock{players_mutex, std::try_to_lock};
             if (survival_lock.owns_lock()) {
                 std::vector<ItemEntity> death_drops;
@@ -5873,10 +6416,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                               .y         = who.y,
                                               .z         = who.z,
                                               .on_ground = who.on_ground,
-                                              // The survival block only runs
-                                              // with --survival, so this is
-                                              // always a survival player.
-                                              .game_mode = 0,
+                                              // ── commands: per player; the
+                                              // session spares creative and
+                                              // spectator itself ──
+                                              .game_mode = who.game_mode,
                                               .submerged = submerged,
                                               // ── effects ──
                                               .breathes_underwater =
@@ -5884,13 +6427,26 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                               .jump_boost   = who.effects.jump_boost(),
                                               .slow_falling = who.effects.slow_falling()};
                     SurvivalOutcome outcome = who.survival.tick(
-                        view, io, gameplay::Difficulty::Normal, true,
+                        view, io,
+                        // ── commands: /difficulty and naturalRegeneration ──
+                        commands ? static_cast<gameplay::Difficulty>(commands->world().difficulty)
+                                 : gameplay::Difficulty::Normal,
+                        !commands || commands->world().rules.flag("naturalRegeneration"),
                         static_cast<f64>(world::WorldShape::overworld().min_y));
 
                     if (who.wants_respawn) {
                         who.wants_respawn = false;
+                        // ── commands: /spawnpoint's, else /setworldspawn's ──
                         who.survival.spawn = SurvivalSession::SpawnPoint{
-                            0.5, static_cast<f64>(Superflat::kSurfaceY) + 1.0, 0.5, false};
+                            static_cast<f64>(level_settings.spawn_x) + 0.5,
+                            static_cast<f64>(level_settings.spawn_y),
+                            static_cast<f64>(level_settings.spawn_z) + 0.5, false};
+                        if (const auto own =
+                                commands ? commands->personal_spawn(who.uuid) : std::nullopt) {
+                            who.survival.spawn = SurvivalSession::SpawnPoint{
+                                static_cast<f64>(own->x) + 0.5, static_cast<f64>(own->y),
+                                static_cast<f64>(own->z) + 0.5, false};
+                        }
                         if (who.survival.perform_respawn(view, io, outcome, 0)) {
                             who.x = outcome.respawn_x;
                             who.y = outcome.respawn_y;
@@ -5928,8 +6484,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     // keepInventory off. Cleared first, so a client that
                     // reconnects before the tick finishes cannot be handed the
                     // same stacks twice.
+                    const bool keep_inventory =  // ── commands ──
+                        commands && commands->world().rules.flag("keepInventory");
                     for (net::ItemStack& stack : who.inventory) {
-                        if (stack.item_id == 0 || stack.count <= 0) {
+                        if (keep_inventory || stack.item_id == 0 || stack.count <= 0) {
                             continue;
                         }
                         ItemEntity item;
@@ -6065,7 +6623,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         }
         // ── end survival ───────────────────────────────────────────────────
 
-        if (options.survival) {
+        {  // ── commands: a delayed dig only ever starts in survival ──
             std::unique_lock dig_lock{players_mutex, std::try_to_lock};
             if (dig_lock.owns_lock()) {
                 for (auto& [key, digger] : players) {
