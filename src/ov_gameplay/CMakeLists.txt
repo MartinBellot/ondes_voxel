@@ -25,6 +25,7 @@ ov_add_library(ov_gameplay
         src/signal.cpp
         src/redstone.cpp
         src/hopper.cpp
+        src/dispenser.cpp
         src/piston.cpp
         src/loot.cpp
         src/recipe.cpp
@@ -59,6 +60,7 @@ ov_add_test(test_ov_gameplay
         tests/test_connections.cpp
         tests/test_redstone.cpp
         tests/test_hopper.cpp
+        tests/test_dispenser.cpp
         tests/test_piston.cpp
         tests/test_loot.cpp
         tests/test_crafting.cpp

@@ -1644,22 +1644,49 @@ def measure_dispenser(out: Path) -> None:
                       for block, _item, x, z in cells], timeout=600.0)
         server.batch([f"item replace block {x} {Y} {z} container.0 with {item} 1"
                       for _block, item, x, z in cells], timeout=600.0)
-        server.batch([f"setblock {x - 1} {Y} {z} minecraft:redstone_block replace"
-                      for _block, _item, x, z in cells], timeout=600.0)
-        time.sleep(3.0)
-
-        # The nearest entity to each target square, if any.
+        # One cell at a time, and tagged a quarter of a second later.
+        #
+        # ⚠ The first run of this scenario triggered everything and looked three
+        #   seconds later. An arrow leaves a dispenser at about a block a tick:
+        #   at three seconds it is sixty blocks away and every projectile in the
+        #   table read as "nothing happened", which is indistinguishable from a
+        #   dispenser that never fired. A dispenser fires four ticks after it is
+        #   told to, so the window is roughly ticks 4 to 10.
         entities: dict[tuple[int, int], str] = {}
-        for block, item, x, z in cells:
+        for index, (block, item, x, z) in enumerate(cells):
+            tag = f"c{index}"
+            server.batch([f"setblock {x - 1} {Y} {z} minecraft:redstone_block replace"])
+            time.sleep(0.3)
+            # The **tag command's own output** names what it tagged:
+            # "Added tag 'c0' to Arrow". That is the readback.
+            #
+            # ⚠ `data get entity <selector> id` does not work and does not say
+            #   so usefully — it answers "Found no elements matching id",
+            #   because a live entity is serialised *without* its id. An hour
+            #   of this scenario went into that answer looking like "nothing
+            #   spawned".
             lines = server.batch([f"execute positioned {x + 2} {Y} {z + 0.5} run "
-                                  "data get entity @e[distance=..6,limit=1,sort=nearest,"
-                                  "type=!player] id"])
-            found = "-"
+                                  f"tag @e[distance=..24,type=!player] add {tag}"])
+            found = []
             for line in lines:
-                match = re.search(r'"(minecraft:[a-z_]+)"', line)
+                match = re.search(r"Added tag '\w+' to (.+)$", line)
                 if match:
-                    found = match.group(1)
-            entities[(x, z)] = found
+                    found.append(match.group(1).strip())
+            # ⚠ The display name alone does not settle it. A thrown arrow and a
+            #   dropped arrow are both called "Arrow", and so are a snowball, an
+            #   ender pearl, a boat and a firework. The crisp discriminator is
+            #   whether the entity is a `minecraft:item` at all — an item on the
+            #   floor is the *default* behaviour, everything else is a
+            #   behaviour with a name.
+            is_item = any("Test passed" in line for line in
+                          server.batch([f"execute if entity @e[tag={tag},"
+                                        "type=minecraft:item]"]))
+            entities[(x, z)] = ((", ".join(sorted(found)) if found else "-")
+                                + (" [item entity]" if is_item else ""))
+            # Off the board before the next cell, so a slow arrow is not
+            # counted twice.
+            server.batch([f"kill @e[tag={tag}]"])
+        time.sleep(1.0)
 
         contents: dict[tuple[int, int], str] = {}
         for block, item, x, z in cells:
@@ -1685,8 +1712,9 @@ def measure_dispenser(out: Path) -> None:
         drop = result.get(f"dropper/{short}", {})
         same = (disp.get("front") == drop.get("front")
                 and disp.get("entity") == drop.get("entity"))
-        print(f"  {short:20s} front={disp.get('front', '-'):34s} "
-              f"entity={disp.get('entity', '-'):26s} {'default' if same else 'SPECIAL'}")
+        print(f"  {short:20s} front={disp.get('front', '-'):26s} "
+              f"disp={disp.get('entity', '-'):32s} drop={drop.get('entity', '-'):26s} "
+              f"{'default' if same else 'SPECIAL'}")
 
 
 SCENARIOS = {
