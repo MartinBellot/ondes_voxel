@@ -159,8 +159,13 @@ public:
     /// project refuses that kind of default.
     [[nodiscard]] bool resistance_measured(registry::BlockStateId state) const noexcept;
 
-    /// The blocks a charge takes, appended to `out` in the order the rays find
-    /// them, without duplicates.
+    /// The blocks a charge takes, appended to `out`, sorted and without
+    /// duplicates.
+    ///
+    /// **Blocks only.** Vanilla's own list carries the air cells the rays
+    /// passed through as well, and throws them away when it finalises — except
+    /// for one use: a charge that leaves fire puts it in exactly those air
+    /// cells. Anything implementing that needs a list this does not return.
     ///
     /// `rng` is drawn from exactly once per ray, in the grid's own traversal
     /// order, so the same generator in the same state gives the same crater.
@@ -206,6 +211,13 @@ public:
     /// `position` is the entity's feet — the point the game measures distance
     /// and knockback direction from — and `eye_y` is the height the vertical
     /// component of the impulse is taken at, which is *not* the box's centre.
+    /// It answers for **any** entity, not only a living one: a dropped item is
+    /// an entity with a box and five health, and an explosion is what turns a
+    /// floor covered in loot into an empty floor. What this does not decide is
+    /// whether the entity is immune at all — an ender dragon and an area effect
+    /// cloud ignore explosions outright — because that is a property of the
+    /// type, and the type is the caller's business, not this module's.
+    ///
     /// `knockback_dampener` is what Blast Protection takes off the impulse,
     /// from 0 to 1. It is a parameter rather than a lookup because enchantments
     /// are not this module's business, and passing 0 is the unenchanted case
@@ -214,6 +226,17 @@ public:
                                           const ExplosionSpec& spec, const AABB& box,
                                           const Vec3d& position, f64 eye_y,
                                           f64 knockback_dampener = 0.0) const;
+
+    /// Does this broken cell catch fire, for a charge that leaves fire behind?
+    ///
+    /// One roll in three, per cell of the crater. ⚠ **Not measured here**: the
+    /// one in three is what the wiki's Explosion article states, and no bench
+    /// in this campaign put a bed in the Nether. It is named so the next
+    /// campaign knows what is owed rather than finding a plausible constant.
+    /// A caller still has to check the cell is air with something solid under
+    /// it — that part is the world's business, not this module's.
+    [[nodiscard]] bool rolls_fire(const ExplosionSpec& spec,
+                                  math::LegacyRandomSource& rng) const;
 
     /// How long a TNT block waits when another explosion sets it off.
     ///

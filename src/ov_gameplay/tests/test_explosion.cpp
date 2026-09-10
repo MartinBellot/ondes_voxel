@@ -102,10 +102,10 @@ private:
     return registry.default_state(*block);
 }
 
-/// How many cells one charge takes out of a solid box of `material`.
-[[nodiscard]] usize destroyed_in_box(const registry::BlockRegistry& registry,
-                                     std::string_view material, i64 seed, i32 half = 9,
-                                     i32 up = 7) {
+/// Which cells one charge takes out of a solid box of `material`.
+[[nodiscard]] std::vector<BlockPos> crater_in_box(const registry::BlockRegistry& registry,
+                                                  std::string_view material, i64 seed,
+                                                  i32 half = 9, i32 up = 7) {
     const Explosions   rules{registry};
     const BoxLevel     level{registry, state_of(registry, material), half, up};
     math::LegacyRandomSource rng{seed};
@@ -114,7 +114,13 @@ private:
     spec.power  = kTntPower;
     std::vector<BlockPos> taken;
     rules.collect_blocks(level, spec, rng, taken);
-    return taken.size();
+    return taken;
+}
+
+/// How many cells one charge takes out of a solid box of `material`.
+[[nodiscard]] usize destroyed_in_box(const registry::BlockRegistry& registry,
+                                     std::string_view material, i64 seed) {
+    return crater_in_box(registry, material, seed).size();
 }
 
 struct CraterTable {
@@ -232,11 +238,14 @@ TEST_CASE("the same seed makes the same crater", "[explosion]") {
     if (pack() == nullptr) {
         return;
     }
-    const auto a = destroyed_in_box(*pack(), "minecraft:dirt", 42);
-    const auto b = destroyed_in_box(*pack(), "minecraft:dirt", 42);
+    const auto a = crater_in_box(*pack(), "minecraft:dirt", 42);
+    const auto b = crater_in_box(*pack(), "minecraft:dirt", 42);
+    REQUIRE_FALSE(a.empty());
     CHECK(a == b);
-    // And a different one does not, or the roll is not being consumed.
-    const auto c = destroyed_in_box(*pack(), "minecraft:dirt", 43);
+    // And a different one does not — compared cell by cell rather than by
+    // size, because two different craters very often have the same size and a
+    // count would let a generator that is never drawn from pass.
+    const auto c = crater_in_box(*pack(), "minecraft:dirt", 43);
     CHECK(c != a);
 }
 

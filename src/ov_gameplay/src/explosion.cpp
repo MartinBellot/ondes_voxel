@@ -158,7 +158,15 @@ void Explosions::collect_blocks(const world::LevelView& level, const ExplosionSp
                         energy -= (resistance_of(state) + constants_.resistance_bias) *
                                   constants_.resistance_scale;
                     }
-                    if (energy > 0.0F && can_drop_from_explosion(state)) {
+                    // Vanilla adds the position whatever is in it, air
+                    // included, and filters air out when it finalises. The set
+                    // of *destroyed* blocks is the same either way; the
+                    // difference is that vanilla's list still carries the air
+                    // cells, and that is where a fire-making charge puts its
+                    // fire. Named here because the list this returns cannot be
+                    // used for that.
+                    if (energy > 0.0F && !blocks_->is_air(block) &&
+                        blocks_->blast_resistance(block) >= 0.0F) {
                         keys.push_back(packed(pos));
                     }
                     x += dir_x * widened(constants_.step);
@@ -300,6 +308,13 @@ ExplosionHit Explosions::hit_entity(const world::LevelView& level, const Explosi
     hit.impulse    = Vec3d{dx * push, dy * push, dz * push};
     hit.touched    = true;
     return hit;
+}
+
+bool Explosions::rolls_fire(const ExplosionSpec& spec, math::LegacyRandomSource& rng) const {
+    if (!spec.fire) {
+        return false;
+    }
+    return rng.next_int(3) == 0;
 }
 
 i32 Explosions::chained_fuse(i32 full_fuse, math::LegacyRandomSource& rng) const {

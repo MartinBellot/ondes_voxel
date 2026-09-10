@@ -343,10 +343,20 @@ def measure_crater(out: Path, trials: int) -> None:
 
 # ── scenario: damage ────────────────────────────────────────────────────────
 #
-# ⚠ `Invulnerable:1b` would make this unreadable — an invulnerable entity takes
-#   nothing and reads exactly like an entity out of range. The targets here are
-#   ordinary and simply have enough health to survive: a zombie with a large
-#   `Health` and the matching `generic.max_health`.
+# One charge, one zombie per distance, health read before and after.
+#
+# ⚠ Three traps, all of them paid by other campaigns in this repo before this
+#   one existed:
+#     * `Invulnerable:1b` makes an entity impossible to read — it takes nothing
+#       and looks exactly like an entity out of range. The targets here are
+#       ordinary and simply carry a thousand health.
+#     * `freeze()` sets `difficulty peaceful`, which deletes a zombie the tick
+#       it appears. `start()` puts it back to normal.
+#     * It is noon in a frozen world, and a zombie in daylight burns. The clock
+#       goes to midnight for this scenario, or the damage read back is a fire.
+#
+#   `NoAI` is what keeps the target where it was put: a mob with no AI does not
+#   walk, so the distance in the table is the distance the game measured.
 
 DAMAGE_DISTANCES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 DAMAGE_HEALTH = 1000.0
@@ -359,41 +369,46 @@ def measure_damage(out: Path, trials: int) -> None:
     result: dict = {"trials": trials, "health": DAMAGE_HEALTH, "power": 4,
                     "distances": DAMAGE_DISTANCES}
     try:
+        server.batch(["time set midnight", "gamerule doFireTick false"])
         forceload(server, -48, -48, 48, 48)
         fill(server, -40, y - 1, -40, 40, y - 1, 40, "minecraft:barrier")
         fill(server, -40, y, -40, 40, y + 6, 40, "minecraft:air")
-        samples = {d: [] for d in DAMAGE_DISTANCES}
-        knock = {d: [] for d in DAMAGE_DISTANCES}
+        damage = {d: [] for d in DAMAGE_DISTANCES}
+        motion = {d: [] for d in DAMAGE_DISTANCES}
         for trial in range(trials):
             server.batch(["kill @e[type=minecraft:zombie]"])
             summons = []
             for d in DAMAGE_DISTANCES:
                 summons.append(
                     f"summon minecraft:zombie {d}.0 {y}.0 0.0 "
-                    "{Tags:[\"blast\"],NoAI:1b,PersistenceRequired:1b,Silent:1b,"
-                    f"Health:{DAMAGE_HEALTH}f,"
-                    "Attributes:[{Name:\"generic.max_health\",Base:"
-                    f"{DAMAGE_HEALTH}"
-                    "}],CustomName:'{\"text\":\"d" + str(d) + "\"}'}")
+                    f'{{Tags:["d{d}"],NoAI:1b,Silent:1b,IsBaby:0b,'
+                    f"PersistenceRequired:1b,Health:{DAMAGE_HEALTH}f,"
+                    f'Attributes:[{{Name:"generic.max_health",Base:{DAMAGE_HEALTH}}}]}}')
             server.batch(summons)
             wait_ticks(server, 4)
-            server.batch([f"summon minecraft:tnt 0.5 {y}.0 0.5 "
+            server.batch([f"summon minecraft:tnt 0.0 {y}.0 0.0 "
                           "{Fuse:0,NoGravity:1b,Motion:[0.0,0.0,0.0]}"])
-            wait_ticks(server, 3)
+            wait_ticks(server, 2)
             for d in DAMAGE_DISTANCES:
-                lines = server.batch([
-                    "data get entity @e[type=minecraft:zombie,limit=1,sort=nearest,"
-                    f"x={d}.0,y={y}.0,z=0.0,distance=..1.5] Health"])
-                for line in lines:
-                    m = re.search(r"following entity data: ([0-9.]+)", line)
-                    if m:
-                        samples[d].append(round(DAMAGE_HEALTH - float(m.group(1)), 4))
+                selector = f"@e[type=minecraft:zombie,tag=d{d},limit=1]"
+                for line in server.batch([f"data get entity {selector} Health"]):
+                    match = re.search(r"following entity data: ([0-9.]+)", line)
+                    if match:
+                        damage[d].append(round(DAMAGE_HEALTH - float(match.group(1)), 4))
+                for line in server.batch([f"data get entity {selector} Motion"]):
+                    match = re.search(r"following entity data: \[(.*)\]", line)
+                    if match:
+                        motion[d].append([float(v.strip().rstrip("d"))
+                                          for v in match.group(1).split(",")])
             print(f"  trial {trial + 1}/{trials}: "
-                  + " ".join(f"{d}:{samples[d][-1] if samples[d] else '-'}"
+                  + " ".join(f"{d}:{damage[d][-1] if damage[d] else '-'}"
                              for d in DAMAGE_DISTANCES))
-            server.batch(["kill @e[type=minecraft:zombie]"])
-        result["damage"] = {str(d): samples[d] for d in DAMAGE_DISTANCES}
-        result["knockback"] = {str(d): knock[d] for d in DAMAGE_DISTANCES}
+        result["damage"] = {str(d): damage[d] for d in DAMAGE_DISTANCES}
+        result["motion"] = {str(d): motion[d] for d in DAMAGE_DISTANCES}
+        for d in DAMAGE_DISTANCES:
+            if damage[d]:
+                print(f"  {d:3d} blocs : degats {sorted(set(damage[d]))} "
+                      f"recul {motion[d][0] if motion[d] else '-'}")
     finally:
         server.stop()
     with open(out, "w") as f:
@@ -401,47 +416,57 @@ def measure_damage(out: Path, trials: int) -> None:
 
 
 # ── scenario: drops ─────────────────────────────────────────────────────────
+#
+# What share of what a charge breaks it gives back.
+#
+# Counting item **entities** would undercount: dropped stone merges into stacks
+# of up to 64 within a tick, and "Killed 7 entities" is then seven stacks and
+# not seven stones. The count goes through a scoreboard, summing `Item.Count`
+# over every item entity — which is the number the yield is a ratio of.
 
 
 def measure_drops(out: Path, trials: int) -> None:
     y = BENCH_Y
-    check_y(y - 4)
+    check_y(y - 5)
     server, world = start("drops")
     result: dict = {"trials": trials}
     try:
         forceload(server, -48, -48, 48, 48)
-        server.batch(["gamerule doTileDrops true"])
+        server.batch(["gamerule doTileDrops true",
+                      "scoreboard objectives add blast dummy"])
         broken, dropped = [], []
         for trial in range(trials):
-            fill(server, -6, y - 4, -6, 6, y + 4, 6, "minecraft:stone")
             server.batch(["kill @e[type=minecraft:item]"])
+            fill(server, -8, y - 5, -8, 8, y + 5, 8, "minecraft:stone")
             server.batch([f"summon minecraft:tnt 0.5 {y}.0 0.5 "
                           "{Fuse:0,NoGravity:1b,Motion:[0.0,0.0,0.0]}"])
             wait_ticks(server, 20)
-            lines = server.batch(["execute store result score #n blast run "
-                                  "data get entity @e[type=minecraft:item,limit=1] Item.Count",
-                                  "scoreboard objectives add blast dummy"])
-            # Counting items is done the blunt way: kill them and read how many
-            # the console says it removed.
-            killed = server.batch(["kill @e[type=minecraft:item]"])
-            count = 0
-            for line in killed:
-                m = re.search(r"Killed (\d+) entities", line)
-                if m:
-                    count = int(m.group(1))
-                if "Killed " in line and "entities" not in line:
-                    count = 1
+            count = None
+            lines = server.batch([
+                "execute as @e[type=minecraft:item] store result score @s blast "
+                "run data get entity @s Item.Count",
+                "scoreboard players set #total blast 0",
+                "execute as @e[type=minecraft:item] run "
+                "scoreboard players operation #total blast += @s blast",
+                "scoreboard players get #total blast"])
+            for line in lines:
+                match = re.search(r"\[#total\] has (\d+) ", line)
+                if match:
+                    count = int(match.group(1))
+            server.batch(["kill @e[type=minecraft:item]"])
             save(server)
-            cells = [(dx, y + dy, dz) for dy in range(-4, 5)
-                     for dz in range(-6, 7) for dx in range(-6, 7)]
+            cells = [(dx, y + dy, dz) for dy in range(-5, 6)
+                     for dz in range(-8, 9) for dx in range(-8, 9)]
             states = read_states(world, cells)
-            gone = sum(1 for s in states if name_of(s) != "minecraft:stone")
-            broken.append(gone - 1)   # the charge's own cell was never stone
+            gone = sum(1 for state in states if name_of(state) != "minecraft:stone")
+            broken.append(gone)
             dropped.append(count)
-            print(f"  trial {trial + 1}/{trials}: broke {gone - 1}, dropped {count}")
+            print(f"  trial {trial + 1}/{trials}: broke {gone}, dropped {count}")
         result["broken"] = broken
         result["dropped"] = dropped
-        total_b, total_d = sum(broken), sum(dropped)
+        pairs = [(b, d) for b, d in zip(broken, dropped) if d is not None]
+        total_b = sum(b for b, _ in pairs)
+        total_d = sum(d for _, d in pairs)
         result["yield"] = round(total_d / total_b, 4) if total_b else None
         print(f"  {total_d}/{total_b} = {result['yield']}")
     finally:
