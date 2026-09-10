@@ -35,6 +35,7 @@ ov_add_library(ov_render
         src/environment.cpp
         src/font.cpp
         src/chunk_mesher.cpp
+        src/creative_tabs.cpp
         src/frustum.cpp
         src/item_model.cpp
         src/block_state_model.cpp
@@ -70,6 +71,7 @@ ov_add_test(test_ov_render
         tests/test_environment.cpp
         tests/test_font.cpp
         tests/test_chunk_mesher.cpp
+        tests/test_creative_tabs.cpp
         tests/test_frustum.cpp
         tests/test_mesher.cpp
         tests/test_item_model.cpp

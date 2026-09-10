@@ -6,6 +6,7 @@ ov_add_library(ov_client
     LAYER 15
     SOURCES
         src/container_screen.cpp
+        src/creative_screen.cpp
         src/entity_renderer.cpp
         src/gui.cpp
         src/hud.cpp
@@ -26,6 +27,7 @@ ov_add_library(ov_client
 # drawing.
 ov_add_test(test_ov_client
     SOURCES
+        tests/test_creative_screen.cpp
         tests/test_interface.cpp
     DEPS ov_client
     LABELS unit

@@ -30,6 +30,7 @@
 #include <expected>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -226,7 +227,12 @@ public:
     /// Slot 36 is the first of the hotbar in the player's own window; the
     /// hotbar is slots 36 to 44 and not 0 to 8, which is the mistake this
     /// comment exists to stop.
-    void send_creative_slot(i16 slot, i32 item_id, i8 count);
+    /// The stack's NBT is carried through untouched, exactly as the Slot
+    /// encoder expects it: TAG_Compound, an empty name, the payload. A potion
+    /// or an enchanted book without it is a *different item* — the same id
+    /// with none of its meaning — so the creative screen needs the overload
+    /// rather than the short one.
+    void send_creative_slot(i16 slot, i32 item_id, i8 count, std::span<const u8> nbt = {});
 
     /// Click inside an open window, in the protocol's own terms.
     ///

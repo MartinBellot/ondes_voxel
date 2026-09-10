@@ -146,6 +146,46 @@ std::expected<std::unique_ptr<Interface>, std::string> Interface::create(
                     render::to_string(language.error()));
     }
 
+    // ── The creative catalogue ──────────────────────────────────────────────
+    //
+    // Refused and named when it is missing rather than replaced by a guess.
+    // The order of the tabs is Mojang's and there is no way to state it here:
+    // see docs/provenance/inventaire-creatif.md.
+    auto tabs = render::CreativeTabs::load(options.creative_tabs);
+    if (tabs) {
+        usize cells = 0;
+        for (const render::CreativeTab& tab : tabs->tabs()) {
+            cells += tab.stacks.size();
+        }
+        OV_LOG_INFO("interface: creative catalogue {} — {} tabs, {} cells",
+                    options.creative_tabs, tabs->tabs().size(), cells);
+        self->creative_tabs_ = std::move(*tabs);
+
+        for (const std::string_view location :
+             {"minecraft:gui/container/creative_inventory/tabs",
+              "minecraft:gui/container/creative_inventory/tab_items",
+              "minecraft:gui/container/creative_inventory/tab_item_search",
+              "minecraft:gui/container/creative_inventory/tab_inventory"}) {
+            auto handle = sheet(location);
+            if (!handle) {
+                OV_LOG_WARN("{}", handle.error());
+                continue;
+            }
+            if (location.ends_with("/tabs")) {
+                self->creative_sheet_ = *handle;
+            } else {
+                self->backgrounds_.emplace_back(std::string(location), *handle);
+            }
+        }
+        if (self->creative_sheet_ != client::GuiTexture::Invalid) {
+            self->creative_screen_.emplace(*self->creative_tabs_, self->language_);
+        }
+    } else {
+        OV_LOG_WARN("creative catalogue {}: {}. The creative inventory is refused; "
+                    "generate it with scripts/measure_creative_tabs.py.",
+                    options.creative_tabs, render::to_string(tabs.error()));
+    }
+
     self->inventory_.assign(kPlayerSlots, net::ItemStack{});
     self->views_.reserve(128);
     return self;
@@ -319,6 +359,100 @@ void Interface::note_creative(i16 slot, i32 item_id, i8 count) {
     refresh_hotbar();
 }
 
+// ── The creative inventory ──────────────────────────────────────────────────
+
+void Interface::toggle_creative(client::Window& window, netclient::Client& client) {
+    if (creative_visible_) {
+        creative_visible_ = false;
+        creative_scrolling_ = false;
+        window.set_cursor_captured(true);
+        return;
+    }
+    if (!creative_screen_) {
+        OV_LOG_WARN("no creative catalogue loaded; the screen is refused");
+        return;
+    }
+    if (!hud_.creative) {
+        // Not a cosmetic guard. A survival server *ignores* Set Creative Slot
+        // — vanilla's own behaviour, measured — so the screen would be a
+        // catalogue that hands out nothing and looks broken.
+        OV_LOG_INFO("the creative inventory needs creative mode; the server is in survival");
+        return;
+    }
+    if (screen_) {
+        close(window, client);
+    }
+    creative_visible_ = true;
+    window.set_cursor_captured(false);
+}
+
+bool Interface::select_creative_tab(std::string_view id) {
+    return creative_screen_ && creative_screen_->select(id);
+}
+
+void Interface::creative_search(std::string_view text) {
+    if (!creative_screen_) {
+        return;
+    }
+    (void)creative_screen_->select("minecraft:search");
+    creative_screen_->type(text);
+}
+
+bool Interface::creative_take(i32 cell) {
+    if (!creative_screen_) {
+        return false;
+    }
+    const render::CreativeStack* stack = creative_screen_->cell(cell);
+    if (stack == nullptr) {
+        return false;
+    }
+    if (registries_ == nullptr || !item_registry_) {
+        OV_LOG_WARN("no item registry; {} cannot be named to the server", stack->item);
+        return false;
+    }
+    const auto id = registries_->protocol_id(*item_registry_, stack->item);
+    if (!id) {
+        // Refused and named. An item the registry does not know has no wire id
+        // and sending zero would hand the player air.
+        OV_LOG_WARN("creative: {} is not in minecraft:item; refused", stack->item);
+        return false;
+    }
+    // A click takes a *full* stack, which is the item's own limit and not
+    // always 64: a bucket is 16 and a sword is 1.
+    carried_.item_id = static_cast<i32>(*id);
+    carried_.count   = registries_->max_stack_size(*id);
+    carried_.nbt.assign(stack->nbt.begin(), stack->nbt.end());
+    return true;
+}
+
+void Interface::creative_put(netclient::Client& client, i16 slot) {
+    if (slot < 0 || static_cast<usize>(slot) >= inventory_.size()) {
+        return;
+    }
+    client.send_creative_slot(slot, carried_.item_id, carried_.count, carried_.nbt);
+    inventory_[static_cast<usize>(slot)] = carried_;
+    refresh_hotbar();
+    carried_ = net::ItemStack{};
+}
+
+std::string Interface::describe_creative() const {
+    if (!creative_screen_) {
+        return "no creative catalogue";
+    }
+    const client::CreativeScreen& screen = *creative_screen_;
+    std::string out = fmt::format("creative tab {} \"{}\" ({} cells, row {}/{})", screen.tab().id,
+                                  language_.translate(screen.tab().translation_key),
+                                  screen.page().size(), screen.scroll_row(),
+                                  screen.scroll_range());
+    for (i32 i = 0; i < client::creative_layout::kPageCells; ++i) {
+        const render::CreativeStack* stack = screen.cell(i);
+        if (stack != nullptr) {
+            out += fmt::format("\n  cell {:2}  {}", i, stack->item);
+        }
+    }
+    return out;
+}
+
 u8 Interface::window_id() const noexcept {
     return screen_ && !own_inventory_ ? screen_->window_id() : u8{0};
 }
@@ -362,8 +496,20 @@ bool Interface::update(const client::InputState& input, netclient::Client& clien
     mouse_y_        = static_cast<f32>(input.mouse_y) / scale;
 
     if (input.just_pressed(client::Key::Inventory)) {
-        toggle_inventory(window, client);
+        // E opens the creative inventory in creative and the player's own
+        // inventory otherwise, which is what vanilla binds it to. The creative
+        // screen already refuses itself in survival, so this is one branch and
+        // not two rules that can disagree.
+        if (hud_.creative && creative_screen_ && !screen_) {
+            toggle_creative(window, client);
+        } else {
+            toggle_inventory(window, client);
+        }
         return true;
+    }
+
+    if (creative_visible_) {
+        return update_creative(input, client, window);
     }
 
     if (!screen_) {
@@ -484,6 +630,113 @@ bool Interface::update(const client::InputState& input, netclient::Client& clien
     return true;
 }
 
+bool Interface::update_creative(const client::InputState& input, netclient::Client& client,
+                                client::Window& window) {
+    client::CreativeScreen& screen = *creative_screen_;
+
+    if (input.just_pressed(client::Key::Escape)) {
+        toggle_creative(window, client);
+        return true;
+    }
+    if (!input.typed.empty()) {
+        screen.type(input.typed);
+    }
+    if (input.just_pressed(client::Key::Backspace)) {
+        screen.backspace();
+    }
+    if (input.scroll != 0.0) {
+        screen.scroll_by(static_cast<f32>(input.scroll));
+    }
+
+    const client::CreativeTarget target =
+        screen.hit_test(gui_->width(), gui_->height(), mouse_x_, mouse_y_);
+
+    // The scrollbar drag holds across frames, so it is answered before the
+    // press: a pointer that leaves the groove mid-drag still scrolls, which is
+    // what every scrollbar in the game does.
+    if (creative_scrolling_) {
+        screen.drag_scroll(gui_->height(), mouse_y_);
+        creative_scrolling_ = input.attack_held;
+        return true;
+    }
+
+    if (!input.attack_pressed && !input.use_pressed) {
+        return true;
+    }
+
+    switch (target.kind) {
+        case client::CreativeHit::Tab:
+            screen.select(static_cast<usize>(target.index));
+            return true;
+
+        case client::CreativeHit::Scrollbar:
+            creative_scrolling_ = true;
+            screen.drag_scroll(gui_->height(), mouse_y_);
+            return true;
+
+        case client::CreativeHit::Cell: {
+            if (!creative_take(target.index)) {
+                return true;
+            }
+            if (input.shift_held) {
+                // Shift-click puts the stack straight into the inventory: the
+                // first empty slot of the hotbar, then of the three rows. That
+                // is where vanilla's own quick-move ends up, and it is done
+                // here rather than asked of the server because Set Creative
+                // Slot names a slot and has no "anywhere" form.
+                for (usize slot = kHotbarFirst; slot < kOffHandSlot; ++slot) {
+                    if (inventory_[slot].empty()) {
+                        creative_put(client, static_cast<i16>(slot));
+                        return true;
+                    }
+                }
+                for (usize slot = 9; slot < kHotbarFirst; ++slot) {
+                    if (inventory_[slot].empty()) {
+                        creative_put(client, static_cast<i16>(slot));
+                        return true;
+                    }
+                }
+                // Full. Named rather than silently dropped: the stack stays on
+                // the cursor, which is what vanilla does too.
+                OV_LOG_INFO("creative: the inventory is full; the stack stays on the cursor");
+            }
+            return true;
+        }
+
+        case client::CreativeHit::PlayerSlot:
+            if (carried_.empty()) {
+                // Picking a slot's contents back up. Its own Set Creative Slot
+                // with an empty stack, or the server keeps the copy.
+                const auto index = static_cast<usize>(target.index);
+                if (index < inventory_.size() && !inventory_[index].empty()) {
+                    carried_ = inventory_[index];
+                    client.send_creative_slot(static_cast<i16>(index), 0, 0, {});
+                    inventory_[index] = net::ItemStack{};
+                    refresh_hotbar();
+                }
+            } else {
+                creative_put(client, static_cast<i16>(target.index));
+            }
+            return true;
+
+        case client::CreativeHit::Destroy:
+            carried_ = net::ItemStack{};
+            return true;
+
+        case client::CreativeHit::SearchField:
+        case client::CreativeHit::None:
+            break;
+    }
+
+    // Outside every cell with a full cursor: the stack is dropped, which in
+    // creative means it simply stops existing. No packet: the server never had
+    // it, because a cell of the catalogue is not a slot.
+    if (target.kind == client::CreativeHit::None && !carried_.empty()) {
+        carried_ = net::ItemStack{};
+    }
+    return true;
+}
+
 void Interface::draw(rhi::CommandList& cmd, u32 framebuffer_width, u32 framebuffer_height) {
     const u32 scale =
         options_.gui_scale != 0
@@ -493,6 +746,33 @@ void Interface::draw(rhi::CommandList& cmd, u32 framebuffer_width, u32 framebuff
 
     if (options_.hud) {
         client::draw_hud(*gui_, *items_, textures_, hud_);
+    }
+
+    if (creative_visible_ && creative_screen_) {
+        client::draw_screen_dim(*gui_);
+        build_views(inventory_);
+        const client::CreativeTarget hovered =
+            creative_screen_->hit_test(gui_->width(), gui_->height(), mouse_x_, mouse_y_);
+        client::GuiTexture background = client::GuiTexture::Invalid;
+        for (const auto& [location, handle] : backgrounds_) {
+            if (location == creative_screen_->background_texture()) {
+                background = handle;
+            }
+        }
+        if (background != client::GuiTexture::Invalid) {
+            creative_screen_->draw(*gui_, *items_, background, creative_sheet_, views_, hovered);
+            const std::string_view name = creative_screen_->hovered_name(hovered, views_);
+            if (!name.empty()) {
+                (void)gui_->text(mouse_x_ + 8.0F, mouse_y_ - 12.0F, name);
+            }
+        }
+        if (!carried_.empty()) {
+            const client::ItemStackView held{item_name(carried_.item_id), carried_.count};
+            items_->draw(*gui_, mouse_x_ - 8.0F, mouse_y_ - 8.0F, held);
+            items_->draw_count(*gui_, mouse_x_ - 8.0F, mouse_y_ - 8.0F, held);
+        }
+        gui_->flush(cmd);
+        return;
     }
 
     if (screen_ && background_ != client::GuiTexture::Invalid) {
