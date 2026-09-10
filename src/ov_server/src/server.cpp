@@ -1738,9 +1738,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // Half the overworld's workers when it generates too; the machine's
         // recommendation when the overworld is a superflat that needs none.
         // One worker filled 16 chunks in four seconds after a crossing.
+        // Two at least: with one, the chunks round a new portal took longer
+        // than a minute to arrive in a Debug build beside a generating
+        // overworld (`--ours`, 2026-09-10).
         const usize workers = generation_workers == 0
                                   ? std::max<usize>(1, recommended_worker_count())
-                                  : std::max<usize>(1, generation_workers / 2);
+                                  : std::max<usize>(2, generation_workers / 2);
         nether = NetherWorld::open(level_dir, data_dir, *blocks, *registries, biome_names,
                                    codec_context, level_settings.seed, workers, std::move(hooks));
         return nether != nullptr;
@@ -6052,7 +6055,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 }
             }
             if (!entrance) {
-                // Stepped out while the chunks were on their way.
+                // Stepped out while the chunks were on their way. Said, and not
+                // silently: a crossing that vanishes looks exactly like one that
+                // never started.
+                if (who.crossing_ticks > 0) {
+                    OV_LOG_INFO("{} left the portal after {} ticks waiting for the chunks round "
+                                "the destination; the crossing is dropped",
+                                who.name, who.crossing_ticks);
+                }
                 return true;
             }
 
@@ -6089,6 +6099,11 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     }
                 }
                 if (!ready) {
+                    if (who.crossing_ticks == 0) {
+                        OV_LOG_INFO("{}: waiting for the chunks round ({}, {}, {}) in {} before "
+                                    "building a portal there",
+                                    who.name, target.x, target.y, target.z, to_info.name);
+                    }
                     to_map.set_ticket(world::TicketType::Transient, static_cast<u64>(who.entity_id),
                                       ChunkPos{target.x >> 4, target.z >> 4},
                                       world::LoadLevel::for_view_distance(2));
