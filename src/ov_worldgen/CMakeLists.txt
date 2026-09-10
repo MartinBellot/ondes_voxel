@@ -8,6 +8,7 @@
 ov_add_library(ov_worldgen
     LAYER 10
     SOURCES
+        src/aquifer.cpp
         src/biome_source.cpp
         src/carver.cpp
         src/carving_mask.cpp
@@ -38,6 +39,7 @@ ov_add_library(ov_worldgen
 
 ov_add_test(test_ov_worldgen
     SOURCES
+        tests/test_aquifer.cpp
         tests/test_biome_source.cpp
         tests/test_carver.cpp
         tests/test_chunk_generator.cpp

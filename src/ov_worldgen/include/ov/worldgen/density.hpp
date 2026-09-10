@@ -114,6 +114,9 @@ public:
     [[nodiscard]] const BlendedNoise* blended_noise() const noexcept;
 
     [[nodiscard]] i32 sea_level() const noexcept;
+    /// The world seed this router was loaded with. The aquifer forks its own
+    /// positional factory from it, from the same root the noises use.
+    [[nodiscard]] i64 seed() const noexcept;
     [[nodiscard]] i32 min_y() const noexcept;
     [[nodiscard]] i32 height() const noexcept;
     /// Cell size in blocks: horizontal and vertical. The terrain is sampled on

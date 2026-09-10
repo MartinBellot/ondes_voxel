@@ -305,6 +305,67 @@ void report(const Arm& arm, i32 show) {
     }
 }
 
+// ── the aquifer arm ─────────────────────────────────────────────────────────
+//
+// Every cell of every generated chunk, sorted into four classes — air, water,
+// lava, solid — ours against the game's, with the aquifer on and off. The
+// class and not the block, because what the aquifer decides is exactly the
+// class: it never chooses between stone and dirt.
+
+/// The four classes, in this order: air, water, lava, solid.
+///
+/// Ice and the plants that grow in water are water for this purpose: they are
+/// what a later stage made of a water cell (the freeze, the seagrass), and
+/// counting them as solid is how an ice sheet becomes a terrain error (see
+/// docs/provenance — "la glace n'est pas du terrain"). Snow layers are air for
+/// the same reason on the other side.
+[[nodiscard]] usize fluid_class(std::string_view name) {
+    if (name == "minecraft:air" || name == "minecraft:cave_air" || name == "minecraft:void_air" ||
+        name == "minecraft:snow") {
+        return 0;
+    }
+    if (name == "minecraft:water" || name == "minecraft:ice" ||
+        name == "minecraft:bubble_column" || name == "minecraft:seagrass" ||
+        name == "minecraft:tall_seagrass" || name == "minecraft:kelp" ||
+        name == "minecraft:kelp_plant") {
+        return 1;
+    }
+    if (name == "minecraft:lava") {
+        return 2;
+    }
+    return 3;
+}
+
+struct ClassArm {
+    std::string                                 name;
+    std::array<std::array<usize, 4>, 4>         table{};
+    /// The same, below the sea level only, where the aquifer has its say.
+    std::array<std::array<usize, 4>, 4>         below_sea{};
+};
+
+void report(const ClassArm& arm) {
+    static constexpr std::array<std::string_view, 4> kNames{"air", "water", "lava", "solid"};
+    const auto print = [](const std::array<std::array<usize, 4>, 4>& table, std::string_view what) {
+        usize total = 0;
+        usize agree = 0;
+        fmt::print("  {}\n    {:>12} {:>10} {:>10} {:>10} {:>10}\n", what, "game \\ ours",
+                   kNames[0], kNames[1], kNames[2], kNames[3]);
+        for (usize t = 0; t < 4; ++t) {
+            fmt::print("    {:>12} {:>10} {:>10} {:>10} {:>10}\n", kNames[t], table[t][0],
+                       table[t][1], table[t][2], table[t][3]);
+            for (usize o = 0; o < 4; ++o) {
+                total += table[t][o];
+                agree += t == o ? table[t][o] : 0;
+            }
+        }
+        fmt::print("    agreement {} / {} = {:.3f} %\n", agree, total,
+                   total == 0 ? 0.0 : 100.0 * static_cast<f64>(agree) / static_cast<f64>(total));
+    };
+    fmt::print("\n{}\n", arm.name);
+    print(arm.table, "every cell of every generated chunk");
+    print(arm.below_sea, "cells below the sea level (y < 63)");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -365,6 +426,25 @@ int main(int argc, char** argv) {
     }
     after.set_carve_before_surface(false);
     before.set_carve_before_surface(true);
+
+    // ── the aquifer arm: the game's order, with the aquifer switched off ──
+    worldgen::ChunkGenerator dry{*router, *biomes, *blocks};
+    dry.set_surface_system(&*surface);
+    if (auto attached = dry.set_carvers(&carvers, *registries); !attached) {
+        OV_LOG_ERROR("carvers: {}", worldgen::to_string(attached.error()));
+        return 1;
+    }
+    dry.set_carve_before_surface(false);
+    dry.set_aquifer_enabled(false);
+    ClassArm class_on;
+    class_on.name = "classes, aquifer on  (the generator as it ships)";
+    ClassArm class_off;
+    class_off.name = "classes, aquifer off (global fluid rule, carvers cut to air)";
+    usize class_paired      = 0;
+    usize class_only_on     = 0;
+    usize class_only_off    = 0;
+    usize class_neither     = 0;
+    std::map<std::string, usize> class_changes;
 
     Arm arm_before;
     arm_before.name = "before — noise + carvers, then biomes, then surface (stone cut only)";
@@ -444,6 +524,45 @@ int main(int argc, char** argv) {
             world::Chunk         chunk_before{position, shape, air, &*blocks};
             after.generate(chunk_after);
             before.generate(chunk_before);
+
+            // ── the aquifer arm ──
+            world::Chunk chunk_dry{position, shape, air, &*blocks};
+            dry.generate(chunk_dry);
+            for (i32 cz = 0; cz < 16; ++cz) {
+                for (i32 cx = 0; cx < 16; ++cx) {
+                    for (i32 y = shape.min_y; y <= shape.max_y(); ++y) {
+                        const std::string_view theirs = normalise(reference.block(cx, y, cz));
+                        if (theirs.empty()) {
+                            continue;
+                        }
+                        const auto  ax     = static_cast<usize>(cx);
+                        const auto  az     = static_cast<usize>(cz);
+                        const usize game   = fluid_class(theirs);
+                        const usize on     = fluid_class(our_name(chunk_after.get_block(ax, y, az)));
+                        const usize off    = fluid_class(our_name(chunk_dry.get_block(ax, y, az)));
+                        ++class_on.table[game][on];
+                        ++class_off.table[game][off];
+                        if (y < 63) {
+                            ++class_on.below_sea[game][on];
+                            ++class_off.below_sea[game][off];
+                        }
+                        if (on != off) {
+                            ++class_paired;
+                            static constexpr std::array<std::string_view, 4> kClass{
+                                "air", "water", "lava", "solid"};
+                            ++class_changes[fmt::format("game {:<5}  off {:<5} -> on {:<5}",
+                                                        kClass[game], kClass[off], kClass[on])];
+                            if (on == game && off != game) {
+                                ++class_only_on;
+                            } else if (off == game && on != game) {
+                                ++class_only_off;
+                            } else if (on != game && off != game) {
+                                ++class_neither;
+                            }
+                        }
+                    }
+                }
+            }
 
             for (i32 cz = 0; cz < 16; ++cz) {
                 for (i32 cx = 0; cx < 16; ++cx) {
@@ -530,6 +649,31 @@ int main(int argc, char** argv) {
                    paired_only_before, percent(paired_only_before));
         fmt::print("  neither matches:                   {:>9}  ({:6.3f} %)\n", paired_neither,
                    percent(paired_neither));
+    }
+
+    // ── the aquifer arm, reported ──
+    report(class_off);
+    report(class_on);
+    fmt::print("\npaired: cells whose class the aquifer changed\n");
+    if (class_paired == 0) {
+        fmt::print("  none — switching the aquifer off changed nothing on this sample\n");
+    } else {
+        const auto percent = [&](usize part) {
+            return 100.0 * static_cast<f64>(part) / static_cast<f64>(class_paired);
+        };
+        fmt::print("  cells the aquifer changed:         {:>9}\n", class_paired);
+        fmt::print("  only the aquifer matches the game: {:>9}  ({:6.3f} %)\n", class_only_on,
+                   percent(class_only_on));
+        fmt::print("  only the global rule matches:      {:>9}  ({:6.3f} %)\n", class_only_off,
+                   percent(class_only_off));
+        fmt::print("  neither matches:                   {:>9}  ({:6.3f} %)\n", class_neither,
+                   percent(class_neither));
+        std::vector<std::pair<std::string, usize>> sorted(class_changes.begin(),
+                                                          class_changes.end());
+        std::ranges::sort(sorted, [](const auto& a, const auto& b) { return a.second > b.second; });
+        for (usize i = 0; i < sorted.size() && i < 12; ++i) {
+            fmt::print("    {:>9}  {}\n", sorted[i].second, sorted[i].first);
+        }
     }
     return 0;
 }

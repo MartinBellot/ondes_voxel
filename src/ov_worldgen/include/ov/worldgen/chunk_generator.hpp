@@ -22,21 +22,30 @@
 // (1200/1200 chunks, see docs/provenance/carvers.md). What moved is when it is
 // applied, not how it is computed.
 //
-// Still missing, and named rather than silently absent: the aquifer, which is
-// what decides that a carved cell under the sea stays water instead of becoming
-// air, and the features.
+// What fills a block the terrain left empty is the aquifer's answer, in both
+// stages that leave blocks empty: the noise stage asks it with the terrain's
+// density, the carvers ask it with a density of zero. A carved cell under an
+// aquifer's level fills with its fluid, and a carved cell on a barrier is not
+// carved at all (aquifer.hpp; docs/provenance/aquiferes.md § 10).
+//
+// Still missing, and named rather than silently absent: the features, which
+// live in the pipeline, and the hand-off of the fluids the aquifer wants woken
+// to a level's tick queue — they are collected here, not yet delivered.
 #pragma once
 
 #include "ov/base/types.hpp"
+#include "ov/math/block_pos.hpp"
 #include "ov/registry/block_states.hpp"
 #include "ov/registry/registries.hpp"
 #include "ov/world/chunk.hpp"
+#include "ov/worldgen/aquifer.hpp"
 #include "ov/worldgen/biome_source.hpp"
 #include "ov/worldgen/carver.hpp"
 #include "ov/worldgen/density.hpp"
 #include "ov/worldgen/surface_system.hpp"
 
 #include <expected>
+#include <memory>
 #include <string_view>
 #include <vector>
 
@@ -75,7 +84,10 @@ public:
     /// Exactly the four stages below, run in order. Kept as one call because
     /// almost every caller wants all four, and because a caller that has no
     /// notion of a chunk status should not have to learn one.
-    void generate(world::Chunk& chunk) const;
+    ///
+    /// `fluid_updates`, when given, receives every fluid block the aquifer
+    /// wants woken once the chunk exists — the game's post-processing marks.
+    void generate(world::Chunk& chunk, std::vector<BlockPos>* fluid_updates = nullptr) const;
 
     // ── The stages, individually ────────────────────────────────────────────
     //
@@ -89,8 +101,10 @@ public:
     // and the position, which is why the pipeline's radius is zero up to the
     // carvers and one only at the features.
 
-    /// Stone, water, lava, air — and nothing cut. Reads no biome.
-    void generate_noise(world::Chunk& chunk) const;
+    /// Stone, water, lava, air — and nothing cut. Reads no biome. What fills
+    /// an empty block is the aquifer's answer, barrier stone included.
+    void generate_noise(world::Chunk& chunk,
+                        std::vector<BlockPos>* fluid_updates = nullptr) const;
 
     /// The 4x4x4 biome grid. Reads no block.
     ///
@@ -106,7 +120,25 @@ public:
     /// The carving mask, applied to what the surface rules left. A no-op when
     /// no carvers are attached, and a no-op in the legacy order, where the
     /// cutting has already happened inside the noise stage.
-    void generate_carvers(world::Chunk& chunk) const;
+    void generate_carvers(world::Chunk& chunk,
+                          std::vector<BlockPos>* fluid_updates = nullptr) const;
+
+    /// The aquifer this generator asks, or nullptr when it has none. Built
+    /// from the router and its seed at construction; exposed for harnesses.
+    [[nodiscard]] const Aquifer* aquifer() const noexcept { return aquifer_.get(); }
+
+    /// Switch the aquifer off, so the global fluid rule decides alone and the
+    /// carvers cut to air — the behaviour before the aquifer existed.
+    ///
+    /// A measuring instrument, like `set_carve_before_surface`: the before and
+    /// the after have to come out of one binary on one sample. Defaults to on,
+    /// or to what `OV_AQUIFER` said at construction (`OV_AQUIFER=0` is off).
+    void set_aquifer_enabled(bool enabled) noexcept { use_aquifer_ = enabled; }
+
+    /// Whether the aquifer is actually answering: attached, fully built, on.
+    [[nodiscard]] bool aquifer_active() const noexcept {
+        return use_aquifer_ && aquifer_ != nullptr && aquifer_->enabled();
+    }
 
     /// Give the generator the surface rules, so a generated chunk gets grass,
     /// dirt, sand, gravel, snow, the desert's sandstone, the badlands' clay
@@ -187,7 +219,11 @@ public:
 private:
     /// Apply an already-computed carving mask to a chunk whose surface has been
     /// built. Split out because it is the stage this file is about.
-    void apply_carving(world::Chunk& chunk, const CarvingMask& mask, i32 lava_level) const;
+    void apply_carving(world::Chunk& chunk, const CarvingMask& mask, i32 lava_level,
+                       AquiferSampler* aquifer, std::vector<BlockPos>* fluid_updates) const;
+
+    /// The block an aquifer answer puts down.
+    [[nodiscard]] registry::BlockStateId state_of(Substance substance) const noexcept;
 
     const NoiseRouter*             router_;
     const BiomeSource*             biomes_;
@@ -219,22 +255,25 @@ private:
     /// world; it is a measuring instrument.
     bool carve_before_surface_{false};
 
-    /// Whether a carved cell that currently holds a fluid is emptied.
+    /// Whether a carved cell that currently holds a fluid is carved at all.
     ///
-    /// On, because the tag says so — `minecraft:water` is a member — and
-    /// because it measures better, which is the part that settled it. The
-    /// reasoning said the opposite: the game asks the aquifer, we have none,
-    /// so emptying carved water should drain sea beds the game kept full. The
-    /// measurement disagreed. Our noise stage fills *every* non-solid cell
-    /// below the sea level with water, so a dry cave under dry land comes out
-    /// flooded; cutting the fluid fixes far more of those than it breaks under
-    /// the sea. Cave interiors: 70,53 % with fluids spared, **73,50 %** with
-    /// them cut, walls identical to the block. See
-    /// docs/provenance/ordre-des-etages.md § 5.
+    /// On, because the tag says so — `minecraft:water` is a member. What a
+    /// carved cell becomes is no longer decided here: with the aquifer active
+    /// it is the aquifer's answer for a density of zero, so carved water under
+    /// a sea bed usually comes back as water rather than being drained. The
+    /// measurement that first settled this (cave interiors 70,53 % spared,
+    /// 73,50 % cut, docs/provenance/ordre-des-etages.md § 5) was taken without
+    /// an aquifer, when "carved" meant "air"; it predates
+    /// docs/provenance/aquiferes.md § 10.
     ///
-    /// `OV_CARVE_FLUIDS=0` puts it back, so the question can be re-measured
-    /// when the aquifer lands and takes the decision away from here entirely.
+    /// `OV_CARVE_FLUIDS=0` puts the old choice back, as an instrument.
     bool carve_fluids_{true};
+
+    /// Seed-level half of the aquifer. Immutable after construction, so one
+    /// generator's aquifer is safe wherever the generator itself is; each
+    /// stage builds its own per-chunk sampler on top.
+    std::unique_ptr<const Aquifer> aquifer_;
+    bool                           use_aquifer_{true};
 
     i32 sea_level_{63};
 };
