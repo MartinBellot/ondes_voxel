@@ -1769,24 +1769,38 @@ def measure_tnt(out: Path) -> None:
         time.sleep(6.0)
 
         # ── the shape ───────────────────────────────────────────────────────
+        #
+        # ⚠ The box floats. The first run of this scenario centred it on the
+        #   superflat floor at y=-60, so the fill reached y=-66 — **below the
+        #   world**. `/fill` then failed outright, no box was ever built, and
+        #   every cell read back as "not the material": the run reported
+        #   obsidian fully destroyed by one stick of TNT, with a reach of
+        #   exactly the box's own half-width. The dirt cell was the tell — it
+        #   "survived" 399 blocks, which are the two natural dirt layers of the
+        #   superflat.
+        cy = Y + 8
         for index, material in enumerate(TNT_MATERIALS):
             cx = 200 + index * TNT_SPACING
-            fill(server, cx - TNT_HALF - 1, Y - TNT_UP - 1, -TNT_HALF - 1,
-                 cx + TNT_HALF + 1, Y + TNT_UP + 1, TNT_HALF + 1, material)
-            server.batch([f"setblock {cx} {Y} 0 minecraft:tnt replace"])
-            server.batch([f"setblock {cx + 1} {Y} 0 minecraft:redstone_block replace"])
+            # Its own tickets, per box: one forceload rectangle across five
+            # boxes runs past the 256-chunk cap and drops the far ones in
+            # silence.
+            forceload(server, cx - 32, -32, cx + 32, 32)
+            fill(server, cx - TNT_HALF - 1, cy - TNT_UP - 1, -TNT_HALF - 1,
+                 cx + TNT_HALF + 1, cy + TNT_UP + 1, TNT_HALF + 1, material)
+            server.batch([f"setblock {cx} {cy} 0 minecraft:tnt replace"])
+            server.batch([f"setblock {cx + 1} {cy} 0 minecraft:redstone_block replace"])
         # 80 ticks of fuse plus room for the blast and the falling entities.
         time.sleep(12.0)
         save(server)
 
         for index, material in enumerate(TNT_MATERIALS):
             cx = 200 + index * TNT_SPACING
-            cells = [(cx + dx, Y + dy, dz)
+            cells = [(cx + dx, cy + dy, dz)
                      for dy in range(-TNT_UP, TNT_UP + 1)
                      for dz in range(-TNT_HALF, TNT_HALF + 1)
                      for dx in range(-TNT_HALF, TNT_HALF + 1)]
             states = read_states(world, cells)
-            gone = [[c[0] - cx, c[1] - Y, c[2]]
+            gone = [[c[0] - cx, c[1] - cy, c[2]]
                     for c, s in zip(cells, states) if name_of(s) != material]
             # The furthest cell that gave way, by Chebyshev and by Euclid: the
             # two disagree, and which one the game uses is the question.

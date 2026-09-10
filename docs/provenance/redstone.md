@@ -549,8 +549,41 @@ Nommé plutôt que caché.
   sonne juste jusqu'à ce que quelqu'un joue un air.
   Reste non mesuré : les instruments de tête de mob (zombie, squelette…), qui
   viennent d'une tête posée **au-dessus** du note block et pas en dessous.
-- **TNT, rails, cible.** Non mesurés et non implémentés dans cette vague, sauf le
-  fait — mesuré ci-dessus — que la TNT distribuée explose.
+- **La TNT est mesurée mais pas implémentée.** La mèche vaut **80 ticks**, lue
+  sur le `Fuse` de l'entité amorcée et prise au maximum sur douze captures :
+  `80 80 80 79 79 78 78 77 77 77 76 76`, qui converge par en dessous exactement
+  comme le délai de la plaque (§11).
+
+  La forme de l'explosion l'est aussi. Une charge au centre d'une boîte pleine
+  d'un seul matériau, 15×11×15, allumée puis relue cellule par cellule :
+
+  | matériau | blocs détruits | portée (Chebyshev) |
+  |---|---|---|
+  | `obsidian` | 2 | 1 |
+  | `stone` | 26 | 1 |
+  | `oak_planks` | 30 | 2 |
+  | `dirt` | 216 | 4 |
+  | `glass` | 284 | 4 |
+
+  L'ordre est monotone en résistance au souffle, ce qui est le contrôle : une
+  campagne qui donnerait l'obsidienne plus fragile que le verre serait fausse
+  quel que soit le nombre.
+
+  Ce qui **manque** pour implémenter, et pourquoi ça n'a pas été fait ici : la
+  résistance au souffle n'est dans aucun rapport du data generator, et la
+  déduire des formes demanderait une boîte par bloc, soit 987 boîtes. Sans
+  table de résistance, l'algorithme de rayons rendrait une moitié de règle. La
+  mèche et les cinq formes restent comme oracle pour la vague suivante.
+
+  ⚠ Le premier passage de ce scénario a centré la boîte sur le sol du superflat
+  à y=−60, donc le `fill` descendait à y=−66 — **sous le monde**. La commande
+  échouait en entier, aucune boîte n'était construite, et chaque cellule se
+  lisait « pas le matériau » : le rapport annonçait l'obsidienne entièrement
+  détruite par un bâton de TNT, avec une portée valant exactement la
+  demi-largeur de la boîte. Le témoin qui l'a trahi est la cellule de terre, qui
+  « survivait » 399 blocs — les deux couches de terre naturelles du superflat.
+
+- **Rails et cible.** Non mesurés et non implémentés dans cette vague.
 - **Le distributeur choisit la première case pleine, pas une au hasard.** Vanilla
   tire au sort parmi les cases non vides. Reproduire le tirage demande le flux
   RNG de la machine, que ce projet ne porte pas encore sur un block entity. Dit
