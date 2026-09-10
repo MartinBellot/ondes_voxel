@@ -361,10 +361,10 @@ Nommé plutôt que passé sous silence :
 - **Le `moving_piston` et son block entity.** L'état stable après une poussée est
   mesuré et reproduit (tête posée, colonne déplacée) ; les deux ticks
   intermédiaires pendant lesquels vanilla pose un `moving_piston` ne le sont pas.
-- **Entonnoir, distributeur, dropper, note block, cible, rails.** Le modèle
-  d'alimentation les couvre (ils sont dans la table des consommateurs et leur
-  drapeau suit la puissance), mais leur *effet* — transférer un objet, tirer une
-  flèche, jouer une note — n'est pas implémenté et n'est pas mesuré.
+- **Cible et rails.** Le modèle d'alimentation les couvre (ils sont dans la
+  table des consommateurs et leur drapeau suit la puissance), mais leur *effet*
+  n'est pas implémenté et n'est pas mesuré. L'entonnoir, le distributeur, le
+  dropper et le note block, eux, le sont désormais : §§ 11 à 14.
 - **`minecraft:tripwire`.** Son `powered` est posé par une entité sur le fil et
   le signal ressort par le crochet ; ce n'est ni une source ni un consommateur.
   Nommé explicitement dans le test, qui échoue si un autre bloc rejoint la liste.
@@ -375,7 +375,190 @@ Nommé plutôt que passé sous silence :
 
 ---
 
-## 11. Reproduire
+## 11. Les interrupteurs : bouton et plaque de pression
+
+Le modèle de puissance pilotait correctement les deux, et **rien ne les
+relevait**. `Redstone::scheduled_tick` tombait dans `consumer_rule`, ne trouvait
+rien et rendait `false` : un bouton enfoncé restait enfoncé pour toujours,
+pendant que son tick de relâchement était vidé une fois par tick, chaque tick,
+sans effet. Un joueur qui tirait un levier voyait le fil s'allumer ; un joueur
+qui appuyait sur un bouton voyait le bouton coller.
+
+Ce ne sont pas des consommateurs. Rien autour d'un bouton ne décide de son état
+et `consumer_powered` répond faux pour les deux ; ce sont des **sources à
+minuterie**, et la minuterie est toute la règle.
+
+### Les durées, mesurées tick par tick
+
+Les deux constantes de `item_use.cpp` portaient un commentaire disant qu'elles
+n'avaient jamais été chronométrées. Elles le sont.
+
+Le banc n'est pas la console — un bouton ne s'enfonce que par un *use*, et la
+console ne peut rien utiliser. C'est un client sonde qui parle 763 et rien
+d'autre : il clique le bouton, et lit les deux `Block Update` de retour sur
+**l'horloge du serveur** (`Update Time` porte l'âge du monde en ticks), pas sur
+un chronomètre mural. La différence entre « environ une seconde » et 20.
+
+| Matériau | Ticks | Cellules |
+|---|---|---|
+| `stone_button`, `polished_blackstone_button` | **20** | 2/2 |
+| les onze boutons de bois (chêne → warped) | **30** | 11/11 |
+
+13 matériaux sur 13, aucun écart. Les littéraux du code étaient justes — ce qui
+vaut d'être su plutôt que supposé.
+
+### La plaque, et le tick de trop
+
+Sur le fil, les quinze plaques rendent **19** ticks (10 → **9** pour les deux
+plaques pondérées) alors que les treize boutons tombent tous sur un 20 ou un 30
+exact par la même méthode. Un biais qui n'apparaît que sur une famille n'est pas
+un biais, donc le nombre a été confirmé une seconde fois, sans aucune mesure
+réseau dedans :
+
+`block_ticks` sur disque porte `t`, le délai **relatif au `gameTime` de la
+sauvegarde** (§7). Attrapé dans le même tick que l'appui, `t` vaut le délai
+entier ; attrapé plus tard il vaut moins. La campagne prend donc le **maximum**
+sur quatorze tentatives, qui converge par en dessous et ne peut jamais dépasser.
+
+```
+stone_pressure_plate            t max = 20   (échantillons 20 12 5 20 12 4 19 …)
+light_weighted_pressure_plate   t max = 10   (échantillons 10 3 10 3 9 1 3 9 …)
+```
+
+Le délai programmé vaut donc **20** pour les quatre plaques simples et **10**
+pour les deux pondérées. Le tick d'écart vient du front d'appui — la plaque
+s'enfonce pendant la phase des entités, son tick programmé retombe pendant la
+phase des ticks de bloc — et pas du délai.
+
+⚠ **Une plaque se réarme tant que quelque chose est dessus.** Chronométrer depuis
+l'instant où l'entité s'en va donne un nombre étalé sur (0, D] et ressemble à du
+bruit. Chronométrer depuis l'**appui** donne D exactement. C'est ce qui a fait
+choisir le montage « invoquer un porte-armure, puis le tuer ».
+
+### `entity_pressure`
+
+Une plaque répond aux **entités**, pas à la puissance, et `RedstoneWorld` ne
+connaissait pas les entités. Il gagne `entity_pressure`, non-pure et valant 0 par
+défaut. Ce n'est pas un bouche-trou : un monde qui ne porte pas d'entités n'a
+véritablement rien sur aucune plaque, et 0 est la vraie réponse. Le serveur, qui
+en porte, doit surcharger — il ne le fait pas encore (§14).
+
+---
+
+## 12. L'entonnoir : la cadence, et le verrou
+
+Montage : coffre au-dessus, entonnoir tourné vers le bas, coffre en dessous, 64
+cobblestone dans le coffre du haut. La cadence n'est pas lue objet par objet — un
+aller-retour de console vaut plusieurs ticks et la réponse serait l'aller-retour.
+Elle est lue comme une **pente**, sur un intervalle que le serveur mesure
+lui-même avec `time query gametime`.
+
+| Montage | Objets | Ticks | Ticks/objet |
+|---|---|---|---|
+| libre | 30 | 242 | **8,07** |
+| levier posé dessus | **0** | 242 | — |
+
+8,07 contre un temps de recharge de **8**, le reste étant les deux aller-retours
+de console aux extrémités. Et zéro objet sur le même intervalle avec un levier :
+le verrou est total, pas un ralentissement.
+
+L'état lu dans la sauvegarde :
+
+```
+libre     minecraft:hopper[enabled=true,facing=down]
+verrouillé minecraft:hopper[enabled=false,facing=down]
+```
+
+C'est le seul consommateur dont le drapeau **se lit à l'envers** : `enabled` est
+*faux* pendant qu'il est alimenté. `ConsumerRule` gagne donc un bit `inverted`
+plutôt qu'une seconde table — sans lui, la même table **allumerait** un
+entonnoir quand un levier à côté se lève.
+
+⚠ Le levier se pose **en dernier** et **adjacent**. `/setblock` ne prévient que
+six voisins et s'arrête (§1) : un déclencheur à deux blocs ne déclenche rien.
+
+---
+
+## 13. Le distributeur et le dropper
+
+Le dropper est la moitié simple, et il est aussi le **témoin** : il éjecte
+toujours, quoi qu'il porte. Donc tout objet où les deux machines s'accordent est
+un objet où le distributeur est tombé dans son comportement par défaut, et tout
+objet où elles diffèrent est un comportement qui a un nom. Une cellule par objet
+et par machine, vingt-quatre blocs d'écart — un seau d'eau se répand sur sept
+blocs, et une cellule inondée par sa voisine se lit exactement comme un
+distributeur qui n'a rien fait.
+
+Trois résultats qu'aucune règle ne prédit :
+
+- le **seau d'eau** laisse un **seau vide** dans le distributeur : l'objet est
+  *remplacé*, pas consommé ;
+- le **briquet** n'est ni consommé ni remplacé : il revient avec `tag: {Damage:
+  1}`. La règle est un point d'usure, et l'objet ne part que quand il casse ;
+- la **TNT a détruit son propre distributeur**. La cellule est revenue avec
+  « The target block is not a block entity », ce qui est la preuve la plus forte
+  possible que la TNT distribuée est *amorcée* et non lâchée.
+
+⚠ Deux pièges payés ici, tous deux généraux :
+
+1. **Une sonde qui regarde trois secondes après ne voit aucun projectile.** Une
+   flèche quitte un distributeur à environ un bloc par tick : à trois secondes
+   elle est à soixante blocs et toute la table lit « rien ne s'est passé », ce
+   qui est indiscernable d'un distributeur qui n'a jamais tiré. Un distributeur
+   tire **quatre ticks** après qu'on le lui dit ; la fenêtre utile est ticks 4 à
+   10.
+2. **`data get entity <sélecteur> id` ne marche pas** et ne le dit pas
+   utilement : il répond « Found no elements matching id », parce qu'une entité
+   vivante est sérialisée *sans* son id. C'est la sortie de la commande `tag`
+   elle-même qui nomme ce qu'elle a marqué — « Added tag 'c0' to Arrow » — et
+   c'est la lecture qui marche.
+
+---
+
+## 14. Ce qui reste non branché, et pourquoi
+
+Nommé plutôt que caché.
+
+- **L'entonnoir ne transporte rien dans le serveur.** Les règles et leurs tests
+  existent (`hopper.hpp`), mais les conteneurs du serveur sont du NBT lu au coup
+  par coup dans `server.cpp`, que ce mandat n'avait pas le droit de toucher. Un
+  entonnoir du banc ne bouge toujours aucun objet. Seul son drapeau `enabled`
+  est piloté.
+- **La plaque de pression ne s'enfonce pas dans le serveur.** `plate_step` existe
+  et est testée ; rien n'appelle `entity_pressure` parce que le serveur n'a pas
+  de détection « entité sur un bloc ». Le relâchement, lui, est branché : une
+  plaque posée `powered=true` se relève.
+- Le note block, lui, **est** branché. Sa table est complète et vérifiée :
+  `redstone_noteblock` a relu l'état de bloc d'un note block posé au-dessus de
+  chacun des **987 blocs** du jeu, 16 instruments, **0 refus**, et
+  `scripts/check_noteblock.py` compare la table compilée à cette mesure bloc par
+  bloc — **987/987**.
+
+  | instrument | blocs | | instrument | blocs |
+  |---|---|---|---|---|
+  | harp | 401 | | guitar (laines) | 16 |
+  | basedrum | 280 | | xylophone (bone_block) | 1 |
+  | bass | 221 | | flute (clay) | 1 |
+  | hat (verres) | 38 | | bit, pling, bell, banjo… | 1 chacun |
+  | snare (sables) | 21 | | | |
+
+  Il **fallait** la table : aucune règle de nom ne marche. Les boutons et les
+  portes de bois sont `harp`, pas `bass` ; les dalles de cuivre taillé sont
+  `harp` et le cuivre taillé plein ne l'est pas. Un heuristique par suffixe
+  essayé contre la mesure se trompe sur **51 blocs** — le genre de faux qui
+  sonne juste jusqu'à ce que quelqu'un joue un air.
+  Reste non mesuré : les instruments de tête de mob (zombie, squelette…), qui
+  viennent d'une tête posée **au-dessus** du note block et pas en dessous.
+- **TNT, rails, cible.** Non mesurés et non implémentés dans cette vague, sauf le
+  fait — mesuré ci-dessus — que la TNT distribuée explose.
+- **Le distributeur choisit la première case pleine, pas une au hasard.** Vanilla
+  tire au sort parmi les cases non vides. Reproduire le tirage demande le flux
+  RNG de la machine, que ce projet ne porte pas encore sur un block entity. Dit
+  dans le code, pas seulement ici.
+
+---
+
+## 15. Reproduire
 
 ```bash
 python3 scripts/measure_redstone.py conductors        # ~6 min, 987 blocs
@@ -389,6 +572,17 @@ python3 scripts/measure_redstone.py torch
 python3 scripts/measure_redstone.py piston
 python3 scripts/measure_redstone.py qc
 python3 scripts/measure_redstone.py ticks
+python3 scripts/measure_redstone.py switches      # bouton et plaque, tick par tick
+python3 scripts/measure_redstone.py noteblock     # ~5 min, 987 blocs, un instrument chacun
+python3 scripts/measure_redstone.py hopper        # cadence et verrou
+python3 scripts/measure_redstone.py dispenser     # 18 objets, distributeur contre dropper
+python3 scripts/measure_redstone.py tnt           # meche et forme de l'explosion
+```
+
+Et la vérification qui compare la table compilée à la mesure :
+
+```bash
+python3 scripts/check_noteblock.py                # 987/987
 ```
 
 Chaque scénario démarre et arrête son propre serveur, sur le port 25611, dans

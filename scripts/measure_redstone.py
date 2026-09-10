@@ -1717,6 +1717,95 @@ def measure_dispenser(out: Path) -> None:
               f"{'default' if same else 'SPECIAL'}")
 
 
+# ── scenario: tnt ───────────────────────────────────────────────────────────
+#
+# How long a stick of TNT burns, and what it takes with it.
+#
+# The fuse is read the same way the pressure plate's delay was, and for the same
+# reason: caught early it is the whole number, caught late it is less, so the
+# run takes the **maximum** over many attempts, which converges from below and
+# can never overshoot. Here the counter is the entity's own `Fuse`, which is a
+# field on the primed entity and needs no timing at all — only to be caught.
+#
+# The shape is a solid box of one block with the charge in the middle: fill,
+# ignite, wait, save, read every cell back. Five materials, so the run says not
+# only how far the blast reaches but in what **order** materials give way, which
+# is what a resistance table has to reproduce.
+
+TNT_MATERIALS = ["minecraft:stone", "minecraft:dirt", "minecraft:oak_planks",
+                 "minecraft:glass", "minecraft:obsidian"]
+
+TNT_HALF = 7      # cells reach ±7 on x and z
+TNT_UP = 5        # and ±5 on y
+TNT_SPACING = 48
+
+
+def measure_tnt(out: Path) -> None:
+    server, world = start("tnt")
+    result: dict = {}
+    try:
+        forceload(server, -32, -32, len(TNT_MATERIALS) * TNT_SPACING + 32, 32)
+
+        # ── the fuse ────────────────────────────────────────────────────────
+        best = -1
+        samples = []
+        for attempt in range(12):
+            server.batch([f"kill @e[type=minecraft:tnt]",
+                          f"fill -4 {Y} -4 4 {Y + 2} 4 minecraft:air",
+                          f"setblock 0 {Y} 0 minecraft:tnt replace"])
+            # Adjacent, and last. Trap 9.
+            server.send(f"setblock 1 {Y} 0 minecraft:redstone_block replace")
+            time.sleep(0.02 * attempt)
+            lines = server.batch(["data get entity @e[type=minecraft:tnt,limit=1] Fuse"])
+            for line in lines:
+                match = re.search(r"following entity data: (\d+)", line)
+                if match:
+                    samples.append(int(match.group(1)))
+                    best = max(best, int(match.group(1)))
+            server.batch([f"setblock 1 {Y} 0 minecraft:air replace"])
+        result["fuse"] = {"ticks": best, "samples": samples}
+        print(f"  fuse {best} ticks  (samples {samples})")
+        server.batch(["kill @e[type=minecraft:tnt]"])
+        time.sleep(6.0)
+
+        # ── the shape ───────────────────────────────────────────────────────
+        for index, material in enumerate(TNT_MATERIALS):
+            cx = 200 + index * TNT_SPACING
+            fill(server, cx - TNT_HALF - 1, Y - TNT_UP - 1, -TNT_HALF - 1,
+                 cx + TNT_HALF + 1, Y + TNT_UP + 1, TNT_HALF + 1, material)
+            server.batch([f"setblock {cx} {Y} 0 minecraft:tnt replace"])
+            server.batch([f"setblock {cx + 1} {Y} 0 minecraft:redstone_block replace"])
+        # 80 ticks of fuse plus room for the blast and the falling entities.
+        time.sleep(12.0)
+        save(server)
+
+        for index, material in enumerate(TNT_MATERIALS):
+            cx = 200 + index * TNT_SPACING
+            cells = [(cx + dx, Y + dy, dz)
+                     for dy in range(-TNT_UP, TNT_UP + 1)
+                     for dz in range(-TNT_HALF, TNT_HALF + 1)
+                     for dx in range(-TNT_HALF, TNT_HALF + 1)]
+            states = read_states(world, cells)
+            gone = [[c[0] - cx, c[1] - Y, c[2]]
+                    for c, s in zip(cells, states) if name_of(s) != material]
+            # The furthest cell that gave way, by Chebyshev and by Euclid: the
+            # two disagree, and which one the game uses is the question.
+            reach_cheb = max((max(abs(g[0]), abs(g[1]), abs(g[2])) for g in gone), default=-1)
+            reach_eucl = max(((g[0] ** 2 + g[1] ** 2 + g[2] ** 2) ** 0.5 for g in gone),
+                             default=-1.0)
+            result[material] = {"destroyed": len(gone),
+                                "reach_chebyshev": reach_cheb,
+                                "reach_euclidean": round(reach_eucl, 3),
+                                "cells": gone}
+            print(f"  {material:22s} {len(gone):5d} blocs détruits  "
+                  f"portée {reach_cheb} (chebyshev) {reach_eucl:.2f} (euclide)")
+    finally:
+        server.stop()
+
+    with open(out, "w") as f:
+        json.dump(result, f, indent=1)
+
+
 SCENARIOS = {
     "conductors": measure_conductors,
     "conductor_gaps": measure_conductor_gaps,
@@ -1732,6 +1821,7 @@ SCENARIOS = {
     "ticks": measure_ticks,
     "hopper": measure_hopper,
     "dispenser": measure_dispenser,
+    "tnt": measure_tnt,
     "switches": measure_switches,
     "noteblock": measure_noteblock,
 }
