@@ -158,9 +158,10 @@ TEST_CASE("a furnace admits each face's slot and no other", "[container][faces]"
         SUCCEED("no registry pack");
         return;
     }
-    BlockInventory  furnace = inventory_of("minecraft:furnace");
-    TagPool         pool;
-    ContainerBridge bridge{furnace, &*loaded().registries, pool};
+    BlockInventory      furnace = inventory_of("minecraft:furnace");
+    TagPool             pool;
+    gameplay::RecipeBook book{*loaded().registries};
+    ContainerBridge     bridge{furnace, &*loaded().registries, pool, &book};
 
     const gameplay::SlotStack coal{item("minecraft:coal"), 1, 0};
     const gameplay::SlotStack ore{item("minecraft:iron_ore"), 1, 0};
@@ -170,8 +171,10 @@ TEST_CASE("a furnace admits each face's slot and no other", "[container][faces]"
     CHECK_FALSE(bridge.can_place_into(1, coal, Direction::Up));
     CHECK_FALSE(bridge.can_place_into(2, ore, Direction::Up));
 
-    // From the side: the fuel slot, and only the fuel slot.
+    // From the side: the fuel slot, **and only what burns**. Measured with two
+    // items and the same hopper: coal went in, iron ore did not.
     CHECK(bridge.can_place_into(1, coal, Direction::North));
+    CHECK_FALSE(bridge.can_place_into(1, ore, Direction::North));
     CHECK_FALSE(bridge.can_place_into(0, ore, Direction::North));
     CHECK(bridge.can_place_into(1, coal, Direction::East));
 

@@ -95,7 +95,13 @@ struct TransportStats {
 /// The pass, and the small amount of state it has to keep between ticks.
 class ItemTransport {
 public:
-    ItemTransport(const registry::BlockRegistry& blocks, const registry::Registries& registries);
+    /// `book` answers one measured question and nothing else: whether an item
+    /// burns, which is what a furnace's side face admits and nothing else does.
+    /// Optional so that a server without recipes still transports items — it
+    /// then refuses every fuel slot, which is wrong in a way that shows rather
+    /// than in a way that jams.
+    ItemTransport(const registry::BlockRegistry& blocks, const registry::Registries& registries,
+                  const gameplay::RecipeBook* book = nullptr);
 
     /// A block was written. Watch for a dispenser or dropper whose `triggered`
     /// flag has just gone up.
@@ -150,7 +156,8 @@ private:
     [[nodiscard]] bool open_container(const TransportHost& host, BlockPos pos,
                                       LoadedContainer& out) const;
 
-    void store_container(const TransportHost& host, LoadedContainer& container, BlockPos pos) const;
+    void store_container(const TransportHost& host, LoadedContainer& container, BlockPos pos,
+                         bool contents_changed) const;
 
     void rebuild_index(const TransportHost& host, std::span<const ChunkPos> loaded);
 
@@ -163,6 +170,7 @@ private:
     const registry::BlockRegistry*      blocks_{nullptr};
     const registry::Registries*         registries_{nullptr};
     std::optional<registry::RegistryId> item_registry_{};
+    const gameplay::RecipeBook*         book_{nullptr};
     gameplay::Dispenser                 dispenser_;
 
     /// The hopper and machine blocks, by block id, so the hot check is an

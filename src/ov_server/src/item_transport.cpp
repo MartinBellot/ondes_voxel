@@ -34,10 +34,12 @@ bool hopper_suck_contains(BlockPos hopper, f64 x, f64 y, f64 z) noexcept {
 }
 
 ItemTransport::ItemTransport(const registry::BlockRegistry& blocks,
-                             const registry::Registries&    registries)
+                             const registry::Registries&    registries,
+                             const gameplay::RecipeBook*    book)
     : blocks_{&blocks},
       registries_{&registries},
       item_registry_{registries.find("minecraft:item")},
+      book_{book},
       dispenser_{registries},
       hopper_block_{blocks.find_block("minecraft:hopper")},
       dispenser_block_{blocks.find_block("minecraft:dispenser")},
@@ -103,12 +105,16 @@ bool ItemTransport::open_container(const TransportHost& host, BlockPos pos,
 }
 
 void ItemTransport::store_container(const TransportHost& host, LoadedContainer& container,
-                                    BlockPos pos) const {
+                                    BlockPos pos, bool contents_changed) const {
     container.inventory.store(container.entity->data);
     if (host.mark_dirty) {
         host.mark_dirty(pos.x >> 4, pos.z >> 4);
     }
-    if (host.container_changed) {
+    // Only when an item actually moved. A hopper counting its wait down writes
+    // its NBT every tick and nothing about it is visible, so telling the world
+    // about it would resend a whole window twenty times a second to anybody who
+    // happened to be looking at one.
+    if (contents_changed && host.container_changed) {
         host.container_changed(pos);
     }
 }
@@ -177,24 +183,24 @@ void ItemTransport::tick_hopper(const TransportHost& host, BlockPos pos, Transpo
         const bool      has_target = open_container(host, target, into);
         const bool      has_source = open_container(host, above, from);
 
-        ContainerBridge self_bridge{self.inventory, registries_, tags_};
+        ContainerBridge self_bridge{self.inventory, registries_, tags_, book_};
         // Built unconditionally because a bridge holds references and costs
         // nothing; only the pointers handed to the rule depend on what is
         // actually there.
         ContainerBridge into_bridge{has_target ? into.inventory : self.inventory, registries_,
-                                    tags_};
+                                    tags_, book_};
         ContainerBridge from_bridge{has_source ? from.inventory : self.inventory, registries_,
-                                    tags_};
+                                    tags_, book_};
 
         const gameplay::HopperRules::TickResult result = gameplay::HopperRules::tick(
             self_bridge, has_target ? &into_bridge : nullptr, where,
             has_source ? &from_bridge : nullptr);
 
         if (result.pushed && has_target) {
-            store_container(host, into, target);
+            store_container(host, into, target, true);
         }
         if (result.pulled && has_source) {
-            store_container(host, from, above);
+            store_container(host, from, above, true);
         }
         moved = result.moved();
 
@@ -233,7 +239,7 @@ void ItemTransport::tick_hopper(const TransportHost& host, BlockPos pos, Transpo
     }
     (void)self.entity->data.put(std::string{kCooldownField},
                                 nbt::Tag{static_cast<i32>(std::max(cooldown, 0))});
-    store_container(host, self, pos);
+    store_container(host, self, pos, moved);
 }
 
 void ItemTransport::fire_machine(const TransportHost& host, BlockPos pos, TransportStats& stats) {
@@ -247,7 +253,7 @@ void ItemTransport::fire_machine(const TransportHost& host, BlockPos pos, Transp
         return;
     }
 
-    ContainerBridge bridge{machine.inventory, registries_, tags_};
+    ContainerBridge bridge{machine.inventory, registries_, tags_, book_};
     const i32       index = gameplay::Dispenser::slot_to_fire(bridge);
     if (index < 0) {
         // Vanilla plays a click and does nothing. Nothing to save either.
@@ -275,7 +281,7 @@ void ItemTransport::fire_machine(const TransportHost& host, BlockPos pos, Transp
     // docs/provenance/conteneurs.md.
     LoadedContainer ahead;
     if (is_dropper && open_container(host, front, ahead)) {
-        ContainerBridge     into{ahead.inventory, registries_, tags_};
+        ContainerBridge     into{ahead.inventory, registries_, tags_, book_};
         gameplay::SlotStack one{stack.item_id, 1, tags_.intern(stack.nbt)};
         const i32 fitted = gameplay::HopperRules::insert(into, one, opposite(where));
         if (fitted > 0) {
@@ -283,8 +289,8 @@ void ItemTransport::fire_machine(const TransportHost& host, BlockPos pos, Transp
             if (stack.count <= 0) {
                 stack = {};
             }
-            store_container(host, ahead, front);
-            store_container(host, machine, pos);
+            store_container(host, ahead, front, true);
+            store_container(host, machine, pos, true);
             ++stats.fired;
         }
         return;
@@ -302,7 +308,7 @@ void ItemTransport::fire_machine(const TransportHost& host, BlockPos pos, Transp
             if (host.eject) {
                 host.eject(front, where, thrown);
             }
-            store_container(host, machine, pos);
+            store_container(host, machine, pos, true);
             ++stats.fired;
             return;
         }

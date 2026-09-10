@@ -2129,15 +2129,51 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     /// writes a few hundred blocks and relighting a 3x3 neighbourhood for each
     /// of them is the single most expensive thing this server could do per
     /// tick; the driver relights the chunks it touched once, at the end.
+    /// Write a state and keep the block entity when the **block** has not
+    /// changed.
+    ///
+    /// `Chunk::set_block` drops the block entity at the position it writes, and
+    /// it is right to: a block entity outliving its block is a chest that
+    /// cannot be opened and cannot be removed. But a redstone-driven property
+    /// change is not a new block — a hopper going `enabled=false`, a furnace
+    /// going `lit=true`, a dispenser going `triggered=true` — and dropping the
+    /// block entity there **empties the container**.
+    ///
+    /// This cost an afternoon to find, because the symptom is not an error: the
+    /// hopper is still a hopper, still has its facing, and simply cannot be
+    /// opened any more, while its items are gone from the save. Vanilla's own
+    /// `Level.setBlock` keeps the block entity when the block is the same, and
+    /// so does this.
+    const auto write_block = [&](world::Chunk& chunk, i32 x, i32 y, i32 z,
+                                 registry::BlockStateId state) {
+        const auto local_x = static_cast<usize>(x & 15);
+        const auto local_z = static_cast<usize>(z & 15);
+        const registry::BlockStateId before = chunk.get_block(local_x, y, local_z);
+
+        const world::BlockEntity* existing = chunk.block_entity_at(local_x, y, local_z);
+        const bool                same_block =
+            blocks && existing != nullptr && blocks->block_of(before) == blocks->block_of(state);
+        // Copied rather than moved: `set_block` erases the entry this points
+        // at, so the copy has to be taken first and cannot be a reference.
+        std::optional<world::BlockEntity> kept;
+        if (same_block) {
+            kept = *existing;
+        }
+
+        chunk.set_block(local_x, y, local_z, state);
+
+        if (kept) {
+            chunk.set_block_entity(std::move(*kept));
+        }
+    };
+
     const auto apply_block_change = [&](net::WirePosition position, registry::BlockStateId state,
                                         bool relight) {
         const i32 chunk_x = position.x >> 4;
         const i32 chunk_z = position.z >> 4;
         world::Chunk& chunk = chunk_at(chunk_x, chunk_z);
 
-        const auto local_x = static_cast<usize>(position.x & 15);
-        const auto local_z = static_cast<usize>(position.z & 15);
-        chunk.set_block(local_x, position.y, local_z, state);
+        write_block(chunk, position.x, position.y, position.z, state);
         dirty_chunks.insert(chunk_key(chunk_x, chunk_z));
 
         if (relight) {
@@ -2178,9 +2214,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             const std::scoped_lock lock{chunk_mutex};
             world::Chunk&          chunk = chunk_at(chunk_x, chunk_z);
 
-            const auto local_x = static_cast<usize>(position.x & 15);
-            const auto local_z = static_cast<usize>(position.z & 15);
-            chunk.set_block(local_x, position.y, local_z, state);
+            write_block(chunk, position.x, position.y, position.z, state);
             dirty_chunks.insert(chunk_key(chunk_x, chunk_z));
 
             // WORLD_SURFACE has just moved, so the chunk's sky light has too.
@@ -2322,7 +2356,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     // place both sides of that edge exist is inside the write.
     std::optional<ItemTransport> item_transport;
     if (blocks && registries) {
-        item_transport.emplace(*blocks, *registries);
+        item_transport.emplace(*blocks, *registries, recipe_book ? &*recipe_book : nullptr);
     }
     /// The three buffers the container pass reuses between ticks. Reused rather
     /// than built per tick for the reason every other buffer here is: the tick
@@ -3606,7 +3640,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         // ── crafting and smelting ───────────────────────────
                         // A crafting table or a furnace opens instead of being
                         // built against, the same way a chest does below.
-                        {
+                        //
+                        // Sneaking with something in hand builds instead, which
+                        // is the same rule the containers below follow and the
+                        // only way to put a hopper under a furnace.
+                        if (!player.sneaking ||
+                            player.inventory[36 + static_cast<usize>(player.held_slot)].empty()) {
                             const std::scoped_lock chunk_lock{chunk_mutex};
                             if (open_workbench(workbench_context,
                                                workbench_host(player, send_packet), place->position.x,
@@ -3618,15 +3657,22 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         }
 
                         // Clicking a container opens it rather than placing
-                        // against it. Vanilla only places when the player is
-                        // sneaking, which is not tracked yet, so the container
-                        // always wins — stated rather than silently surprising.
+                        // against it — **unless** the player is sneaking, which
+                        // is vanilla's own rule and is what makes it possible to
+                        // put a block on top of a chest at all.
+                        //
+                        // `sneaking` was tracked and unused here, and the cost
+                        // showed the first time somebody tried to build a hopper
+                        // under a chest on the test bench: every click opened the
+                        // hopper and nothing could ever be placed on one.
                         //
                         // Every container the model knows, not only a chest: a
                         // barrel used to open as nothing at all and a hopper
                         // could not be opened, because the size and the menu
                         // were two literals here.
-                        {
+                        const net::ItemStack& in_hand =
+                            player.inventory[36 + static_cast<usize>(player.held_slot)];
+                        if (!player.sneaking || in_hand.empty()) {
                             const std::scoped_lock chunk_lock{chunk_mutex};
                             world::Chunk&          clicked_chunk =
                                 chunk_at(place->position.x >> 4, place->position.z >> 4);
@@ -5729,8 +5775,11 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                 }
                                 const registry::BlockStateId next =
                                     blocks->with_property(state, *property, index);
-                                chunk->set_block(static_cast<usize>(where.x & 15), where.y,
-                                                 static_cast<usize>(where.z & 15), next);
+                                // `write_block`, never `chunk->set_block`: a
+                                // furnace that lights would otherwise lose its
+                                // block entity — its ore, its fuel and its
+                                // stored experience — on the tick it catches.
+                                write_block(*chunk, where.x, where.y, where.z, next);
                                 dirty_chunks.insert(chunk_key(where.x >> 4, where.z >> 4));
                                 if (const auto framed = net::encode_packet(
                                         net::clientbound::kBlockUpdate,

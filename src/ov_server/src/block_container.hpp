@@ -37,6 +37,7 @@
 #pragma once
 
 #include "ov/gameplay/hopper.hpp"
+#include "ov/gameplay/smelting.hpp"
 #include "ov/math/vec.hpp"
 #include "ov/nbt/tag.hpp"
 #include "ov/protocol/play.hpp"
@@ -80,6 +81,10 @@ struct ContainerSpec {
     /// True when the block's own screen is `workbench`'s rather than the plain
     /// container window here. Set for the three furnaces.
     bool workbench{false};
+    /// Which furnace, when it is one. The three differ in what burns in them
+    /// and for how long, and the fuel slot's admission rule is exactly that
+    /// question — so it cannot be answered without knowing which one.
+    gameplay::FurnaceKind furnace{gameplay::FurnaceKind::Furnace};
 };
 
 /// The spec for a block, or nullptr when that block is not a container.
@@ -179,9 +184,17 @@ private:
 /// allocating.
 class ContainerBridge final : public gameplay::ItemContainer {
 public:
+    /// `book` is needed for exactly one question and it is a measured one: a
+    /// furnace's **side** face admits the fuel slot, and the fuel slot admits
+    /// only what burns. Iron ore pushed into a furnace's side by a hopper does
+    /// not go in — measured, `scripts/measure_containers.py furnace-faces` —
+    /// and without the recipe book there is no way to know that here. A null
+    /// book means the rule cannot be applied, and the slot is then refused
+    /// rather than opened: refusing a legal fuel is visible and recoverable,
+    /// while admitting cobblestone as fuel is neither.
     ContainerBridge(BlockInventory& inventory, const registry::Registries* registries,
-                    TagPool& pool)
-        : inventory_{&inventory}, registries_{registries}, pool_{&pool} {}
+                    TagPool& pool, const gameplay::RecipeBook* book = nullptr)
+        : inventory_{&inventory}, registries_{registries}, pool_{&pool}, book_{book} {}
 
     [[nodiscard]] i32 slot_count() const override { return inventory_->size(); }
 
@@ -200,6 +213,7 @@ private:
     BlockInventory*             inventory_{nullptr};
     const registry::Registries* registries_{nullptr};
     TagPool*                    pool_{nullptr};
+    const gameplay::RecipeBook* book_{nullptr};
 };
 
 /// Build the block entity a freshly placed container needs.

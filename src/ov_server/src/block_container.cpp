@@ -37,10 +37,13 @@ constexpr ContainerSpec kDropper{"minecraft:dropper", 9, "minecraft:generic_3x3"
 /// The three furnaces. `menu` is empty because `workbench.cpp` opens their
 /// screen — it owns the four counters as well as the three slots — but they are
 /// still containers here, because a hopper feeds one and a comparator reads one.
-constexpr ContainerSpec kFurnace{"minecraft:furnace", 3, {}, "Furnace", SidedAccess::Furnace, true};
-constexpr ContainerSpec kBlastFurnace{"minecraft:blast_furnace", 3,   {},
-                                      "Blast Furnace",          SidedAccess::Furnace, true};
-constexpr ContainerSpec kSmoker{"minecraft:smoker", 3, {}, "Smoker", SidedAccess::Furnace, true};
+constexpr ContainerSpec kFurnace{"minecraft:furnace",   3,    {}, "Furnace", SidedAccess::Furnace,
+                                 true, gameplay::FurnaceKind::Furnace};
+constexpr ContainerSpec kBlastFurnace{
+    "minecraft:blast_furnace", 3, {}, "Blast Furnace", SidedAccess::Furnace, true,
+    gameplay::FurnaceKind::BlastFurnace};
+constexpr ContainerSpec kSmoker{"minecraft:smoker", 3,    {}, "Smoker", SidedAccess::Furnace,
+                                true,               gameplay::FurnaceKind::Smoker};
 
 /// The seventeen shulker boxes all share one block entity type, which is why
 /// `container_spec_for_entity` cannot simply be `container_spec_for_block` with
@@ -310,17 +313,29 @@ bool ContainerBridge::can_place_into(i32 index, const gameplay::SlotStack& stack
             return !registries_->entry_of(*items, stack.item).ends_with("shulker_box");
         }
         case SidedAccess::Furnace:
-            // The three faces, measured with one hopper each:
-            //   above → the input slot;
-            //   the side → the fuel slot;
-            //   below → nothing goes in, the bottom is an exit.
+            // The three faces, measured with one hopper each and two items
+            // (`scripts/measure_containers.py furnace-faces`):
+            //
+            //   above → the input slot, whatever the item;
+            //   the side → the fuel slot, **and only if the item burns**. Coal
+            //     went in through the side; iron ore, pushed the same way by
+            //     the same hopper, did not. Without the second item the rule
+            //     reads as "the side takes anything" and a hopper feeding a
+            //     furnace array jams its own fuel line with ore;
+            //   below → nothing goes in. The bottom is an exit.
             if (face == Direction::Up) {
                 return index == kFurnaceInput;
             }
             if (face == Direction::Down) {
                 return false;
             }
-            return index == kFurnaceFuel;
+            if (index != kFurnaceFuel) {
+                return false;
+            }
+            // No recipe book means the question cannot be answered, and the
+            // answer this project gives to a question it cannot answer is no.
+            return book_ != nullptr &&
+                   gameplay::burn_ticks(*book_, inventory_->spec().furnace, stack.item) > 0;
     }
     return true;
 }
