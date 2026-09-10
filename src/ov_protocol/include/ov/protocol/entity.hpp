@@ -136,6 +136,18 @@ inline constexpr i8 kSharedFlagGlowing = 0x40;
 /// the above, and the reason this whole file exists.
 inline constexpr u8 kItemStack = 8;
 
+// ── husbandry ── Measured the same way, on farm animals: one NBT field against
+// a baseline of the same species (scripts/measure_husbandry.py `meta`).
+/// Boolean on every ageable mob: a baby. `Age:-24000` moves it on cow, sheep,
+/// pig and chicken alike.
+inline constexpr u8 kAgeableBaby = 16;
+/// Sheep, a byte: the wool colour in the low four bits, 0x10 sheared.
+/// Measured: `Color:14b` sends 14, `Sheared:1b` sends 16.
+inline constexpr u8 kSheepFleece = 17;
+inline constexpr i8 kSheepSheared = 0x10;
+/// Pig, a boolean: saddled. Measured with `Saddle:1b`.
+inline constexpr u8 kPigSaddle = 17;
+
 }  // namespace metadata
 
 /// Builds the body of Set Entity Metadata: (index, type, value)*, then 0xFF.

@@ -22,6 +22,7 @@
 #include "ov/base/types.hpp"
 #include "ov/entity/entity.hpp"
 #include "ov/entity/world.hpp"
+#include "ov/gameplay/animal.hpp"
 #include "ov/gameplay/collision.hpp"
 #include "ov/gameplay/pathfinding.hpp"
 #include "ov/math/random.hpp"
@@ -29,6 +30,7 @@
 #include "ov/world/level.hpp"
 
 #include <memory>
+#include <span>
 #include <string_view>
 #include <vector>
 
@@ -80,6 +82,17 @@ struct GoalContext {
     /// determinism forbids.
     math::LegacyRandomSource* random{nullptr};
 
+    // ── husbandry ──
+    /// The players an animal may be tempted by, this tick. Empty is legal.
+    std::span<const Tempter> tempters{};
+    /// Where births, eggs and eaten grass go for the caller to finish. Null:
+    /// the animal still does them, and nobody hears.
+    std::vector<AnimalEvent>* animal_events{nullptr};
+    /// Another mob's brain, or null for an entity that has none. A mate has to
+    /// be *in love*, and that is not on an EntityState.
+    MobBrain* (*brain_of)(entity::EntityWorld& world, entity::EntityHandle handle){nullptr};
+    // ── end husbandry ──
+
     [[nodiscard]] entity::EntityState*       state() noexcept;
     [[nodiscard]] const entity::EntityState* state() const noexcept;
 };
@@ -119,13 +132,13 @@ struct MobBrain {
     MobSize       size{};
     PathAbilities abilities{};
 
-    /// The parent this mob follows, and the mate it is looking for. Both are
-    /// here rather than in the goals so that a mob keeps them across a goal
-    /// stopping and starting again.
+    /// The parent this mob follows. Here rather than in the goal so that a
+    /// calf keeps its mother across the goal stopping and starting again.
     entity::EntityHandle parent{entity::kNoEntity};
-    i32                  love_ticks{0};
-    i32                  breed_cooldown{0};
-    bool                 baby{false};
+    // ── husbandry ──
+    /// Age, love, fleece, saddle, egg: see animal.hpp. The goals read it; the
+    /// mob's own tick ages it.
+    AnimalState animal{};
 
     explicit MobBrain(usize path_capacity = 2048) : finder{path_capacity} {
         path.steps.reserve(256);
@@ -433,13 +446,15 @@ private:
 
 /// Two animals in love find each other and produce a third.
 ///
-/// The spawning half is left to the caller through `bred`: this module may
-/// create an entity, but what a baby cow *is* — its size, its attributes — is
-/// the registry's answer and the caller already holds it.
+/// ── husbandry ── The mate is an adult of the same type, *in love*, whose box
+/// grown by `reach` on every axis meets this one's (measured: a pair 8.5 blocks
+/// apart finds each other and 9 does not — the cube, not a sphere of 8; see
+/// docs/provenance/elevage.md). The birth itself is an `AnimalEvent` the caller
+/// finishes: what a calf *is* is the registry's answer, and the caller holds it.
 class BreedGoal final : public Goal {
 public:
-    explicit BreedGoal(f64 speed = 1.0, f64 radius = 8.0) noexcept
-        : speed_{speed}, radius_{radius} {}
+    explicit BreedGoal(f64 speed = 1.0, f64 reach = 8.0) noexcept
+        : speed_{speed}, reach_{reach} {}
 
     [[nodiscard]] bool     can_use(GoalContext& context) override;
     [[nodiscard]] bool     can_continue_to_use(GoalContext& context) override;
@@ -451,18 +466,13 @@ public:
     }
     [[nodiscard]] std::string_view name() const noexcept override { return "breed"; }
 
-    /// True on the tick a birth happened, and cleared by the caller.
-    [[nodiscard]] bool bred() const noexcept { return bred_; }
-    void               clear_bred() noexcept { bred_ = false; }
-    [[nodiscard]] Vec3d birth_position() const noexcept { return birth_; }
+    [[nodiscard]] entity::EntityHandle mate() const noexcept { return mate_; }
 
 private:
     f64                  speed_{1.0};
-    f64                  radius_{8.0};
+    f64                  reach_{8.0};
     entity::EntityHandle mate_{entity::kNoEntity};
     i32                  loops_{0};
-    bool                 bred_{false};
-    Vec3d                birth_{};
 };
 
 /// Ask the brain to walk to a block. Shared by every move goal, so that

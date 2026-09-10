@@ -1,5 +1,7 @@
 #include "ov/gameplay/mob_logic.hpp"
 
+#include "ov/gameplay/breeding.hpp"  // ── husbandry ──
+
 #include <array>
 #include <cmath>
 
@@ -86,8 +88,24 @@ void install_goals(GoalSelector& selector, const MobKind& kind, i32 look_type,
         selector.add(3, std::make_unique<NearestAttackableTargetGoal>(quarry_type, 35.0, true));
     }
     if (kind.breeds) {
-        selector.add(4, std::make_unique<BreedGoal>(kind.walk_speed));
+        // ── husbandry ── Breed before tempt before following a parent, which
+        // is the order the game's animals show: a cow in love ignores the
+        // wheat it has just eaten and walks to its mate.
+        // `walk_speed` is the attribute halved, so the attribute is twice it.
+        const f64 attribute = kind.walk_speed * 2.0;
+        selector.add(3, std::make_unique<BreedGoal>(walk_blocks_per_tick(attribute), kMateReach));
+        if (const AnimalKind* animal = animal_kind(kind.type_name)) {
+            // Measured: cow 0.1347, sheep 0.1380, pig 0.1936, chicken 0.1349
+            // blocks a tick, which the law gives from 1.25, 1.1, 1.2 and 1.0.
+            selector.add(4, std::make_unique<TemptGoal>(
+                                *animal, walk_blocks_per_tick(attribute * animal->tempt_speed)));
+        }
         selector.add(5, std::make_unique<FollowParentGoal>(kind.walk_speed * 1.1));
+        if (const AnimalKind* animal = animal_kind(kind.type_name);
+            animal != nullptr && animal->shearable) {
+            selector.add(5, std::make_unique<EatGrassGoal>());
+        }
+        // ── end husbandry ──
     }
 
     // 6 and 7 — what a mob does when nothing else is happening, which is most
@@ -115,6 +133,16 @@ Mob::Mob(const MobKind& kind, f32 width, f32 height, i64 seed, i32 quarry_type)
     // can see for itself. Borrowed — the selector owns it and outlives the
     // pointer.
     panic_ = kind.panics ? static_cast<PanicGoal*>(goals_.find("panic")) : nullptr;
+
+    // ── husbandry ──
+    adult_width_  = width;
+    adult_height_ = height;
+    // A chicken's first egg: drawn at birth, as the game does — measured on
+    // 200 fresh chickens, 6004 to 11992 ticks.
+    if (const AnimalKind* animal = animal_kind(kind.type_name);
+        animal != nullptr && animal->lays_eggs) {
+        brain_.animal.egg_time = egg_interval(random_);
+    }
 }
 
 void Mob::frighten(i32 ticks) noexcept {
@@ -134,6 +162,10 @@ void Mob::tick(entity::EntityWorld& world, entity::EntityHandle self,
         return;
     }
 
+    // ── husbandry ── Age, love and eggs tick whether or not the brain does:
+    // measured, a NoAI calf grows and a NoAI chicken lays.
+    tick_husbandry(*state, self, *mob);
+
     // The brain runs only when there is a world to read. Without a level a mob
     // still falls — which is the floor `FallingMob` established — but it does
     // not decide anything, because every decision here needs blocks.
@@ -150,6 +182,10 @@ void Mob::tick(entity::EntityWorld& world, entity::EntityHandle self,
         goal_context.brain      = &brain_;
         goal_context.tick       = context.tick;
         goal_context.random     = &random_;
+        // ── husbandry ──
+        goal_context.tempters      = mob->tempters;
+        goal_context.animal_events = mob->animal_events;
+        goal_context.brain_of      = &mob_brain_of;
         goals_.tick(goal_context);
 
         // Turn the brain's intent into velocity. The goals never touch

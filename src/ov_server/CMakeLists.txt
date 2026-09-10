@@ -12,6 +12,7 @@ ov_add_library(ov_server
         src/item_transport.cpp
         src/generated_world.cpp
         src/generation_check.cpp
+        src/husbandry.cpp
         src/natural_spawning.cpp
         src/player_inventory.cpp
         src/server.cpp
