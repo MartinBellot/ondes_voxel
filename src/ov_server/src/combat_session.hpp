@@ -116,6 +116,12 @@ struct CombatPlayer {
     /// The player's hunger, for `begin_use` — a full player cannot eat bread.
     i32 food{20};
     i32 max_food{20};
+
+    /// ── effects ── Strength and Weakness amplifiers, -1 for none. Filled
+    /// from the effect session; `resolve_attack` already knew what to do with
+    /// them and nothing had ever set them.
+    i8 strength{-1};
+    i8 weakness{-1};
 };
 
 /// What one swing or one use asked the server to do beyond the packets.

@@ -54,6 +54,16 @@ struct SurvivalPlayer {
     /// Whether the player's eyes are under water. The caller knows the world;
     /// this module does not.
     bool submerged{false};
+
+    // ── effects ─────────────────────────────────────────────────────────────
+    /// Water breathing or conduit power: under water the air is frozen,
+    /// neither drained nor refilled. Measured on cows, see effect_session.hpp.
+    bool breathes_underwater{false};
+    /// Jump boost's amplifier, -1 for none: a landing costs `amp + 1` less.
+    /// Measured, fifteen falls of fifteen.
+    i32 jump_boost{-1};
+    /// Slow falling: a landing costs nothing.
+    bool slow_falling{false};
 };
 
 /// What one tick of survival asked the server to do.
@@ -127,8 +137,16 @@ public:
     void spend_experience(i32 amount);
 
     /// Apply a hit. Returns what actually came off, for the packets.
+    ///
+    /// `window` replaces the damage constants for this one hit — an effect's
+    /// periodic damage is measured against a window entered at more than ten
+    /// rather than ten or more (see gameplay::effect_damage_constants).
     [[nodiscard]] gameplay::DamageResult hurt(gameplay::DamageKind kind, f32 amount,
-                                              const SurvivalIo& io, i32 entity_id);
+                                              const SurvivalIo& io, i32 entity_id,
+                                              const gameplay::DamageConstants* window = nullptr);
+
+    /// Resistance, kept current by the effect session.
+    gameplay::DamageMitigation mitigation{};
 
     /// One tick.
     [[nodiscard]] SurvivalOutcome tick(const SurvivalPlayer& player, const SurvivalIo& io,

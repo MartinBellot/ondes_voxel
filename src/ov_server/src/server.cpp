@@ -53,6 +53,7 @@
 #include "async_chunk_source.hpp"
 #include "generated_world.hpp"
 #include "survival_session.hpp"
+#include "effect_session.hpp"  // ── effects ──
 // ── combat and interaction ───────────────────────────────────────────
 #include "combat_session.hpp"
 #include "mob_combat.hpp"
@@ -99,6 +100,9 @@ using ov::server::SurvivalIo;
 using ov::server::SurvivalOutcome;
 using ov::server::SurvivalPlayer;
 using ov::server::SurvivalSession;
+using ov::server::EffectBearer;   // ── effects ──
+using ov::server::EffectIo;       // ── effects ──
+using ov::server::EffectSession;  // ── effects ──
 // ── combat and interaction ───────────────────────────────────────────
 using ov::server::CombatIo;
 using ov::server::CombatOutcome;
@@ -158,6 +162,12 @@ struct Options {
     /// look at: `--mobs=zombie,cow,creeper` puts three of them on the ground in
     /// front of the spawn.
     std::vector<std::string> mobs;
+
+    // ── effects ──
+    /// Effects every player is given on joining: `--effect=speed:1:600,…`
+    /// (name, amplifier, ticks). A test entry point until /effect exists —
+    /// scripts/check_effects_e2e.py drives it — and named as one.
+    std::vector<std::string> effects;
 };
 
 /// Where a connection is in the protocol's state machine.
@@ -1030,6 +1040,15 @@ struct Player {
     /// Everything about it lives in survival_session.{hpp,cpp}.
     SurvivalSession survival;
 
+    // ── effects ──────────────────────────────────────────────────────────
+    /// Status effects and attributes, and the packets they owe this client.
+    /// Everything about it lives in effect_session.{hpp,cpp}; /effect calls
+    /// `effects.apply` / `remove` / `clear` on it.
+    EffectSession effects;
+    /// `--effect=` has been applied to this player.
+    bool effects_started{false};
+    // ── end effects ──────────────────────────────────────────────────────
+
     // ── combat and interaction ───────────────────────────────────────────
     /// The attack gauge, the eat in progress, and the four verbs' state.
     /// Everything about it lives in combat_session.{hpp,cpp}.
@@ -1109,6 +1128,16 @@ Options parse_args(int argc, char** argv) {
             options.record_motion = std::string{arg.substr(16)};
         } else if (arg == "--survival") {
             options.survival = true;
+        } else if (arg.starts_with("--effect=")) {  // ── effects ──
+            std::string_view list = arg.substr(9);
+            while (!list.empty()) {
+                const auto comma = list.find(',');
+                if (!list.substr(0, comma).empty()) {
+                    options.effects.emplace_back(list.substr(0, comma));
+                }
+                list = comma == std::string_view::npos ? std::string_view{}
+                                                       : list.substr(comma + 1);
+            }
         } else if (arg.starts_with("--mobs=")) {
             std::string_view list = arg.substr(7);
             while (!list.empty()) {
@@ -1177,6 +1206,7 @@ void print_help() {
         "  --survival                                      survival mode: blocks take time\n"
         "  --record-motion=<file>                          log every reported position\n"
         "  --mobs=<name,name,...>                          place mobs near the spawn point\n"
+        "  --effect=<name:amp:ticks,...>                   effects given to every joining player\n"
         "  --help, -h                                      this message\n"
         "\n"
         "Not an official Minecraft product. Not approved by or associated with Mojang.\n");
@@ -1884,8 +1914,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             holding.item       = held.item_id;
             holding.efficiency = enchantment_level(held, "minecraft:efficiency");
         }
-        return break_rules->destroy_progress(state, holding,
-                                             gameplay::Stance{.on_ground = who.on_ground});
+        // ── effects: haste, conduit power and mining fatigue ──
+        return break_rules->destroy_progress(state, holding, who.effects.dig_stance(who.on_ground));
     };
 
     /// Tirer le butin d'un bloc et le poser au sol.
@@ -2748,6 +2778,32 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         send_slot(who, slot);
     };
 
+    // ── effects ─────────────────────────────────────────────────────────────
+    /// The two sinks an effect packet goes to, for one player.
+    const auto effect_io_for = [&](Player& who) {
+        return EffectIo{
+            .send =
+                [&who](i32 id, std::span<const u8> payload) {
+                    if (const auto framed = net::encode_packet(id, payload);
+                        framed && who.connection) {
+                        who.connection->send(*framed);
+                    }
+                },
+            .broadcast = [&broadcast, &who](i32 id, std::span<const u8> payload) {
+                broadcast(who.connection.get(), id, payload);
+            }};
+    };
+    /// Who the effects are on: mortal only in survival, and the sneak and
+    /// sprint bits of index 0 so an invisibility does not erase them.
+    const auto effect_bearer_for = [&](const Player& who) {
+        return EffectBearer{
+            .entity_id    = who.entity_id,
+            .mortal       = options.survival,
+            .shared_flags = static_cast<u8>((who.sneaking ? 0x02 : 0) |
+                                            (who.survival.sprinting ? 0x08 : 0))};
+    };
+    // ── end effects ─────────────────────────────────────────────────────────
+
     /// The player, as the combat session reads them.
     const auto combat_view = [&](const Player& who) {
         CombatPlayer view;
@@ -2766,7 +2822,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // critical slightly too easy — a stated gap, not a silent one.
         view.in_water     = false;
         view.on_climbable = false;
-        view.blind        = false;
+        view.blind        = who.effects.blind();  // ── effects ──
         view.riding       = false;
         view.game_mode    = options.survival ? u8{0} : u8{1};
         view.food         = who.survival.food.food;
@@ -2774,6 +2830,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             // always twenty haunches — and `begin_use` compares against
             // this to refuse an eat a full player cannot make.
             view.max_food     = 20;
+        view.strength = who.effects.strength();  // ── effects ──
+        view.weakness = who.effects.weakness();  // ── effects ──
         return view;
     };
 
@@ -5367,6 +5425,24 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     // caller's, which is this: `tick_use` says when, and
                     // `food_for` says what.
                     const auto value = gameplay::food_for(finished);
+                    // ── effects: milk is not food; it clears, and the bucket
+                    // comes back empty ──────────────────────────────────────
+                    if (!value && finished == "minecraft:milk_bucket") {
+                        (void)who.effects.on_consumed(finished, who.survival, effect_io_for(who),
+                                                      effect_bearer_for(who));
+                        if (options.survival && registries && item_registry) {
+                            const usize slot = 36 + static_cast<usize>(who.held_slot);
+                            if (const auto bucket =
+                                    registries->protocol_id(*item_registry, "minecraft:bucket")) {
+                                who.inventory[slot]         = net::ItemStack{};
+                                who.inventory[slot].item_id = *bucket;
+                                who.inventory[slot].count   = 1;
+                                send_slot(who, slot);
+                            }
+                        }
+                        continue;
+                    }
+                    // ── end effects ─────────────────────────────────────────
                     if (!value) {
                         // Refused and named. A potion, a milk bucket and a
                         // chorus fruit all finish a use and none of them is
@@ -5377,6 +5453,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         continue;
                     }
                     gameplay::eat(who.survival.food, *value);
+                    // ── effects: the food's own, and honey's cure — after the
+                    // nutrition, in the game's order ──
+                    (void)who.effects.on_consumed(finished, who.survival, effect_io_for(who),
+                                                  effect_bearer_for(who));
                     if (options.survival) {
                         consume_one_held(who);
                     }
@@ -5397,6 +5477,38 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             }
         }
         // ── end combat and interaction ─────────────────────────────────────
+
+        // ── effects: every effect ticks, and its packets go out ─────────────
+        //
+        // Before the survival block. Survival's `tick_health` counts the
+        // window down after this; the gap between two effect hits is then N
+        // decrements for N ticks, exactly as in the game, where the measured
+        // gap is ten (effets.md). Not gated on --survival: a creative
+        // player's effects still run out, they just cannot hurt.
+        {
+            std::unique_lock effects_lock{players_mutex, std::try_to_lock};
+            if (effects_lock.owns_lock()) {
+                for (auto& [effects_key, who] : players) {
+                    if (!who.confirmed || !who.connection) {
+                        continue;
+                    }
+                    if (!who.effects_started) {
+                        who.effects_started = true;
+                        for (const std::string& spec : options.effects) {
+                            const auto instance = ov::server::parse_effect_spec(spec);
+                            if (!instance) {
+                                OV_LOG_WARN("--effect={}: not an effect this server knows", spec);
+                                continue;
+                            }
+                            (void)who.effects.apply(*instance, who.survival, effect_io_for(who),
+                                                    effect_bearer_for(who));
+                        }
+                    }
+                    who.effects.tick(who.survival, effect_io_for(who), effect_bearer_for(who));
+                }
+            }
+        }
+        // ── end effects ─────────────────────────────────────────────────────
 
         // ── survival: health, hunger, experience, death and respawn ────────
         //
@@ -5446,7 +5558,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                               // with --survival, so this is
                                               // always a survival player.
                                               .game_mode = 0,
-                                              .submerged = submerged};
+                                              .submerged = submerged,
+                                              // ── effects ──
+                                              .breathes_underwater =
+                                                  who.effects.breathes_underwater(),
+                                              .jump_boost   = who.effects.jump_boost(),
+                                              .slow_falling = who.effects.slow_falling()};
                     SurvivalOutcome outcome = who.survival.tick(
                         view, io, gameplay::Difficulty::Normal, true,
                         static_cast<f64>(world::WorldShape::overworld().min_y));
@@ -5484,6 +5601,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     if (!outcome.died) {
                         continue;
                     }
+                    // ── effects: gone with the body; Respawn tells the client ──
+                    who.effects.on_death();
                     OV_LOG_INFO("{} died at {:.1f} {:.1f} {:.1f}, dropping {} experience",
                                 who.name, who.x, who.y, who.z, outcome.dropped_experience);
                     // The inventory goes on the floor, as vanilla does with

@@ -15,6 +15,7 @@ ov_add_library(ov_server
         src/player_inventory.cpp
         src/server.cpp
         src/combat_session.cpp
+        src/effect_session.cpp
         src/mob_combat.cpp
         src/player_level.cpp
         src/survival_session.cpp

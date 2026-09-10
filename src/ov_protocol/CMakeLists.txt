@@ -8,6 +8,7 @@ ov_add_library(ov_protocol
     SOURCES
         src/blast.cpp
         src/client_play.cpp
+        src/effect_packets.cpp
         src/entity.cpp
         src/framing.cpp
         src/interaction.cpp
@@ -35,6 +36,7 @@ ov_add_test(test_ov_protocol
         tests/test_blast_packets.cpp
         tests/test_chunk_roundtrip.cpp
         tests/test_client_play.cpp
+        tests/test_effect_packets.cpp
         tests/test_entities.cpp
         tests/test_entity_packets.cpp
         tests/test_framing.cpp
