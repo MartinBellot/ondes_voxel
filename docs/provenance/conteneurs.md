@@ -107,6 +107,7 @@ client qui parle le protocole 763 exact et n'a pas d'écran.
 | chaîne de cinq entonnoirs | 36 objets livrés au coffre de queue | — |
 | **verrou par signal** | **0 objet** en 189 ticks serveur | **0 en 242 ticks** |
 | distributeur sur front montant | 1 objet éjecté, une fois | le jeu |
+| dropper sur front montant | 1 objet éjecté, une fois | le jeu |
 | remplissage du coffre | 0, 1, 5, 14 et 27 piles exactes | — |
 | sauvegarde / rechargement | tonneau 17, shulker 5, entonnoir 3 | — |
 
@@ -198,6 +199,9 @@ relancer.
   `ItemTransport::unsupported()` les liste, `TransportStats::unsupported` les compte, et
   l'objet reste dans la machine. Un distributeur qui lâcherait un seau d'eau par terre au
   lieu de poser de l'eau est indiscernable d'un distributeur qui marche.
+- **Le dropper face à un conteneur y insère** (mesuré, §2), et c'est implémenté ; la
+  parcelle du banc n'a pas de conteneur devant ses machines, donc la sonde de bout en bout
+  n'exerce que l'éjection.
 - **Le distributeur tire la première case pleine, pas une au hasard.** Vanilla tire au sort
   parmi les cases non vides ; reproduire le tirage demande le flux RNG de la machine, que ce
   projet ne porte pas encore sur une block entity. Déjà dit dans `dispenser.hpp`.
