@@ -79,6 +79,11 @@ set(OV_FORBID_ov_rhi
     ov_entity ov_gameplay ov_worldgen ov_sim ov_server ov_netclient
     ov_render ov_audio ov_client)
 set(OV_FORBID_ov_render    ov_client ov_server ov_sim ov_netclient)
+# ov_audio plays what it is told to, at a position it is given. It knows sounds,
+# not packets, blocks or windows: the network half and the game half stay above
+# it in ov_client, which is what lets the null backend be tested without a
+# server and without a sound card.
+set(OV_FORBID_ov_audio     ov_client ov_server ov_sim ov_netclient ov_render ov_rhi)
 
 # ── ov_check_deps(<module> <deps...>) ───────────────────────────────────────
 function(ov_check_deps NAME)

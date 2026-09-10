@@ -24,12 +24,15 @@
     },
     "client": {
       "description": "Rendering, windowing and audio. MUST NOT be required by ov_dedicated.",
+      "$comment-audio": "miniaudio (Unlicense OR MIT-0) opens the sound device; stb (MIT OR public domain) provides stb_vorbis.c, which decodes the .ogg files. Both are single-file C, compiled once inside ov_audio's own .cpp and never included by a public header. See docs/provenance/son.md.",
       "dependencies": [
         "glfw3",
         "volk",
         "vulkan-headers",
         "vulkan-memory-allocator",
-        "libspng"
+        "libspng",
+        "miniaudio",
+        "stb"
       ]
     }
   }

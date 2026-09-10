@@ -100,8 +100,26 @@ if(OV_BUILD_CLIENT)
     find_package(VulkanMemoryAllocator CONFIG REQUIRED)
     find_package(glfw3 CONFIG REQUIRED)
 
+    # ── sound ── miniaudio and stb_vorbis ship as a header and a .c with no
+    # CMake package, so they are found as files and exposed as one interface
+    # target that ov_audio alone takes as a PRIVATE_DEP. Declared here and not
+    # under src/, where scripts/check_layers.py forbids target_link_libraries.
+    find_path(OV_MINIAUDIO_INCLUDE_DIR miniaudio.h REQUIRED)
+    find_path(OV_STB_VORBIS_INCLUDE_DIR stb_vorbis.c REQUIRED)
+    add_library(thirdparty_audio INTERFACE)
+    target_include_directories(thirdparty_audio SYSTEM INTERFACE
+        ${OV_MINIAUDIO_INCLUDE_DIR} ${OV_STB_VORBIS_INCLUDE_DIR})
+    if(APPLE)
+        target_link_libraries(thirdparty_audio INTERFACE
+            "-framework CoreFoundation" "-framework CoreAudio" "-framework AudioToolbox")
+    elseif(UNIX)
+        target_link_libraries(thirdparty_audio INTERFACE ${CMAKE_DL_LIBS} m)
+    endif()
+    # ── end sound ──
+
     add_subdirectory(src/ov_rhi)
     add_subdirectory(src/ov_render)
+    add_subdirectory(src/ov_audio)  # ── sound ──
     add_subdirectory(src/ov_client)
 endif()
 
@@ -111,7 +129,7 @@ endif()
 # libc++ and fails on libstdc++.
 set(OV_SELFTEST_MODULES ov_base ov_math ov_io ov_nbt ov_registry ov_world ov_protocol ov_entity)
 if(OV_BUILD_CLIENT)
-    list(APPEND OV_SELFTEST_MODULES ov_rhi ov_render ov_client)
+    list(APPEND OV_SELFTEST_MODULES ov_rhi ov_render ov_audio ov_client)
 endif()
 ov_add_header_selftest(MODULES ${OV_SELFTEST_MODULES})
 
