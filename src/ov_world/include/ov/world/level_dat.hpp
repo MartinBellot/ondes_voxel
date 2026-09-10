@@ -36,7 +36,31 @@ struct LevelSettings {
     i32                    game_type{1};
     std::string            biome{"minecraft:plains"};
     std::vector<FlatLayer> layers;
+
+    // ── The world's clocks, weather and rules ───────────────────────────────
+    //
+    // Written by the command engine and read back on start, so that
+    // `/time set`, `/weather` and `/gamerule` survive a restart the way they
+    // do in vanilla. The defaults are the values this file always wrote.
+    f32  spawn_angle{0.0F};
+    i64  game_time{0};
+    i64  day_time{1000};
+    i32  clear_weather_time{0};
+    i32  rain_time{0};
+    i32  thunder_time{0};
+    bool raining{false};
+    bool thundering{false};
+    /// 0 peaceful, 1 easy, 2 normal, 3 hard.
+    i8   difficulty{2};
+    bool difficulty_locked{false};
+    /// `GameRules`, as vanilla stores it: every value a string. Empty is an
+    /// empty compound, which vanilla reads as every rule at its default.
+    std::vector<std::pair<std::string, std::string>> game_rules;
 };
+
+/// Read what a level.dat says about itself into `into`, leaving fields it does
+/// not carry as they were. `data` is the `Data` compound.
+void read_level_settings(const nbt::Tag& data, LevelSettings& into);
 
 /// Build the level.dat document for a superflat world.
 [[nodiscard]] nbt::Document make_level_dat(const LevelSettings& settings);

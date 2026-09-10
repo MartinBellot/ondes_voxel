@@ -20,6 +20,24 @@ ov_add_library(ov_server
         src/survival_session.cpp
         src/workbench.cpp
         src/world_ticks.cpp
+        # ── commands and chat ──
+        src/commands/arguments.cpp
+        src/commands/console.cpp
+        src/commands/context.cpp
+        src/commands/dispatcher.cpp
+        src/commands/env.cpp
+        src/commands/game_commands.cpp
+        src/commands/game_rules.cpp
+        src/commands/json.cpp
+        src/commands/names.cpp
+        src/commands/ops.cpp
+        src/commands/selector.cpp
+        src/commands/service.cpp
+        src/commands/snbt.cpp
+        src/commands/string_reader.cpp
+        src/commands/suggestions.cpp
+        src/commands/text.cpp
+        src/commands/world_state.cpp
     DEPS
         ov_base
         ov_gameplay
@@ -47,6 +65,16 @@ ov_add_test(test_ov_server
         tests/test_block_container.cpp
         tests/test_player_inventory.cpp
         tests/test_player_level.cpp
+    DEPS ov_server
+    LABELS unit
+)
+
+# ── commands and chat ──
+# The command engine, without a socket: parsers, selectors, the dispatcher's
+# errors and cursors, and every command run against a fake server.
+ov_add_test(test_ov_commands
+    SOURCES
+        tests/test_commands.cpp
     DEPS ov_server
     LABELS unit
 )

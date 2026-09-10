@@ -83,8 +83,8 @@ nbt::Document make_level_dat(const LevelSettings& settings) {
     put(data, "LevelName", nbt::Tag{settings.name});
     put(data, "LastPlayed", nbt::Tag{i64{0}});
     put(data, "GameType", nbt::Tag{settings.game_type});
-    put(data, "Difficulty", nbt::Tag{i8{2}});
-    put(data, "DifficultyLocked", nbt::Tag::make_bool(false));
+    put(data, "Difficulty", nbt::Tag{settings.difficulty});
+    put(data, "DifficultyLocked", nbt::Tag::make_bool(settings.difficulty_locked));
     put(data, "hardcore", nbt::Tag::make_bool(false));
     put(data, "allowCommands", nbt::Tag::make_bool(true));
 
@@ -95,15 +95,15 @@ nbt::Document make_level_dat(const LevelSettings& settings) {
     put(data, "SpawnX", nbt::Tag{settings.spawn_x});
     put(data, "SpawnY", nbt::Tag{settings.spawn_y});
     put(data, "SpawnZ", nbt::Tag{settings.spawn_z});
-    put(data, "SpawnAngle", nbt::Tag{0.0F});
+    put(data, "SpawnAngle", nbt::Tag{settings.spawn_angle});
 
-    put(data, "Time", nbt::Tag{i64{0}});
-    put(data, "DayTime", nbt::Tag{i64{1000}});
-    put(data, "clearWeatherTime", nbt::Tag{i32{0}});
-    put(data, "rainTime", nbt::Tag{i32{0}});
-    put(data, "thunderTime", nbt::Tag{i32{0}});
-    put(data, "raining", nbt::Tag::make_bool(false));
-    put(data, "thundering", nbt::Tag::make_bool(false));
+    put(data, "Time", nbt::Tag{settings.game_time});
+    put(data, "DayTime", nbt::Tag{settings.day_time});
+    put(data, "clearWeatherTime", nbt::Tag{settings.clear_weather_time});
+    put(data, "rainTime", nbt::Tag{settings.rain_time});
+    put(data, "thunderTime", nbt::Tag{settings.thunder_time});
+    put(data, "raining", nbt::Tag::make_bool(settings.raining));
+    put(data, "thundering", nbt::Tag::make_bool(settings.thundering));
     put(data, "WanderingTraderSpawnChance", nbt::Tag{i32{0}});
     put(data, "WanderingTraderSpawnDelay", nbt::Tag{i32{0}});
 
@@ -152,12 +152,60 @@ nbt::Document make_level_dat(const LevelSettings& settings) {
     put(dragon, "NeedsStateScanning", nbt::Tag::make_bool(true));
     put(data, "DragonFight", std::move(dragon));
 
-    put(data, "GameRules", nbt::Tag::make_compound());
+    nbt::Tag rules = nbt::Tag::make_compound();
+    for (const auto& [rule, value] : settings.game_rules) {
+        put(rules, rule, nbt::Tag{value});
+    }
+    put(data, "GameRules", std::move(rules));
     put(data, "ServerBrands", nbt::Tag::make_list(nbt::TagType::String));
     put(data, "ScheduledEvents", nbt::Tag::make_list(nbt::TagType::Compound));
 
     put(document.root, "Data", std::move(data));
     return document;
+}
+
+void read_level_settings(const nbt::Tag& data, LevelSettings& into) {
+    const auto integer = [&](std::string_view key, auto& field) {
+        if (const nbt::Tag* value = data.find(key)) {
+            field = static_cast<std::remove_reference_t<decltype(field)>>(value->as_i64());
+        }
+    };
+    const auto flag = [&](std::string_view key, bool& field) {
+        if (const nbt::Tag* value = data.find(key)) {
+            field = value->as_bool();
+        }
+    };
+    if (const nbt::Tag* name = data.find("LevelName")) {
+        into.name = std::string{name->as_string()};
+    }
+    integer("SpawnX", into.spawn_x);
+    integer("SpawnY", into.spawn_y);
+    integer("SpawnZ", into.spawn_z);
+    if (const nbt::Tag* angle = data.find("SpawnAngle")) {
+        into.spawn_angle = static_cast<f32>(angle->as_f64());
+    }
+    integer("GameType", into.game_type);
+    integer("Time", into.game_time);
+    integer("DayTime", into.day_time);
+    integer("clearWeatherTime", into.clear_weather_time);
+    integer("rainTime", into.rain_time);
+    integer("thunderTime", into.thunder_time);
+    flag("raining", into.raining);
+    flag("thundering", into.thundering);
+    integer("Difficulty", into.difficulty);
+    flag("DifficultyLocked", into.difficulty_locked);
+    if (const nbt::Tag* worldgen = data.find("WorldGenSettings")) {
+        if (const nbt::Tag* seed = worldgen->find("seed")) {
+            into.seed = seed->as_i64();
+        }
+    }
+    if (const nbt::Tag* rules = data.find("GameRules");
+        rules != nullptr && rules->compound() != nullptr) {
+        into.game_rules.clear();
+        for (const nbt::CompoundEntry& entry : *rules->compound()) {
+            into.game_rules.emplace_back(entry.name, std::string{entry.value.as_string()});
+        }
+    }
 }
 
 std::vector<u8> encode_level_dat(const LevelSettings& settings) {
