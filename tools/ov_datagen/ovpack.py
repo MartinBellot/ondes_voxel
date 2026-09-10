@@ -58,7 +58,7 @@ MAGIC = b"OVPK"
 # Bumped by hand whenever the layout changes, so a stale cache is detected
 # rather than misread. A mismatched cache read as if it were current is far
 # worse than no cache at all.
-FORMAT_VERSION = 13
+FORMAT_VERSION = 14
 
 _loot_report = ""
 _recipe_report = ""
@@ -102,7 +102,7 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
           hardness_doc: dict, loot_dir, loot_map_doc: dict,
           collision_doc: dict, emission_doc: dict, biome_list: list,
           entities_doc: dict, recipe_dir, fuel_doc: dict,
-          remainder_doc: dict) -> bytes:
+          remainder_doc: dict, resistance_doc: dict) -> bytes:
     blocks = blocks_doc["blocks"]
     state_count = blocks_doc["state_count"]
 
@@ -189,6 +189,7 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
     opacity = opacity_doc["opacity"]
     motion = motion_doc["blocks"]
     hardness = hardness_doc["blocks"]
+    resistance = resistance_doc["blocks"]
 
     def flags_for(block: dict) -> int:
         name = block["name"]
@@ -376,6 +377,11 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
         body += struct.pack("<f", float(hardness.get(block["name"], {}).get("hardness", -1.0)))
     align8(body)
 
+    resistance_offset = HEADER_SIZE + len(body)
+    for block in blocks:
+        body += struct.pack("<f", float(resistance.get(block["name"], -1.0)))
+    align8(body)
+
     registries_offset = HEADER_SIZE + len(body)
     for name_offset, entry_first, entry_count, first_id in registry_records:
         # u32 name, u32 entry_first, u32 entry_count, u32 first_id — 16 bytes.
@@ -550,7 +556,7 @@ def build(blocks_doc: dict, registries_doc: dict, tags_doc: dict,
         len(recipe_sections["choices"]),
         fuel_offset,
         remainder_offset,
-        0,  # reserved
+        resistance_offset,
     )
     assert len(header) <= HEADER_SIZE
     header += b"\0" * (HEADER_SIZE - len(header))
@@ -625,10 +631,17 @@ def main() -> int:
     with open(remainder_path) as f:
         remainder_doc = json.load(f)
 
+    resistance_path = NORMALIZED / "blast_resistance.json"
+    if not resistance_path.is_file():
+        sys.exit(f"error: {resistance_path} not found. "
+                 f"Run scripts/measure_blast.py resistance first.")
+    with open(resistance_path) as f:
+        resistance_doc = json.load(f)
+
     payload = build(blocks_doc, registries_doc, tags_doc, opacity_doc, stacks_doc,
                     motion_doc, hardness_doc, loot_dir, loot_map_doc, collision_doc,
                     emission_doc, biome_list, entities_doc, recipe_dir, fuel_doc,
-                    remainder_doc)
+                    remainder_doc, resistance_doc)
     tag_records_count = [t for g in tags_doc["tags"].values() for t in g]
     member_count_total = sum(len(v) for g in tags_doc["tags"].values() for v in g.values())
     OUTPUT.write_bytes(payload)
@@ -642,6 +655,8 @@ def main() -> int:
     print(f"    stack sizes .... {stacks_doc['measured']} items measured")
     print(f"    motion flags ... {motion_doc['measured']} blocks measured")
     print(f"    hardness ....... {hardness_doc['count']} blocks")
+    print(f"    blast res. ..... {resistance_doc['count']} blocks, "
+          f"{resistance_doc['measured']} confirmed against the game")
     print(f"    biomes ......... {len(biome_list)}")
     print(f"    loot tables .... {_loot_report}")
     print(f"    collision ...... {len(collision_doc['shapes'])} shapes, "
@@ -659,7 +674,7 @@ def main() -> int:
     if build(blocks_doc, registries_doc, tags_doc, opacity_doc, stacks_doc,
              motion_doc, hardness_doc, loot_dir, loot_map_doc, collision_doc,
              emission_doc, biome_list, entities_doc, recipe_dir, fuel_doc,
-             remainder_doc) != payload:
+             remainder_doc, resistance_doc) != payload:
         sys.exit("error: emitter is not deterministic")
     print("    deterministic .. yes")
     return 0

@@ -228,6 +228,16 @@ public:
     /// see docs/PROVENANCE.md.
     [[nodiscard]] f32 hardness(BlockId block) const noexcept;
 
+    /// How much of an explosion's energy this block eats, or -1 when the block
+    /// was never measured.
+    ///
+    /// Not in Mojang's reports either, and not derivable from hardness: stone
+    /// is 1.5 hard and 6 resistant, obsidian 50 and 1200. The candidate comes
+    /// from PrismarineJS/minecraft-data and every placeable block was then put
+    /// in front of a real charge on a real 1.20.1 server — see
+    /// docs/provenance/explosions.md.
+    [[nodiscard]] f32 blast_resistance(BlockId block) const noexcept;
+
     /// Does breaking this block need the right kind of tool to drop anything?
     ///
     /// It also makes it five times slower: vanilla divides by 100 instead of
@@ -325,6 +335,7 @@ private:
     std::span<const u8>           block_flags_;
     std::span<const u8>           fluid_bits_;
     std::span<const f32>          hardness_;
+    std::span<const f32>          resistance_;
     LootData                      loot_;
     std::span<const Box>          boxes_;
     std::span<const u32>          shape_records_;

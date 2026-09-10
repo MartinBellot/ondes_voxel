@@ -86,6 +86,7 @@ std::expected<BlockRegistry, RegistryError> BlockRegistry::from_bytes(std::vecto
     const u32   fluid_bytes = (header.state_count + 7) / 8;
     const auto* fluids      = pack_at<u8>(data, header.fluid_offset, fluid_bytes);
     const auto* hardness    = pack_at<f32>(data, header.hardness_offset, header.block_count);
+    const auto* resistance  = pack_at<f32>(data, header.resistance_offset, header.block_count);
     const auto* shape_boxes =
         pack_at<BlockRegistry::Box>(data, header.boxes_offset, header.box_count);
     const auto* shape_records =
@@ -97,7 +98,8 @@ std::expected<BlockRegistry, RegistryError> BlockRegistry::from_bytes(std::vecto
     const auto* biomes   = pack_at<BiomeRecord>(data, header.biomes_offset, header.biome_count);
 
     if (blocks == nullptr || props == nullptr || values == nullptr || states == nullptr ||
-        flags == nullptr || fluids == nullptr || hardness == nullptr || shape_boxes == nullptr ||
+        flags == nullptr || fluids == nullptr || hardness == nullptr || resistance == nullptr ||
+        shape_boxes == nullptr ||
         shape_records == nullptr || state_shapes == nullptr || emission == nullptr ||
         biomes == nullptr) {
         return std::unexpected{RegistryError::Corrupt};
@@ -118,6 +120,9 @@ std::expected<BlockRegistry, RegistryError> BlockRegistry::from_bytes(std::vecto
         reinterpret_cast<const u8*>(registry.data_.data() + header.fluid_offset), fluid_bytes};
     registry.hardness_ =
         std::span{reinterpret_cast<const f32*>(registry.data_.data() + header.hardness_offset),
+                  header.block_count};
+    registry.resistance_ =
+        std::span{reinterpret_cast<const f32*>(registry.data_.data() + header.resistance_offset),
                   header.block_count};
     registry.boxes_ = std::span{
         reinterpret_cast<const BlockRegistry::Box*>(registry.data_.data() + header.boxes_offset),
@@ -386,6 +391,13 @@ f32 BlockRegistry::hardness(BlockId block) const noexcept {
     // Unknown block: unbreakable, which stops a stray id from being mined
     // through rather than making it free to break.
     return block.value() < hardness_.size() ? hardness_[block.value()] : -1.0F;
+}
+
+f32 BlockRegistry::blast_resistance(BlockId block) const noexcept {
+    // -1 rather than 0 for an id the pack does not cover: a caller that treats
+    // it as zero would make an unknown block the most fragile in the game, and
+    // this project refuses a silent default. The explosion code checks for it.
+    return block.value() < resistance_.size() ? resistance_[block.value()] : -1.0F;
 }
 
 bool BlockRegistry::requires_correct_tool(BlockId block) const noexcept {
