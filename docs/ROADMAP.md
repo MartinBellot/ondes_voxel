@@ -793,9 +793,21 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [ ] Resource packs empilables, i18n, options persistées, captures d'écran
 
 ### Commandes et progression
-- [ ] Parseur Brigadier-like : sélecteurs `@a @p @r @e @s` et tous leurs filtres,
+- [~] Parseur Brigadier-like : sélecteurs `@a @p @r @e @s` et tous leurs filtres,
       chemins NBT, coordonnées relatives et locales
-- [ ] **~75 commandes** : advancement, attribute, ban, ban-ip, banlist, bossbar,
+      *(**2026-09-10** : arbre littéral / argument / redirection, permissions
+      par nœud, erreurs `...<--[HERE]` et suggestions ; 21 types d'argument,
+      sélecteurs et filtres, `~` et `^`, états de bloc, durées, texte JSON.
+      L'arbre `Commands` envoyé au client, relu par un décodeur indépendant :
+      **34/34**, ordre de la racine identique à vanilla. Restent les chemins
+      NBT, qui attendent `/data`)*
+- [~] **~75 commandes**
+      *(**34 livrées** avec leurs alias, chat non signé et console du serveur
+      dédié : **269/271 réponses identiques octet pour octet** au vrai serveur
+      sur la même sonde — les deux écarts sont le succès « Diamonds! » et la
+      liste de `/help`. Manquent notamment `execute`, `scoreboard`, `data`,
+      `clone`, `particle`, `playsound`, `worldborder`, `ban`, `whitelist`,
+      `trigger`. Voir `docs/provenance/commandes.md`)* : advancement, attribute, ban, ban-ip, banlist, bossbar,
       clear, clone, damage, data, datapack, debug, defaultgamemode, deop,
       difficulty, effect, enchant, **execute** (toutes les sous-commandes),
       experience, fill, fillbiome, forceload, function, gamemode, gamerule,
@@ -805,7 +817,21 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       setidletimeout, setworldspawn, spawnpoint, spectate, spreadplayers, stop,
       stopsound, summon, tag, team, teammsg, teleport, tellraw, time, title,
       trigger, weather, whitelist, worldborder, xp
-- [ ] **~45 gamerules**
+- [~] **~45 gamerules**
+      *(le catalogue est complet — **45/45** noms, types et défauts relevés sur
+      le vrai serveur, persistés dans `level.dat` — mais seules celles dont le
+      système existe agissent : doDaylightCycle, doMobSpawning, keepInventory,
+      randomTickSpeed…)*
+- [x] Fichiers joueur `playerdata/<uuid>.dat` au format vanilla
+      *(**2026-09-10**. Avant, rien n'était écrit : la position vivait dans une
+      table en mémoire et l'inventaire se perdait à chaque déconnexion. Un
+      fichier vanilla relu par nous puis réécrit : **159/159 feuilles
+      identiques**, et vanilla qui le relit ne change que ce qu'il change sur
+      son propre fichier ; notre fichier ouvert par vanilla : position,
+      PV, faim, piles et effets retrouvés, **0 feuille perdue**. Les clés que
+      nous ne modélisons pas repartent intactes. Bout en bout 45/45 à travers
+      un redémarrage. Le solo écrit aussi `level.dat` → `Data.Player`. Voir
+      `docs/provenance/donnees-joueur.md`)*
 - [ ] Scoreboard, équipes, objectifs, critères
 - [ ] **Tous les succès** (story, nether, end, adventure, husbandry) et leurs
       déclencheurs

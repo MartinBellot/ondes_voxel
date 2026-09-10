@@ -68,8 +68,8 @@
     "M6": {
       "name": "Contenu complet",
       "status": "in_progress",
-      "done": 14,
-      "total": 79,
+      "done": 15,
+      "total": 80,
       "exit_criterion": "Une batterie world_test par sous-système ; parité statistique worldgen sur 1000 seeds ; matrice protocole à 100 %.",
       "blocked": [],
       "notes": "Vague d'agents parallèles du 2026-09-09 : carvers, règles de surface, départage des biomes (100,000 %), ordre des étages, fluides, redstone, survie, et le cadre des features. Le blocage unique de l'étage des features est la formule d'ensemencement de la décoration : tout le reste est mesuré et en place, et l'étage est exposé sans être câblé plutôt qu'allumé faux."
@@ -109,7 +109,9 @@
     "m3_vertical_slice": "client vanilla 1.20.1 non modifie : connexion, spawn dans un superflat eclaire, deplacement, cassage et pose de blocs.",
     "chunk_packet": "encodage identique section par section a celui du vrai serveur vanilla (largeurs de bits, tailles de palette, nombres de longs, octets aux memes offsets)",
     "sky_light": "sunlight direct + flood fill traversant les frontieres de chunk ; verifie par un cas ou la seule source proche est dans le chunk voisin",
-    "player_state": "position et rotation retenues entre sessions ; chunks centres sur le joueur a la reconnexion (verifie a 1234,-777 : chunk 77,-49)",
+    "player_state": "position et rotation retenues entre sessions ; chunks centres sur le joueur a la reconnexion (verifie a 1234,-777 : chunk 77,-49). Correction du 2026-09-10 : c'etait vrai dans la vie d'un processus seulement, jusqu'aux fichiers joueur (voir player_data)",
+    "player_data": "world/playerdata/<uuid>.dat au format vanilla 1.20.1, ecrit a la deconnexion, a l'autosave et a l'arret, .dat_old compris. Fichier vanilla relu puis reecrit : 159/159 feuilles identiques ; notre fichier ouvert par vanilla : 0 feuille perdue ; bout en bout 45/45 a travers un redemarrage. Un fichier d'un autre DataVersion est refuse et jamais ecrase",
+    "commands": "chat et 34 commandes (alias compris) : 269/271 reponses identiques octet pour octet au vrai serveur 1.20.1 sur 271 commandes, help 34/34, suggestions 21/22, arbre Commands 34/34 relu par un decodeur independant, 45/45 gamerules. Mode de jeu par joueur, heure, meteo, difficulte et gamerules persistes dans level.dat",
     "chunk_streaming": "un pas d'un chunk echange 17 chunks, un saut de 5 en diagonale 157 ; le total reste a 289 et reste centre sur le joueur",
     "region_write": "17879/17879 chunks reecrits octet-identiques sur un monde reel",
     "persistence": "monde sauvegarde en Anvil et recharge : tour, trou et lumiere identiques apres redemarrage ; autosave 30 s, 4 chunks / 3 regions sans surcharge de tick",
