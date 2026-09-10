@@ -567,7 +567,12 @@ def measure_sources(out: Path, trials: int) -> None:
         fuses = []
         for attempt in range(10):
             server.batch(["kill @e[type=minecraft:creeper]",
-                          f"summon minecraft:creeper 200.5 {y}.0 0.5 "
+                          # ⚠ Inside the forceloaded rectangle. The first
+                          #   version put this creeper at x=200, outside every
+                          #   ticket: it was never in the level, `data get`
+                          #   answered nothing, and "no fuse" is exactly what a
+                          #   creeper with no countdown would look like.
+                          f"summon minecraft:creeper 0.5 {y}.0 20.5 "
                           "{NoGravity:1b,ignited:1b,NoAI:1b}"])
             time.sleep(0.02 * attempt)
             for line in server.batch(["data get entity "

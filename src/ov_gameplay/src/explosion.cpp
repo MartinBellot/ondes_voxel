@@ -210,6 +210,14 @@ bool Explosions::rolls_drop(const ExplosionSpec& spec, math::LegacyRandomSource&
     return rng.next_float() < chance;
 }
 
+AABB Explosions::entity_search_box(const ExplosionSpec& spec) const noexcept {
+    const f64 reach = static_cast<f64>(spec.power) *
+                          static_cast<f64>(constants_.entity_radius_factor) +
+                      1.0;
+    return AABB{spec.centre - Vec3d{reach, reach, reach},
+                spec.centre + Vec3d{reach, reach, reach}};
+}
+
 f64 Explosions::seen_percent(const world::LevelView& level, const Vec3d& centre,
                              const AABB& box) const {
     const f64 step_x = 1.0 / ((box.max.x - box.min.x) * 2.0 + 1.0);

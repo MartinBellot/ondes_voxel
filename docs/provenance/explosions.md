@@ -353,7 +353,39 @@ bouche-trou.
 
 ## 5. Les sources
 
-*(section remplie par `measure_blast.py sources` et `drops`.)*
+La puissance d'une source ne se lit nulle part : elle se lit **dans son cratère**.
+Le banc `sources` fait exploser, dans la même boîte de terre que le § 3, une TNT
+amorcée, un creeper allumé et un creeper chargé, et compte.
+
+| source | puissance | union, eux | union, nous | intersection, eux | nous |
+|---|---|---|---|---|---|
+| creeper | 3 | 86 | 90 | 72 | 68 |
+| TNT | 4 | 209 | 214 | 141 | 127 |
+| creeper chargé | 6 | 603 | 617 | 356 | 339 |
+
+Trois puissances, trois cratères, et l'ordre comme les tailles tiennent à
+quelques cellules de bord près — sur des unions de 86, 209 et 603 cellules
+estimées à huit tirs de chaque côté. Les autres puissances de la table
+(`explosion_sources()`) ne sont **pas** mesurées ici et sont marquées comme
+telles : ghast et tête de wither à 1, lit et ancre de résurrection à 5, cristal
+de l'End à 6.
+
+**La mèche du creeper vaut 30 ticks.** Lue sur le `Fuse` de l'entité pendant
+qu'elle gonfle, dix captures, **dix fois 30** — sans la convergence par en
+dessous qu'ont les autres délais de ce dépôt, parce que le compteur du creeper
+monte au lieu de descendre et que ce qu'on lit est sa borne.
+
+⚠ La première version de cette lecture posait le creeper à `x = 200`, **hors de
+tout ticket de forceload**. Il n'était donc dans aucun niveau, `data get` ne
+répondait rien, et « pas de mèche » ressemble exactement à un creeper qui n'a pas
+de compte à rebours. Le piège n°11 du briefing, une variante de plus.
+
+La mèche de la TNT vaut **80 ticks**, mesurée par la campagne redstone
+(`redstone.md` § 14) sur le `Fuse` de l'entité amorcée, et reprise ici sans être
+remesurée. Une TNT que *l'explosion d'une autre* allume n'attend pas 80 ticks
+mais `fuse/8 + aléa(fuse/4)`, soit **10 à 29** — c'est l'échelonnement qui fait
+qu'une pile de TNT projette des blocs au lieu de disparaître d'un coup, et le
+test `chained_fuse` le vérifie sur les deux bornes.
 
 ---
 

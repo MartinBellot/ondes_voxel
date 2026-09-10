@@ -188,6 +188,14 @@ public:
     /// Roll `drop_chance` for one block.
     [[nodiscard]] bool rolls_drop(const ExplosionSpec& spec, math::LegacyRandomSource& rng) const;
 
+    /// The box a caller has to look for entities in.
+    ///
+    /// `2 * power` on every side **plus one**. The extra block is not slack: an
+    /// entity is found by its own box overlapping this one, and an entity whose
+    /// feet are just outside still has a body inside. Dropping it makes the
+    /// outermost ring of victims immune.
+    [[nodiscard]] AABB entity_search_box(const ExplosionSpec& spec) const noexcept;
+
     /// How much of the way from an entity's box to the centre is unobstructed.
     ///
     /// The game samples the box on a grid whose spacing depends on the box's
