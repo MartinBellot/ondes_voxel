@@ -88,6 +88,14 @@ f64 ChunkGenerator::density_at(i32 x, i32 y, i32 z) const {
     return density_ == nullptr ? 0.0 : density_->compute(FunctionContext{x, y, z});
 }
 
+std::string_view ChunkGenerator::biome_name_at(i32 x, i32 y, i32 z) const {
+    // Quart positions: the biome grid is one cell per four blocks on each axis.
+    // An arithmetic shift and not a division, because `-1 / 4` is 0 in C++ and
+    // the block at x = -1 belongs to quart -1.
+    const auto climate = biomes_->sample(*router_, x >> 2, y >> 2, z >> 2);
+    return biomes_->biome_at(climate);
+}
+
 registry::BlockStateId ChunkGenerator::fluid_at(i32 y) const {
     if (y < std::min(kLavaLevel, sea_level_)) {
         return y < kLavaLevel ? lava_ : registry::kAirState;

@@ -25,9 +25,12 @@
 
 #include "ov/registry/registries.hpp"
 #include "ov/worldgen/pipeline.hpp"
+#include "ov/worldgen/structure.hpp"
+#include "ov/worldgen/structure_set.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <filesystem>
 #include <set>
 #include <utility>
@@ -57,6 +60,43 @@ constexpr i64 kSeed = 1234567890;
     return std::filesystem::is_directory(data_root() / "worldgen") &&
            std::filesystem::is_regular_file(registry_pack());
 }
+
+/// The world as the structure placer needs to see it, over a generator.
+///
+/// The same two heightmap rules the parity harness uses: WORLD_SURFACE counts
+/// water as something, OCEAN_FLOOR does not. Duplicated here rather than shared
+/// because a test that borrowed the harness's version would stop testing the
+/// day the harness changed.
+class ColumnSampler final : public StructureWorldSampler {
+public:
+    explicit ColumnSampler(const ChunkGenerator& generator) : generator_{&generator} {}
+
+    [[nodiscard]] std::string_view biome_at(i32 x, i32 y, i32 z) const override {
+        return generator_->biome_name_at(x, y, z);
+    }
+
+    [[nodiscard]] i32 surface_height(i32 x, i32 z) const override {
+        const i32 sea = generator_->sea_level();
+        for (i32 y = 319; y >= -64; --y) {
+            if (generator_->is_solid(x, y, z) || y < sea) {
+                return y + 1;
+            }
+        }
+        return -64;
+    }
+
+    [[nodiscard]] i32 ocean_floor_height(i32 x, i32 z) const override {
+        for (i32 y = 319; y >= -64; --y) {
+            if (generator_->is_solid(x, y, z)) {
+                return y + 1;
+            }
+        }
+        return -64;
+    }
+
+private:
+    const ChunkGenerator* generator_;
+};
 
 }  // namespace
 
@@ -119,6 +159,51 @@ TEST_CASE("driving the statuses gives the chunk generate() gives", "[worldgen][p
         }
     }
     CHECK(differing_biomes == 0);
+}
+
+TEST_CASE("structure starts are decided before a block exists", "[worldgen][pipeline]") {
+    if (!data_present()) {
+        SKIP("vanilla data absent; run tools/ov_datagen first");
+    }
+    auto blocks = registry::BlockRegistry::load(registry_pack());
+    REQUIRE(blocks.has_value());
+    auto router = NoiseRouter::load(data_root(), "overworld", kSeed);
+    REQUIRE(router.has_value());
+    auto biomes = BiomeSource::load(reports_root(), "overworld");
+    REQUIRE(biomes.has_value());
+    auto sets = StructureSetRegistry::load(data_root());
+    REQUIRE(sets.has_value());
+    auto placer = StructurePlacer::load(data_root(), *sets);
+    REQUIRE(placer.has_value());
+    placer->restrict_to_biomes(biomes->biomes());
+
+    ChunkGenerator generator{*router, *biomes, *blocks};
+    const auto     shape = world::WorldShape::overworld();
+
+    ChunkPipeline pipeline{generator, nullptr, *blocks, shape, kSeed};
+
+    // No placer yet: the answer is empty, and empty is the honest answer rather
+    // than a silent zero — nothing here pretends the structures happened.
+    CHECK(pipeline.structure_starts(-7, -10).empty());
+    CHECK(pipeline.stats().structure_starts == 0);
+
+    ChunkPipeline with_structures{generator, nullptr, *blocks, shape, kSeed};
+    ColumnSampler sampler{generator};
+    with_structures.set_structures(&*placer, &sampler);
+
+    // The mineshaft the real game started in chunk (-7, -10) at this seed.
+    const auto starts = with_structures.structure_starts(-7, -10);
+    REQUIRE(std::find(starts.begin(), starts.end(), "minecraft:mineshaft") != starts.end());
+
+    // And the point of the status being where it is: the chunk is still empty.
+    // A structure decision that needed generated blocks could not answer for a
+    // chunk the world has not made, and the game answers for those constantly.
+    CHECK(with_structures.status_of(-7, -10) == ChunkStatus::StructureStarts);
+    CHECK(with_structures.stats().reached[static_cast<usize>(ChunkStatus::Noise)] == 0);
+    CHECK(with_structures.stats().structure_starts >= 1);
+
+    // A chunk with nothing in it costs nothing and says so.
+    CHECK(with_structures.structure_starts(-6, -10).empty());
 }
 
 TEST_CASE("a chunk cannot decorate before its neighbours are carved",

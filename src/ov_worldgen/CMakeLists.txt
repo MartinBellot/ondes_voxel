@@ -19,6 +19,8 @@ ov_add_library(ov_worldgen
         src/ore_feature.cpp
         src/pipeline.cpp
         src/placement.cpp
+        src/structure.cpp
+        src/structure_set.cpp
         src/surface_rules.cpp
         src/surface_system.cpp
         src/tree_feature.cpp
@@ -43,6 +45,7 @@ ov_add_test(test_ov_worldgen
         tests/test_feature.cpp
         tests/test_noise.cpp
         tests/test_pipeline.cpp
+        tests/test_structure_set.cpp
         tests/test_surface_rules.cpp
         tests/test_tree_feature.cpp
     DEPS ov_worldgen
