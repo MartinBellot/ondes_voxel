@@ -713,6 +713,15 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       l'élevage entier, le composteur, les abeilles, la pêche, le sniffer,
       la météo — donc la terre qui s'humidifie sous la pluie — et le
       piétinement. Voir `docs/provenance/agriculture.md`)*
+      *(**2026-09-10 — l'élevage des quatre espèces vivantes** : bébés (`Age`
+      −24 000, métadonnée 16, boîte moitié et yeux mesurés), croissance par la
+      nourriture, reproduction — veau 59-62 ticks après le repas contre 59-60,
+      `InLove` 600, repos 6000, XP 1-7 (χ² p ≈ 0,69) —, tentation à 10 blocs,
+      tonte 1-3 laines, teinture et couleurs héritées (256 paires), broutage
+      qui refait la laine, ponte 6000-12 000 ticks, traite, selle, et l'œuf
+      lancé qui fait éclore un poussin. Restent les autres espèces (lapin,
+      équidés, loup, chat), l'apprivoisement, et la persistance des mobs.
+      Voir `docs/provenance/elevage.md`)*
 - [ ] **Enchantement** : table, coût XP, lapis, étagères, **39 enchantements**,
       enclume (combinaison, réparation, renommage, coûts, « trop cher »), meule,
       mending, livres enchantés

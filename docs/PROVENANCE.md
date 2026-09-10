@@ -43,6 +43,7 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`combat.md`](provenance/combat.md) | Frapper, utiliser, manger, user : la jauge d'attaque, 34 armes, 91 tables de butin |
 | [`verbes.md`](provenance/verbes.md) | Les verbes branchés au serveur, et le levier enfin tiré |
 | [`explosions.md`](provenance/explosions.md) | La résistance au souffle des 987 blocs, mesurée — et le plafond au-delà duquel aucune explosion ne peut plus distinguer deux valeurs |
+| [`elevage.md`](provenance/elevage.md) | Veaux, agneaux et poussins : reproduction à 59-62 ticks, couleurs héritées, et une vitesse de marche qui n'est pas l'attribut divisé par deux |
 | [`chat-client.md`](provenance/chat-client.md) | Le chat de notre client, mesuré sur le vrai client : un fondu de 10 s et non de 3, et des coupures de ligne identiques |
 | [`projectiles.md`](provenance/projectiles.md) | Flèches, tridents et lancers : un vol ajusté à 1,3·10⁻¹⁴, et l'ordre des opérations qui expliquait le résidu des flèches |
 | [`commandes.md`](provenance/commandes.md) | Le chat et 34 commandes : 269/271 réponses identiques au vrai serveur, octet pour octet |
