@@ -169,6 +169,25 @@ f32 fall_damage(f32 distance, const DamageConstants& constants) noexcept {
 
 DamageResult apply_damage(HealthState& state, DamageKind kind, f32 amount,
                           const DamageConstants& constants) noexcept {
+    return apply_damage(state, kind, amount, constants, DamageMitigation{});
+}
+
+f32 after_resistance(DamageKind kind, f32 amount, i32 resistance) noexcept {
+    const DamageTypeInfo& info = damage_type(kind);
+    if (resistance < 0 || has(info.flags, DamageFlags::BypassesEffects) ||
+        has(info.flags, DamageFlags::BypassesResistance)) {
+        return amount;
+    }
+    // In float, in this order: the product first, then the division. 7 at
+    // level I came back as 5.6 on the real server, and so does this.
+    const i32 kept    = 25 - (resistance + 1) * 5;
+    const f32 product = amount * static_cast<f32>(kept);
+    return std::max(product / 25.0F, 0.0F);
+}
+
+DamageResult apply_damage(HealthState& state, DamageKind kind, f32 amount,
+                          const DamageConstants& constants,
+                          const DamageMitigation& mitigation) noexcept {
     DamageResult result;
     if (state.dead || amount <= 0.0F) {
         return result;
@@ -195,6 +214,14 @@ DamageResult apply_damage(HealthState& state, DamageKind kind, f32 amount,
             state.hurt_ticks         = constants.hurt_ticks;
         }
     }
+
+    // Resistance, then the yellow hearts. With no resistance and no
+    // absorption both are identities, so the measured survival tables run
+    // through this path unchanged.
+    dealt               = after_resistance(kind, dealt, mitigation.resistance);
+    const f32 through   = std::max(dealt - state.absorption, 0.0F);
+    state.absorption    = std::max(state.absorption - (dealt - through), 0.0F);
+    dealt               = through;
 
     state.health -= dealt;
     result.applied = true;

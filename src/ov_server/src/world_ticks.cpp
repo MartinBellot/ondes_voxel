@@ -88,6 +88,9 @@ usize WorldTicks::settle(ServerLevel& level, usize& waves) {
             // *replaced* — a source broken into air — recompute rather than
             // wait for someone else to poke it.
             fluid_.on_neighbour_changed(level, pos);
+            if (extension_ != nullptr) {  // ── tnt and gravity ──
+                extension_->neighbour_changed(level, pos);
+            }
             ++notified;
 
             for (u8 i = 0; i < kDirectionCount; ++i) {
@@ -97,6 +100,9 @@ usize WorldTicks::settle(ServerLevel& level, usize& waves) {
                 }
                 fluid_.on_neighbour_changed(level, neighbour);
                 (void)redstone_.neighbour_changed(level, neighbour, pos);
+                if (extension_ != nullptr) {  // ── tnt and gravity ──
+                    extension_->neighbour_changed(level, neighbour);
+                }
                 ++notified;
             }
         }
@@ -181,6 +187,11 @@ WorldTickStats WorldTicks::run(ServerLevel& level, i64 now) {
             OV_LOG_WARN("block tick names an unknown block '{}' at {},{},{}", tick.what,
                         tick.pos.x, tick.pos.y, tick.pos.z);
             ++stats.refused;
+            continue;
+        }
+        // ── tnt and gravity: a falling block's tick is not redstone's ──
+        if (extension_ != nullptr && extension_->scheduled_tick(level, tick.pos, tick.what)) {
+            ++stats.block_ticks;
             continue;
         }
         (void)redstone_.scheduled_tick(level, tick.pos, tick.what);

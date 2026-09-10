@@ -53,6 +53,7 @@
 #include "async_chunk_source.hpp"
 #include "generated_world.hpp"
 #include "survival_session.hpp"
+#include "effect_session.hpp"  // ── effects ──
 // ── combat and interaction ───────────────────────────────────────────
 #include "combat_session.hpp"
 #include "mob_combat.hpp"
@@ -60,6 +61,8 @@
 #include "ov/gameplay/food.hpp"
 #include "ov/gameplay/item_use.hpp"
 #include "ov/protocol/interaction.hpp"
+// ── tnt and gravity ─────────────────────────────────────────────────
+#include "tnt_gravity.hpp"
 
 #include <fmt/format.h>
 
@@ -97,6 +100,9 @@ using ov::server::SurvivalIo;
 using ov::server::SurvivalOutcome;
 using ov::server::SurvivalPlayer;
 using ov::server::SurvivalSession;
+using ov::server::EffectBearer;   // ── effects ──
+using ov::server::EffectIo;       // ── effects ──
+using ov::server::EffectSession;  // ── effects ──
 // ── combat and interaction ───────────────────────────────────────────
 using ov::server::CombatIo;
 using ov::server::CombatOutcome;
@@ -156,6 +162,12 @@ struct Options {
     /// look at: `--mobs=zombie,cow,creeper` puts three of them on the ground in
     /// front of the spawn.
     std::vector<std::string> mobs;
+
+    // ── effects ──
+    /// Effects every player is given on joining: `--effect=speed:1:600,…`
+    /// (name, amplifier, ticks). A test entry point until /effect exists —
+    /// scripts/check_effects_e2e.py drives it — and named as one.
+    std::vector<std::string> effects;
 };
 
 /// Where a connection is in the protocol's state machine.
@@ -1028,6 +1040,15 @@ struct Player {
     /// Everything about it lives in survival_session.{hpp,cpp}.
     SurvivalSession survival;
 
+    // ── effects ──────────────────────────────────────────────────────────
+    /// Status effects and attributes, and the packets they owe this client.
+    /// Everything about it lives in effect_session.{hpp,cpp}; /effect calls
+    /// `effects.apply` / `remove` / `clear` on it.
+    EffectSession effects;
+    /// `--effect=` has been applied to this player.
+    bool effects_started{false};
+    // ── end effects ──────────────────────────────────────────────────────
+
     // ── combat and interaction ───────────────────────────────────────────
     /// The attack gauge, the eat in progress, and the four verbs' state.
     /// Everything about it lives in combat_session.{hpp,cpp}.
@@ -1107,6 +1128,16 @@ Options parse_args(int argc, char** argv) {
             options.record_motion = std::string{arg.substr(16)};
         } else if (arg == "--survival") {
             options.survival = true;
+        } else if (arg.starts_with("--effect=")) {  // ── effects ──
+            std::string_view list = arg.substr(9);
+            while (!list.empty()) {
+                const auto comma = list.find(',');
+                if (!list.substr(0, comma).empty()) {
+                    options.effects.emplace_back(list.substr(0, comma));
+                }
+                list = comma == std::string_view::npos ? std::string_view{}
+                                                       : list.substr(comma + 1);
+            }
         } else if (arg.starts_with("--mobs=")) {
             std::string_view list = arg.substr(7);
             while (!list.empty()) {
@@ -1175,6 +1206,7 @@ void print_help() {
         "  --survival                                      survival mode: blocks take time\n"
         "  --record-motion=<file>                          log every reported position\n"
         "  --mobs=<name,name,...>                          place mobs near the spawn point\n"
+        "  --effect=<name:amp:ticks,...>                   effects given to every joining player\n"
         "  --help, -h                                      this message\n"
         "\n"
         "Not an official Minecraft product. Not approved by or associated with Mojang.\n");
@@ -1882,8 +1914,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             holding.item       = held.item_id;
             holding.efficiency = enchantment_level(held, "minecraft:efficiency");
         }
-        return break_rules->destroy_progress(state, holding,
-                                             gameplay::Stance{.on_ground = who.on_ground});
+        // ── effects: haste, conduit power and mining fatigue ──
+        return break_rules->destroy_progress(state, holding, who.effects.dig_stance(who.on_ground));
     };
 
     /// Tirer le butin d'un bloc et le poser au sol.
@@ -2010,6 +2042,11 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         }
     };
 
+    // ── tnt and gravity ─────────────────────────────────────────────────────
+    // Declared here and emplaced once the world ticks exist: the join path
+    // below hands it the entities it spawned, and the drain hands it blocks.
+    std::optional<TntGravity> tnt_gravity;
+
     /// The packets that make one mob appear.
     ///
     /// Three, in this order, and the order is what a real server sends: the
@@ -2019,6 +2056,13 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     /// from the two that follow.
     const auto mob_packets = [&](const entity::EntityState& state,
                                  const auto&                deliver) {
+        // ── tnt and gravity: a primed TNT and a falling block are not mobs ──
+        if (tnt_gravity && mobs && tnt_gravity->owns(state.type)) {
+            tnt_gravity->spawn_packets(*mobs, state, [&](i32 id, std::span<const u8> payload) {
+                deliver(id, payload);
+            });
+            return;
+        }
         net::SpawnEntity spawn;
         spawn.entity_id = state.network_id;
         spawn.uuid      = state.uuid;
@@ -2423,6 +2467,11 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
 
         level.emplace(*blocks, std::move(hooks));
         world_ticks.emplace(*blocks, *registries);
+        // ── tnt and gravity ──
+        tnt_gravity.emplace(*blocks, *registries, loot_tables ? &*loot_tables : nullptr,
+                            mob_combat ? &*mob_combat : nullptr);
+        tnt_gravity->set_redstone(&world_ticks->redstone());
+        world_ticks->set_extension(&*tnt_gravity);
         tick_broadcasts.reserve(4096);
     } else {
         OV_LOG_WARN("no block registry — fluids and redstone stay inert");
@@ -2729,6 +2778,32 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         send_slot(who, slot);
     };
 
+    // ── effects ─────────────────────────────────────────────────────────────
+    /// The two sinks an effect packet goes to, for one player.
+    const auto effect_io_for = [&](Player& who) {
+        return EffectIo{
+            .send =
+                [&who](i32 id, std::span<const u8> payload) {
+                    if (const auto framed = net::encode_packet(id, payload);
+                        framed && who.connection) {
+                        who.connection->send(*framed);
+                    }
+                },
+            .broadcast = [&broadcast, &who](i32 id, std::span<const u8> payload) {
+                broadcast(who.connection.get(), id, payload);
+            }};
+    };
+    /// Who the effects are on: mortal only in survival, and the sneak and
+    /// sprint bits of index 0 so an invisibility does not erase them.
+    const auto effect_bearer_for = [&](const Player& who) {
+        return EffectBearer{
+            .entity_id    = who.entity_id,
+            .mortal       = options.survival,
+            .shared_flags = static_cast<u8>((who.sneaking ? 0x02 : 0) |
+                                            (who.survival.sprinting ? 0x08 : 0))};
+    };
+    // ── end effects ─────────────────────────────────────────────────────────
+
     /// The player, as the combat session reads them.
     const auto combat_view = [&](const Player& who) {
         CombatPlayer view;
@@ -2747,7 +2822,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // critical slightly too easy — a stated gap, not a silent one.
         view.in_water     = false;
         view.on_climbable = false;
-        view.blind        = false;
+        view.blind        = who.effects.blind();  // ── effects ──
         view.riding       = false;
         view.game_mode    = options.survival ? u8{0} : u8{1};
         view.food         = who.survival.food.food;
@@ -2755,6 +2830,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             // always twenty haunches — and `begin_use` compares against
             // this to refuse an eat a full player cannot make.
             view.max_food     = 20;
+        view.strength = who.effects.strength();  // ── effects ──
+        view.weakness = who.effects.weakness();  // ── effects ──
         return view;
     };
 
@@ -2781,6 +2858,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         entity::EntityState* state = mobs->mutable_state(handle);
         if (state == nullptr || state->removed) {
             return false;
+        }
+        // ── tnt and gravity: a primed TNT or a falling block takes no damage ──
+        if (tnt_gravity && tnt_gravity->owns(state->type)) {
+            return true;
         }
 
         const MobHurt result = mob_combat->hurt(*state, damage, mob_damage_constants);
@@ -3766,11 +3847,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                              used.screen_position.x, used.screen_position.y,
                                              used.screen_position.z);
                             }
-                            if (used.spawn_primed_tnt) {
-                                OV_LOG_DEBUG("use on block: primed TNT at ({}, {}, {}) is not "
-                                             "spawned by this server yet",
-                                             used.tnt_position.x, used.tnt_position.y,
-                                             used.tnt_position.z);
+                            // ── tnt and gravity: spawned by the next tick ──
+                            if (used.spawn_primed_tnt && tnt_gravity) {
+                                tnt_gravity->request_prime(used.tnt_position,
+                                                           gameplay::kTntFuseTicks);
                             }
                             if (used.result != gameplay::UseResult::Pass) {
                                 return true;
@@ -4540,6 +4620,86 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     bool      mobs_placed   = false;
     auto      last_autosave = std::chrono::steady_clock::now();
 
+    // ── tnt and gravity ─────────────────────────────────────────────────────
+    // What an explosion reaches outside the module for. Built once, before the
+    // loop: five std::functions built per tick would allocate in the tick.
+    // Every callback runs inside the entity pass, which holds players_mutex
+    // and chunk_mutex.
+    const Deliver tnt_deliver = [&](i32 id, std::span<const u8> payload) {
+        broadcast(nullptr, id, payload);
+    };
+    TntGravityHost tnt_host;
+    tnt_host.broadcast   = tnt_deliver;
+    tnt_host.each_player = [&](const std::function<void(BlastPlayer&)>& visit) {
+        for (auto& [blast_key, who] : players) {
+            if (!who.connection || !who.confirmed) {
+                continue;
+            }
+            BlastPlayer view;
+            view.feet     = Vec3d{who.x, who.y, who.z};
+            view.creative = !options.survival;
+            view.send     = [&who](i32 id, std::span<const u8> payload) {
+                if (const auto framed = net::encode_packet(id, payload); framed && who.connection) {
+                    who.connection->send(*framed);
+                }
+            };
+            if (options.survival) {
+                view.hurt = [&](f32 amount) {
+                    const SurvivalIo io{
+                        .send =
+                            [&](i32 id, std::span<const u8> payload) {
+                                if (const auto framed = net::encode_packet(id, payload);
+                                    framed && who.connection) {
+                                    who.connection->send(*framed);
+                                }
+                            },
+                        .broadcast = [&](i32 id, std::span<const u8> payload) {
+                            broadcast(who.connection.get(), id, payload);
+                        }};
+                    (void)who.survival.hurt(gameplay::DamageKind::Explosion, amount, io,
+                                            who.entity_id);
+                };
+            }
+            visit(view);
+        }
+    };
+    tnt_host.drop_item = [&](Vec3d at, const net::ItemStack& stack) {
+        ItemEntity item;
+        item.entity_id = next_entity_id.fetch_add(1);
+        item.uuid      = uuid_for_entity(item.entity_id);
+        item.x         = at.x;
+        item.y         = at.y;
+        item.z         = at.z;
+        item.stack     = stack;
+        item.born      = server_tick.load(std::memory_order_relaxed);
+        std::vector<ItemEntity> one;
+        one.push_back(std::move(item));
+        publish_items(one);
+    };
+    tnt_host.sweep_items = [&](const std::function<bool(Vec3d)>& destroyed) {
+        for (usize i = ground_items.size(); i-- > 0;) {
+            const ItemEntity& item = ground_items[i];
+            if (!destroyed(Vec3d{item.x, item.y, item.z})) {
+                continue;
+            }
+            broadcast(nullptr, net::clientbound::kRemoveEntities,
+                      net::encode_remove_entity(item.entity_id));
+            ground_items.erase(ground_items.begin() + static_cast<isize>(i));
+        }
+    };
+    tnt_host.creeper_targets = [&](std::vector<Vec3d>& out) {
+        // A creative player is never a creeper's target.
+        if (!options.survival) {
+            return;
+        }
+        for (const auto& [target_key, who] : players) {
+            if (who.connection && who.confirmed && !who.survival.awaiting_respawn) {
+                out.push_back(Vec3d{who.x, who.y, who.z});
+            }
+        }
+    };
+    // ── end tnt and gravity ─────────────────────────────────────────────────
+
     const auto should_stop = [&]() {
         return g_stop_requested.load(std::memory_order_relaxed) ||
                (external_stop != nullptr && external_stop->load(std::memory_order_relaxed));
@@ -5046,7 +5206,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // Mobs: gravity, collision, and only the movement that actually
         // happened. A delta packet when the move fits in one — six bytes rather
         // than twenty-eight — and a teleport when it does not.
-        if (mobs && blocks && !mobs->handles().empty()) {
+        if (mobs && blocks &&
+            (!mobs->handles().empty() || (tnt_gravity && tnt_gravity->has_pending()))) {
             std::unique_lock mob_lock{players_mutex, std::try_to_lock};
             if (mob_lock.owns_lock()) {
                 const std::scoped_lock chunk_lock{chunk_mutex};
@@ -5086,7 +5247,22 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 mob_level.registry = &*blocks;
 
                 gameplay::MobContext mob_context{&collisions, &mob_level, false};
+                // ── tnt and gravity: what the drain and the network asked for ──
+                if (tnt_gravity) {
+                    tnt_gravity->spawn_pending(*mobs, tnt_deliver);
+                }
                 mobs->tick(entity::TickContext{clock.tick_count(), &mob_context});
+                // ── tnt and gravity: creepers, landings, explosions ──
+                if (tnt_gravity && level && world_ticks) {
+                    tnt_gravity->tick_creepers(*mobs, mob_level, tnt_host, tnt_deliver);
+                    const TntGravityStats tnt_stats = tnt_gravity->after_entity_tick(
+                        *mobs, *level, *world_ticks, tnt_host, tnt_deliver);
+                    if (tnt_stats.blasts > 0) {
+                        OV_LOG_DEBUG("tick {}: {} explosions, {} blocks, {} TNT lit",
+                                     clock.tick_count(), tnt_stats.blasts,
+                                     tnt_stats.blocks_destroyed, tnt_stats.primed);
+                    }
+                }
 
                 for (const i32 gone : mobs->removed_ids()) {
                     broadcast(nullptr, net::clientbound::kRemoveEntities,
@@ -5146,6 +5322,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 }
             }
         }
+        // ── tnt and gravity: the craters and landings, sent and relit ──
+        flush_tick_writes();
 
         // Les piles au sol : elles se ramassent, et au bout de cinq minutes
         // elles s'en vont. Sans cette seconde moitié un monde de test finit
@@ -5247,6 +5425,24 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     // caller's, which is this: `tick_use` says when, and
                     // `food_for` says what.
                     const auto value = gameplay::food_for(finished);
+                    // ── effects: milk is not food; it clears, and the bucket
+                    // comes back empty ──────────────────────────────────────
+                    if (!value && finished == "minecraft:milk_bucket") {
+                        (void)who.effects.on_consumed(finished, who.survival, effect_io_for(who),
+                                                      effect_bearer_for(who));
+                        if (options.survival && registries && item_registry) {
+                            const usize slot = 36 + static_cast<usize>(who.held_slot);
+                            if (const auto bucket =
+                                    registries->protocol_id(*item_registry, "minecraft:bucket")) {
+                                who.inventory[slot]         = net::ItemStack{};
+                                who.inventory[slot].item_id = *bucket;
+                                who.inventory[slot].count   = 1;
+                                send_slot(who, slot);
+                            }
+                        }
+                        continue;
+                    }
+                    // ── end effects ─────────────────────────────────────────
                     if (!value) {
                         // Refused and named. A potion, a milk bucket and a
                         // chorus fruit all finish a use and none of them is
@@ -5257,6 +5453,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         continue;
                     }
                     gameplay::eat(who.survival.food, *value);
+                    // ── effects: the food's own, and honey's cure — after the
+                    // nutrition, in the game's order ──
+                    (void)who.effects.on_consumed(finished, who.survival, effect_io_for(who),
+                                                  effect_bearer_for(who));
                     if (options.survival) {
                         consume_one_held(who);
                     }
@@ -5277,6 +5477,38 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             }
         }
         // ── end combat and interaction ─────────────────────────────────────
+
+        // ── effects: every effect ticks, and its packets go out ─────────────
+        //
+        // Before the survival block. Survival's `tick_health` counts the
+        // window down after this; the gap between two effect hits is then N
+        // decrements for N ticks, exactly as in the game, where the measured
+        // gap is ten (effets.md). Not gated on --survival: a creative
+        // player's effects still run out, they just cannot hurt.
+        {
+            std::unique_lock effects_lock{players_mutex, std::try_to_lock};
+            if (effects_lock.owns_lock()) {
+                for (auto& [effects_key, who] : players) {
+                    if (!who.confirmed || !who.connection) {
+                        continue;
+                    }
+                    if (!who.effects_started) {
+                        who.effects_started = true;
+                        for (const std::string& spec : options.effects) {
+                            const auto instance = ov::server::parse_effect_spec(spec);
+                            if (!instance) {
+                                OV_LOG_WARN("--effect={}: not an effect this server knows", spec);
+                                continue;
+                            }
+                            (void)who.effects.apply(*instance, who.survival, effect_io_for(who),
+                                                    effect_bearer_for(who));
+                        }
+                    }
+                    who.effects.tick(who.survival, effect_io_for(who), effect_bearer_for(who));
+                }
+            }
+        }
+        // ── end effects ─────────────────────────────────────────────────────
 
         // ── survival: health, hunger, experience, death and respawn ────────
         //
@@ -5326,7 +5558,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                               // with --survival, so this is
                                               // always a survival player.
                                               .game_mode = 0,
-                                              .submerged = submerged};
+                                              .submerged = submerged,
+                                              // ── effects ──
+                                              .breathes_underwater =
+                                                  who.effects.breathes_underwater(),
+                                              .jump_boost   = who.effects.jump_boost(),
+                                              .slow_falling = who.effects.slow_falling()};
                     SurvivalOutcome outcome = who.survival.tick(
                         view, io, gameplay::Difficulty::Normal, true,
                         static_cast<f64>(world::WorldShape::overworld().min_y));
@@ -5364,6 +5601,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     if (!outcome.died) {
                         continue;
                     }
+                    // ── effects: gone with the body; Respawn tells the client ──
+                    who.effects.on_death();
                     OV_LOG_INFO("{} died at {:.1f} {:.1f} {:.1f}, dropping {} experience",
                                 who.name, who.x, who.y, who.z, outcome.dropped_experience);
                     // The inventory goes on the floor, as vanilla does with

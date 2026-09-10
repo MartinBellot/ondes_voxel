@@ -513,8 +513,21 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [~] Attributs, modificateurs, équipement
       *(les valeurs de base des 13 attributs relevées sur un vrai serveur
       1.20.1 pour les 120 types mesurables — 622 valeurs — et une absence
-      reste une absence. Les modificateurs et l'équipement restent à faire)*
-- [ ] **33 effets de statut** : speed, slowness, haste, mining_fatigue, strength,
+      reste une absence. **Les modificateurs sont faits** : bornes des 13
+      attributs 13/13, trois opérations bit pour bit, et l'ordre à l'intérieur
+      d'une opération est celui des seaux de hachage de Java — 5/5, contre 2/5
+      pour l'ordre d'insertion. L'équipement reste à faire)*
+- [~] **33 effets de statut**
+      *(**2026-09-10** : les 33 portés, envoyés et décomptés ; règles de
+      remplacement et effet caché mesurés. Régénération, poison et wither
+      **522/522** intervalles (amplificateurs 0-5), instantanés 24/24 morts-
+      vivants inversés compris, résistance 36/36, couleur de particules 64/64,
+      cassage sous haste / fatigue / conduit 30/32 au tick près. Branchés :
+      manger, lait, miel, mort, cassage, mêlée, chute, souffle. **Restent** les
+      effets sur les mobs, la persistance (le serveur n'écrit aucun fichier
+      joueur), et les effets sans règle serveur — nausée, lévitation, dolphin's
+      grace, bad omen, hero of the village. Voir `docs/provenance/effets.md`)* :
+      speed, slowness, haste, mining_fatigue, strength,
       instant_health, instant_damage, jump_boost, nausea, regeneration,
       resistance, fire_resistance, water_breathing, invisibility, blindness,
       night_vision, hunger, weakness, poison, wither, health_boost, absorption,
@@ -563,7 +576,10 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       eye_of_ender, experience_bottle, potion, fireball, small_fireball,
       dragon_fireball, wither_skull, llama_spit, shulker_bullet, fishing_bobber,
       firework_rocket
-- [ ] Autres non vivantes : item, experience_orb, falling_block, tnt, boat,
+- [ ] Autres non vivantes *(**tnt et falling_block faits** : les 25 blocs
+      soumis à la gravité, départs de colonne à 2 ticks d'écart relevés, la
+      poudre de béton qui durcit au contact de l'eau en tombant)* : item,
+      experience_orb, falling_block, tnt, boat,
       chest_boat, minecart ×7, armor_stand, item_frame, glow_item_frame,
       painting, lightning_bolt, area_effect_cloud, end_crystal, leash_knot,
       marker, **block_display / item_display / text_display / interaction**
@@ -699,7 +715,19 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       clic, cinq vaches lâchent 14 bœufs et 3 cuirs, et manger fait remonter la
       faim de 13 à 16. Le **seau** est refusé et nommé : il n'agit pas par
       `Use Item On` mais par `Use Item` avec un lancer de rayon serveur)*
-- [~] **Explosions et résistance des blocs**
+- [x] **Explosions et résistance des blocs**
+      *(**branché le 2026-09-10** : la TNT s'allume au briquet, au signal
+      redstone et par une explosion voisine — mèche en chaîne 10 à 29, les 20
+      valeurs relevées sur 384 —, vole avec la gravité 0,04 et la traînée 0,98
+      sur trois axes, mesurées sur 3950 échantillons à 2,9e-9, et explose à
+      80 ticks en deux phases, entités blessées entre les deux. Le creeper
+      gonfle 30 ticks et rend 0,337 de ses blocs. Cratère **de bout en bout
+      par notre serveur** : union 265/271, intersection 157/170, écart de
+      fréquence 0,048 contre 0,269 pour un témoin décalé d'un bloc. Paquet
+      Explosion en **0x1D, pas 0x1E** comme le dit l'archive. Restent le feu,
+      le distributeur de TNT et le contenu des conteneurs détruits — voir
+      `docs/provenance/tnt-et-gravite.md`)*
+      *(mesure d'origine :)*
       *(la résistance au souffle des **987 blocs mesurée** — elle n'est dans
       aucun rapport du data generator : 959 blocs debout sur le banc, 947 dans
       leur propre classe, 1885 lectures sur 1900 en croisant deux bancs,

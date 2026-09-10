@@ -165,3 +165,58 @@ TEST_CASE("standing still matters as much as the tool", "[gameplay][breaking]") 
     REQUIRE(rules.break_ticks(stone, pick, Stance{.on_ground = false, .head_in_water = true}) ==
             563);
 }
+
+// ── Under effects ───────────────────────────────────────────────────────────
+//
+// Counted on the real server by scripts/measure_effects.py (campaign
+// `breaking`), each case twice, with the method above. Conduit power is not a
+// field of its own: measured, it digs exactly like haste, and conduit II with
+// haste I digs like haste II — the larger of the two amplifiers. The server
+// passes `max(haste, conduit)` in `Stance::haste`.
+//
+// Two of the thirty-two counts were a tick short on one of their two attempts
+// (stone with a wooden pickaxe under haste II: 16 and 17; dirt by hand: 14 and
+// 15). That is the ±1 of the miner's own start, the jitter PROVENANCE.md
+// describes for the hardness sweep; the other attempt is the one asserted.
+TEST_CASE("breaking under haste, conduit power and mining fatigue",
+          "[gameplay][breaking][effects][parity]") {
+    if (!loaded().rules) {
+        SKIP("registry.ovpack not generated");
+    }
+    const BreakRules& rules = *loaded().rules;
+    struct Case {
+        std::string_view block;
+        std::string_view tool;
+        u8               efficiency;
+        i8               haste;
+        i8               fatigue;
+        i32              ticks;
+    };
+    const Case cases[] = {
+        {"minecraft:stone", "", 0, -1, -1, 150},
+        {"minecraft:stone", "", 0, 0, -1, 125},
+        {"minecraft:stone", "", 0, 1, -1, 108},
+        {"minecraft:stone", "", 0, 2, -1, 94},
+        {"minecraft:stone", "", 0, 4, -1, 75},
+        {"minecraft:stone", "", 0, 0, -1, 125},  // conduit power I
+        {"minecraft:stone", "", 0, 1, -1, 108},  // conduit power II + haste I
+        {"minecraft:stone", "minecraft:wooden_pickaxe", 0, 1, -1, 17},
+        {"minecraft:obsidian", "minecraft:netherite_pickaxe", 0, 1, -1, 120},
+        {"minecraft:dirt", "", 0, -1, -1, 15},
+        {"minecraft:dirt", "", 0, -1, 0, 50},
+        {"minecraft:dirt", "", 0, -1, 1, 167},
+        {"minecraft:dirt", "minecraft:netherite_shovel", 0, -1, 2, 618},
+        {"minecraft:dirt", "minecraft:netherite_shovel", 5, -1, 3, 530},
+        {"minecraft:dirt", "", 0, 1, 0, 36},
+        {"minecraft:oak_planks", "", 0, 2, -1, 38},
+    };
+    usize agree = 0;
+    for (const Case& c : cases) {
+        const Held   held = c.tool.empty() ? Held{} : holding(c.tool, c.efficiency);
+        const Stance stance{.on_ground = true, .haste = c.haste, .mining_fatigue = c.fatigue};
+        const i32    ticks = rules.break_ticks(block(c.block), held, stance);
+        CHECK(ticks == c.ticks);
+        agree += ticks == c.ticks ? 1 : 0;
+    }
+    CHECK(agree == 16);
+}

@@ -6,6 +6,8 @@
 ov_add_library(ov_gameplay
     LAYER 9
     SOURCES
+        src/attributes.cpp
+        src/effects.cpp
         src/breaking.cpp
         src/combat.cpp
         src/collision.cpp
@@ -14,6 +16,8 @@ ov_add_library(ov_gameplay
         src/entity_physics.cpp
         src/experience.cpp
         src/explosion.cpp
+        src/falling_block.cpp
+        src/primed_tnt.cpp
         src/fluid.cpp
         src/item_use.cpp
         src/food.cpp
@@ -37,10 +41,14 @@ ov_add_library(ov_gameplay
         ov_entity
         ov_registry
         ov_math
+        ov_nbt
+        ov_protocol
 )
 
 ov_add_test(test_ov_gameplay
     SOURCES
+        tests/test_attributes.cpp
+        tests/test_effects.cpp
         tests/test_breaking.cpp
         tests/test_combat.cpp
         tests/test_entity_loot.cpp
@@ -50,6 +58,8 @@ ov_add_test(test_ov_gameplay
         tests/test_entity_physics.cpp
         tests/test_experience.cpp
         tests/test_explosion.cpp
+        tests/test_falling_block.cpp
+        tests/test_primed_tnt.cpp
         tests/test_fluid.cpp
         tests/test_item_use.cpp
         tests/test_food.cpp
