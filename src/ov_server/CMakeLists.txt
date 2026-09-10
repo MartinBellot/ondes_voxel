@@ -7,6 +7,8 @@ ov_add_library(ov_server
     LAYER 12
     SOURCES
         src/async_chunk_source.cpp
+        src/block_container.cpp
+        src/item_transport.cpp
         src/generated_world.cpp
         src/generation_check.cpp
         src/natural_spawning.cpp
@@ -42,6 +44,7 @@ ov_add_library(ov_server
 # bugs found the hard way.
 ov_add_test(test_ov_server
     SOURCES
+        tests/test_block_container.cpp
         tests/test_player_inventory.cpp
         tests/test_player_level.cpp
     DEPS ov_server
