@@ -2,6 +2,7 @@
 # across the rendering frontier; this one is the only binary that may.
 ov_add_executable(ov_voxel
     SOURCES
+        src/chat.cpp
         src/entities.cpp
         src/interface.cpp
         src/main.cpp

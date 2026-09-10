@@ -22,6 +22,7 @@
 // rule was measured on the real client. See docs/provenance/inventaire-creatif.md.
 #pragma once
 
+#include "chat.hpp"  // ── chat ──
 #include "ov/base/types.hpp"
 #include "ov/client/container_screen.hpp"
 #include "ov/client/creative_gestures.hpp"
@@ -183,6 +184,12 @@ public:
 
     void close(client::Window& window, netclient::Client& client);
 
+    // ── chat ──
+    /// True while the chat box is open: the keys are letters, not moves.
+    [[nodiscard]] bool chat_open() const noexcept { return chat_.open(); }
+    [[nodiscard]] ChatUi& chat() noexcept { return chat_; }
+    // ── end chat ──
+
 private:
     Interface() = default;
 
@@ -252,6 +259,8 @@ private:
     /// is on the screen and not only in the log — the log is where the
     /// original "there is no creative inventory" hid.
     std::string refusal_;
+
+    ChatUi chat_;  // ── chat ──
 
     bool own_inventory_{false};
     client::GuiTexture background_{client::GuiTexture::Invalid};

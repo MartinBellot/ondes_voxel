@@ -314,8 +314,11 @@ f32 Gui::text(f32 x, f32 y, std::string_view utf8, u32 argb, bool shadow) {
     // The shadow is a whole second pass over the string, drawn first. Drawing
     // glyph and shadow together would put a glyph under the next glyph's
     // shadow, which is exactly the artefact vanilla avoids by doing the same.
+    // `k` is the text size (1 everywhere but titles, see text_scaled): every
+    // offset below is in the font's own pixels, times k.
+    const f32 k = text_size_;
     if (shadow) {
-        (void)text(x + render::Font::kShadowOffset, y + render::Font::kShadowOffset, utf8,
+        (void)text(x + render::Font::kShadowOffset * k, y + render::Font::kShadowOffset * k, utf8,
                    shadow_colour(argb), false);
     }
 
@@ -341,17 +344,19 @@ f32 Gui::text(f32 x, f32 y, std::string_view utf8, u32 argb, bool shadow) {
             // The baseline is the anchor: a glyph is drawn `ascent` pixels
             // above it, which is what puts a `p` below the line and an `A` on
             // it.
-            const f32 top  = y + render::Font::kBaseline - glyph->ascent;
+            const f32 top  = y + (render::Font::kBaseline - glyph->ascent) * k;
             const f32 left = pen;
             // Italic is vanilla's shear: the top edge moves one pixel right.
-            const f32 shear = style.italic ? 1.0F : 0.0F;
+            const f32 shear = style.italic ? k : 0.0F;
+            const f32 gw    = glyph->width * k;
+            const f32 gh    = glyph->height * k;
 
             const auto draw_at = [&](f32 dx) {
                 const std::array<GuiPoint, 4> corners{
                     GuiPoint{left + dx + shear, top},
-                    GuiPoint{left + dx, top + glyph->height},
-                    GuiPoint{left + dx + glyph->width, top + glyph->height},
-                    GuiPoint{left + dx + glyph->width + shear, top}};
+                    GuiPoint{left + dx, top + gh},
+                    GuiPoint{left + dx + gw, top + gh},
+                    GuiPoint{left + dx + gw + shear, top}};
                 const std::array<GuiPoint, 4> uvs{GuiPoint{glyph->u0, glyph->v0},
                                                   GuiPoint{glyph->u0, glyph->v1},
                                                   GuiPoint{glyph->u1, glyph->v1},
@@ -362,21 +367,30 @@ f32 Gui::text(f32 x, f32 y, std::string_view utf8, u32 argb, bool shadow) {
             if (style.bold) {
                 // Bold is the same glyph again, one pixel to the right. That is
                 // why it costs one pixel of advance and not a second font.
-                draw_at(1.0F);
+                draw_at(k);
             }
         }
 
-        const f32 advance = glyph->advance + (style.bold ? render::Font::kBoldExtraAdvance : 0.0F);
+        const f32 advance =
+            (glyph->advance + (style.bold ? render::Font::kBoldExtraAdvance : 0.0F)) * k;
         if (style.strikethrough) {
-            fill(pen, y + 3.0F, advance, 1.0F, style.has_colour ? (base_alpha | style.colour)
-                                                                : argb);
+            fill(pen, y + 3.0F * k, advance, k, style.has_colour ? (base_alpha | style.colour)
+                                                                 : argb);
         }
         if (style.underline) {
-            fill(pen - 1.0F, y + 8.0F, advance + 1.0F,
-                 1.0F, style.has_colour ? (base_alpha | style.colour) : argb);
+            fill(pen - k, y + 8.0F * k, advance + k,
+                 k, style.has_colour ? (base_alpha | style.colour) : argb);
         }
         pen += advance;
     }
+    return pen;
+}
+
+f32 Gui::text_scaled(f32 x, f32 y, std::string_view utf8, u32 argb, f32 size, bool shadow) {
+    const f32 previous = text_size_;
+    text_size_         = size;
+    const f32 pen      = text(x, y, utf8, argb, shadow);
+    text_size_         = previous;
     return pen;
 }
 

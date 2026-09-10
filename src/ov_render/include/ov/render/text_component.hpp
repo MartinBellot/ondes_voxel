@@ -18,13 +18,58 @@
 
 #include "ov/base/types.hpp"
 
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace ov::render {
 
 class Language;
+
+// ── Styled runs: the same walk, keeping exact colours ───────────────────────
+//
+// A chat line cannot go through flatten_component: `/tellraw` sends `#3080ff`
+// and a `§` string can only say one of sixteen colours. So chat keeps the
+// component as runs — a stretch of text and the style it is drawn in — with
+// the colour as the number the server sent. The walk is the one above: the
+// same inheritance, the same translation rules, the same refusals.
+
+/// One stretch of text in one style.
+struct StyledRun {
+    /// Plain UTF-8. A `§` that arrived inside the text is left in it, and the
+    /// GUI's text path obeys it, as vanilla's font renderer does.
+    std::string text;
+    /// 0xRRGGBB, meaningful only when `has_colour`.
+    u32  rgb{0xFFFFFF};
+    bool has_colour{false};
+    bool bold{false};
+    bool italic{false};
+    bool underlined{false};
+    bool strikethrough{false};
+    bool obfuscated{false};
+
+    [[nodiscard]] bool same_style(const StyledRun& other) const noexcept {
+        return rgb == other.rgb && has_colour == other.has_colour && bold == other.bold &&
+               italic == other.italic && underlined == other.underlined &&
+               strikethrough == other.strikethrough && obfuscated == other.obfuscated;
+    }
+
+    friend bool operator==(const StyledRun&, const StyledRun&) = default;
+};
+
+/// A component, given as its JSON text, as runs in reading order. Adjacent
+/// runs of one style are merged. Malformed JSON is one unstyled run of its own
+/// text, so a line this cannot read looks obviously wrong rather than empty.
+[[nodiscard]] std::vector<StyledRun> component_runs(std::string_view json,
+                                                    const Language& language);
+
+/// The runs' text, joined.
+[[nodiscard]] std::string plain_text(std::span<const StyledRun> runs);
+
+/// A colour as a component names it: one of the sixteen, or `#RRGGBB`.
+[[nodiscard]] std::optional<u32> colour_rgb(std::string_view name) noexcept;
 
 /// Flatten a component, given as its JSON text, into a `§`-coded line.
 ///

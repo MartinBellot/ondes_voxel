@@ -8,6 +8,7 @@ ov_add_library(ov_protocol
     SOURCES
         src/blast.cpp
         src/chat.cpp
+        src/chat_types.cpp
         src/client_play.cpp
         src/effect_packets.cpp
         src/entity.cpp

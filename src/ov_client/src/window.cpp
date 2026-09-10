@@ -8,6 +8,7 @@
 
 #include <array>
 #include <string>
+#include <vector>
 
 namespace ov::client {
 
@@ -101,7 +102,53 @@ struct Window::Impl {
     f64 scroll{0.0};
     /// The same for typed characters, which are events for the same reason.
     std::string typed;
+    // ── chat ──
+    /// Key presses and repeats since the last poll, drained into the input.
+    std::vector<KeyEvent> key_events;
+    // ── end chat ──
 };
+
+// ── chat ──
+/// GLFW's key callback, for the keys a text field reads. A callback and not
+/// a poll because a text field needs the *repeats* — holding Backspace — and
+/// polling sees a held key, not how many times the system repeated it.
+void key_callback(GLFWwindow* window, int key, int /*scancode*/, int action, int mods) {
+    auto* impl = static_cast<Window::Impl*>(glfwGetWindowUserPointer(window));
+    if (impl == nullptr || (action != GLFW_PRESS && action != GLFW_REPEAT)) {
+        return;
+    }
+    EditKey edit{};
+    switch (key) {
+        case GLFW_KEY_ENTER:
+        case GLFW_KEY_KP_ENTER: edit = EditKey::Enter; break;
+        case GLFW_KEY_ESCAPE: edit = EditKey::Escape; break;
+        case GLFW_KEY_TAB: edit = EditKey::Tab; break;
+        case GLFW_KEY_BACKSPACE: edit = EditKey::Backspace; break;
+        case GLFW_KEY_DELETE: edit = EditKey::Delete; break;
+        case GLFW_KEY_LEFT: edit = EditKey::Left; break;
+        case GLFW_KEY_RIGHT: edit = EditKey::Right; break;
+        case GLFW_KEY_UP: edit = EditKey::Up; break;
+        case GLFW_KEY_DOWN: edit = EditKey::Down; break;
+        case GLFW_KEY_HOME: edit = EditKey::Home; break;
+        case GLFW_KEY_END: edit = EditKey::End; break;
+        case GLFW_KEY_PAGE_UP: edit = EditKey::PageUp; break;
+        case GLFW_KEY_PAGE_DOWN: edit = EditKey::PageDown; break;
+        case GLFW_KEY_A: edit = EditKey::A; break;
+        case GLFW_KEY_C: edit = EditKey::C; break;
+        case GLFW_KEY_V: edit = EditKey::V; break;
+        case GLFW_KEY_X: edit = EditKey::X; break;
+        case GLFW_KEY_SLASH: edit = EditKey::Slash; break;
+        default: return;
+    }
+#if defined(__APPLE__)
+    const bool control = (mods & GLFW_MOD_SUPER) != 0;
+#else
+    const bool control = (mods & GLFW_MOD_CONTROL) != 0;
+#endif
+    impl->key_events.push_back(KeyEvent{edit, action == GLFW_REPEAT, (mods & GLFW_MOD_SHIFT) != 0,
+                                        control, (mods & GLFW_MOD_ALT) != 0});
+}
+// ── end chat ──
 
 void scroll_callback(GLFWwindow* window, double /*x*/, double y) {
     auto* impl = static_cast<Window::Impl*>(glfwGetWindowUserPointer(window));
@@ -174,8 +221,21 @@ std::expected<std::unique_ptr<Window>, WindowError> Window::create(u32 width, u3
     glfwSetWindowUserPointer(self->impl_->window, self->impl_.get());
     glfwSetScrollCallback(self->impl_->window, scroll_callback);
     glfwSetCharCallback(self->impl_->window, character_callback);
+    glfwSetKeyCallback(self->impl_->window, key_callback);  // ── chat ──
     return self;
 }
+
+// ── chat ──
+std::string Window::clipboard() const {
+    const char* text = glfwGetClipboardString(impl_->window);
+    return text == nullptr ? std::string{} : std::string(text);
+}
+
+void Window::set_clipboard(std::string_view utf8) {
+    const std::string text(utf8);
+    glfwSetClipboardString(impl_->window, text.c_str());
+}
+// ── end chat ──
 
 void* Window::native_handle() const noexcept {
     return impl_->window;
@@ -228,6 +288,10 @@ const InputState& Window::poll() {
     // and be lost.
     input.typed = std::move(impl_->typed);
     impl_->typed.clear();
+    // ── chat ──  (swapped, so both vectors keep their capacity)
+    input.key_events.clear();
+    input.key_events.swap(impl_->key_events);
+    // ── end chat ──
 
     input.hotbar_pressed = -1;
     for (usize i = 0; i < kHotbarKeys.size(); ++i) {

@@ -23,6 +23,7 @@
 #include "ov/client/gui.hpp"
 #include "ov/client/item_view.hpp"
 #include "ov/client/saved_hotbars.hpp"
+#include "ov/client/text_field.hpp"
 #include "ov/render/creative_items.hpp"
 #include "ov/render/creative_tabs.hpp"
 #include "ov/render/item_model.hpp"
@@ -240,7 +241,11 @@ public:
         return tab().type == render::CreativeTabType::Search;
     }
 
-    [[nodiscard]] const std::string& query() const noexcept { return query_; }
+    [[nodiscard]] const std::string& query() const noexcept { return search_.value(); }
+
+    /// The search box itself — the same widget as the chat's, so Home/End,
+    /// arrows and Ctrl/Cmd chords can reach it.
+    [[nodiscard]] TextField& search_field() noexcept { return search_; }
 
     void type(std::string_view utf8);
     void backspace();
@@ -309,7 +314,8 @@ private:
 
     usize       selected_{0};
     f32         scroll_{0.0F};
-    std::string query_;
+    /// The search box: vanilla's EditBox, as the chat's is (text_field.hpp).
+    TextField   search_{creative_layout::kSearchMaxLength};
     std::string folded_;
 
     std::vector<CreativeCell> page_;

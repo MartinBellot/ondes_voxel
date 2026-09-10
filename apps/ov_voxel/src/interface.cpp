@@ -295,6 +295,7 @@ void Interface::refresh_hotbar() {
 }
 
 void Interface::apply(const netclient::ClientEvents& events) {
+    chat_.apply(events, gui_->font(), language_);  // ── chat ──
     if (events.game_mode) {
         // 1 is creative. Creative hides the hearts, the haunches and the
         // experience bar, and it is the only thing that decides it.
@@ -660,6 +661,13 @@ bool Interface::update(const client::InputState& input, netclient::Client& clien
     mouse_x_        = static_cast<f32>(input.mouse_x) / scale;
     mouse_y_        = static_cast<f32>(input.mouse_y) / scale;
 
+    // ── chat ──  First: while the box is open every key is its, and T or /
+    // opens it only when no other screen is up.
+    if (chat_.update(input, client, window, delta_seconds, screen_.has_value() || creative_visible_)) {
+        return true;
+    }
+    // ── end chat ──
+
     // E on the search page is a letter, not a key: measured, the running
     // client keeps the screen open and the letter goes into the box.
     const bool typing = creative_visible_ && creative_screen_ && creative_screen_->searching();
@@ -968,6 +976,7 @@ void Interface::draw(rhi::CommandList& cmd, u32 framebuffer_width, u32 framebuff
     if (options_.hud) {
         client::draw_hud(*gui_, *items_, textures_, hud_);
     }
+    chat_.draw(*gui_);  // ── chat ──  over the HUD, under any screen
 
     if (creative_visible_ && creative_screen_) {
         client::draw_screen_dim(*gui_);
