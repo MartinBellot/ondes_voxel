@@ -1361,8 +1361,9 @@ int main(int argc, char** argv) {
                 gameplay::MoveInput move;
                 move.forward = (input.held(client::Key::Forward) || options.walk ? 1.0F : 0.0F) -
                                (input.held(client::Key::Back) ? 1.0F : 0.0F);
-                move.strafe = (input.held(client::Key::Right) ? 1.0F : 0.0F) -
-                              (input.held(client::Key::Left) ? 1.0F : 0.0F);
+                // Positive is LEFT, as vanilla's `xxa`: see MoveInput::strafe.
+                move.strafe = (input.held(client::Key::Left) ? 1.0F : 0.0F) -
+                              (input.held(client::Key::Right) ? 1.0F : 0.0F);
                 move.yaw    = camera.yaw_degrees;
                 move.jump   = input.held(client::Key::Up);
                 move.sprint = input.held(client::Key::Sprint);

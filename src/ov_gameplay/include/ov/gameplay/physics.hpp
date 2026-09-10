@@ -19,6 +19,9 @@ namespace ov::gameplay {
 struct MoveInput {
     /// Forward and sideways, each in -1..1, before any speed is applied.
     f32 forward{0.0F};
+    /// Sideways, and **positive is to the player's left** — vanilla's `xxa`
+    /// (`leftImpulse`). Facing south at yaw 0, left is east, +X. The client
+    /// once fed right-minus-left here and every strafe went the wrong way.
     f32 strafe{0.0F};
     /// Where the player is looking, in degrees. Movement is relative to it.
     f32 yaw{0.0F};

@@ -77,6 +77,40 @@ TEST_CASE("walking, sprinting and sneaking settle where the game does", "[gamepl
     REQUIRE(std::abs(settled_speed(input, world) - 0.06474) < 0.0005);
 }
 
+TEST_CASE("a positive strafe goes to the player's left, as vanilla's xxa", "[gameplay][physics]") {
+    if (!pack()) {
+        SKIP("no registry pack");
+    }
+    Floor floor;
+    floor.stone = pack()->default_state(*pack()->find_block("minecraft:stone"));
+    const CollisionWorld world{*pack(), &Floor::look_up, &floor};
+
+    // Where one tick of an input takes a player standing still at the origin.
+    const auto moved = [&](f32 yaw, f32 forward, f32 strafe) {
+        MoveInput input;
+        input.yaw     = yaw;
+        input.forward = forward;
+        input.strafe  = strafe;
+        MotionState state{Vec3d{0.5, 0.0, 0.5}, Vec3d{}, true};
+        state = step(state, input, MotionConstants{}, world);
+        return Vec3d{state.position.x - 0.5, 0.0, state.position.z - 0.5};
+    };
+
+    // Yaw 0 faces south (+Z), so the left hand points east (+X). The client
+    // once fed right-minus-left here and every strafe went the wrong way.
+    const Vec3d south_left = moved(0.0F, 0.0F, 1.0F);
+    REQUIRE(south_left.x > 0.0);
+    REQUIRE(std::abs(south_left.z) < 1.0E-9);
+    const Vec3d south_ahead = moved(0.0F, 1.0F, 0.0F);
+    REQUIRE(south_ahead.z > 0.0);
+
+    // Yaw 90 faces west (-X), so the left hand points south (+Z).
+    const Vec3d west_ahead = moved(90.0F, 1.0F, 0.0F);
+    REQUIRE(west_ahead.x < 0.0);
+    const Vec3d west_left = moved(90.0F, 0.0F, 1.0F);
+    REQUIRE(west_left.z > 0.0);
+}
+
 TEST_CASE("a jump leaves the ground at exactly 0.42", "[gameplay][physics]") {
     if (!pack()) {
         SKIP("no registry pack");
