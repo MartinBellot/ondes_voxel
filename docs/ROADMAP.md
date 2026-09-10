@@ -582,7 +582,18 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       vindicator, **warden**, witch, wither_skeleton, zoglin, zombie,
       zombie_villager
 - [ ] **Boss** : ender_dragon (phases, cristaux, combat complet), wither
-- [ ] Projectiles : arrow, spectral_arrow, trident, snowball, egg, ender_pearl,
+- [~] Projectiles
+      *(**2026-09-10** : flèche, trident, boule de neige, œuf, perle, bouteille
+      d'XP et potion jetable volent, se plantent et se ramassent ; arc,
+      arbalète et squelettes branchés. Vol ajusté sur vanilla à **1,3·10⁻¹⁴**
+      près — l'ordre est avancer, freiner puis tirer vers le bas, l'inverse des
+      mobs, d'où le résidu de 2,6·10⁻³ noté dans `mobs.md` ; dégâts 7/7 =
+      ⌈vitesse × base⌉, critiques couvrant exactement 6 à 10 ; œufs 5602/776/22
+      sur 6400, soit 1/8 et 1/32 ; squelette 60 ticks, 40 en difficile.
+      Restent perçage, multishot, Flamme, flèches à effet, Loyauté, Riptide,
+      Canalisation, endermite et effets des potions jetables ; boules de feu,
+      crachat de lama et balles de shulker n'existent pas. Voir
+      `docs/provenance/projectiles.md`)* : arrow, spectral_arrow, trident, snowball, egg, ender_pearl,
       eye_of_ender, experience_bottle, potion, fireball, small_fireball,
       dragon_fireball, wither_skull, llama_spit, shulker_bullet, fishing_bobber,
       firework_rocket
