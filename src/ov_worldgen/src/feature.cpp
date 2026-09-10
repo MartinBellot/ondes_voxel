@@ -914,6 +914,11 @@ const PlacedFeature* FeatureRegistry::placed(std::string_view name) const {
     return found == impl_->placed.end() ? nullptr : found->second.get();
 }
 
+const Feature* FeatureRegistry::configured(std::string_view name) const {
+    const auto found = impl_->configured.find(qualify(name));
+    return found == impl_->configured.end() ? nullptr : found->second.get();
+}
+
 usize FeatureRegistry::placed_count() const noexcept {
     return impl_->placed.size();
 }

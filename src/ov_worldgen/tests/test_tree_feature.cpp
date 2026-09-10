@@ -102,6 +102,12 @@ private:
     std::map<i64, registry::BlockStateId> written_;
 };
 
+/// The z of a `GroundLevel` key, sign-extended out of its twenty bits.
+[[nodiscard]] i32 sign_extend_z(i64 key) {
+    const auto raw = static_cast<u32>((key >> 20) & 0xFFFFF);
+    return static_cast<i32>(raw << 12) >> 12;
+}
+
 /// Nothing lists anything, which is what a nested placed feature sees.
 class NoBiomeFeatures final : public BiomeFeatures {
 public:
@@ -375,4 +381,144 @@ TEST_CASE("a random patch always spends its tries", "[worldgen][tree]") {
     const i32 after_stone = over_stone.next_int();
     const i32 after_grass = over_grass.next_int();
     CHECK(after_stone == after_grass);
+}
+
+TEST_CASE("a fancy oak's canopy is not an inverted cone", "[worldgen][tree]") {
+    // The rule this guards was read off a probe world (scripts/probe_tree.sh)
+    // rather than reasoned about: the rows run from `offset` down to
+    // `offset - height`, the first and last are one narrower than the radius,
+    // and a cell is written when `x² + z² < range² + range`. The reading that
+    // stood here before made a cone widest at its bottom row, and no fancy oak
+    // in either reference world ever came out right.
+    if (!std::filesystem::exists(pack_path()) || !std::filesystem::is_directory(data_root())) {
+        SUCCEED("no generated data; run tools/ov_datagen");
+        return;
+    }
+    auto pack = registry::BlockRegistry::load(pack_path());
+    REQUIRE(pack.has_value());
+    auto registry = FeatureRegistry::load(data_root(), *pack);
+    REQUIRE(registry.has_value());
+
+    const auto* fancy = registry->configured("minecraft:fancy_oak");
+    REQUIRE(fancy != nullptr);
+
+    const auto grass = pack->find_block("minecraft:grass_block");
+    const auto dirt  = pack->find_block("minecraft:dirt");
+    const auto stone = pack->find_block("minecraft:stone");
+    REQUIRE(grass.has_value());
+    REQUIRE(dirt.has_value());
+    REQUIRE(stone.has_value());
+
+    GroundLevel     level{pack->default_state(*grass), pack->default_state(*dirt),
+                      pack->default_state(*stone), 64};
+    NoBiomeFeatures biomes;
+    FeatureContext  context;
+    context.blocks       = &*pack;
+    context.feature_name = "minecraft:fancy_oak";
+    context.biomes       = &biomes;
+
+    FeatureRandom random{FeatureRandom::Kind::Xoroshiro, 987};
+    CHECK(fancy->place(context, level, random, {0, 65, 0}));
+
+    // The lowest row of a canopy must never be its widest. With `radius` 2 and
+    // an attachment on the trunk column, the old reading gave the bottom row a
+    // half-width of three and the top row none at all.
+    std::map<i32, i32> half_width;
+    std::map<i32, i32> per_row;
+    for (const auto& [where, state] : level.written()) {
+        if (pack->block_name(pack->block_of(state)) != "minecraft:oak_leaves") {
+            continue;
+        }
+        const i32 x = static_cast<i32>(where >> 40);
+        const i32 z = sign_extend_z(where);
+        const i32 y = static_cast<i32>(where & 0xFFFFF) - 64;
+        half_width[y] = std::max(half_width[y], std::max(std::abs(x), std::abs(z)));
+        per_row[y] += 1;
+    }
+    REQUIRE(half_width.size() >= 5);
+    const i32 lowest  = half_width.begin()->first;
+    const i32 highest = half_width.rbegin()->first;
+    CHECK(half_width[lowest] < half_width[highest] + 4);
+    // A range-two row of this placer holds twenty-one cells, not the thirteen
+    // of a disc of radius two nor the twenty-five of a full square.
+    bool saw_twenty_one = false;
+    for (const auto& [y, count] : per_row) {
+        (void)y;
+        if (count == 21 || count == 20) {
+            saw_twenty_one = true;
+        }
+    }
+    CHECK(saw_twenty_one);
+
+    // Determinism, and the draw count with it: the same seed twice, block for
+    // block, and the generator left in the same state.
+    GroundLevel   again{pack->default_state(*grass), pack->default_state(*dirt),
+                      pack->default_state(*stone), 64};
+    FeatureRandom repeat{FeatureRandom::Kind::Xoroshiro, 987};
+    CHECK(fancy->place(context, again, repeat, {0, 65, 0}));
+    CHECK(again.written() == level.written());
+    CHECK(repeat.next_int() == random.next_int());
+}
+
+TEST_CASE("a jungle bush draws for its corners", "[worldgen][tree]") {
+    // The bush's corner is decided by a `nextInt(2)`, and the draw happens even
+    // for the degenerate corner of a range-zero row — the single block at the
+    // top of the bush, which is therefore there about half the time. That draw
+    // was missing altogether, so every feature placed after a bush in the same
+    // chunk read the generator one step early, which is why `trees_jungle`
+    // scored one tree in eighteen while its trunks were in the right place.
+    if (!std::filesystem::exists(pack_path()) || !std::filesystem::is_directory(data_root())) {
+        SUCCEED("no generated data; run tools/ov_datagen");
+        return;
+    }
+    auto pack = registry::BlockRegistry::load(pack_path());
+    REQUIRE(pack.has_value());
+    auto registry = FeatureRegistry::load(data_root(), *pack);
+    REQUIRE(registry.has_value());
+
+    const auto* bush = registry->configured("minecraft:jungle_bush");
+    REQUIRE(bush != nullptr);
+
+    const auto grass = pack->find_block("minecraft:grass_block");
+    const auto dirt  = pack->find_block("minecraft:dirt");
+    const auto stone = pack->find_block("minecraft:stone");
+    REQUIRE(grass.has_value());
+    REQUIRE(dirt.has_value());
+    REQUIRE(stone.has_value());
+
+    NoBiomeFeatures biomes;
+    FeatureContext  context;
+    context.blocks       = &*pack;
+    context.feature_name = "minecraft:jungle_bush";
+    context.biomes       = &biomes;
+
+    // Over a run of seeds, the top block is sometimes there and sometimes not,
+    // and the number of leaves is not constant. Both are only possible if the
+    // corner is drawn for.
+    std::set<i32> leaf_counts;
+    i32           tops = 0;
+    constexpr i32 kSeeds = 24;
+    for (i32 seed = 0; seed < kSeeds; ++seed) {
+        GroundLevel   level{pack->default_state(*grass), pack->default_state(*dirt),
+                          pack->default_state(*stone), 64};
+        FeatureRandom random{FeatureRandom::Kind::Xoroshiro, seed};
+        CHECK(bush->place(context, level, random, {0, 65, 0}));
+        i32 leaves = 0;
+        for (const auto& [where, state] : level.written()) {
+            if (pack->block_name(pack->block_of(state)) != "minecraft:oak_leaves") {
+                continue;
+            }
+            ++leaves;
+            const i32 x = static_cast<i32>(where >> 40);
+            const i32 z = sign_extend_z(where);
+            const i32 y = static_cast<i32>(where & 0xFFFFF) - 64;
+            if (x == 0 && z == 0 && y == 67) {
+                ++tops;
+            }
+        }
+        leaf_counts.insert(leaves);
+    }
+    CHECK(leaf_counts.size() > 1);
+    CHECK(tops > 0);
+    CHECK(tops < kSeeds);
 }
