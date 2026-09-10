@@ -135,8 +135,13 @@ def stop_server(process: subprocess.Popen) -> None:
         process.kill()
 
 
+#: Appended to world and log names when another binary is checked, so a
+#: "before" run does not overwrite the log of the run it is compared with.
+SUFFIX = ""
+
+
 def fresh_world(name: str) -> Path:
-    world = RUN / name
+    world = RUN / f"{name}{SUFFIX}"
     shutil.rmtree(world, ignore_errors=True)
     world.mkdir(parents=True)
     return world
@@ -282,7 +287,9 @@ def check_creative(binary: Path) -> int:
 
         # 2. Into the ground at the probe's feet: it sticks, and a creative
         #    player takes it ("creative only") without getting anything.
-        probe.look(0.5, FEET_Y, 0.5, 0.0, 60.0)
+        # Away from the cow: once hurt it panics and runs about in front of
+        # the probe, and the first version shot it rather than the ground.
+        probe.look(0.5, FEET_Y, 0.5, 180.0, 60.0)
         probe.pump(0.3)
         probe.drain()
         hands.draw(1.2)
@@ -429,7 +436,9 @@ def check_survival(binary: Path) -> int:
             failures.append("the survival arrow did not hurt the cow")
 
         # Into the ground, then walk nothing: picked up, back to 7 + 1.
-        probe.look(0.5, FEET_Y, 0.5, 0.0, 60.0)
+        # Away from the cow: once hurt it panics and runs about in front of
+        # the probe, and the first version shot it rather than the ground.
+        probe.look(0.5, FEET_Y, 0.5, 180.0, 60.0)
         probe.pump(0.3)
         probe.drain()
         hands.draw(1.2)
@@ -503,7 +512,9 @@ def main() -> int:
     names = []
     for arg in sys.argv[1:]:
         if arg.startswith("--binary="):
+            global SUFFIX
             binary = Path(arg.split("=", 1)[1])
+            SUFFIX = "-other"
         elif arg in SCENARIOS:
             names.append(arg)
         else:

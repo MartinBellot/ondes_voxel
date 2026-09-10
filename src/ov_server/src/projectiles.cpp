@@ -636,17 +636,10 @@ void Projectiles::spawn_packets(entity::EntityWorld& world, const entity::Entity
 void Projectiles::before_entity_tick(entity::EntityWorld& world, const ProjectileHost& host) {
     world_.targets.clear();
     world_.events.events.clear();
-    bool any = false;
-    for (const entity::EntityHandle handle : world.handles()) {
-        const entity::EntityState* state = world.state(handle);
-        if (state != nullptr && owns(state->type)) {
-            any = true;
-            break;
-        }
-    }
-    if (!any) {
-        return;
-    }
+    // Built every tick, projectile or not: the skeletons read their players
+    // from here, and a skeleton that waits for an arrow to exist before it
+    // looks for a target never shoots the first one — which is exactly what
+    // the end-to-end check caught.
     for (const entity::EntityHandle handle : world.handles()) {
         const entity::EntityState* state = world.state(handle);
         // Living things only: a primed TNT, a falling block and another
