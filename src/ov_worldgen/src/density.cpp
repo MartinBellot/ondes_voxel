@@ -665,6 +665,7 @@ struct NoiseRouter::Impl {
     /// silently absent.
     std::map<std::string, DensityError> unavailable;
 
+    i64 seed{0};
     i32 sea_level{63};
     i32 min_y{-64};
     i32 height{384};
@@ -1083,6 +1084,7 @@ std::expected<NoiseRouter, DensityError> NoiseRouter::load(const std::filesystem
     // world seed. That fork is the whole of "the same seed gives the same
     // world".
     math::XoroshiroRandomSource source{seed};
+    impl.seed           = seed;
     impl.factory        = source.fork_positional();
     impl.blended_random = source.fork();
 
@@ -1167,6 +1169,10 @@ const BlendedNoise* NoiseRouter::blended_noise() const noexcept {
 
 i32 NoiseRouter::sea_level() const noexcept {
     return impl_->sea_level;
+}
+
+i64 NoiseRouter::seed() const noexcept {
+    return impl_->seed;
 }
 i32 NoiseRouter::min_y() const noexcept {
     return impl_->min_y;

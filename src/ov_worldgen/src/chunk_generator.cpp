@@ -5,6 +5,7 @@
 #include "ov/base/log.hpp"
 
 #include <cstdlib>
+#include <optional>
 #include <string_view>
 
 namespace ov::worldgen {
@@ -73,6 +74,33 @@ ChunkGenerator::ChunkGenerator(const NoiseRouter& router, const BiomeSource& bio
     if (density_ == nullptr) {
         OV_LOG_ERROR("worldgen: the router has no final_density; nothing will be generated");
     }
+
+    // The aquifer reads the router's barrier, floodedness, spread, lava,
+    // erosion, depth and initial density; if any is missing it says so and
+    // answers with the global rule, and `aquifer_active()` is false.
+    aquifer_ = std::make_unique<const Aquifer>(router, router.seed());
+    if (const char* setting = std::getenv("OV_AQUIFER"); setting != nullptr) {
+        use_aquifer_ = std::string_view(setting) != "0";
+        if (!use_aquifer_) {
+            OV_LOG_WARN(
+                "worldgen: OV_AQUIFER=0; the global fluid rule decides alone and the carvers "
+                "cut to air. A measuring instrument, not the game's behaviour");
+        }
+    }
+}
+
+registry::BlockStateId ChunkGenerator::state_of(Substance substance) const noexcept {
+    switch (substance) {
+        case Substance::Solid:
+            return stone_;
+        case Substance::Water:
+            return water_;
+        case Substance::Lava:
+            return lava_;
+        case Substance::Air:
+            break;
+    }
+    return registry::kAirState;
 }
 
 bool ChunkGenerator::is_solid(i32 x, i32 y, i32 z) const {
@@ -147,14 +175,10 @@ std::expected<void, CarverAttachError> ChunkGenerator::set_carvers(
     replaceable_ = std::move(table);
     carvers_     = carvers;
 
-    // Emptying a carved cell that holds a fluid is what the tag literally says
-    // — `minecraft:water` is a member. The reasoning against it was that the
-    // game asks the aquifer, we have none, and draining carved water would
-    // empty sea beds the game kept full. The measurement said otherwise, which
-    // is why it is on: our noise fills every non-solid cell below the sea level
-    // with water, so a dry cave under dry land comes out flooded, and cutting
-    // the fluid fixes far more of those than it breaks under the sea. Set to 0
-    // to put it back and re-measure once the aquifer exists.
+    // Carving a cell that holds a fluid is what the tag literally says —
+    // `minecraft:water` is a member. With the aquifer active the carved cell
+    // gets the aquifer's answer, not air, so a sea bed keeps its water. Set to
+    // 0 to spare fluids entirely, as an instrument.
     if (const char* setting = std::getenv("OV_CARVE_FLUIDS"); setting != nullptr) {
         carve_fluids_ = std::string_view(setting) != "0";
     }
@@ -164,9 +188,12 @@ std::expected<void, CarverAttachError> ChunkGenerator::set_carvers(
     return {};
 }
 
-void ChunkGenerator::apply_carving(world::Chunk& chunk, const CarvingMask& mask,
-                                   i32 lava_level) const {
-    const auto shape = chunk.shape();
+void ChunkGenerator::apply_carving(world::Chunk& chunk, const CarvingMask& mask, i32 lava_level,
+                                   AquiferSampler* aquifer,
+                                   std::vector<BlockPos>* fluid_updates) const {
+    const auto shape    = chunk.shape();
+    const i32  origin_x = chunk.position().x * 16;
+    const i32  origin_z = chunk.position().z * 16;
 
     for (usize local_z = 0; local_z < 16; ++local_z) {
         for (usize local_x = 0; local_x < 16; ++local_x) {
@@ -191,8 +218,29 @@ void ChunkGenerator::apply_carving(world::Chunk& chunk, const CarvingMask& mask,
                     continue;
                 }
 
-                chunk.set_block(local_x, y, local_z,
-                                y <= lava_level ? lava_ : registry::kAirState);
+                // Lava at and below the carvers' own lava level, whatever the
+                // aquifer would say. Above it the aquifer decides, with a
+                // density of zero: its fluid under its level, air above, and
+                // no cut at all where a barrier holds.
+                registry::BlockStateId carved   = registry::kAirState;
+                bool                   schedule = false;
+                if (y <= lava_level) {
+                    carved = lava_;
+                } else if (aquifer != nullptr) {
+                    const i32  world_x = origin_x + static_cast<i32>(local_x);
+                    const i32  world_z = origin_z + static_cast<i32>(local_z);
+                    const auto answer  = aquifer->compute(world_x, y, world_z, 0.0);
+                    if (answer.substance == Substance::Solid) {
+                        continue;
+                    }
+                    carved   = state_of(answer.substance);
+                    schedule = answer.schedule;
+                }
+                chunk.set_block(local_x, y, local_z, carved);
+                if (schedule && fluid_updates != nullptr && carved != registry::kAirState) {
+                    fluid_updates->push_back(BlockPos{origin_x + static_cast<i32>(local_x), y,
+                                                      origin_z + static_cast<i32>(local_z)});
+                }
 
                 // The grass above a cell that has just been cut becomes dirt.
                 // Without it a cave eating into a hillside from underneath
@@ -210,10 +258,18 @@ void ChunkGenerator::apply_carving(world::Chunk& chunk, const CarvingMask& mask,
     }
 }
 
-void ChunkGenerator::generate_noise(world::Chunk& chunk) const {
+void ChunkGenerator::generate_noise(world::Chunk& chunk,
+                                    std::vector<BlockPos>* fluid_updates) const {
     const auto shape    = chunk.shape();
     const i32  origin_x = chunk.position().x * 16;
     const i32  origin_z = chunk.position().z * 16;
+
+    // One sampler per chunk and per call: it memoises cell statuses and
+    // surfaces, and a generator is shared by nothing but its own thread.
+    std::optional<AquiferSampler> aquifer;
+    if (aquifer_active()) {
+        aquifer.emplace(*aquifer_);
+    }
 
     // Stone, water, lava, air. Nothing is cut here: the carvers run after the
     // surface rules, which is the game's order and the reason this file was
@@ -223,7 +279,18 @@ void ChunkGenerator::generate_noise(world::Chunk& chunk) const {
             const i32 world_x = origin_x + static_cast<i32>(local_x);
             const i32 world_z = origin_z + static_cast<i32>(local_z);
             for (i32 y = shape.min_y; y <= shape.max_y(); ++y) {
-                const auto state = is_solid(world_x, y, world_z) ? stone_ : fluid_at(y);
+                registry::BlockStateId state = registry::kAirState;
+                if (aquifer) {
+                    const auto answer =
+                        aquifer->compute(world_x, y, world_z, density_at(world_x, y, world_z));
+                    state = state_of(answer.substance);
+                    if (answer.schedule && fluid_updates != nullptr &&
+                        state != registry::kAirState) {
+                        fluid_updates->push_back(BlockPos{world_x, y, world_z});
+                    }
+                } else {
+                    state = is_solid(world_x, y, world_z) ? stone_ : fluid_at(y);
+                }
                 if (state != registry::kAirState) {
                     chunk.set_block(local_x, y, local_z, state);
                 }
@@ -296,23 +363,29 @@ void ChunkGenerator::generate_surface(world::Chunk& chunk) const {
     }
 }
 
-void ChunkGenerator::generate_carvers(world::Chunk& chunk) const {
+void ChunkGenerator::generate_carvers(world::Chunk& chunk,
+                                      std::vector<BlockPos>* fluid_updates) const {
     // The mask is a record of what the carvers considered, taken for the whole
     // chunk at once; it depends on nothing but the seed, the chunk and the
     // world's height, and it is bit-for-bit the game's. Applying it is the
-    // separate decision: lava below the carvers' own lava level, air above it,
-    // and one day the aquifer's water in between.
+    // separate decision: lava at and below the carvers' own lava level, and
+    // above it whatever the aquifer answers for a density of zero.
     if (carvers_ != nullptr && !carve_before_surface_) {
         const CarvingMask mask = carvers_->carve(chunk.position().x, chunk.position().z);
-        apply_carving(chunk, mask, carvers_->context().lava_level());
+        std::optional<AquiferSampler> aquifer;
+        if (aquifer_active()) {
+            aquifer.emplace(*aquifer_);
+        }
+        apply_carving(chunk, mask, carvers_->context().lava_level(),
+                      aquifer ? &*aquifer : nullptr, fluid_updates);
     }
 }
 
-void ChunkGenerator::generate(world::Chunk& chunk) const {
-    generate_noise(chunk);
+void ChunkGenerator::generate(world::Chunk& chunk, std::vector<BlockPos>* fluid_updates) const {
+    generate_noise(chunk, fluid_updates);
     generate_biomes(chunk);
     generate_surface(chunk);
-    generate_carvers(chunk);
+    generate_carvers(chunk, fluid_updates);
 
     // Last, and after the carvers rather than before them: a carved cell can be
     // the very block a heightmap was pointing at.

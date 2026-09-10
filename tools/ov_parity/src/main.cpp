@@ -13,6 +13,7 @@
 #include "ov/base/log.hpp"
 #include "ov/nbt/binary.hpp"
 #include "ov/nbt/region.hpp"
+#include "ov/worldgen/aquifer.hpp"
 #include "ov/worldgen/biome_source.hpp"
 #include "ov/worldgen/carver.hpp"
 #include "ov/registry/block_states.hpp"
@@ -39,6 +40,52 @@
 using namespace ov;
 
 namespace {
+
+/// The aquifer's open choices, overridable one at a time from the environment.
+///
+/// Every default in `AquiferTuning` is a measured answer, and a measured answer
+/// is only worth its witness: the same measurement with the choice changed has
+/// to come out worse. These variables are how the witnesses are run without
+/// rebuilding — `OV_AQ_SHIFT_Y=-1`, `OV_AQ_NAME=minecraft:witness`, and so on.
+[[nodiscard]] worldgen::AquiferTuning aquifer_tuning_from_environment() {
+    worldgen::AquiferTuning tuning;
+    const auto integer = [](const char* name, i32& into) {
+        if (const char* value = std::getenv(name)) {
+            into = std::atoi(value);
+        }
+    };
+    const auto real = [](const char* name, f64& into) {
+        if (const char* value = std::getenv(name)) {
+            into = std::atof(value);
+        }
+    };
+    const auto flag = [](const char* name, bool& into) {
+        if (const char* value = std::getenv(name)) {
+            into = std::string_view(value) != "0";
+        }
+    };
+    integer("OV_AQ_SHIFT_XZ", tuning.shift_xz);
+    integer("OV_AQ_SHIFT_Y", tuning.shift_y);
+    integer("OV_AQ_DRAW", tuning.draw_order);
+    integer("OV_AQ_SURF_STEP", tuning.surface_step);
+    integer("OV_AQ_SCHEDULE_GAP", tuning.schedule_gap);
+    if (const char* value = std::getenv("OV_AQ_NAME")) {
+        tuning.random_name = value;
+    }
+    flag("OV_AQ_SURF_CENTRE", tuning.surface_from_centre);
+    flag("OV_AQ_CAP_RAISED", tuning.cap_raised);
+    flag("OV_AQ_CHAIN", tuning.chain_similarity);
+    flag("OV_AQ_NOISE", tuning.use_barrier_noise);
+    real("OV_AQ_ABOVE_IN", tuning.above_in);
+    real("OV_AQ_ABOVE_OUT", tuning.above_out);
+    real("OV_AQ_BELOW_BIAS", tuning.below_bias);
+    real("OV_AQ_BELOW_IN", tuning.below_in);
+    real("OV_AQ_BELOW_OUT", tuning.below_out);
+    real("OV_AQ_BAND", tuning.band);
+    real("OV_AQ_WATER_LAVA", tuning.water_lava);
+    real("OV_AQ_GAIN", tuning.gain);
+    return tuning;
+}
 
 struct Options {
     std::filesystem::path world{"run/reference-1234567890/world"};
@@ -743,6 +790,61 @@ int main(int argc, char** argv) {
             return 1;
         }
 
+        // ── the prediction arm ──────────────────────────────────────────────
+        //
+        // Our aquifer asked the carvers' question — a density of exactly zero
+        // — at every cell the oracle reads, next to what the game left there.
+        // Neither our terrain nor our carvers take part: the cell list and the
+        // answer both come from the game, so the agreement is the aquifer's
+        // and nothing else's. `OV_AQ_*` puts a different answer into any of
+        // its open choices, which is how each default gets its witness.
+        const worldgen::Aquifer aquifer_model{*router, options.seed,
+                                              aquifer_tuning_from_environment()};
+        if (!aquifer_model.enabled()) {
+            OV_LOG_ERROR("the aquifer could not be built; the router lacks {}",
+                         aquifer_model.missing().front());
+            return 1;
+        }
+        const i32 carver_lava_level = router->min_y() + 8;
+        // [plain][theirs][ours], kinds in the order air, water, lava, solid.
+        // `plain` is a cell whose game block is air, a fluid, stone or
+        // deepslate: bedrock and the feature blocks are not the aquifer's.
+        using Table = std::array<std::array<std::array<usize, 4>, 4>, 2>;
+        Table                               after_table{};
+        Table                               before_table{};
+        std::map<i32, std::array<usize, 2>> after_by_band;
+        // The game's own post-processing marks, decoded both ways the short
+        // could be packed; the right packing is the one whose marks sit on
+        // fluid.
+        std::array<usize, 2>           flagged_total{};
+        std::array<usize, 2>           flagged_fluid{};
+        std::array<std::set<i32>, 2>   flagged;
+        // [packing][game marked][we marked], over cells where both put the
+        // same fluid.
+        std::array<std::array<std::array<usize, 2>, 2>, 2> schedule_table{};
+        std::optional<worldgen::AquiferSampler>             sampler;
+        // Candidate wake-up rules, each scored against the game's marks
+        // (packing 0) over the same cells: [rule][game marked][rule says].
+        static constexpr std::array<std::string_view, 6> kRules{
+            "the generator's rule",
+            "first != second, any distance",
+            "any of the other three differs from the first, any distance",
+            "second within 25 of the first, any status",
+            "any of the other three within 25 differs from the first",
+            "every fluid",
+        };
+        std::array<std::array<std::array<usize, 2>, 2>, kRules.size()> rule_table{};
+        // d2 - d1, in bands of 5 (the last is 45 and over), marked or not.
+        std::array<std::array<usize, 10>, 2> gap_histogram{};
+        // Same-fluid cells at or below the carvers' lava level — lava the
+        // carvers put down without asking the aquifer — marked or not.
+        std::array<usize, 2> deep_lava_marks{};
+        // The same one unit wide from 30 to 69, where the cutoff is.
+        std::array<std::array<usize, 40>, 2> fine_gap{};
+        // "Marked iff d2 - d1 < T", any status: [threshold][game][rule].
+        static constexpr std::array<i32, 6>                             kCutoffs{25, 40, 45, 48, 50, 55};
+        std::array<std::array<std::array<usize, 2>, 2>, kCutoffs.size()> cutoff_table{};
+
         const auto regions = options.world / "region";
         if (!std::filesystem::is_directory(regions)) {
             OV_LOG_ERROR("{} has no region/.", regions.string());
@@ -814,6 +916,42 @@ int main(int argc, char** argv) {
                 const auto chunk_z = static_cast<i32>(z_pos->as_i64());
                 ++chunks;
 
+                // One sampler per chunk, as the generator builds one.
+                sampler.emplace(aquifer_model);
+                flagged[0].clear();
+                flagged[1].clear();
+                if (const nbt::Tag* post = document->root.find("PostProcessing")) {
+                    if (const auto* sections = post->list()) {
+                        for (usize s = 0; s < sections->size(); ++s) {
+                            const auto* entries = (*sections)[s].list();
+                            if (entries == nullptr) {
+                                continue;
+                            }
+                            const i32 base_y = router->min_y() + static_cast<i32>(s) * 16;
+                            for (const nbt::Tag& entry : *entries) {
+                                const auto value = static_cast<i32>(entry.as_i64());
+                                const i32  lx    = value & 15;
+                                const i32  mid   = (value >> 4) & 15;
+                                const i32  high  = (value >> 8) & 15;
+                                // Packing 0: y in bits 4-7, z in 8-11.
+                                // Packing 1: the other way round.
+                                for (usize p = 0; p < 2; ++p) {
+                                    const i32 ly = p == 0 ? mid : high;
+                                    const i32 lz = p == 0 ? high : mid;
+                                    const i32 wy = base_y + ly;
+                                    flagged[p].insert((wy - router->min_y()) * 256 + lz * 16 + lx);
+                                    ++flagged_total[p];
+                                    const std::string_view* at = block_at(*document, lx, wy, lz);
+                                    if (at != nullptr &&
+                                        (*at == "minecraft:water" || *at == "minecraft:lava")) {
+                                        ++flagged_fluid[p];
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 const i32 min_y = router->min_y();
                 const i32 max_y = min_y + router->height() - 1;
 
@@ -871,6 +1009,83 @@ int main(int argc, char** argv) {
                         }
                         ++kinds[kind];
                         ++rows;
+                        {
+                            const i32   ax       = chunk_x * 16 + local_x;
+                            const i32   az       = chunk_z * 16 + local_z;
+                            const usize theirs_i = kind == 'a'   ? 0
+                                                   : kind == 'w' ? 1
+                                                   : kind == 'l' ? 2
+                                                                 : 3;
+                            usize ours_i   = 2;
+                            bool  our_flag = false;
+                            if (y > carver_lava_level) {
+                                const auto answer = sampler->compute(ax, y, az, 0.0);
+                                switch (answer.substance) {
+                                    case worldgen::Substance::Air:
+                                        ours_i = 0;
+                                        break;
+                                    case worldgen::Substance::Water:
+                                        ours_i = 1;
+                                        break;
+                                    case worldgen::Substance::Lava:
+                                        ours_i = 2;
+                                        break;
+                                    case worldgen::Substance::Solid:
+                                        ours_i = 3;
+                                        break;
+                                }
+                                our_flag = answer.schedule;
+                            }
+                            const usize before_i = y > carver_lava_level ? 0 : 2;
+                            const bool  plain    = kind != 's' || *name == "minecraft:stone" ||
+                                               *name == "minecraft:deepslate";
+                            ++after_table[plain ? 0 : 1][theirs_i][ours_i];
+                            ++before_table[plain ? 0 : 1][theirs_i][before_i];
+                            if (plain) {
+                                auto& band_count = after_by_band[(y >> 4) << 4];
+                                ++band_count[1];
+                                if (theirs_i == ours_i) {
+                                    ++band_count[0];
+                                }
+                            }
+                            if ((theirs_i == 1 || theirs_i == 2) && theirs_i == ours_i) {
+                                const i32 key = (y - router->min_y()) * 256 + local_z * 16 + local_x;
+                                for (usize p = 0; p < 2; ++p) {
+                                    ++schedule_table[p][flagged[p].contains(key) ? 1 : 0]
+                                                    [our_flag ? 1 : 0];
+                                }
+                                const usize marked = flagged[0].contains(key) ? 1 : 0;
+                                if (y <= carver_lava_level) {
+                                    ++deep_lava_marks[marked];
+                                }
+                                const auto  near   = sampler->neighbourhood(ax, y, az);
+                                const auto& d      = near.distance;
+                                const auto& s      = near.status;
+                                const auto  close  = [&](usize k) { return d[k] - d[0] < 25; };
+                                const std::array<bool, kRules.size()> says{
+                                    our_flag,
+                                    s[0] != s[1],
+                                    s[0] != s[1] || s[0] != s[2] || s[0] != s[3],
+                                    close(1),
+                                    (close(1) && s[0] != s[1]) || (close(2) && s[0] != s[2]) ||
+                                        (close(3) && s[0] != s[3]),
+                                    true,
+                                };
+                                for (usize r = 0; r < kRules.size(); ++r) {
+                                    ++rule_table[r][marked][says[r] ? 1 : 0];
+                                }
+                                const auto gap = static_cast<usize>(
+                                    std::min(9, std::max(0, (d[1] - d[0]) / 5)));
+                                ++gap_histogram[marked][gap];
+                                const i32 raw_gap = d[1] - d[0];
+                                if (raw_gap >= 30 && raw_gap < 70) {
+                                    ++fine_gap[marked][static_cast<usize>(raw_gap - 30)];
+                                }
+                                for (usize c = 0; c < kCutoffs.size(); ++c) {
+                                    ++cutoff_table[c][marked][raw_gap < kCutoffs[c] ? 1 : 0];
+                                }
+                            }
+                        }
                         auto& band = bands[(y >> 4) << 4];
                         band[kind == 'w' ? 0 : kind == 'l' ? 1 : kind == 'a' ? 2 : 3] += 1;
 
@@ -950,6 +1165,115 @@ int main(int argc, char** argv) {
         }
         if (!options.dump.empty()) {
             fmt::print("\n  rows written to {}\n", options.dump);
+        }
+
+        // ── the prediction arm, reported ────────────────────────────────────
+        const auto& tuning = aquifer_model.tuning();
+        fmt::print("\naquifer prediction (density 0, the carvers' question)\n");
+        fmt::print("  tuning: shift_xz {} shift_y {} draw {} name {} surface_from_centre {} "
+                   "step {} cap_raised {}\n"
+                   "          above {}/{} below {}+{}/{} band {} water_lava {} gain {} chain {} "
+                   "noise {}\n",
+                   tuning.shift_xz, tuning.shift_y, tuning.draw_order, tuning.random_name,
+                   tuning.surface_from_centre, tuning.surface_step, tuning.cap_raised,
+                   tuning.above_in, tuning.above_out, tuning.below_bias, tuning.below_in,
+                   tuning.below_out, tuning.band, tuning.water_lava, tuning.gain,
+                   tuning.chain_similarity, tuning.use_barrier_noise);
+        const auto print_table = [](std::string_view title, const Table& table) {
+            static constexpr std::array<std::string_view, 4> kNames{"air", "water", "lava",
+                                                                     "solid"};
+            fmt::print("\n  {}\n", title);
+            fmt::print("    {:>12} {:>9} {:>9} {:>9} {:>9}\n", "game \\ ours", kNames[0],
+                       kNames[1], kNames[2], kNames[3]);
+            usize total = 0;
+            usize agree = 0;
+            usize total_plain = 0;
+            usize agree_plain = 0;
+            for (usize t = 0; t < 4; ++t) {
+                std::array<usize, 4> row{};
+                for (usize p = 0; p < 2; ++p) {
+                    for (usize o = 0; o < 4; ++o) {
+                        const usize n = table[p][t][o];
+                        row[o] += n;
+                        total += n;
+                        agree += t == o ? n : 0;
+                        if (p == 0) {
+                            total_plain += n;
+                            agree_plain += t == o ? n : 0;
+                        }
+                    }
+                }
+                fmt::print("    {:>12} {:>9} {:>9} {:>9} {:>9}\n", kNames[t], row[0], row[1],
+                           row[2], row[3]);
+            }
+            const auto pct = [](usize a, usize b) {
+                return b == 0 ? 0.0 : 100.0 * static_cast<f64>(a) / static_cast<f64>(b);
+            };
+            fmt::print("    agreement, every cell:                        {:>8} / {:>8} = "
+                       "{:7.3f} %\n",
+                       agree, total, pct(agree, total));
+            fmt::print("    agreement, air/fluid/stone/deepslate cells:   {:>8} / {:>8} = "
+                       "{:7.3f} %\n",
+                       agree_plain, total_plain, pct(agree_plain, total_plain));
+        };
+        print_table("before — lava at and below the carvers' lava level, air above",
+                    before_table);
+        print_table("after  — our aquifer", after_table);
+
+        fmt::print("\n  after, by band (air/fluid/stone/deepslate cells)\n");
+        for (const auto& [low, count] : after_by_band) {
+            fmt::print("    {:>5} ..{:>5} {:>8} / {:>8} = {:7.3f} %\n", low, low + 15, count[0],
+                       count[1],
+                       count[1] == 0 ? 0.0
+                                     : 100.0 * static_cast<f64>(count[0]) /
+                                           static_cast<f64>(count[1]));
+        }
+
+        fmt::print("\n  PostProcessing: the game's marks, decoded two ways\n");
+        for (usize p = 0; p < 2; ++p) {
+            const auto& s = schedule_table[p];
+            fmt::print("    packing {} ({}): {} marks, {:.3f} % of them on a fluid\n", p,
+                       p == 0 ? "x | y<<4 | z<<8" : "x | z<<4 | y<<8", flagged_total[p],
+                       flagged_total[p] == 0 ? 0.0
+                                             : 100.0 * static_cast<f64>(flagged_fluid[p]) /
+                                                   static_cast<f64>(flagged_total[p]));
+            fmt::print("      same-fluid carved cells: game marked & we marked {:>7}, game only "
+                       "{:>7}, ours only {:>7}, neither {:>7}\n",
+                       s[1][1], s[1][0], s[0][1], s[0][0]);
+        }
+        fmt::print("\n  wake-up rules against the game's marks (packing 0)\n");
+        for (usize r = 0; r < kRules.size(); ++r) {
+            const auto& t     = rule_table[r];
+            const usize total = t[0][0] + t[0][1] + t[1][0] + t[1][1];
+            fmt::print("    {:<62} both {:>7} game only {:>7} rule only {:>7} neither {:>7}  "
+                       "agree {:7.3f} %\n",
+                       kRules[r], t[1][1], t[1][0], t[0][1], t[0][0],
+                       total == 0 ? 0.0
+                                  : 100.0 * static_cast<f64>(t[1][1] + t[0][0]) /
+                                        static_cast<f64>(total));
+        }
+        fmt::print("\n  d2 - d1 of same-fluid carved cells, marked / not marked\n");
+        for (usize g = 0; g < 10; ++g) {
+            fmt::print("    {:>3}{:<4} {:>8} {:>8}\n", g * 5, g == 9 ? "+" : "..",
+                       gap_histogram[1][g], gap_histogram[0][g]);
+        }
+        fmt::print("\n  carvers' lava at or below their lava level: {} marked by the game, {} not "
+                   "(we mark none: the aquifer is not asked there)\n",
+                   deep_lava_marks[1], deep_lava_marks[0]);
+        fmt::print("\n  d2 - d1 one unit wide, marked / not marked\n");
+        for (usize g = 0; g < fine_gap[0].size(); ++g) {
+            fmt::print("    {:>3} {:>8} {:>8}\n", 30 + g, fine_gap[1][g], fine_gap[0][g]);
+        }
+        fmt::print("\n  \"marked iff d2 - d1 < T\", any status\n");
+        for (usize c = 0; c < kCutoffs.size(); ++c) {
+            const auto& t     = cutoff_table[c];
+            const usize total = t[0][0] + t[0][1] + t[1][0] + t[1][1];
+            fmt::print("    T = {:>3}: both {:>7} game only {:>7} rule only {:>7} neither {:>7}  "
+                       "agree {:7.3f} %\n",
+                       kCutoffs[c], t[1][1], t[1][0], t[0][1], t[0][0],
+                       total == 0 ? 0.0
+                                  : 100.0 * static_cast<f64>(t[1][1] + t[0][0]) /
+                                        static_cast<f64>(total));
         }
         return 0;
     }

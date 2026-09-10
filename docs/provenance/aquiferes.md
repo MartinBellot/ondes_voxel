@@ -2,7 +2,13 @@
 
 *Seed 1234567890, monde de référence `run/reference-1234567890`.*
 
-Ce document ne rapporte **aucun changement de génération**. Les quatre chiffres de parité sont
+> **Mise à jour (§ 10).** Les §§ 1–9 décrivent l'oracle et refusaient l'implémentation faute de
+> source pour la barrière. Cette source existe maintenant (`Cave#Aquifer` sur le wiki), et le § 10
+> rapporte **l'aquifère implémenté**, branché dans l'étage de bruit et dans les carvers, avec ses
+> chiffres avant/après et un témoin par choix ouvert. Ce qui suit jusqu'au § 9 est gardé tel quel :
+> c'est l'oracle sur lequel le § 10 est mesuré.
+
+Les §§ 1–9 ne rapportaient **aucun changement de génération**. Les quatre chiffres de parité y sont
 identiques avant et après, au bloc près, et c'est dit en § 7 plutôt que caché.
 
 Ce qu'il rapporte est autre chose : **un oracle qui n'existait pas**, et ce qu'il dit.
@@ -407,3 +413,422 @@ sens, et c'est honnête : ce travail a produit un oracle et quatre mesures, pas 
   fluid_level_spread × 10`, seuils 0,8 / 0,4 / ±0,3). Le § 3.2 la confirme sur le facteur 10 et y
   ajoute l'arrondi à un multiple de trois et la position d'échantillonnage, qui n'y sont pas.
 - **Aucune source de code tierce n'a été consultée pour ce travail.**
+
+---
+
+## 10. L'aquifère implémenté (`aquiferes-2`)
+
+*2026-09-10. Seed 1234567890, même monde de référence.*
+
+Ce qui a changé depuis les §§ 1–9 n'est pas l'oracle, c'est la documentation. L'article
+`Aquifer` du wiki que `etage-de-bruit.md` § 5 citait comme vide est devenu une redirection vers
+**`Cave#Aquifer`**, et cette section décrit maintenant l'algorithme — y compris la moitié barrière
+que ce dépôt refusait faute de source. Le gist de jacobsjo, lui, est inchangé et marque toujours la
+barrière « TODO ».
+
+### 10.1 Ce que chaque source dit, et ce qu'elle ne dit pas
+
+| pièce | `Cave#Aquifer` (wiki) | gist jacobsjo | ce qui restait ouvert |
+|---|---|---|---|
+| grille | 16 × 12 × 16, « décalée de 5 en X/Z et de 1 en Y » | — | **le sens** du décalage |
+| centre | offset 0–9 / 0–8 / 0–9, « tiré de la graine et des coordonnées de cellule » | — | **le nom** du hachage positionnel, **l'ordre** des trois tirages |
+| voisins | 12 cellules (2 × 3 × 2), 4 plus proches, écart de 25 sur les distances au carré | — | l'ordre de parcours (départage des égalités) |
+| règle globale | lave sous `min(−54, niveau de la mer)`, surface à −54 ; fluide par défaut jusqu'au niveau de la mer | idem | — |
+| surface préliminaire | 13 échantillons, relevés de 8 | `initial_density_without_jaggedness > 0,390625`, liste des 13 décalages **en chunks** | **où** dans le chunk, **le pas** de la recherche |
+| statut | trois règles (au-dessus du sol → global ; touche une surface sous la mer → mer ; sinon le bruit) | « désactivé si la lave est choisie » | — |
+| inondation | seuils −0,3 / −0,8 sous la mer, 0,8 / 0,4 sur terre, interpolés sur 64 blocs | idem | la profondeur est-elle comptée depuis la surface relevée ou brute |
+| niveau partiel | `40⌊Y/40⌋ + 20 + spread`, « plafonné à la plus basse surface » | `spread × 10`, **arrondi vers le bas au multiple de 3**, échantillonné à l'échelle 1/16, 1/40, 1/16 | **quelle** surface plafonne (relevée ou brute) |
+| lave | niveau ≤ −10 et `|lava| > 0,3`, une valeur par région 64 × 40 × 64 | idem, échelle 1/64, 1/40, 1/64 | — |
+| exclusion | `erosion < −0,225` et `depth > 0,9` | les mêmes en flottants | — |
+| barrière | **qualitative** : positive entre les niveaux, pic au milieu ; couvercle « jusqu'à environ 5 blocs » au-dessus ; plancher « jusqu'à environ 23 blocs » en dessous ; pression fixe forte eau/lave ; bruit `barrier` « dans une bande étroite » ; statuts égaux → pression nulle | TODO | **toute la formule** |
+| ticks | « un tick planifié » pour les fluides près d'une frontière entre statuts différents ; l'eau juste au-dessus de la couche de lave, toujours | — | la règle exacte de « près » |
+
+La colonne de droite est ce qui a été **mesuré** (§ 10.3). Aucune ligne de code tiers n'a servi à la
+remplir : chaque choix ouvert a été posé comme hypothèse, puis confronté à l'oracle du § 1 avec au
+moins un témoin qui aurait dû faire baisser l'accord.
+
+### 10.2 La forme de la pression, depuis les deux nombres de l'article
+
+L'article ne donne pas la formule, mais il donne **deux épaisseurs**, et elles contraignent une
+famille. Soit `m` le milieu des deux niveaux, `h` la demi-distance entre eux et
+`d = h − |y + ½ − m|` (positif entre les niveaux, maximal au milieu) :
+
+- moitié haute : `d / a₁` si `d > 0`, `d / a₂` sinon ;
+- moitié basse : avec `q = b + d`, `q / b₁` si `q > 0`, `q / b₂` sinon ;
+- bruit `barrier` ajouté seulement si la pression brute est dans `[−B, B]` ;
+- le tout multiplié par `g` et par la similarité `1 − (d₂ − d₁)/25` des centres, puis ajouté à la
+  densité ; pierre si la somme est positive.
+
+Le bruit ne peut plus rien quand la pression brute sort de la bande. Le couvercle s'arrête donc à
+`B × a₂` blocs au-dessus du niveau haut, et le plancher à `b + B × b₂` blocs sous le niveau bas.
+« Environ 5 » et « environ 23 » donnent deux équations ; `B = 2`, `a₂ = 2,5`, `b = 3`, `b₂ = 10`
+les satisfont exactement, avec `a₁ = 1,5`, `b₁ = 3`, `g = 2` et une pression eau/lave de 2. Ce
+sont les valeurs par défaut de `AquiferTuning`, et chacune est balayée des deux côtés au § 10.3.
+
+### 10.3 L'oracle des cellules creusées : avant, après, et un témoin par choix ouvert
+
+`ov_parity --aquifer`, bras de prédiction. Pour chaque cellule de l'oracle du § 1, notre aquifère
+répond à la question des carvers (densité nulle ; lave à et sous y = −56) et la réponse est
+comparée à ce que le jeu a laissé. Notre terrain et nos carvers ne participent pas : la liste des
+cellules et la réponse viennent toutes deux du jeu. « Cellules simples » = celles où le jeu a de
+l'air, un fluide, de la pierre ou de la deepslate ; la bedrock et les blocs de features (dripstone,
+sculk) n'appartiennent pas à l'aquifère.
+
+**L'oracle entier — les 1 775 chunks et 1 490 251 cellules du § 1**, `ov_parity --aquifer
+--chunks=4000`. L'avant reproduit exactement la base du § 1 (69,200 % d'air, 23,456 % d'eau,
+2,836 % de lave, 4,508 % de solide chez le jeu) :
+
+| | avant (lave ≤ −56, air au-dessus) | **après (notre aquifère)** |
+|---|---|---|
+| accord, cellules simples | 1 062 950 / 1 481 524 — 71,747 % | **1 480 842 / 1 481 524 — 99,954 %** |
+| accord, toutes cellules | 1 062 950 / 1 490 251 — 71,327 % | 1 482 853 / 1 490 251 — 99,504 % |
+
+| jeu \ nous (après) | air | eau | lave | solide |
+|---|---|---|---|---|
+| air — 1 031 251 | 1 030 690 | 3 | 0 | 558 |
+| eau — 349 558 | 2 | 349 497 | 0 | 59 |
+| lave — 42 259 | 1 | 0 | 42 258 | 0 |
+| solide — 67 183 | 1 562 | 133 | 5 080 | 60 408 |
+
+**Cellule par cellule : l'eau à 99,983 %, la lave à 99,998 %, l'air à 99,946 %.** Le solide garde
+60 408 cellules sur 67 183 ; les 5 080 « solide → lave » sont la bedrock sous −56 (hors des cellules
+simples), et les 1 562 + 133 restants — de la pierre que le jeu garde et que nous creusons — sont,
+avec les 558 cellules d'air que nous gardons en pierre, **l'écart de la barrière : 2 253 cellules,
+0,15 % de l'oracle.**
+
+**300 chunks, 284 514 cellules, dont 283 001 simples** — le sous-échantillon des témoins, même
+tendance :
+
+| | avant (lave ≤ −56, air au-dessus) | **après (notre aquifère)** |
+|---|---|---|
+| accord, cellules simples | 203 738 — 71,992 % | **282 820 — 99,936 %** |
+| accord, toutes cellules | 203 738 — 71,609 % | 283 188 — 99,534 % |
+
+Le tableau de confusion d'après, en entier (jeu en ligne, nous en colonne) :
+
+| jeu \ nous | air | eau | lave | solide |
+|---|---|---|---|---|
+| air | 197 350 | 0 | 0 | 157 |
+| eau | 2 | 66 901 | 0 | 12 |
+| lave | 1 | 0 | 8 555 | 0 |
+| solide | 229 | 71 | 854 | 10 382 |
+
+Les 854 « solide → lave » sont la bedrock sous y = −56, que le jeu garde et que la mesure compte
+parce qu'elle ne distingue pas l'étage ; ils sont hors des cellules simples. Ce qui reste — 157
+cellules d'air que nous gardons en pierre, 229 + 71 de pierre que nous creusons — est la barrière
+aux quelques cellules près, et c'est l'écart nommé.
+
+Par bande de 16, l'accord sur les cellules simples va de **99,143 %** (−64 … −49, la couche de
+lave) à **100,000 %** (−16 … −1, et au-dessus de 64).
+
+**Les témoins.** 200 chunks, 179 958 cellules simples ; le défaut fait **179 860 — 99,946 %**.
+Chaque ligne change **un** choix :
+
+| choix ouvert | défaut | témoin | accord du témoin | verdict |
+|---|---|---|---|---|
+| nom du hachage positionnel | `minecraft:aquifer` | `minecraft:witness` | 90,678 %¹ | **tranché** |
+| ordre des tirages | x, y, z | z, y, x | 91,795 % | **tranché** |
+| sens du décalage X/Z | −5 | +5 | 96,313 % | **tranché** |
+| pas de la surface préliminaire | 8 | 1 | 92,356 % | **tranché** |
+| position des 13 surfaces | centre + 16 × décalage | origine du chunk | 97,872 % | **tranché** |
+| plafond du niveau partiel | surface brute | surface relevée | 99,894 % | **tranché** (−92 cellules) |
+| bruit `barrier` | lu | ignoré | 99,926 % | **tranché** (−36) |
+| `below_bias` | 3 | 2 / 4 | 99,904 % / 99,921 % | **maximum intérieur** |
+| `below_in` | 3 | 2 / 4 | 99,941 % / 99,939 % | maximum intérieur (−9 / −12) |
+| `below_out` | 10 | 8 / 12 | 99,942 % / 99,941 % | maximum intérieur (−7 / −9) |
+| `above_in` | 1,5 | 1 / 2 | 99,939 % / 99,943 % | maximum intérieur (−12 / −5) |
+| sens du décalage Y | +1 | −1 | 99,946 % | **non tranché** — identique à la cellule près |
+| gain de la pression | 2 | 1,5 / 2,5 | 99,946 % / 99,946 % | **non mesurable ici** |
+| similarité chaînée | oui | non | 99,946 % | **non mesurable ici** |
+| pression eau/lave | 2 | 1 / 4 | 99,946 % / 99,946 % | **non mesurable ici** |
+| bande du bruit | 2 | 1,5 / 2,5 | 99,946 % / 99,946 % | **non mesurable ici** |
+
+¹ sur 300 chunks.
+
+**Pourquoi quatre lignes ne peuvent pas trancher, et ce n'est pas un manque d'échantillon.** Les
+carvers posent la question avec une densité nulle : une cellule devient pierre si et seulement si
+`bruit + pression brute > 0`. Un gain positif multiplie toute la somme, les similarités sont des
+poids positifs, la pression eau/lave est une constante positive — aucun des trois ne peut changer
+un signe. La bande, elle, ne compte que si le bruit `barrier` dépasse ±2 en valeur absolue, ce
+qu'il ne fait pratiquement jamais. Ces quatre choix n'agissent que dans l'étage de bruit, où la
+densité n'est pas nulle, et là l'erreur de relief de notre terrain domine toute comparaison. **Leurs
+valeurs reposent donc sur la seule contrainte des deux épaisseurs de l'article (§ 10.2), pas sur une
+mesure**, et c'est dit.
+
+**`above_out` : une tendance jusqu'au bord, donc pas ajusté.** C'est le seul choix dont le témoin
+fait *mieux* que le défaut, et il le fait de façon monotone :
+
+| `above_out` | 0,5 | 1,0 | 1,5 | 2,0 | 2,25 | **2,5** | 3,0 |
+|---|---|---|---|---|---|---|---|
+| accord (200 chunks) | 99,989 % | 99,978 % | 99,962 % | 99,953 % | 99,951 % | **99,946 %** | 99,932 % |
+| air du jeu gardé en pierre | 2 | 24 | — | 70 | 73 | **83** | — |
+| solide du jeu gardé | 7 122 | 7 123 | — | 7 124 | 7 124 | **7 124** | — |
+
+Tout le gain est dans la ligne de l'air : une pente plus raide au-dessus du niveau haut ne fait
+que retirer de la fausse pierre, et ne coûte que 2 vraies cellules de barrière à 0,5. **Le
+couvercle « jusqu'à environ 5 blocs » de l'article ne se voit pas dans les cellules creusées.**
+Deux lectures sont possibles et la mesure ne les sépare pas : soit la branche « au-dessus du niveau
+haut » de la famille du § 10.2 n'a pas la bonne forme (et aucune constante ne la corrigera), soit
+le couvercle de l'article est un effet de l'étage de bruit, où la densité n'est pas nulle, et pas
+des carvers. Une valeur ajustée au bord d'un balayage monotone est exactement ce que les pièges 7 et
+14 du briefing interdisent : **la valeur reste celle que l'article impose (2,5)**, et l'écart —
+83 cellules sur 179 958 — est nommé ici plutôt qu'absorbé.
+
+Le décalage Y non tranché s'explique aussi : avec trois rangées de cellules explorées sur l'axe Y,
+les quatre centres les plus proches tombent dans les mêmes rangées quel que soit le sens du
+décalage d'un bloc. Le choix est sans effet mesurable sur cet échantillon ; il n'est pas pour autant
+établi.
+
+La base de comparaison qui rend ces chiffres lisibles : « air partout au-dessus de −56 » fait
+71,992 %. Le témoin le plus faux (mauvais nom de hachage, tous les centres déplacés) fait encore
+90,678 %, parce que la plupart des cellules sont de l'air au-dessus de tout niveau quels que soient
+les centres. **L'échelle utile est donc entre 90,7 % et 99,9 %, pas entre 72 % et 100 %**, et c'est
+dans la ligne de l'eau qu'elle se lit : 66 901 cellules d'eau sur 66 915 avec le bon nom, 58 052 avec
+le mauvais.
+
+### 10.4 Le réveil des fluides : un oracle de plus, et un désaccord avec l'article
+
+**Vanilla ne planifie pas de tick à la génération : il marque.** Les 115 chunks `carvers` des six
+premières régions portent tous une liste `PostProcessing`, 145 022 entrées au total, contre
+**22** entrées `fluid_ticks`. Le « tick planifié » de l'article est donc une marque de
+post-traitement, convertie en tick quand le chunk est terminé. Et c'est un oracle direct : pour
+chaque cellule creusée que le jeu a remplie d'un fluide, la liste dit si le jeu a voulu la réveiller.
+
+**L'empaquetage du short se mesure lui-même.** Décodée `x | y<<4 | z<<8`, **99,615 %** des marques
+tombent sur un fluide du jeu ; décodée `x | z<<4 | y<<8`, 70,970 %. Le premier est le bon, et le
+second sert de témoin.
+
+**La règle.** Sur les cellules creusées où le jeu et nous mettons le même fluide (100 chunks,
+29 683 cellules), le jeu marque selon l'écart `d₂ − d₁` des deux centres les plus proches, et
+selon rien d'autre :
+
+| `d₂ − d₁` | marquées | non marquées |
+|---|---|---|
+| 0 … 44 (par bandes de 5) | 1 205 à 1 697 par bande | 17 à 36 par bande |
+| 44 | 293 | 4 |
+| **45** | **0** | **308** |
+| 46 … 69 | 0, sauf 48 (2), 56 (4), 64 (4) | 185 à 510 |
+
+| règle candidate | accord |
+|---|---|
+| la première (statuts différents parmi les proches, à moins de 25) | 56,665 % |
+| `statut₁ ≠ statut₂`, toute distance | 45,568 % |
+| un des trois autres statuts diffère, toute distance | 43,025 % |
+| `d₂ − d₁ < 25`, tout statut | 78,493 % |
+| `d₂ − d₁ < 40`, tout statut | 93,997 % |
+| **`d₂ − d₁ < 45`, tout statut** | **98,915 %** |
+| `d₂ − d₁ < 48` | 96,213 % |
+| `d₂ − d₁ < 50` | 93,643 % |
+| tout fluide | 44,298 % |
+
+La coupure est franche (293 contre 4 à 44, 0 contre 308 à 45) et le maximum est intérieur, avec des
+témoins des deux côtés. **Les statuts n'y entrent pas** : exiger qu'ils diffèrent fait tomber
+l'accord de 98,9 % à 45,6 %. C'est un **désaccord avec l'article**, qui dit que « les fluides à
+l'intérieur d'une cellule, ou entre cellules de statuts identiques, ne sont jamais planifiés ». La
+mesure dit l'inverse pour la seconde moitié de la phrase, et c'est la mesure qui est retenue
+(`AquiferTuning::schedule_gap = 45`). Les quelques marques au-delà de 45 tombent toutes à 48, 56
+et 64 — des multiples de 8, comme les faux niveaux du § 3.1 — et ne sont pas expliquées ; elles
+représentent 10 cellules sur 29 683.
+
+**La règle posée dans le générateur, mesurée.** `d₂ − d₁ < 45` pour tout fluide que l'aquifère
+place, plus l'eau juste au-dessus de la couche de lave (règle de l'article, gardée telle quelle :
+l'échantillon creusé n'a pas assez de cellules à y = −54 pour la trancher) :
+
+| échantillon | les deux marquent | le jeu seul | nous seuls | ni l'un ni l'autre | accord |
+|---|---|---|---|---|---|
+| 100 chunks | 13 040 | 109 | 0 | 16 534 | **99,633 %** |
+| 300 chunks | 31 936 | 999 | 0 | 42 521 | **98,676 %** |
+| **oracle entier, 1 775 chunks** | **166 437** | **6 547** | **0** | **218 771** | **98,329 %** |
+
+Sur l'oracle entier, les 6 547 cellules que le jeu marque et pas nous sont, **toutes**, de la lave
+des carvers à ou sous y = −56 (le jeu en marque 6 547 et en laisse 25 152). **Au-dessus de ce
+niveau, nos marques et celles du jeu coïncident sur les 385 208 cellules comparées, sans une
+exception.**
+
+**Nous ne marquons jamais une cellule que le jeu ne marque pas.** Sur 100 chunks, les 109 cellules
+que le jeu marque et pas nous sont **toutes** de la lave posée par les carvers **à ou sous leur
+niveau de lave** (y ≤ −56) : le jeu en marque 109 et en laisse 216, nous n'en marquons aucune,
+parce que les carvers n'y demandent rien à l'aquifère. Au-dessus de ce niveau, l'accord est total
+sur cet échantillon. Que le jeu marque un tiers de cette lave-là, et lequel, n'est pas expliqué :
+c'est l'écart restant, nommé.
+
+**Ce qui n'est pas fait.** `ChunkGenerator::generate(chunk, &fluid_updates)` rend la liste des
+positions à réveiller, mais **rien ne la livre** à la file de ticks d'un niveau : `world::Chunk`
+n'a pas de liste de post-traitement, et le serveur n'en lit pas à la génération. Les fluides
+générés restent donc immobiles chez nous là où le jeu ferait couler une cascade au premier tick.
+C'est nommé ici et dans `chunk_generator.hpp`, pas caché.
+
+### 10.5 Déterminisme multi-worker
+
+L'aquifère mémorise statuts, centres et surfaces : c'est exactement le genre d'état qui fait
+diverger deux workers. Il est donc **par chunk et par appel** (`AquiferSampler`, construit dans
+chaque étage), la moitié graine (`Aquifer`) est immuable, et un test unitaire vérifie que l'ordre
+des questions ne change aucune réponse. De bout en bout :
+
+`ov_gendet --side=1 --workers=4`, pipeline complet (bruit, biomes, surface, carvers, features) :
+16 chunks, **1 572 864 cellules de blocs comparées, 0 différente ; 24 576 cellules de biomes,
+0 différente** — le monde à 4 workers est le monde série. (Les temps imprimés, 120 s en série
+contre 212 s en parallèle, ont été pris pendant que deux sondes tournaient sur la même machine et
+ne mesurent rien.)
+
+### 10.6 Ce qui est branché
+
+- **L'étage de bruit** (`ChunkGenerator::generate_noise`) demande à l'aquifère ce que devient
+  chaque bloc, avec la `final_density` du bloc : pierre si la densité est positive **ou** si une
+  barrière la rend positive, sinon eau, lave ou air selon le statut. La couche de lave sous −54
+  reste de la lave quoi qu'il arrive (règle globale).
+- **Les carvers** (`apply_carving`) posent de la lave **à et sous leur propre niveau de lave**
+  (`lava_level: {above_bottom: 8}`, y ≤ −56 — c'était déjà le cas, et c'est gardé avant l'aquifère,
+  pas après). Au-dessus, ils demandent à l'aquifère avec une **densité nulle** : son fluide sous son
+  niveau, de l'air au-dessus, et **pas de coupe du tout** là où la barrière tient — la cellule
+  garde alors ce que la surface y avait mis.
+- **Les fluides à réveiller** (§ 10.4) sont collectés par `generate(chunk, &fluid_updates)` et par
+  les deux étages, mais ne sont livrés à aucune file de ticks.
+- **L'échantillonneur est par chunk** (§ 10.5) ; la moitié graine vit dans le `ChunkGenerator` et
+  se construit toute seule depuis le routeur — `NoiseRouter::seed()` a été ajouté pour ça, rien
+  d'autre dans le serveur ni dans les outils n'a eu à être câblé.
+- **`OV_AQUIFER=0`** remet l'ancien comportement (règle globale seule, carvers qui creusent en
+  air), comme instrument : c'est ce qui donne l'« avant » de chaque tableau ci-dessous depuis le
+  même binaire.
+
+### 10.7 Parité de bout en bout, sur chunks `full`
+
+L'oracle du § 1 isole l'aquifère ; il ne dit pas ce que l'aquifère vaut dans un monde généré
+entier, où notre terrain a ses propres erreurs. C'est la question de cette section, et la sonde
+**passe par `ChunkGenerator::generate()`** (piège 13) : `ov_caveedge` génère chaque chunk avec
+bruit, biomes, surface et carvers, aquifère activé, puis une seconde fois aquifère désactivé,
+dans le même processus, et range chaque cellule en air / eau / lave / solide contre le jeu. La
+glace et les plantes aquatiques du jeu comptent comme eau, la neige comme air : ce sont des
+étages ultérieurs posés sur une cellule d'eau ou d'air.
+
+`ov_caveedge --chunks=60 --per-region=2`, 60 chunks `full`, **5 603 328 cellules** :
+
+| | aquifère désactivé | **aquifère activé** |
+|---|---|---|
+| toutes les cellules | 5 478 887 — 97,779 % | **5 553 521 — 99,111 %** |
+| sous le niveau de la mer (y < 63) | 1 760 146 / 1 853 184 — 94,980 % | **1 834 769 — 99,006 %** |
+
+**L'apparié, qui annule tout ce que les deux bras partagent** — notre erreur de relief comprise :
+
+| | cellules |
+|---|---|
+| cellules dont l'aquifère change la classe | 76 053 |
+| **seul l'aquifère donne la classe du jeu** | **74 684 — 98,200 %** |
+| seule la règle globale la donne | 50 — 0,066 % |
+| aucun des deux | 1 319 — 1,734 % |
+
+Les changements, par ordre : 56 426 cellules d'**air** que la règle globale avait **noyées**
+(des grottes sèches sous le niveau de la mer, exactement le défaut que `ordre-des-etages.md` § 5
+compensait en vidant les fluides creusés), 12 790 cellules creusées qui doivent **garder leur
+eau**, 2 725 + 2 410 cellules que la **barrière** garde en pierre là où le jeu en a, 273 + 60 de
+**lave** d'aquifère. Dans l'autre sens, 1 277 cellules que le jeu a en pierre et que nous vidons
+d'une eau qui n'aurait pas dû y être non plus — l'erreur de relief sous-jacente, que l'aquifère ne
+peut pas corriger.
+
+**La peau des grottes**, même échantillon, même binaire, ordre du jeu (bruit, biomes, surface,
+puis carvers), `OV_AQUIFER=0` pour l'avant :
+
+| | aquifère désactivé | **aquifère activé** |
+|---|---|---|
+| parois (cellules voisines d'une cellule creusée) | 41 952 / 46 927 — 89,398 % | **43 698 / 46 905 — 93,163 %** |
+| intérieurs (cellules creusées) | 53 374 / 70 061 — 76,182 % | **68 394 / 70 061 — 97,621 %** |
+
+Les intérieurs passent de 76 % à 97,6 % : c'est l'eau qui reste dans les cellules creusées sous une
+nappe, et la barrière qui garde la pierre là où le jeu refuse de couper. Les 80,629 % d'intérieurs
+du § 7 ont été pris sur un autre échantillon (`--chunks=150 --per-region=4`) et ne se comparent
+pas à ces deux colonnes.
+
+**Les minerais de bout en bout** (`ov_genparity --chunks=48`, pipeline complet avec features,
+même binaire, `OV_AQUIFER=0` pour l'avant) :
+
+| | aquifère désactivé | **aquifère activé** |
+|---|---|---|
+| minerais du jeu au bon bloc | 14 877 / 18 057 — 82,389 % | **14 977 / 18 057 — 82,943 %** |
+| notre bloc là où le jeu a un minerai : eau | 78 | 16 |
+| notre bloc là où le jeu a un minerai : air | 58 | 35 |
+
++100 minerais, +0,554 point. Le chiffre inscrit dans `PROGRESS.json`, 82,406 %, a été pris sur un
+commit antérieur ; le bras « désactivé » de ce binaire donne 82,389 %, 17 minerais de moins,
+écart qui appartient à ce qui a été fusionné entre-temps et non à l'aquifère. L'avant honnête est
+celui du même binaire.
+
+**`terrain_parity` (97,79 %) ne bouge pas, par construction** : `ov_parity --terrain` interroge
+`ChunkGenerator::is_solid()`, c'est-à-dire le signe de `final_density`, et ne passe ni par
+`generate()` ni par l'aquifère — c'est exactement le piège 13, et c'est pour ça que la mesure de
+cette section a été prise ailleurs. Le chiffre de bout en bout qui le remplace pour les fluides est
+le tableau des classes ci-dessus.
+
+**Ce que l'aquifère coûte.** `ov_gendet --side=1 --workers=1`, 16 chunks, pipeline complet
+(features comprises), build **debug**, machine sans autre sonde de ce travail :
+
+| | bras série | bras « parallèle » (1 worker) | cellules différentes |
+|---|---|---|---|
+| aquifère désactivé | 32,438 s | 33,379 s | 0 |
+| aquifère activé | **80,329 s** | **181,343 s** | 0 |
+
+**La génération coûte environ 2,5 fois plus avec l'aquifère**, sur un chemin que `PROGRESS.json`
+note déjà comme non servable. Rien n'a été optimisé : la surface préliminaire est recherchée par
+pas de 8 depuis y = 320, en treize colonnes par centre, et chaque étage reconstruit son propre
+échantillonneur. Le bras « parallèle » à un seul worker, 2,25 fois plus lent que le bras série
+**seulement quand l'aquifère est activé**, n'est pas expliqué : une seule mesure, sur une machine
+partagée avec d'autres agents. Ce n'est pas un problème de justesse — les deux bras rendent le
+même monde au bloc près — mais c'est un écart de temps nommé et non compris.
+
+Le reste du tableau n'est pas l'aquifère : les ~18 000 cellules d'air du jeu où nous avons de la
+pierre, et les ~20 000 de pierre où nous avons de l'air, sont les mêmes à 7 près avec et sans
+aquifère — c'est le relief (`amplitude-old-blended-noise.md`).
+
+### 10.8 Instruments laissés en place
+
+- **`ov_parity --aquifer`** a maintenant un **bras de prédiction** : pour chaque cellule de
+  l'oracle du § 1, la réponse de notre aquifère (densité nulle), en tableau de confusion contre le
+  jeu, avant (lave ≤ −56, air au-dessus) et après, par bande de 16. Il décode aussi
+  `PostProcessing` des deux façons et note chaque règle de réveil candidate contre les marques du
+  jeu.
+- **`OV_AQ_*`** (`SHIFT_XZ`, `SHIFT_Y`, `DRAW`, `NAME`, `SURF_CENTRE`, `SURF_STEP`, `CAP_RAISED`,
+  `CHAIN`, `NOISE`, `ABOVE_IN`, `ABOVE_OUT`, `BELOW_BIAS`, `BELOW_IN`, `BELOW_OUT`, `BAND`,
+  `WATER_LAVA`, `GAIN`, `SCHEDULE_GAP`) — change un choix ouvert à la fois dans le harnais, sans
+  recompiler. Lus par `ov_parity` seulement ; le générateur n'en lit aucun.
+- **`ov_caveedge`** a un **bras « classes »** : chaque cellule de chaque chunk généré, rangée en
+  air / eau / lave / solide, contre le jeu, aquifère activé et désactivé, avec le décompte apparié
+  des cellules que l'aquifère change.
+- **`AquiferSampler::neighbourhood`** — les quatre centres les plus proches et leurs statuts, pour
+  tester une règle contre l'oracle sans toucher à `compute`.
+
+### 10.9 Ce qui n'est pas fait, et les pièges payés
+
+**Pas fait, nommé :**
+
+1. **La livraison des fluides à réveiller.** `generate(chunk, &fluid_updates)` rend la liste ;
+   `world::Chunk` n'a pas de liste de post-traitement et le pipeline comme le serveur l'ignorent.
+   Chez nous, une cascade générée reste immobile jusqu'à ce qu'un voisin la touche.
+2. **La lave des carvers sous leur niveau.** Le jeu marque 109 de ces 325 cellules (100 chunks),
+   nous aucune ; la règle qui en choisit un tiers n'est pas trouvée.
+3. **Quatre constantes de pression non mesurées** — gain, similarité chaînée, pression eau/lave,
+   bande du bruit (§ 10.3). L'oracle des cellules creusées ne peut pas les voir, et l'oracle de bout
+   en bout est dominé par l'erreur de relief. Leurs valeurs viennent des deux épaisseurs de l'article.
+4. **Le sens du décalage Y**, sans effet mesurable sur l'échantillon, donc non établi.
+5. **Le coût** : environ 2,5 fois le temps de génération en debug (§ 10.7), non optimisé, et un
+   bras « parallèle » à un worker inexplicablement plus lent avec l'aquifère.
+6. **Les égalités de distance** : l'ordre de parcours des douze cellules (x, puis y, puis z, avec
+   comparaisons strictes) décide qui est « le plus proche » à égalité. Il n'est ni documenté ni
+   mesuré séparément ; ce qui en dépend est dans les quelques centaines de cellules d'écart.
+
+**Pièges, à connaître des autres agents :**
+
+1. **La page `Aquifer` du wiki n'existe plus comme telle** : c'est une redirection vers
+   `Cave#Aquifer`, et c'est là que la barrière est décrite. Un `WebFetch` de `/w/Aquifer?action=raw`
+   rend la redirection et rien d'autre ; le résumeur de `WebFetch` tronque par ailleurs les
+   passages longs — télécharger le wikitext avec `curl` et le lire soi-même.
+2. **Un témoin identique au défaut ne confirme rien.** Quatre des témoins du § 10.3 tombent pile sur
+   le chiffre du défaut, et ce n'est pas qu'ils sont faux « de peu » : la question posée (densité
+   nulle, signe d'une somme) ne peut pas les voir. Avant de conclure qu'un choix est bon parce que
+   son témoin ne fait pas mieux, vérifier que le témoin peut faire *moins bien*.
+3. **Une tendance qui court jusqu'au bord n'est pas un optimum** (pièges 7 et 14 du briefing) :
+   c'est ce que fait `above_out`, et c'est pourquoi sa valeur n'a pas été ajustée sur l'agrégat.
+4. **`PostProcessing` est empaqueté `x | y<<4 | z<<8`**, une liste par section à partir de la
+   section la plus basse. L'autre sens place encore 66–71 % des marques sur un fluide — assez pour
+   avoir l'air de marcher.
+5. **`ov_parity --terrain` ne voit pas l'aquifère** (il appelle `is_solid`) : un chiffre de terrain
+   inchangé après ce travail n'est pas une preuve que l'aquifère n'a rien changé. Mesurer par
+   `generate()` (`ov_caveedge`, `ov_genparity`).

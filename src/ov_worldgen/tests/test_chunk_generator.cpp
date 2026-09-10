@@ -4,8 +4,9 @@
 // degree of agreement: that the replaceables tag resolves out of the pack
 // rather than out of a list somebody typed, that it holds the blocks the
 // surface rules put on top of a column and not merely stone, that a carved cell
-// really is emptied whatever it was made of, and that grass left over a cut
-// becomes dirt.
+// really is emptied whatever it was made of — unless the aquifer's barrier
+// holds there, where the game's carver does not cut at all — and that grass
+// left over a cut becomes dirt.
 //
 // What the ordering is *worth* is not settled here and cannot be: the oracle
 // for that is a world the real game wrote. tools/ov_caveedge runs both stage
@@ -158,9 +159,19 @@ TEST_CASE("a generated chunk is carved after its surface, not before",
     const auto grass_block = blocks->find_block("minecraft:grass_block");
     REQUIRE(grass_block.has_value());
 
-    usize carved_cells   = 0;
-    usize still_solid    = 0;
-    usize grass_on_a_cut = 0;
+    // The aquifer's barrier is the one thing allowed to leave a listed block
+    // in a carved cell: where it holds, the game's carver does not cut at all
+    // (docs/provenance/aquiferes.md § 1 counts it at 4.5 % of the cells the
+    // game's carvers considered). The same question the carvers ask — the
+    // aquifer at a density of zero — tells those cells apart.
+    REQUIRE(generator.aquifer_active());
+    AquiferSampler barrier{*generator.aquifer()};
+    const i32      lava_level = context.lava_level();
+
+    usize carved_cells    = 0;
+    usize kept_by_barrier = 0;
+    usize still_solid     = 0;
+    usize grass_on_a_cut  = 0;
     for (i32 local_z = 0; local_z < 16; ++local_z) {
         for (i32 local_x = 0; local_x < 16; ++local_x) {
             const auto ax = static_cast<usize>(local_x);
@@ -171,10 +182,19 @@ TEST_CASE("a generated chunk is carved after its surface, not before",
                 }
                 ++carved_cells;
                 const auto state = chunk.get_block(ax, y, az);
-                // A carved cell holds air, lava, or something the tag does not
-                // let a carver touch. What it must never hold is a block the
-                // tag lists — that would mean the mask was applied to a terrain
-                // that no longer existed by the time it mattered.
+                if (y > lava_level &&
+                    barrier
+                            .compute(position.x * 16 + local_x, y, position.z * 16 + local_z,
+                                     0.0)
+                            .substance == Substance::Solid) {
+                    ++kept_by_barrier;
+                    continue;
+                }
+                // Anywhere else a carved cell holds air, a fluid, or something
+                // the tag does not let a carver touch. What it must never hold
+                // is a block the tag lists — that would mean the mask was
+                // applied to a terrain that no longer existed by the time it
+                // mattered.
                 if (state != registry::kAirState &&
                     generator.is_carver_replaceable(blocks->block_of(state)) &&
                     !blocks->holds_fluid(state)) {
@@ -194,6 +214,8 @@ TEST_CASE("a generated chunk is carved after its surface, not before",
     }
 
     CHECK(carved_cells > 0);
+    INFO("carved cells the aquifer's barrier kept, and that were not asked about: "
+         << kept_by_barrier);
     CHECK(still_solid == 0);
     CHECK(grass_on_a_cut == 0);
 }
