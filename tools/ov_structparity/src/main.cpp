@@ -252,8 +252,9 @@ struct Tally {
     std::vector<ChunkPos> false_positive_at;
     std::vector<ChunkPos> false_negative_at;
 
-    /// Why we said no where the game said yes, and vice versa.
-    std::map<std::string, i32> false_positive_reason;
+    /// Which gate of ours said no where the game said yes. The only thing
+    /// that turns a false negative into a fix.
+    std::map<std::string, i32> false_negative_reason;
 };
 
 [[nodiscard]] std::string strip(std::string_view name) {
@@ -550,9 +551,9 @@ int main(int argc, char** argv) {
                             tally.false_negative_at.push_back({chunk_x, chunk_z});
                         }
                         if (entry != ours.end()) {
-                            ++tally.false_positive_reason[entry->second];
+                            ++tally.false_negative_reason[entry->second];
                         } else {
-                            ++tally.false_positive_reason["not-chosen"];
+                            ++tally.false_negative_reason["not-chosen"];
                         }
                     }
                 }
@@ -614,7 +615,7 @@ int main(int argc, char** argv) {
                 fmt::print("    theirs-not-ours  chunk {} {}  our anchor {}\n", at.x, at.z,
                            entry == seen.end() ? std::string{"-"} : entry->second);
             }
-            for (const auto& [reason, count] : tally.false_positive_reason) {
+            for (const auto& [reason, count] : tally.false_negative_reason) {
                 fmt::print("    theirs-not-ours  our reason {} x{}\n", reason, count);
             }
             for (const ChunkPos& at : tally.false_positive_at) {

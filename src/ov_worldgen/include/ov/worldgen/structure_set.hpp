@@ -172,13 +172,13 @@ struct StructureSet {
     std::vector<StructureSetEntry> entries;
 
     /// The sum of the weights, for the weighted choice.
-    [[nodiscard]] i32 total_weight() const noexcept;
-
-    /// Which structure of the set is tried first in this chunk.
     ///
-    /// A set with one entry always answers that one without drawing, which
-    /// matters: drawing anyway would consume a number the game did not.
-    [[nodiscard]] std::string_view choose(i64 level_seed, i32 chunk_x, i32 chunk_z) const;
+    /// The choice itself is not here: it is a *loop* — draw, try, and on a
+    /// refusal remove that entry and draw again from the same stream — and it
+    /// lives in `StructurePlacer::decide_set` because only the placer knows
+    /// what "refused" means. A one-shot `choose()` used to sit here and it
+    /// disagreed with the loop on every set of more than two, silently.
+    [[nodiscard]] i32 total_weight() const noexcept;
 };
 
 enum class StructureSetError : u8 {

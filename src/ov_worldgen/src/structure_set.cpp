@@ -166,32 +166,6 @@ i32 StructureSet::total_weight() const noexcept {
     return total;
 }
 
-std::string_view StructureSet::choose(i64 level_seed, i32 chunk_x, i32 chunk_z) const {
-    if (entries.empty()) {
-        return {};
-    }
-    if (entries.size() == 1) {
-        // No draw. A set of one never asks the generator, so asking anyway
-        // would be harmless here but wrong in principle — and the sets of one
-        // are most of them.
-        return entries.front().structure;
-    }
-    const i32 total = total_weight();
-    if (total <= 0) {
-        return entries.front().structure;
-    }
-    math::LegacyRandomSource random{0};
-    random.set_seed(large_feature_seed(level_seed, chunk_x, chunk_z));
-    i32 roll = random.next_int(total);
-    for (const StructureSetEntry& entry : entries) {
-        roll -= entry.weight;
-        if (roll < 0) {
-            return entry.structure;
-        }
-    }
-    return entries.back().structure;
-}
-
 // ── Loading ─────────────────────────────────────────────────────────────────
 
 namespace {
