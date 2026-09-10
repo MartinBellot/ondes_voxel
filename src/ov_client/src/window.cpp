@@ -20,7 +20,7 @@ struct Binding {
     int glfw_code;
 };
 
-constexpr std::array<Binding, 11> kBindings{{
+constexpr std::array<Binding, 12> kBindings{{
     {Key::Forward, GLFW_KEY_W},
     {Key::Back, GLFW_KEY_S},
     {Key::Left, GLFW_KEY_A},
@@ -32,6 +32,7 @@ constexpr std::array<Binding, 11> kBindings{{
     {Key::Reload, GLFW_KEY_F3},
     {Key::Inventory, GLFW_KEY_E},
     {Key::Drop, GLFW_KEY_Q},
+    {Key::Backspace, GLFW_KEY_BACKSPACE},
 }};
 
 /// The number row, in hotbar order.
@@ -70,12 +71,40 @@ struct Window::Impl {
     /// Accumulated by the scroll callback and drained by poll(). A wheel notch
     /// arrives as an event, not as a state, so polling it would lose it.
     f64 scroll{0.0};
+    /// The same for typed characters, which are events for the same reason.
+    std::string typed;
 };
 
 void scroll_callback(GLFWwindow* window, double /*x*/, double y) {
     auto* impl = static_cast<Window::Impl*>(glfwGetWindowUserPointer(window));
     if (impl != nullptr) {
         impl->scroll += y;
+    }
+}
+
+/// GLFW hands over a Unicode codepoint, already through the layout and any
+/// dead keys. Encoding it as UTF-8 here rather than passing the number on is
+/// what lets a search field hold a string the font can measure directly.
+void character_callback(GLFWwindow* window, unsigned int codepoint) {
+    auto* impl = static_cast<Window::Impl*>(glfwGetWindowUserPointer(window));
+    if (impl == nullptr) {
+        return;
+    }
+    std::string& out = impl->typed;
+    if (codepoint < 0x80U) {
+        out.push_back(static_cast<char>(codepoint));
+    } else if (codepoint < 0x800U) {
+        out.push_back(static_cast<char>(0xC0U | (codepoint >> 6)));
+        out.push_back(static_cast<char>(0x80U | (codepoint & 0x3FU)));
+    } else if (codepoint < 0x10000U) {
+        out.push_back(static_cast<char>(0xE0U | (codepoint >> 12)));
+        out.push_back(static_cast<char>(0x80U | ((codepoint >> 6) & 0x3FU)));
+        out.push_back(static_cast<char>(0x80U | (codepoint & 0x3FU)));
+    } else {
+        out.push_back(static_cast<char>(0xF0U | (codepoint >> 18)));
+        out.push_back(static_cast<char>(0x80U | ((codepoint >> 12) & 0x3FU)));
+        out.push_back(static_cast<char>(0x80U | ((codepoint >> 6) & 0x3FU)));
+        out.push_back(static_cast<char>(0x80U | (codepoint & 0x3FU)));
     }
 }
 
@@ -116,6 +145,7 @@ std::expected<std::unique_ptr<Window>, WindowError> Window::create(u32 width, u3
 
     glfwSetWindowUserPointer(self->impl_->window, self->impl_.get());
     glfwSetScrollCallback(self->impl_->window, scroll_callback);
+    glfwSetCharCallback(self->impl_->window, character_callback);
     return self;
 }
 
@@ -147,6 +177,9 @@ const InputState& Window::poll() {
     // Polled rather than taken from a callback, like the keys: one place that
     // reads the whole input state, and no edge that can arrive between frames
     // and be lost.
+    input.typed = std::move(impl_->typed);
+    impl_->typed.clear();
+
     input.hotbar_pressed = -1;
     for (usize i = 0; i < kHotbarKeys.size(); ++i) {
         const bool down = glfwGetKey(impl_->window, kHotbarKeys[i]) == GLFW_PRESS;

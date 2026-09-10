@@ -289,9 +289,16 @@ void CreativeScreen::draw(Gui& gui, const ItemRenderer& items, GuiTexture backgr
              kSheet, kSheet);
     blit_tab(selected_, true);
 
-    // The tab's own name, where vanilla puts a container title.
-    (void)gui.text(ox + 8.0F, oy + 6.0F, language_->translate(tab().translation_key), 0xFF404040U,
-                   false);
+    // The tab's own name, where vanilla puts a container title — and only on
+    // a page that has room for one. The search page's text field starts at
+    // x = 82 and the survival page's armour boxes at y = 6, so a label there
+    // would be drawn straight through them, which is what the first capture
+    // showed.
+    if (tab().type == render::CreativeTabType::Category
+        || tab().type == render::CreativeTabType::Hotbar) {
+        (void)gui.text(ox + 8.0F, oy + 6.0F, language_->translate(tab().translation_key),
+                       0xFF404040U, false);
+    }
 
     if (tab().type == render::CreativeTabType::Hotbar) {
         // Refused and named. The saved hotbars live in the vanilla client's

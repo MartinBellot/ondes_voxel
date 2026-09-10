@@ -924,16 +924,21 @@ void Client::send_place(i32 x, i32 y, i32 z, i32 face, f32 cursor_x, f32 cursor_
     impl_->send_raw(net::serverbound::kUseItemOn, writer.data());
 }
 
-void Client::send_creative_slot(i16 slot, i32 item_id, i8 count) {
+void Client::send_creative_slot(i16 slot, i32 item_id, i8 count, std::span<const u8> nbt) {
+    // Through net::write_slot rather than by hand. The hand-rolled version
+    // this replaces wrote the present flag, the id and the count and then
+    // *stopped*: a Slot ends with its NBT, and an absent tag is a TAG_End
+    // byte, not nothing. A vanilla server reading that would take the next
+    // packet's first byte as the tag type and never recover.
     io::ByteWriter writer;
     writer.write_i16(slot);
-    if (item_id <= 0 || count <= 0) {
-        writer.write_u8(0);
-    } else {
-        writer.write_u8(1);
-        net::write_varint(writer, item_id);
-        writer.write_u8(static_cast<u8>(count));
+    net::ItemStack stack;
+    if (item_id > 0 && count > 0) {
+        stack.item_id = item_id;
+        stack.count   = count;
+        stack.nbt.assign(nbt.begin(), nbt.end());
     }
+    net::write_slot(writer, stack);
     impl_->send_raw(net::serverbound::kSetCreativeSlot, writer.data());
 }
 

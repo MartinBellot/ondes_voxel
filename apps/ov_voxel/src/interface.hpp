@@ -22,6 +22,7 @@
 
 #include "ov/base/types.hpp"
 #include "ov/client/container_screen.hpp"
+#include "ov/client/creative_screen.hpp"
 #include "ov/client/gui.hpp"
 #include "ov/client/hud.hpp"
 #include "ov/client/item_view.hpp"
@@ -30,6 +31,7 @@
 #include "ov/protocol/play.hpp"
 #include "ov/registry/registries.hpp"
 #include "ov/render/asset_source.hpp"
+#include "ov/render/creative_tabs.hpp"
 #include "ov/render/item_model.hpp"
 #include "ov/render/language.hpp"
 #include "ov/rhi/device.hpp"
@@ -50,6 +52,10 @@ struct InterfaceOptions {
     /// is the difference between this on and off on the same scene.
     bool hud{true};
     std::string language{"en_us"};
+    /// The creative catalogue, produced by scripts/measure_creative_tabs.py.
+    /// Absent is not fatal: the creative screen is then refused and named,
+    /// because a screen with invented tabs is worse than no screen.
+    std::string creative_tabs{"data/vanilla/1.20.1/creative_tabs.json"};
 };
 
 class Interface {
@@ -83,6 +89,42 @@ public:
 
     /// Remember a Set Creative Slot this client sent. See the header comment.
     void note_creative(i16 slot, i32 item_id, i8 count);
+
+    // ── The creative inventory ──────────────────────────────────────────────
+    //
+    // Its own screen rather than a ContainerScreen, because it is not a
+    // container: its cells are a catalogue, not slots, and no click on one
+    // names a number to the server. What reaches the server is Set Creative
+    // Slot, and only when a stack lands in the player's own inventory.
+
+    /// True when the catalogue loaded. False means the screen is refused.
+    [[nodiscard]] bool creative_available() const noexcept {
+        return creative_screen_.has_value();
+    }
+
+    [[nodiscard]] bool creative_open() const noexcept { return creative_visible_; }
+
+    /// Put the creative inventory up, or take it down. Creative only: in
+    /// survival the server ignores Set Creative Slot, so the screen would be a
+    /// catalogue that hands out nothing.
+    void toggle_creative(client::Window& window, netclient::Client& client);
+
+    /// Select a tab by registry id, for the scripted captures. False when
+    /// there is no such tab.
+    [[nodiscard]] bool select_creative_tab(std::string_view id);
+
+    /// Type into the search field, for the scripted captures.
+    void creative_search(std::string_view text);
+
+    /// Take the stack in a visible cell onto the cursor, exactly as a left
+    /// click does. False when the cell is past the end of the page.
+    [[nodiscard]] bool creative_take(i32 cell);
+
+    /// Put what the cursor holds into a window-0 slot and tell the server.
+    void creative_put(netclient::Client& client, i16 slot);
+
+    /// A one-line description of the creative page, for the scripted checks.
+    [[nodiscard]] std::string describe_creative() const;
 
     /// Which hotbar slot is selected, 0..8.
     [[nodiscard]] i32 selected() const noexcept { return hud_.selected; }
@@ -127,6 +169,11 @@ private:
     /// The registry name of an item id, or empty.
     [[nodiscard]] std::string_view item_name(i32 item_id) const noexcept;
 
+    /// The creative screen's own input. Split out because it shares nothing
+    /// with the container path: no click mode, no state id, no waiting.
+    bool update_creative(const client::InputState& input, netclient::Client& client,
+                         client::Window& window);
+
     /// Refill `views_` from a slot vector, for drawing.
     void build_views(const std::vector<net::ItemStack>& slots);
 
@@ -154,6 +201,15 @@ private:
     i32 state_id_{0};
 
     std::optional<client::ContainerScreen> screen_;
+
+    /// The catalogue, and the screen that reads it. Both absent when the file
+    /// is missing, which is reported once rather than drawn as an empty page.
+    std::optional<render::CreativeTabs>   creative_tabs_;
+    std::optional<client::CreativeScreen> creative_screen_;
+    client::GuiTexture                    creative_sheet_{client::GuiTexture::Invalid};
+    bool                                  creative_visible_{false};
+    /// True while the scrollbar handle is being dragged.
+    bool creative_scrolling_{false};
     /// Set when the screen is the player's own inventory rather than one the
     /// server opened, because closing it must not send Close Container for a
     /// window the server never opened.

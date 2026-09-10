@@ -170,6 +170,23 @@ struct Options {
     /// Close the open window at this frame, so a run can prove the server kept
     /// what was put in it.
     u32 close_at{0};
+
+    // ── The creative inventory ──────────────────────────────────────────────
+    /// The catalogue, produced by scripts/measure_creative_tabs.py. Gitignored
+    /// like every other datum derived from Mojang's files.
+    std::string creative_tabs{"data/vanilla/1.20.1/creative_tabs.json"};
+    /// Put the creative inventory up after this many frames, so a capture of
+    /// each tab can be taken without a hand on the keyboard.
+    u32 open_creative{0};
+    /// Which tab to show, by registry id, e.g. minecraft:redstone_blocks.
+    std::string creative_tab;
+    /// Type this into the search field, which also selects the search tab.
+    std::string creative_search;
+    /// cell,slot: take the stack in a visible cell and put it in a window-0
+    /// slot, exactly as two clicks would. The scripted half of the round trip.
+    std::string creative_take;
+    /// Print the visible page at the end.
+    bool dump_creative{false};
     /// Dump the font's advances and exit, for scripts/measure_font_widths.py.
     std::string font_widths;
 
@@ -281,6 +298,19 @@ struct Options {
             options.close_at = static_cast<u32>(std::atoi(value("--close-at=").c_str()));
         } else if (argument.starts_with("--drag-slots=")) {
             options.drag_slots = value("--drag-slots=");
+        } else if (argument.starts_with("--creative-tabs=")) {
+            options.creative_tabs = value("--creative-tabs=");
+        } else if (argument.starts_with("--open-creative=")) {
+            options.open_creative =
+                static_cast<u32>(std::atoi(value("--open-creative=").c_str()));
+        } else if (argument.starts_with("--creative-tab=")) {
+            options.creative_tab = value("--creative-tab=");
+        } else if (argument.starts_with("--creative-search=")) {
+            options.creative_search = value("--creative-search=");
+        } else if (argument.starts_with("--creative-take=")) {
+            options.creative_take = value("--creative-take=");
+        } else if (argument == "--dump-creative") {
+            options.dump_creative = true;
         } else if (argument == "--dump-window") {
             options.dump_window = true;
         } else if (argument.starts_with("--font-widths=")) {
@@ -910,6 +940,7 @@ int main(int argc, char** argv) {
     interface_options.hud       = options.hud;
     interface_options.gui_scale = options.gui_scale;
     interface_options.language  = options.language;
+    interface_options.creative_tabs = options.creative_tabs;
 
     // The tint a grass or leaf face takes in a GUI cell. Vanilla samples the
     // colormap at (0.5, 1.0) for an item, which is not any biome's point; this
@@ -1137,6 +1168,9 @@ int main(int argc, char** argv) {
     bool move_pick_sent  = false;
     bool move_place_sent = false;
     bool inventory_opened = false;
+    bool creative_opened  = false;
+    bool creative_taken   = false;
+    std::string creative_dump;
 
     std::optional<RayHit> aimed;
     bool                  dig_sent   = false;
@@ -1425,6 +1459,45 @@ int main(int argc, char** argv) {
                 !inventory_opened && !(*interface)->screen_open()) {
                 (*interface)->toggle_inventory(**window, *client);
                 inventory_opened = true;
+            }
+            // ── The creative inventory, scripted ────────────────────────────
+            //
+            // Opened, then posed, then read — in that order and in separate
+            // frames, because the tab a capture wants is chosen after the
+            // screen exists and the page is what a later frame draws.
+            if (options.open_creative != 0 && rendered >= options.open_creative &&
+                !creative_opened && !(*interface)->creative_open()) {
+                (*interface)->toggle_creative(**window, *client);
+                if ((*interface)->creative_open()) {
+                    if (!options.creative_tab.empty() &&
+                        !(*interface)->select_creative_tab(options.creative_tab)) {
+                        fmt::print(stderr, "no creative tab named {}\n", options.creative_tab);
+                    }
+                    if (!options.creative_search.empty()) {
+                        (*interface)->creative_search(options.creative_search);
+                    }
+                }
+                creative_opened = true;
+            }
+            if (!options.creative_take.empty() && creative_opened && !creative_taken &&
+                rendered >= options.open_creative + 5) {
+                const auto comma = options.creative_take.find(',');
+                const i32  cell  = std::atoi(options.creative_take.substr(0, comma).c_str());
+                const i16  slot  = comma == std::string::npos
+                                     ? i16{36}
+                                     : static_cast<i16>(std::atoi(
+                                           options.creative_take.substr(comma + 1).c_str()));
+                if ((*interface)->creative_take(cell)) {
+                    (*interface)->creative_put(*client, slot);
+                    fmt::print("creative: cell {} -> slot {}\n", cell, slot);
+                } else {
+                    fmt::print(stderr, "creative: cell {} is past the end of the page\n", cell);
+                }
+                creative_taken = true;
+            }
+            if (options.dump_creative && (*interface)->creative_open() && creative_dump.empty() &&
+                rendered >= options.open_creative + 10) {
+                creative_dump = (*interface)->describe_creative();
             }
 
             // Where the player is looking, every frame rather than only on a
@@ -1842,6 +1915,11 @@ int main(int argc, char** argv) {
         if (options.dump_window) {
             fmt::print("{}\n",
                        window_dump.empty() ? (*interface)->describe_window() : window_dump);
+            fmt::print("{}\n", (*interface)->describe_inventory());
+        }
+        if (options.dump_creative) {
+            fmt::print("{}\n",
+                       creative_dump.empty() ? (*interface)->describe_creative() : creative_dump);
             fmt::print("{}\n", (*interface)->describe_inventory());
         }
         if (dig_sent) {

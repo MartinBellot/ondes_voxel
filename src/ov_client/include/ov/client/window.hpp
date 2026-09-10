@@ -39,6 +39,8 @@ enum class Key : u8 {
     Inventory,
     /// Q. Throws what is held.
     Drop,
+    /// Backspace. Only a text field reads it.
+    Backspace,
     Count,
 };
 
@@ -76,6 +78,15 @@ struct InputState {
     /// rather than nine booleans: two number keys in one frame is not a thing
     /// the game has a meaning for, and the last one wins.
     i32 hotbar_pressed{-1};
+
+    /// The characters typed since the last poll, as UTF-8.
+    ///
+    /// GLFW's character callback rather than its key callback: a key is a
+    /// physical position and a character is what the layout made of it, and
+    /// only the second is what a search field wants. Cleared every poll, so a
+    /// frame that drops a keystroke loses it — which is the right trade for a
+    /// field nothing is typed into at speed.
+    std::string typed;
 
     /// Either shift, held. Not a Key: it is a modifier on other input rather
     /// than an action, and Key::Down is already bound to left shift for
