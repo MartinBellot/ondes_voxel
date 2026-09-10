@@ -445,6 +445,7 @@ private:
 
 /// Where our placement algorithm puts a new portal, on our own terrain.
 int place_portals(const Options& options, const registry::BlockRegistry& blocks,
+                  const registry::Registries& registries,
                   const worldgen::ChunkGenerator& generator, const worldgen::BiomeSource& source) {
     auto features = worldgen::FeatureRegistry::load(options.data, blocks);
     if (!features) {
@@ -454,7 +455,7 @@ int place_portals(const Options& options, const registry::BlockRegistry& blocks,
     if (!decorator) {
         return 1;
     }
-    const gameplay::PortalRules rules{blocks};
+    const gameplay::PortalRules rules{blocks, registries};
     std::string_view            list = options.portals;
     while (!list.empty()) {
         const usize            semicolon = list.find(';');
@@ -641,7 +642,8 @@ int compare_full(const Options& options, const registry::BlockRegistry& blocks,
 int main(int argc, char** argv) {
     const Options options = parse(argc, argv);
     const auto    regions = options.world / "region";
-    if (!std::filesystem::is_directory(regions)) {
+    // `--portal` builds portals on terrain and needs no reference world.
+    if (options.portals.empty() && !std::filesystem::is_directory(regions)) {
         OV_LOG_ERROR("{} has no region/. Generate one with scripts/reference_nether.sh.",
                      options.world.string());
         return 1;
@@ -678,7 +680,7 @@ int main(int argc, char** argv) {
     const auto air = world::AirStates::from(*blocks);
 
     if (!options.portals.empty()) {
-        return place_portals(options, *blocks, generator, *source);
+        return place_portals(options, *blocks, *packs, generator, *source);
     }
 
     const auto name_of = [&](registry::BlockStateId state) -> std::string_view {

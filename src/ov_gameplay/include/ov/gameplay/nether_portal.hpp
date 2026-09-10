@@ -22,6 +22,7 @@
 #include "ov/math/block_pos.hpp"
 #include "ov/math/vec.hpp"
 #include "ov/registry/block_states.hpp"
+#include "ov/registry/registries.hpp"
 #include "ov/world/level.hpp"
 
 #include <optional>
@@ -78,6 +79,14 @@ inline constexpr i32 kCreateRadius = 16;
 
 class PortalRules {
 public:
+    /// With the registries: what a new portal may overwrite is the
+    /// `#minecraft:replaceable` tag — the game's `canBeReplaced` — minus fluids.
+    PortalRules(const registry::BlockRegistry& blocks, const registry::Registries& registries);
+
+    /// Without them — a test map — "replaceable" falls back to "has no
+    /// collision box", which is wider than the tag: a fungus, a vine or a
+    /// mushroom has no box and is not replaceable. Measured to move one of six
+    /// new portals by a block; see docs/provenance/nether.md.
     explicit PortalRules(const registry::BlockRegistry& blocks);
 
     /// Can a portal fill this block? Air, fire of either kind, or portal.
@@ -151,6 +160,9 @@ private:
     registry::BlockStateId         obsidian_{};
     registry::BlockStateId         portal_x_{};
     registry::BlockStateId         portal_z_{};
+    /// Membership of `#minecraft:replaceable`, by block id. Empty when built
+    /// without registries.
+    std::vector<bool> replaceable_;
 };
 
 /// Where an entity at `position` lands: the other dimension's coordinates,

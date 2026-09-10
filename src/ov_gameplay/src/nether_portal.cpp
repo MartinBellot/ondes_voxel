@@ -63,6 +63,25 @@ PortalRules::PortalRules(const registry::BlockRegistry& blocks) : blocks_(&block
     }
 }
 
+PortalRules::PortalRules(const registry::BlockRegistry& blocks,
+                         const registry::Registries&    registries)
+    : PortalRules(blocks) {
+    replaceable_.assign(blocks.block_count(), false);
+    const auto block_registry = registries.find("minecraft:block");
+    if (!block_registry) {
+        return;
+    }
+    const auto tag = registries.find_tag(*block_registry, "minecraft:replaceable");
+    if (!tag) {
+        return;
+    }
+    for (const registry::ProtocolId id : registries.tag_members(*tag)) {
+        if (const auto block = blocks.find_block(registries.entry_of(*block_registry, id))) {
+            replaceable_[static_cast<usize>(block->value())] = true;
+        }
+    }
+}
+
 bool PortalRules::is_empty(registry::BlockStateId state) const noexcept {
     if (state == registry::kAirState) {
         return true;
@@ -291,6 +310,10 @@ bool PortalRules::can_replace(registry::BlockStateId state) const noexcept {
         return false;
     }
     const registry::BlockId block = blocks_->block_of(state);
+    if (!replaceable_.empty()) {
+        const auto index = static_cast<usize>(block.value());
+        return index < replaceable_.size() && replaceable_[index];
+    }
     return blocks_->is_air(block) || block == fire_block_ || block == soul_fire_block_ ||
            blocks_->collision_boxes(state).empty();
 }

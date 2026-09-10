@@ -1703,8 +1703,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     std::unique_ptr<NetherWorld>         nether;
     std::optional<ServerLevel>           nether_level;
     std::optional<gameplay::PortalRules> portal_rules;
-    if (blocks) {
-        portal_rules.emplace(*blocks);
+    if (blocks && registries) {
+        portal_rules.emplace(*blocks, *registries);
     }
     const bool nether_enabled = [] {
         const char* setting = std::getenv("OV_NETHER");
@@ -6115,10 +6115,11 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             to_map.remove_ticket(world::TicketType::Transient, static_cast<u64>(who.entity_id));
             to_map.refresh(changes);
         }
-        // A portal built in the overworld went through the overworld's drain
-        // hooks; its blocks go out with the rest of this tick's writes.
-        flush_tick_writes();
-        flush_nether_tick_writes();
+        // A built portal went through its level's drain hooks: its Block
+        // Updates and its relighting go out with the next tick's flush — not
+        // from here, which holds `players_mutex` that the flush try-locks (a
+        // `try_lock` by the owner is undefined). The traveller is sent the
+        // chunks themselves below, portal included.
 
         // Gone from the old level, for everyone there.
         broadcast_in(from, who.connection.get(), net::clientbound::kRemoveEntities,

@@ -589,10 +589,18 @@ std::optional<world::Chunk> parse_chunk_data(std::span<const u8> payload,
             return std::nullopt;
         }
     }
-    if (reader.position() != sections_end) {
-        // The declared length and what was actually read disagree. Refusing
-        // here is the whole value of the length prefix: continuing would read
-        // the block entities out of the middle of a palette.
+    if (reader.position() > sections_end) {
+        // More was read than was declared: continuing would read the block
+        // entities out of the middle of a palette.
+        return std::nullopt;
+    }
+    // ── nether ── Fewer bytes read than declared is the real server's own
+    // shape: it declares its section buffer by an estimate larger than what it
+    // writes — 14 859 declared, 14 850 written, in a Nether chunk captured from
+    // 1.20.1 (scripts/measure_nether_portal.py) — and its client reads inside
+    // the declared buffer and skips the rest. So does this; refusing made every
+    // chunk from a vanilla server unreadable.
+    if (!reader.skip(sections_end - reader.position())) {
         return std::nullopt;
     }
 
