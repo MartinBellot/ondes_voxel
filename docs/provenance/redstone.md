@@ -584,6 +584,34 @@ Nommé plutôt que caché.
   « survivait » 399 blocs — les deux couches de terre naturelles du superflat.
 
 - **Rails et cible.** Non mesurés et non implémentés dans cette vague.
+
+- **L'index nom → id d'`ov_registry` reste utile — la thèse inverse est
+  fausse, et c'est mesuré.** Ce mandat demandait de vérifier qu'inverser
+  l'ordre du spawner (position d'abord, type ensuite) rendrait *inutile*
+  l'index de hachage ajouté à `Registries::protocol_id`. Ce n'est pas le cas.
+
+  Compteur posé dans `spawn_tick`, 200 passes sur 289 chunks tickés,
+  **173 400 tentatives** :
+
+  | ordre | tentatives atteignant le tirage du type |
+  |---|---|
+  | inversion seule (chargé, dans le monde, loin d'un joueur, lumière) | 173 066 — **99,8 %** |
+  | + refus des cellules qui bloquent le mouvement | 144 492 — **83,3 %** |
+
+  Le premier chiffre est le résultat important : les vérifications
+  indépendantes du mob ne refusent **presque rien**. C'est le sol et le
+  dégagement qui refusent, et ceux-là ont besoin de la boîte de collision, donc
+  du type. La seule vérification massive qui n'en a pas besoin est « la cellule
+  des pieds bloque-t-elle le mouvement ? » — celle que vanilla pose en premier,
+  et qui manquait à la première version de cette inversion.
+
+  Même avec elle, 83 % des tentatives résolvent encore un nom de mob. L'index a
+  toujours un appelant chaud. L'inversion reste juste — elle économise le
+  tirage et la résolution sur les cellules pleines — mais elle ne remplace pas
+  l'index, et le message de commit qui disait le contraire est corrigé ici.
+  (Le 83 % vient d'un monde de test dont 16,7 % de la hauteur est solide ; un
+  monde réel en a davantage, donc l'économie réelle est plus grande — mais le
+  tirage reste sur le chemin chaud dans tous les cas.)
 - **Le distributeur choisit la première case pleine, pas une au hasard.** Vanilla
   tire au sort parmi les cases non vides. Reproduire le tirage demande le flux
   RNG de la machine, que ce projet ne porte pas encore sur un block entity. Dit

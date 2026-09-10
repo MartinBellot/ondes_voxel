@@ -211,6 +211,22 @@ bool NaturalSpawner::position_plausible(const SpawnEnvironment& environment,
         }
     }
 
+    // The cell the mob's feet would be in, before anything is known about the
+    // mob. A block that stops movement cannot hold one whatever its size, and
+    // this is the check that does the work: a y drawn uniformly over the build
+    // height lands in stone the overwhelming majority of the time.
+    //
+    // It is also the one vanilla asks first, and leaving it out is why the
+    // first version of this reordering saved nothing measurable — 99.8% of
+    // attempts still reached the type draw. With it, see the number in
+    // docs/provenance/redstone.md.
+    if (!rules.aquatic) {
+        const registry::BlockRegistry& blocks = level.blocks();
+        if (blocks.blocks_motion(blocks.block_of(level.block_at(pos)))) {
+            return false;
+        }
+    }
+
     if (rules.max_spawn_light >= 0) {
         if (environment.light == nullptr) {
             return false;  // refused, not assumed dark
