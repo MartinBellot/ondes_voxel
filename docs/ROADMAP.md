@@ -623,8 +623,14 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       quasi-connectivité confirmée réelle et **pistons seulement**. 830 blocs
       sondés pour la conductivité, **36 exceptions nommées** ; 979 pour la
       réaction au piston, **101 déclarés non lus**. Les **effets** des
-      consommateurs — transferts, tir, sons, allumage, rails — ne sont pas
-      faits, et rien n'est câblé dans le serveur)*
+      consommateurs sont mesurés : **note block 987/987 blocs** — il fallait une
+      table, une heuristique par suffixe se trompe sur 51 blocs — entonnoir
+      8,07 ticks/objet et 0 quand verrouillé, distributeur relevé sur 18 items,
+      mèche de TNT 80 ticks. **Les boutons et plaques se relèvent** : 20 ticks
+      pierre, 30 les onze bois, mesurés tick par tick et confirmés une seconde
+      fois sans horloge réseau. Restent les rails, la cible, le transport
+      d'objets par entonnoir dans le serveur, et l'algorithme d'explosion —
+      refusé faute de résistance des blocs, absente de tout rapport)*
 - [~] **Fluides** : écoulement, sources, mélanges (pierre / cobble / obsidienne),
       poussée d'entités, waterlogging, colonnes de bulles, éponge
       *(**branché au tick** : casser le bord d'un bassin fait un losange exact
@@ -674,6 +680,16 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       il n'y a **pas** de Hurt Animation. Restent les sources de dégâts au
       corps à corps, projectile et feu, la réapparition au lit, l'armure, et
       l'XP de minage dont la sonde est intermittente)*
+- [~] **Combat et utilisation** : frapper, utiliser, manger, user un outil
+      *(**jauge d'attaque 13 marches sur 13** et 5/5 pour une arme au
+      refroidissement différent, `0,2 + 0,8·f²` ; dégâts et refroidissement de
+      **34 objets sur 34** par deux routes indépendantes ; critique ×1,5 exact ;
+      recul à deux impulsions dont la seconde suit le **regard** ; **91 tables
+      de butin de mob sur 92** ; durabilité de 31 outils. **Branché** : le
+      levier se tire et le fil s'allume 14/14, portes et trappes s'ouvrent au
+      clic, cinq vaches lâchent 14 bœufs et 3 cuirs, et manger fait remonter la
+      faim de 13 à 16. Le **seau** est refusé et nommé : il n'agit pas par
+      `Use Item On` mais par `Use Item` avec un lancer de rayon serveur)*
 - [ ] **Divers** : explosions et résistance des blocs, feu et propagation,
       foudre et conversions, météo, cycle jour / nuit, sommeil et phantoms,
       gel (poudreuse), noyade, gravité, **archéologie** (brosse, sable et

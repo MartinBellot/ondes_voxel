@@ -46,6 +46,7 @@
 
 #include <array>
 #include <deque>
+#include <optional>
 #include <vector>
 
 namespace ov::gameplay {
@@ -184,9 +185,63 @@ public:
         /// True when the block turns *off* on a delay but on immediately, as
         /// the lamp does.
         bool delay_off_only;
+        /// True when the flag reads the other way round: the hopper's
+        /// `enabled` is *false* while it is powered, which is the whole of
+        /// "a signal locks a hopper". Without this the same table would turn
+        /// a hopper **on** when a lever beside it went up.
+        bool inverted{false};
     };
 
     [[nodiscard]] const ConsumerRule* consumer_rule(registry::BlockId block) const noexcept;
+
+    /// Blocks that switch themselves **off** again after a fixed delay.
+    ///
+    /// A button and a pressure plate are not consumers: nothing around them
+    /// decides their state, and `consumer_powered` gives the wrong answer for
+    /// both. They are sources with a timer, and the timer is the whole rule.
+    ///
+    /// Until this table existed, `scheduled_tick` fell through to
+    /// `consumer_rule`, found nothing and returned false — so a button that had
+    /// been pressed **stayed down for ever**, and its release tick was drained
+    /// once a tick, every tick, doing nothing.
+    struct SwitchRule {
+        registry::BlockId block;
+        /// Ticks between the press and the release. Measured; see
+        /// docs/provenance/redstone.md.
+        i32 ticks;
+        /// True for a plate, which re-checks what is standing on it and re-arms
+        /// while something still is; false for a button, which simply pops back
+        /// up when its tick comes due.
+        bool rearms;
+        /// True for the two weighted plates, which carry `power` 0..15 rather
+        /// than a `powered` flag.
+        bool analogue;
+    };
+
+    [[nodiscard]] const SwitchRule* switch_rule(registry::BlockId block) const noexcept;
+
+    /// Which instrument a note block standing on `below` plays.
+    ///
+    /// In 1.20.1 this is not a sound but a **block state**: the note block
+    /// carries `instrument`, the server recomputes it whenever its support
+    /// changes, and the client plays whatever the state says. So the whole rule
+    /// is readable off a save, and it was — for every block in the game. See
+    /// docs/provenance/redstone.md.
+    ///
+    /// Returns the vanilla property value, e.g. "bass". Never empty: a block
+    /// nothing was measured about is `harp`, which is not a guess — `harp` is
+    /// the value the game gives it, and the table lists the exceptions.
+    [[nodiscard]] std::string_view note_instrument(registry::BlockStateId below) const noexcept;
+
+    /// Press a plate, or refresh one that is already pressed.
+    ///
+    /// The counterpart of `neighbour_changed` for the one family of blocks that
+    /// answers to entities rather than to power. A caller that moves entities
+    /// calls this for every plate an entity is standing on; a caller that has
+    /// no entities never calls it, and its plates stay up.
+    ///
+    /// Returns true if anything was written.
+    bool plate_step(RedstoneWorld& world, BlockPos pos);
 
     // ── Named blocks, resolved once ─────────────────────────────────────────
 
@@ -238,9 +293,22 @@ private:
     Ids                            ids_{};
     TorchHistory                   torches_;
 
+    bool switch_tick(RedstoneWorld& world, BlockPos pos, const SwitchRule& rule,
+                     registry::BlockStateId state);
+
     std::vector<ConsumerRule> consumers_;
     /// Indexed by block: an index into `consumers_`, or -1.
     std::vector<i16> consumer_index_;
+
+    std::vector<SwitchRule> switches_;
+    /// Indexed by block: an index into `switches_`, or -1.
+    std::vector<i16> switch_index_;
+
+    /// Indexed by block: the note block instrument that block gives, as a
+    /// property-value index, or -1 for the default.
+    std::vector<i16> instrument_index_;
+    /// The note block's `instrument` property, resolved once.
+    std::optional<registry::PropertyView> instrument_property_;
 };
 
 }  // namespace ov::gameplay

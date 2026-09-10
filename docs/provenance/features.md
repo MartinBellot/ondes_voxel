@@ -591,7 +591,11 @@ forme ; comparer les états appelait « différence » chaque feuille correcte e
 donnait 3,8 % là où la vraie valeur est 45 %. Cette passe n'est **pas**
 implémentée : nos feuilles sortent avec la `distance` du fournisseur.
 
-### Les chiffres — graine 1234567890
+### Les chiffres — graine 1234567890, **avant** la sonde d'arbre
+
+> Ces deux tableaux sont l'état d'avant, gardé pour mémoire. Les chiffres
+> d'après, mesurés sur exactement le même échantillon, sont plus bas dans
+> « La sonde d'arbre ».
 
 200 chunks, un sur treize par région du monde de référence — les minerais sont
 partout et une région en est un échantillon honnête, les arbres non : la
@@ -674,22 +678,22 @@ Par feature à cette graine : `trees_birch` 25/32 (78,1 %),
 
 **Pas établi, et nommé :**
 
-* **`fancy_trunk_placer` / `fancy_foliage_placer`.** Sur un cas où les bûches
-  sortent *identiques* — le tronc et sa branche, bloc pour bloc — le feuillage
-  est deux niveaux trop bas et centré sur la mauvaise attache. La liste de
-  `FoliageCoords` que le tronc rend n'est donc pas la bonne. Le compte de
-  grappes a été testé dans les deux sens : `Math.min(1, …)` — qui se lit comme
-  une faute et qui donne 1 partout — fait 39 troncs et 2355 blocs justes,
-  `Math.max` en fait 35 et 2346. C'est `min`, mesuré.
-* **La jungle.** 1/18. `jungle_tree` est pourtant `straight` + `blob`, donc
-  exacts : ce qui diffère est le choix du sélecteur (`fancy_oak_checked` 0,1,
-  `jungle_bush` 0,5, `mega_jungle_tree_checked` 1/3, défaut `jungle_tree`) ou
-  l'un des trois décorateurs. Sur un premier essai dont la position est juste,
-  nous faisons pousser un buisson là où le jeu ne met rien — donc notre tirage
-  de sélecteur diffère du sien alors que l'état du générateur devrait être le
-  même. Ce n'est pas résolu.
-* **`giant_trunk_placer` + `mega_pine_foliage_placer`** : 0/18 à la graine
-  987654321. L'épicéa géant est faux.
+> Les trois premières entrées de cette liste ont été tranchées depuis, par la
+> sonde d'arbre. Elles sont gardées telles quelles parce que **deux des trois
+> diagnostics étaient faux**, et que c'est cela qu'il faut retenir : « le
+> sélecteur de la jungle choisit autrement que le jeu » et « l'épicéa géant est
+> faux dès le premier tirage » étaient des conclusions raisonnables tirées d'une
+> mesure trop grossière pour les porter. Voir « La sonde d'arbre » plus bas.
+
+* ~~**`fancy_trunk_placer` / `fancy_foliage_placer`.**~~ Le tronc était juste ;
+  seul le feuillage était faux, et pas « deux niveaux trop bas » mais *à
+  l'envers*. Le `Math.min(1, …)` mesuré ici est confirmé à 1291 arbres sur 1329.
+* ~~**La jungle.**~~ Le sélecteur était juste (97,6 % de troncs identiques). Ce
+  qui manquait est un `nextInt(2)` dans `bush_foliage_placer`.
+* ~~**`giant_trunk_placer` + `mega_pine_foliage_placer`.**~~ Le
+  `giant_trunk_placer` est juste à 96,97 %, et la hauteur qu'il tire tombe juste
+  789 fois sur 790 : ce n'est pas une divergence dès le premier tirage. Reste
+  `mega_pine_foliage_placer`, toujours faux.
 * `cherry_trunk_placer` et `cherry_foliage_placer` sont écrits mais **n'ont
   aucun oracle** : ni `run/reference-1234567890` ni `run/reference-987654321` ne
   contient de `cherry_grove`. Ils se chargent, ils produisent un arbre, et rien
@@ -702,6 +706,305 @@ Par feature à cette graine : `trees_birch` 25/32 (78,1 %),
 * La passe qui recalcule la propriété `distance` des feuilles n'est pas
   implémentée. Elle ne tire rien, mais un monde sauvegardé par nous n'est pas
   identique bloc-état pour bloc-état tant qu'elle manque.
+
+---
+
+# La sonde d'arbre : un arbre connu par chunk
+
+La parité des arbres était bloquée à **40,5 % de troncs au bon endroit** et
+**43,1 % de formes exactes** parmi eux, et la raison n'était pas qu'on manquait
+d'idées : c'est que la mesure ne pouvait pas trancher. Un monde de référence
+mélange dans un seul pourcentage le sélecteur, la biome, le pipeline de
+placement, le voisinage, le protocole de dépouillement et le placer. Une
+hypothèse sur un placer y vaut deux points de pourcentage, c'est-à-dire rien.
+
+C'est le même mur que celui des minerais, et la réponse est la même :
+**faire écrire au jeu ce qu'on veut lire.**
+
+## Le montage
+
+`scripts/probe_tree.sh` et `scripts/probe_tree.py`, calqués sur
+`probe_decoration.*`.
+
+Un datapack vide les onze listes de features de `plains` et n'en laisse qu'une,
+à l'étape 9 (`vegetal_decoration`), index 0 :
+
+```
+count(1) → in_square → heightmap(OCEAN_FLOOR) → <la feature demandée>
+```
+
+Les carvers sont vidés eux aussi, et un preset de monde privé met `plains`
+partout. Le monde qui en sort a **un arbre par chunk**, isolé, sur un terrain de
+plaine. Les deux premiers tirages de la graine de feature donnent sa colonne ;
+tout le reste du flux appartient à l'arbre.
+
+La feature est **nommée**, jamais copiée : le datapack ne redéfinit rien de la
+forme de l'arbre, sinon la sonde mesurerait le datapack. L'exception est
+délibérée et sert à autre chose — voir « faire varier un champ » plus bas.
+
+Deux vérifications avant toute conclusion, toutes deux passées :
+
+* la colonne prédite par la formule de graine tombe sur une bûche du jeu dans
+  **1329 chunks sur 1329** ;
+* la hauteur prédite par `base + nextInt(a+1) + nextInt(b+1)` égale la longueur
+  du tronc vertical observé dans **789 cas sur 790** pour l'épicéa géant, aux
+  dix-sept hauteurs possibles.
+
+Autrement dit : l'ensemencement, l'index, `in_square` et le heightmap sont
+justes, et tout écart qui reste appartient au placer. C'est exactement ce que la
+mesure sur le monde de référence ne pouvait pas dire.
+
+## `ov_features --probe` : la sonde passe par notre code
+
+Un modèle Python de la géométrie aurait été une deuxième implémentation, pas une
+mesure de la première — le piège n° 13. `ov_features --probe` lit donc le monde
+de la sonde, dépouille son bois, rejoue **le C++** sur les neuf chunks du
+voisinage et compare arbre par arbre :
+
+```bash
+./build/macos-debug/bin/ov_features --probe --world=run/probe-tree-fancy_oak-1234/world \
+    --seed=1234 --feature=minecraft:fancy_oak --chunks=300
+```
+
+`--feature` accepte plusieurs noms séparés par des virgules : ils vont aux index
+0, 1, 2… comme le datapack les a écrits. Ce n'est pas un confort — un monde de
+sonde qui porte trois espèces les a toutes les trois sur le disque, et noter une
+espèce contre un monde qui contient les deux autres appelle « différence » les
+feuilles d'un voisin.
+
+Trois chiffres en sortent : *bûches identiques*, *arbre entier identique*, et
+l'accord bloc à bloc. Le premier sépare le trunk placer du foliage placer sans
+qu'on ait à regarder une silhouette.
+
+## Ce que la sonde a trouvé
+
+### 1. Le fancy oak : le tronc était juste, la canopée était à l'envers
+
+Sur 300 arbres : **96,3 % de troncs identiques, 0 % d'arbres entiers**. Le
+`fancy_trunk_placer` était donc déjà bon — y compris le `Math.min(1, …)` que la
+provenance précédente avait mesuré à l'aveugle, et qu'un modèle indépendant
+confirme à **1291 arbres sur 1329**. Toute l'erreur était dans le feuillage.
+
+Pour lire la règle plutôt que la deviner, trois copies du fancy oak, chacune ne
+différant que par un champ de son foliage placer, ont été semées **dans le même
+monde** avec trois essences de bois différentes — bouleau, épicéa, acajou — pour
+rester distinguables même quand deux canopées se recouvrent :
+
+| radius | offset | height | rangées, du haut vers le bas | arbres mesurés |
+|---:|---:|---:|---|---:|
+| 2 | 4 | 4 | 1, 2, 2, 2, 1 | 448 |
+| 4 | 4 | 4 | 3, 4, 4, 4, 3 | 316 |
+| 2 | 6 | 6 | 1, 2, 2, 2, 2, 2, 1 | 312 |
+| 2 | 1 | 4 | 1, 2, 2, 2, 1, à `dy` 1 … −3 | 307 |
+
+La règle est donc : les rangées vont de `offset` à `offset - height` comme
+partout ailleurs, la portée vaut le rayon, et **la première et la dernière
+rangée sont d'un bloc plus étroites**.
+
+Ce que nous avions à la place — `portée = rayon + 1 − y` — fait un cône
+**le plus large en bas**, ce qui est précisément le symptôme décrit dans la
+provenance précédente comme « le feuillage est deux niveaux trop bas ».
+
+Le compte de cellules fixe le masque aussi serré : **21 sur 25** à la portée 2,
+**37 sur 49** à la portée 3, **61 sur 81** à la portée 4. Ce sont exactement les
+points entiers vérifiant `x² + z² < portée² + portée`, et rien d'autre. Le
+`x + z >= 7` qui était écrit ici ne se déclenche jamais à ces portées et n'est
+donc pas mesurable ; il a été retiré plutôt que gardé sans preuve.
+
+| `minecraft:fancy_oak`, 300 chunks | avant | après |
+|---|---:|---:|
+| bûches identiques | 96,333 % | **97,333 %** |
+| arbre entier identique | **0,000 %** | **95,333 %** |
+| blocs de bois au même endroit | 45,721 % | **98,542 %** |
+
+### 2. La jungle : ce n'était pas le sélecteur, c'était un tirage manquant
+
+`trees_jungle` valait 1 arbre sur 18 sur le monde de référence, et la provenance
+précédente concluait « le sélecteur choisit autrement que le jeu ». La sonde dit
+le contraire, et c'est le genre d'erreur qu'aucun pourcentage global ne pouvait
+attraper : sur 126 arbres, **97,6 % de troncs identiques** pour **38,9 %
+d'arbres entiers**. Le sélecteur, lui, ne se trompait presque jamais.
+
+Ce qui manquait est dans `bush_foliage_placer`. Le jeu garde **trois** coins sur
+quatre d'une rangée de portée 1 — donc le coin n'est pas jeté d'office — et il
+les garde aussi à `y` local nul, donc la clause `|| y == 0` du blob n'y est pas
+non plus. Et le bloc unique au sommet d'un buisson, qui est le coin dégénéré
+d'une rangée de portée **zéro**, est tantôt écrit tantôt non : c'est ainsi qu'on
+sait que le tirage a lieu même quand il n'y a pas de coin à proprement parler.
+
+```
+should_skip(x, y, z, portée) = x == portée && z == portée && nextInt(2) == 0
+```
+
+Ce tirage manquait entièrement. Sa portée dépasse de loin les trois rangées d'un
+buisson : **toute feature placée après un buisson dans le même chunk lisait le
+générateur un cran trop tôt.**
+
+| `minecraft:trees_jungle`, 200 chunks | avant | après |
+|---|---:|---:|
+| bûches identiques | 97,619 % | 97,619 % |
+| arbre entier identique | **38,889 %** | **92,063 %** |
+| blocs de bois au même endroit | 95,681 % | **97,939 %** |
+
+### 3. L'épicéa : une rangée de feuillage de moins
+
+`spruce_foliage_placer` s'arrêtait une rangée trop tôt, en bas. La progression
+des portées était juste — la suite `1, 0, 1, 2, 1` du jeu sort telle quelle de
+notre boucle — mais la boucle finissait un cran trop haut, parce que la hauteur
+de feuillage était `hauteur − 1 − tronc` au lieu de `max(4, hauteur − tronc)`.
+
+Les deux formes ont été mesurées sur le même échantillon plutôt que choisies :
+`max(4, h − t)` donne 27 épicéas exacts sur 44, `h − t` en donne 25, et
+`h − 1 − t` en donnait 0. Le `max(4, …)` ne se distingue que sur les épicéas les
+plus courts — un sur douze — donc l'écart de deux arbres est faible et il est
+dit tel quel.
+
+### 4. Ce que la sonde dit des autres placers, sans que ce soit corrigé
+
+| feature | arbres | exacts | ce qu'on en sait |
+|---|---:|---:|---|
+| `trees_birch_and_oak` | 119 | **98,3 %** | sélecteur, chêne, bouleau, fancy oak et le décorateur `beehive`, tous justes ensemble |
+| `birch` | 45 | 91,1 % | |
+| `jungle_tree` | 55 | 89,1 % | |
+| `oak` | 49 | 85,7 % | |
+| `spruce` | 44 | 61,4 % | reste un écart non expliqué |
+| `acacia` | 33 | 48,5 % | `forking_trunk_placer` + `acacia_foliage_placer` |
+| `mega_spruce` | 33 | **0 %** | bûches à 97,0 % ; **tous** nos blocs de feuillage sont justes, il en manque 3237 sur 13 848 |
+| `dark_oak` | 55 | **0 %** | bûches parfaites ; le masque des rangées diffère |
+
+Deux diagnostics valent d'être notés parce qu'ils remplacent des hypothèses par
+des faits :
+
+* **`giant_trunk_placer` est juste.** 96,97 % de bûches identiques, et la
+  hauteur prédite tombe juste 789 fois sur 790. Le « 0/18 » de
+  `trees_old_growth_spruce_taiga` n'était pas une divergence dès le premier
+  tirage, contrairement à ce qui était supposé : c'est
+  `mega_pine_foliage_placer` seul.
+* **`mega_pine_foliage_placer` est trop étroit d'exactement une portée sur
+  certains niveaux, jamais trop large.** Sur un arbre lu couche par couche, les
+  portées du jeu descendent `0, 0, 1, 0, 2, 1, 2` là où les nôtres font
+  `0, 0, 0, 0, 1, 1, 1`. La suite du jeu n'est pas monotone, ce que la formule
+  `floor(descente / hauteur × 3,5)` ne peut pas produire ; il y a donc là une
+  récurrence, comme celle de l'épicéa, et pas un simple décalage. **Non
+  résolu.**
+* **`dark_oak_foliage_placer`** : sur la rangée de portée 2 d'une attache
+  large, le jeu garde les cellules vérifiant `x' + z' ≤ 2` (fold de la double
+  colonne), nous gardons tout sauf les quatre coins. Un masque en disque a été
+  essayé et **mesuré moins bon** (acajou 36,4 % contre 48,5 %), donc la règle
+  n'est ni l'un ni l'autre. **Non résolu.**
+
+## Les chiffres de parité, avant et après
+
+Même échantillon, même commande, rien retouché entre les deux graines.
+
+```bash
+./build/macos-debug/bin/ov_features --trees --chunks=200 --stride=13
+./build/macos-debug/bin/ov_features --trees --chunks=200 --stride=13 \
+    --world=run/reference-987654321/world --seed=987654321
+```
+
+### Graine 1234567890 — l'échantillon sur lequel le travail a été fait
+
+| | avant | après |
+|---|---:|---:|
+| troncs du jeu | 378 | 378 |
+| troncs chez nous | 395 | 366 |
+| **au même endroit** | 153 (40,476 %) | **157 (41,534 %)** |
+| arbres posés sur un vrai tronc | 153 | 155 |
+| **dont la forme est identique** | 66 (43,137 %) | **81 (52,258 %)** |
+| premier essai dans son chunk | 17 / 57 (29,825 %) | **24 / 57 (42,105 %)** |
+| blocs : jeu / nous / même bloc | 24 635 / 24 182 / 9591 (38,932 %) | 24 635 / 25 232 / **10 985 (44,591 %)** |
+
+Par famille, parmi les arbres posés sur un vrai tronc :
+
+| placed feature | avant | après |
+|---|---:|---:|
+| `trees_savanna` | 1 / 1 | 1 / 1 |
+| `trees_birch` | 8 / 9 | 8 / 9 |
+| `birch_tall` | 7 / 12 | 7 / 12 |
+| `trees_birch_and_oak` | 49 / 111 (44,1 %) | **57 / 112 (50,9 %)** |
+| `trees_jungle` | 1 / 18 (5,6 %) | **6 / 19 (31,6 %)** |
+| `trees_sparse_jungle` | 0 / 1 | **1 / 1** |
+| `bamboo_vegetation` | 0 / 1 | **1 / 1** |
+
+### Graine 987654321 — hors échantillon, rien retouché entre les deux
+
+| | avant | après |
+|---|---:|---:|
+| troncs du jeu | 364 | 364 |
+| **au même endroit** | 68 (18,681 %) | 67 (18,407 %) |
+| arbres posés sur un vrai tronc, forme identique | 33 / 59 (55,932 %) | **39 / 58 (67,241 %)** |
+| premier essai, forme identique | 8 / 16 (50,0 %) | **11 / 16 (68,750 %)** |
+| blocs : jeu / nous / même bloc | 17 950 / 7517 / 3998 (22,273 %) | 17 950 / 7559 / **4158 (23,164 %)** |
+
+| placed feature | avant | après |
+|---|---:|---:|
+| `trees_birch` | 25 / 32 (78,1 %) | 25 / 32 (78,1 %) |
+| `trees_birch_and_oak` | 7 / 8 (87,5 %) | 7 / 8 (87,5 %) |
+| `trees_windswept_forest` | 1 / 1 | 1 / 1 |
+| `trees_old_growth_spruce_taiga` | **0 / 18 (0 %)** | **6 / 17 (35,3 %)** |
+
+Le taux de troncs au bon endroit ne bouge pas à cette graine, et il ne pouvait
+pas : **242 des 297 troncs manquants sont dans `dark_forest`**, dont la feature
+ne se charge toujours pas. Hors `dark_forest`, il reste 122 troncs et 67
+trouvés.
+
+### Le chargement n'a pas bougé
+
+**113 des 194 features configurées**, 134 placed features, **68 nommées par une
+biome et non construites** — les mêmes qu'avant, à la feature près. Aucun type
+de feature nouveau n'a été implémenté dans ce travail : le deuxième chantier du
+mandat, les 68 refus, **n'a pas été entamé**, et le premier d'entre eux par le
+nombre d'arbres qu'il débloquerait reste `huge_brown_mushroom` /
+`huge_red_mushroom`, qui commandent `dark_forest_vegetation` et ses 242 troncs.
+Un monde de sonde pour les deux champignons a été généré
+(`run/probe-mush`) et n'a pas été exploité.
+
+`ov_features --missing` liste les 68 par leur nom ; le tableau des causes
+racines plus bas est inchangé.
+
+## Reproduire
+
+```bash
+# un monde de sonde par espèce (≈ 2 min chacun)
+PATCHES="0,0" ./scripts/probe_tree.sh minecraft:fancy_oak 1234 run/probe-fancy
+PATCHES="0,0" ./scripts/probe_tree.sh "minecraft:oak minecraft:birch minecraft:jungle_tree" \
+        1234 run/probe-p1
+
+# la mesure, qui passe par notre C++
+./build/macos-debug/bin/ov_features --probe --world=run/probe-fancy/world \
+    --seed=1234 --feature=minecraft:fancy_oak --chunks=300
+./build/macos-debug/bin/ov_features --probe --world=run/probe-p1/world --seed=1234 \
+    --feature=minecraft:oak,minecraft:birch,minecraft:jungle_tree --chunks=150 --show=2
+
+# faire varier un champ d'un placer et lire la règle du jeu
+#   (un @fichier.json est une feature configurée à nous, semée à côté des autres)
+PATCHES="0,0" ./scripts/probe_tree.sh "@variante_a.json @variante_b.json" 1234 run/probe-fv
+```
+
+## Pièges pour les autres agents
+
+* **Un membre d'un limbe n'est pas 6-connexe.** Une branche du fancy oak avance
+  d'un pas en `x` et en `z` à la fois : ses bûches se touchent par la diagonale.
+  Un remplissage par les six faces coupe la branche du tronc et fait dire à la
+  mesure « nous plaçons des bûches en trop, jamais en moins », ce qui envoie
+  chercher un mécanisme de rejet qui n'existe pas. Une heure perdue là.
+* **Un monde de sonde à trois espèces se note à trois.** Noter une espèce contre
+  un monde qui contient les deux autres compte les feuilles du voisin comme une
+  différence : le chêne tombait de 98 % à 63 % pour cette seule raison.
+* **Un placer qui « ne tire pas » est une hypothèse, pas un fait.** Trois masques
+  de coin sur quatre dans ce fichier tiraient dans le jeu et pas chez nous. Le
+  symptôme n'est jamais la forme du placer lui-même : c'est la feature
+  *suivante* du chunk qui se déplace.
+* **Faire varier un champ à la fois est un datapack, pas un raisonnement.**
+  Trois variantes du même foliage placer, semées dans un seul monde avec trois
+  essences de bois, ont donné la règle des rangées en une génération de deux
+  minutes. Le champ `offset` du fichier ne veut pas dire ce qu'on croit tant
+  qu'on ne l'a pas bougé.
+* **La colonne du tronc est un oracle gratuit.** `heightmap` ne tire pas, donc
+  la position d'un arbre est exactement `nextInt(16)` deux fois. Si elle tombe
+  juste 1329 fois sur 1329, l'ensemencement est hors de cause et il n'y a plus
+  qu'un suspect.
 
 ## Ce qui reste refusé, et pourquoi — les 81 features configurées
 

@@ -183,8 +183,8 @@ i32 NaturalSpawner::effective_cap(MobCategory category, usize eligible_chunks) n
     return static_cast<i32>(scaled);
 }
 
-bool NaturalSpawner::can_spawn_at(const SpawnEnvironment& environment, MobCategory category,
-                                  BlockPos pos, f32 width, f32 height) const {
+bool NaturalSpawner::position_plausible(const SpawnEnvironment& environment,
+                                        MobCategory category, BlockPos pos) const {
     if (environment.level == nullptr) {
         return false;
     }
@@ -197,8 +197,7 @@ bool NaturalSpawner::can_spawn_at(const SpawnEnvironment& environment, MobCatego
         // is the same class of bug as a fluid flowing into one.
         return false;
     }
-    const world::WorldShape shape = level.shape();
-    if (!shape.contains_y(pos.y)) {
+    if (!level.shape().contains_y(pos.y)) {
         return false;
     }
 
@@ -212,32 +211,20 @@ bool NaturalSpawner::can_spawn_at(const SpawnEnvironment& environment, MobCatego
         }
     }
 
-    const MobSize size = MobSize::from_box(width, height);
-
-    if (rules.aquatic) {
-        // Every block of the body in water, and a floor of some kind under it
-        // so a fish is not spawned in a one-block puddle in the sky.
-        for (i32 dx = 0; dx < size.width; ++dx) {
-            for (i32 dz = 0; dz < size.width; ++dz) {
-                for (i32 dy = 0; dy < size.height; ++dy) {
-                    if (!is_water(level, {pos.x + dx, pos.y + dy, pos.z + dz})) {
-                        return false;
-                    }
-                }
-            }
+    // The cell the mob's feet would be in, before anything is known about the
+    // mob. A block that stops movement cannot hold one whatever its size, and
+    // this is the check that does the work: a y drawn uniformly over the build
+    // height lands in stone the overwhelming majority of the time.
+    //
+    // It is also the one vanilla asks first, and leaving it out is why the
+    // first version of this reordering saved nothing measurable — 99.8% of
+    // attempts still reached the type draw. With it, see the number in
+    // docs/provenance/redstone.md.
+    if (!rules.aquatic) {
+        const registry::BlockRegistry& blocks = level.blocks();
+        if (blocks.blocks_motion(blocks.block_of(level.block_at(pos)))) {
+            return false;
         }
-        return true;
-    }
-
-    // A floor, and room for the body. Both are the pathfinder's questions, so
-    // they are asked through the pathfinder's evaluator rather than answered
-    // twice — a mob that may spawn somewhere it could not walk out of is a
-    // mob that will be standing in a wall forever.
-    const WalkNodeEvaluator walk;
-    PathAbilities           abilities;
-    abilities.enters_water = false;
-    if (walk.type_at(level, pos, size, abilities) != PathNodeType::Walkable) {
-        return false;
     }
 
     if (rules.max_spawn_light >= 0) {
@@ -265,6 +252,40 @@ bool NaturalSpawner::can_spawn_at(const SpawnEnvironment& environment, MobCatego
     return true;
 }
 
+bool NaturalSpawner::can_spawn_at(const SpawnEnvironment& environment, MobCategory category,
+                                  BlockPos pos, f32 width, f32 height) const {
+    if (!position_plausible(environment, category, pos)) {
+        return false;
+    }
+    const world::LevelView& level = *environment.level;
+    const CategoryRules     rules = rules_for(category);
+    const MobSize           size  = MobSize::from_box(width, height);
+
+    if (rules.aquatic) {
+        // Every block of the body in water, and a floor of some kind under it
+        // so a fish is not spawned in a one-block puddle in the sky.
+        for (i32 dx = 0; dx < size.width; ++dx) {
+            for (i32 dz = 0; dz < size.width; ++dz) {
+                for (i32 dy = 0; dy < size.height; ++dy) {
+                    if (!is_water(level, {pos.x + dx, pos.y + dy, pos.z + dz})) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    // A floor, and room for the body. Both are the pathfinder's questions, so
+    // they are asked through the pathfinder's evaluator rather than answered
+    // twice — a mob that may spawn somewhere it could not walk out of is a
+    // mob that will be standing in a wall forever.
+    const WalkNodeEvaluator walk;
+    PathAbilities           abilities;
+    abilities.enters_water = false;
+    return walk.type_at(level, pos, size, abilities) == PathNodeType::Walkable;
+}
+
 void NaturalSpawner::spawn_tick(const SpawnEnvironment& environment,
                                 std::vector<SpawnRequest>& out) {
     if (environment.level == nullptr || environment.registries == nullptr) {
@@ -284,9 +305,23 @@ void NaturalSpawner::spawn_tick(const SpawnEnvironment& environment,
         return;
     }
 
+    // The passive pass runs once every four hundred ticks, not every tick.
+    //
+    // `game_time` -1 means the caller keeps no clock; counting our own calls is
+    // then exactly as good, because `spawn_tick` is defined as one tick's
+    // worth. It is a named fallback and not a default value: reading -1 as tick
+    // zero would make `% 400` true on every call, which is the bug this gate
+    // exists to remove.
+    const i64 clock = environment.game_time >= 0 ? environment.game_time : ticks_;
+    ++ticks_;
+    const bool passive_pass = clock % kPassiveSpawnInterval == 0;
+
     for (usize index = 0; index < 8; ++index) {
         const MobCategory category = static_cast<MobCategory>(index);
         if (category == MobCategory::Misc || entries(category).empty()) {
+            continue;
+        }
+        if (category == MobCategory::Creature && !passive_pass) {
             continue;
         }
         const i32 cap = effective_cap(category, environment.ticking_chunks.size());
@@ -316,6 +351,24 @@ void NaturalSpawner::spawn_tick(const SpawnEnvironment& environment,
                 const i32               y =
                     shape.min_y + random_.next_int(static_cast<i32>(shape.height));
                 const BlockPos          pos{x, y, z};
+
+                // The position first, and only then the type.
+                //
+                // Everything a position can be rejected for that does not need
+                // a hitbox — unloaded, out of the world, under a player's feet,
+                // too bright, not on grass — is asked here, before a single
+                // weighted draw and before a single name is resolved. Nearly
+                // every attempt dies at this line: a uniform y over the build
+                // height puts most of them in stone.
+                //
+                // Drawing the type first was measurable: it made
+                // `Registries::protocol_id` a hot function, resolving a mob
+                // name by string once per attempt, and that is the reason a
+                // hash index was added to `ov_registry` to compensate. With the
+                // check in this order the index has no hot caller left.
+                if (!position_plausible(environment, category, pos)) {
+                    continue;
+                }
 
                 // Which type. A weighted draw over the category's entries, so
                 // a biome that lists four zombies and one witch gets four
