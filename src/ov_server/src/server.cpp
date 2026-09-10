@@ -2995,13 +2995,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     // ── end effects ─────────────────────────────────────────────────────────
 
     // ── player data ─────────────────────────────────────────────────────────
-    /// A player's record as they stand. The game mode is the server's own
-    /// until players have one each.
+    /// A player's record as they stand, their own game mode included.
     const auto player_record_of = [&](const Player& who) {
         usize        overflow = 0;
         PlayerRecord record   = capture_player(
             PlayerPose{who.x, who.y, who.z, who.yaw, who.pitch, who.on_ground},
-            options.survival ? 0 : 1, who.inventory, who.carried, who.held_slot, who.survival,
+            who.game_mode, who.inventory, who.carried, who.held_slot, who.survival,
             who.effects, &overflow);
         if (overflow > 0) {
             OV_LOG_WARN("{}: {} stacks from the crafting grid or the cursor found no free slot "
@@ -3939,6 +3938,11 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 // ── commands: the world's default, per player from here on ──
                 player.game_mode = commands ? commands->default_game_mode()
                                             : (options.survival ? u8{0} : u8{1});
+                // ── player data: a returning player keeps their own mode, as
+                // vanilla does without force-gamemode ──
+                if (stored && stored->record.game_type >= 0 && stored->record.game_type <= 3) {
+                    player.game_mode = static_cast<u8>(stored->record.game_type);
+                }
                 join.game_mode           = player.game_mode;
                 join.registry_codec      = *codec_bytes;
                 join.view_distance       = 10;
@@ -4576,14 +4580,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                     OV_LOG_DEBUG("use on block: {}", grown.unsupported);
                                 }
                                 if (grown.result != gameplay::UseResult::Pass) {
-                                    if (grown.consume_one && options.survival) {
+                                    if (grown.consume_one && player.game_mode != 1) {
                                         consume_one_held(player);
                                     }
                                     return true;
                                 }
                             } else if (plants->is_plantable(item)) {
                                 if (plants->plant(player_level, clicked, place->face, item).planted &&
-                                    options.survival) {
+                                    player.game_mode != 1) {
                                     consume_one_held(player);
                                 }
                                 return true;
