@@ -76,6 +76,10 @@ inline constexpr i32 kSetPlayerPosition    = 0x14;
 inline constexpr i32 kSetPlayerPositionRot = 0x15;
 inline constexpr i32 kSetPlayerRotation    = 0x16;
 inline constexpr i32 kSetPlayerOnGround    = 0x17;
+/// Player Abilities, serverbound: one flags byte, 0x02 when the player is
+/// flying. How a creative client says it took off or landed; the server
+/// decides nothing from it that the client has not already decided.
+inline constexpr i32 kPlayerAbilities      = 0x1C;
 inline constexpr i32 kPlayerAction         = 0x1D;
 inline constexpr i32 kSetHeldItem          = 0x28;
 inline constexpr i32 kSetCreativeSlot      = 0x2B;

@@ -1118,6 +1118,17 @@ int main(int argc, char** argv) {
     gameplay::MotionState              player;
     const gameplay::MotionConstants    motion;
     bool                               spawned = false;
+    // ── flight ──
+    // What the server granted in Player Abilities, and what the player chose
+    // with it. `jump_window` is vanilla's double-tap window, counted down in
+    // ticks: a second press of jump while it is open toggles flight. Its
+    // length, 7 ticks, is not in any document this project may read and has
+    // not been measured — it is named here so a measurement has a place to go.
+    netclient::ClientEvents::Abilities abilities;
+    bool                               flying       = false;
+    bool                               jump_was_held = false;
+    i32                                jump_window  = 0;
+    constexpr i32                      kJumpWindowTicks = 7;
 
     if (online) {
         std::string host = options.connect;
@@ -1378,6 +1389,13 @@ int main(int argc, char** argv) {
             // the first frame's decision on a default rather than on what the
             // server said.
             (*interface)->apply(events);
+            if (events.abilities) {  // ── flight ──
+                // The server grants and withdraws; it also says whether the
+                // player is flying — a spectator always is, and a creative
+                // player set down by a game-mode change is not.
+                abilities = *events.abilities;
+                flying    = abilities.flying && abilities.may_fly;
+            }
             if (events.teleport && !spawned) {
                 // The first teleport is the spawn. Ask for something in hand
                 // once, here: the server has just accepted the login and the
@@ -1497,9 +1515,38 @@ int main(int argc, char** argv) {
                 move.sprint = input.held(client::Key::Sprint);
                 move.sneak  = input.held(client::Key::Down);
 
+                // ── flight ──
+                // A second press of jump inside the window toggles flight, for
+                // a player the server lets fly. An edge and not a level: holding
+                // jump climbs, it does not flicker in and out of the air.
+                const bool jump_held = move.jump;
+                if (jump_window > 0) {
+                    --jump_window;
+                }
+                if (abilities.may_fly && jump_held && !jump_was_held) {
+                    if (jump_window > 0) {
+                        flying      = !flying;
+                        jump_window = 0;
+                        client->send_abilities(flying);
+                    } else {
+                        jump_window = kJumpWindowTicks;
+                    }
+                }
+                jump_was_held     = jump_held;
+                move.flying       = flying;
+                move.flying_speed = abilities.flying_speed;
+
                 const auto world_view = session->collision();
                 const auto fluid_view = session->fluids();
                 player = gameplay::step(player, move, motion, world_view, &fluid_view);
+
+                // Touching the ground ends flight — except for a spectator, who
+                // may fly but cannot build, and is never set down.
+                const bool spectator = abilities.may_fly && !abilities.instant_build;
+                if (flying && player.on_ground && !spectator) {
+                    flying = false;
+                    client->send_abilities(false);
+                }
 
                 netclient::PlayerInput report;
                 report.position  = player.position;

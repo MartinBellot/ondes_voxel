@@ -193,6 +193,7 @@ void ClientEvents::clear() {
     open_screen.reset();
     close_window.reset();
     game_mode.reset();
+    abilities.reset();  // ── flight ──
     entities.clear();
 }
 
@@ -426,6 +427,27 @@ void Client::Impl::handle_play(i32 packet_id, std::span<const u8> body) {
             }
             const std::lock_guard lock(mutex);
             inbox.game_mode = *mode;
+            break;
+        }
+
+        case net::clientbound::kPlayerAbilities: {  // ── flight ──
+            // Flags (Byte), Flying Speed (Float), Field of View Modifier
+            // (Float), in the order the server's encoder writes them.
+            const auto flags  = reader.read_u8();
+            const auto flying = reader.read_f32();
+            const auto walk   = reader.read_f32();
+            if (!flags || !flying || !walk) {
+                return;
+            }
+            ClientEvents::Abilities granted;
+            granted.invulnerable  = (*flags & 0x01) != 0;
+            granted.flying        = (*flags & 0x02) != 0;
+            granted.may_fly       = (*flags & 0x04) != 0;
+            granted.instant_build = (*flags & 0x08) != 0;
+            granted.flying_speed  = *flying;
+            granted.walk_speed    = *walk;
+            const std::lock_guard lock(mutex);
+            inbox.abilities = granted;
             break;
         }
 
@@ -872,10 +894,18 @@ void Client::poll(ClientEvents& out) {
     out.close_window = impl_->inbox.close_window;
     out.game_mode    = impl_->inbox.game_mode;
     impl_->inbox.game_mode.reset();
+    out.abilities = impl_->inbox.abilities;  // ── flight ──
+    impl_->inbox.abilities.reset();
     impl_->inbox.health.reset();
     impl_->inbox.experience.reset();
     impl_->inbox.open_screen.reset();
     impl_->inbox.close_window.reset();
+}
+
+void Client::send_abilities(bool flying) {  // ── flight ──
+    io::ByteWriter writer;
+    writer.write_u8(flying ? 0x02 : 0x00);
+    impl_->send_raw(net::serverbound::kPlayerAbilities, writer.data());
 }
 
 bool Client::in_game() const noexcept {

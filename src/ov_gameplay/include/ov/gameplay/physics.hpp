@@ -29,6 +29,14 @@ struct MoveInput {
     bool jump{false};
     bool sprint{false};
     bool sneak{false};
+
+    /// Creative flight. While set it replaces the land and fluid ticks: no
+    /// gravity, jump climbs and sneak descends. The caller decides when it
+    /// starts and stops — a double tap of jump, touching the ground.
+    bool flying{false};
+    /// Blocks a tick the server granted in Player Abilities, 0.05 in creative:
+    /// the horizontal push, and a third of the vertical one.
+    f32 flying_speed{0.05F};
 };
 
 /// Everything that carries from one tick to the next.
@@ -145,6 +153,23 @@ struct MotionConstants {
     f64 lava_drag{0.5};
     f64 lava_shallow_vertical_drag{0.8};
     f64 lava_gravity{0.08 / 4.0};
+
+    // ── Creative flight ─────────────────────────────────────────────────────
+    //
+    // Read back the way the fluid table was, through a·0.98/(1−drag). With the
+    // flying speed of 0.05 that the server grants a creative player, flight
+    // settles at 0.05·0.98/0.09 = 0.544 blocks a tick, 10.89 m/s, against the
+    // 10.92 published in the wiki's speed table; sprint-flying doubles the push,
+    // 21.78 against 21.6; climbing and descending add three flying speeds
+    // against a drag of 0.6, 0.15/0.4 = 0.375 blocks a tick, 7.5 m/s. Not yet
+    // measured against a real client's trace, as walking was.
+
+    /// The vertical push is this many flying speeds, up for jump, down for sneak.
+    f64 flying_vertical_factor{3.0};
+    /// Multiplies the vertical velocity each tick in flight. There is no gravity.
+    f64 flying_vertical_drag{0.6};
+    /// Sprinting doubles the horizontal push in flight.
+    f64 flying_sprint_multiplier{2.0};
 
     /// A velocity component below this is set to zero.
     ///

@@ -111,6 +111,58 @@ TEST_CASE("a positive strafe goes to the player's left, as vanilla's xxa", "[gam
     REQUIRE(west_left.z > 0.0);
 }
 
+TEST_CASE("creative flight settles at the published speeds, with no gravity", "[gameplay][physics]") {
+    if (!pack()) {
+        SKIP("no registry pack");
+    }
+    Floor floor;
+    floor.stone = pack()->default_state(*pack()->find_block("minecraft:stone"));
+    const CollisionWorld world{*pack(), &Floor::look_up, &floor};
+
+    // High above the floor, so nothing but the flight rules act.
+    const auto settle = [&](const MoveInput& input, bool vertical) {
+        MotionState state{Vec3d{0.5, 100.0, 0.5}, Vec3d{}, false};
+        f64         last = 0.0;
+        for (int tick = 0; tick < 200; ++tick) {
+            const Vec3d before = state.position;
+            state              = step(state, input, MotionConstants{}, world);
+            last = vertical ? state.position.y - before.y
+                            : std::hypot(state.position.x - before.x, state.position.z - before.z);
+        }
+        return last;
+    };
+
+    MoveInput input;
+    input.flying       = true;
+    input.flying_speed = 0.05F;
+
+    // Hovering: no input, no gravity — the player stays exactly where they are.
+    REQUIRE(settle(input, true) == 0.0);
+
+    // 0.05·0.98/(1−0.91) blocks a tick; the wiki publishes 10.92 and 21.6 m/s.
+    input.forward = 1.0F;
+    REQUIRE(std::abs(settle(input, false) * 20.0 - 10.89) < 0.01);
+    input.sprint = true;
+    REQUIRE(std::abs(settle(input, false) * 20.0 - 21.78) < 0.01);
+
+    // Three flying speeds against a vertical drag of 0.6: 7.5 m/s either way.
+    input         = MoveInput{};
+    input.flying  = true;
+    input.jump    = true;
+    REQUIRE(std::abs(settle(input, true) * 20.0 - 7.5) < 0.01);
+    input.jump  = false;
+    input.sneak = true;
+    REQUIRE(std::abs(settle(input, true) * 20.0 + 7.5) < 0.01);
+
+    // Descending onto the floor lands: the caller reads on_ground to end flight.
+    MotionState low{Vec3d{0.5, 0.5, 0.5}, Vec3d{}, false};
+    for (int tick = 0; tick < 20 && !low.on_ground; ++tick) {
+        low = step(low, input, MotionConstants{}, world);
+    }
+    REQUIRE(low.on_ground);
+    REQUIRE(low.position.y == 0.0);
+}
+
 TEST_CASE("a jump leaves the ground at exactly 0.42", "[gameplay][physics]") {
     if (!pack()) {
         SKIP("no registry pack");

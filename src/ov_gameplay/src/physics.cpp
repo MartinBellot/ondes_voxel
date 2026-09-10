@@ -183,8 +183,63 @@ FluidSample FluidWorld::sample(const Vec3d& position) const {
     return next;
 }
 
+/// Creative flight, which replaces the land tick the way a fluid does.
+///
+/// The same shape as swimming and read back the same way, from published
+/// speeds through the terminal-speed arithmetic a·0.98/(1−drag): no gravity,
+/// the horizontal drag of air, a vertical drag of its own, and a push equal to
+/// the flying speed the server grants. See MotionConstants for the figures.
+[[nodiscard]] MotionState step_flying(const MotionState& state, const MoveInput& input,
+                                      const MotionConstants& constants,
+                                      const CollisionWorld& world) {
+    MotionState next  = state;
+    const f64   speed = static_cast<f64>(input.flying_speed);
+
+    // Jump climbs and sneak descends — an add before the move rather than a
+    // set, so a tap is a nudge and holding the key settles at a speed.
+    const f64 climb = constants.flying_vertical_factor * speed;
+    if (input.jump) {
+        next.velocity.y += climb;
+    }
+    if (input.sneak) {
+        next.velocity.y -= climb;
+    }
+
+    // Sneaking does not slow a flier down: the key is taken by the descent.
+    const f64 multiplier = input.sprint ? constants.flying_sprint_multiplier : 1.0;
+    const Vec3d push     = input_vector(input, speed * multiplier * constants.input_scale);
+    next.velocity.x += push.x;
+    next.velocity.z += push.z;
+
+    const AABB  box     = player_box(next.position);
+    const Vec3d allowed = world.slide(box, next.velocity);
+    next.position.x += allowed.x;
+    next.position.y += allowed.y;
+    next.position.z += allowed.z;
+
+    next.on_ground = allowed.y != next.velocity.y && next.velocity.y < 0.0;
+    if (allowed.x != next.velocity.x) {
+        next.velocity.x = 0.0;
+    }
+    if (allowed.z != next.velocity.z) {
+        next.velocity.z = 0.0;
+    }
+    if (allowed.y != next.velocity.y) {
+        next.velocity.y = 0.0;
+    }
+
+    next.velocity.x *= constants.air_drag;
+    next.velocity.z *= constants.air_drag;
+    next.velocity.y *= constants.flying_vertical_drag;
+    clamp_negligible(next.velocity, constants);
+    return next;
+}
+
 MotionState step(const MotionState& state, const MoveInput& input, const MotionConstants& constants,
                  const CollisionWorld& world, const FluidWorld* fluids) {
+    if (input.flying) {
+        return step_flying(state, input, constants, world);
+    }
     if (fluids != nullptr) {
         const FluidSample fluid = fluids->sample(state.position);
         // On the ground in shallow water a jump is still a jump. That is the

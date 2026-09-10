@@ -122,6 +122,25 @@ struct ClientEvents {
     /// nothing is maintaining.
     std::optional<u8> game_mode;
 
+    // ── flight ──
+    /// Player Abilities (0x34): what the server lets the player do. The flag
+    /// bits are 0x01 invulnerable, 0x02 flying, 0x04 may fly, 0x08 instant
+    /// build — creative sends 0x0D, spectator 0x07. A player who may fly
+    /// decides for themself when to take off and land, and says so with
+    /// Client::send_abilities; the server only grants or withdraws the right.
+    struct Abilities {
+        bool invulnerable{false};
+        bool flying{false};
+        bool may_fly{false};
+        bool instant_build{false};
+        /// Blocks a tick of horizontal push while flying: 0.05 in creative.
+        f32 flying_speed{0.05F};
+        /// The protocol calls it the field-of-view modifier; its value is the
+        /// walking speed, 0.1.
+        f32 walk_speed{0.1F};
+    };
+    std::optional<Abilities> abilities;
+
     // ── What a renderer needs to draw the things that move ──────────────────
     //
     // Ordered, and kept as one stream rather than as several vectors, because
@@ -182,7 +201,7 @@ struct ClientEvents {
         return loaded.empty() && unloaded.empty() && changed.empty() && !teleport &&
                !time_of_day && !health && !experience && containers.empty() &&
                container_slots.empty() && !open_screen && !close_window && !game_mode &&
-               entities.empty();
+               !abilities && entities.empty();
     }
     void clear();
 };
@@ -250,6 +269,11 @@ public:
     /// Tell the server the window is closed. Not optional: a server that still
     /// believes a container is open refuses the next one.
     void send_close_container(u8 window_id);
+
+    /// Tell the server the player took off or landed (Player Abilities,
+    /// serverbound). Only meaningful for a player the server lets fly; a
+    /// vanilla server ignores the flag from anyone else.
+    void send_abilities(bool flying);  // ── flight ──
 
 private:
     struct Impl;
