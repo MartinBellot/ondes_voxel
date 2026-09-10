@@ -69,6 +69,7 @@
 #include "ov/protocol/interaction.hpp"
 // ── tnt and gravity ─────────────────────────────────────────────────
 #include "tnt_gravity.hpp"
+#include "projectiles.hpp"  // ── projectiles ──
 
 #include <fmt/format.h>
 
@@ -2130,6 +2131,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     // Declared here and emplaced once the world ticks exist: the join path
     // below hands it the entities it spawned, and the drain hands it blocks.
     std::optional<TntGravity> tnt_gravity;
+    // ── projectiles ──
+    std::optional<Projectiles> projectiles;
 
     /// The packets that make one mob appear.
     ///
@@ -2143,6 +2146,13 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // ── tnt and gravity: a primed TNT and a falling block are not mobs ──
         if (tnt_gravity && mobs && tnt_gravity->owns(state.type)) {
             tnt_gravity->spawn_packets(*mobs, state, [&](i32 id, std::span<const u8> payload) {
+                deliver(id, payload);
+            });
+            return;
+        }
+        // ── projectiles: an arrow is not a mob either ──
+        if (projectiles && mobs && projectiles->owns(state.type)) {
+            projectiles->spawn_packets(*mobs, state, [&](i32 id, std::span<const u8> payload) {
                 deliver(id, payload);
             });
             return;
@@ -2556,6 +2566,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                             mob_combat ? &*mob_combat : nullptr);
         tnt_gravity->set_redstone(&world_ticks->redstone());
         world_ticks->set_extension(&*tnt_gravity);
+        // ── projectiles ──
+        projectiles.emplace(*registries, *blocks, mob_combat ? &*mob_combat : nullptr);
         tick_broadcasts.reserve(4096);
     } else {
         OV_LOG_WARN("no block registry — fluids and redstone stay inert");
@@ -3089,6 +3101,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         }
         // ── tnt and gravity: a primed TNT or a falling block takes no damage ──
         if (tnt_gravity && tnt_gravity->owns(state->type)) {
+            return true;
+        }
+        // ── projectiles: an arrow in the air is swung through ──
+        if (projectiles && projectiles->owns(state->type)) {
             return true;
         }
 
@@ -3643,6 +3659,31 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                   net::encode_set_default_spawn(x, y, z, angle));
     };
     // ── end commands ────────────────────────────────────────────────────────
+    // ── projectiles ─────────────────────────────────────────────────────────
+    /// The player pressing or releasing the button, as the projectile module
+    /// reads them. Caller holds players_mutex.
+    const auto shooter_of = [&](Player& who) {
+        Shooter shooter;
+        shooter.entity_id = who.entity_id;
+        shooter.feet      = Vec3d{who.x, who.y, who.z};
+        shooter.yaw       = who.yaw;
+        shooter.pitch     = who.pitch;
+        shooter.creative  = who.game_mode == 1;  // ── commands: per player ──
+        shooter.inventory = std::span<net::ItemStack>{who.inventory};
+        shooter.held_slot = 36 + static_cast<usize>(who.held_slot);
+        shooter.send_slot = [&](usize slot) { send_slot(who, slot); };
+        shooter.send      = [&](i32 id, std::span<const u8> payload) {
+            if (const auto framed = net::encode_packet(id, payload); framed && who.connection) {
+                who.connection->send(*framed);
+            }
+        };
+        shooter.held_broke = [&] {
+            broadcast(nullptr, net::clientbound::kEntityEvent,
+                      net::encode_entity_event(who.entity_id, 47));
+        };
+        return shooter;
+    };
+    // ── end projectiles ─────────────────────────────────────────────────────
 
     // Per-connection protocol state. A packet id means different things in
     // different states, so this cannot be global.
@@ -3665,6 +3706,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 const net::Uuid uuid      = it->second.uuid;
                 leaving.emplace(uuid, it->second.name, player_record_of(it->second));  // ── player data ──
                 players.erase(it);
+                // ── projectiles: a draw does not outlive its archer ──
+                if (projectiles) {
+                    projectiles->cancel(entity_id);
+                }
 
                 // The reason goes with the player. Without this the chunks they
                 // were standing on stay loaded for the life of the process,
@@ -4239,6 +4284,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                             if (*slot != player.held_slot) {
                                 player.combat.on_release(combat_io(player));
                             }
+                            // ── projectiles: so does a drawn bow ──
+                            if (*slot != player.held_slot && projectiles) {
+                                projectiles->cancel(player.entity_id);
+                            }
                             // ── end combat and interaction ──────────────────
                             player.held_slot = *slot;
                         }
@@ -4280,6 +4329,13 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         const auto use = net::parse_use_item(body);
                         if (!use) {
                             return false;
+                        }
+                        // ── projectiles: a bow, a crossbow, a trident or a throw ──
+                        if (projectiles && use->hand == net::Hand::Main &&
+                            projectiles->on_use_item(shooter_of(player),
+                                                     server_tick.load(std::memory_order_relaxed))) {
+                            acknowledge(connection, use->sequence);
+                            return true;
                         }
                         const CombatOutcome out = player.combat.on_use_item(
                             *use, combat_view(player), combat_io(player));
@@ -4335,6 +4391,11 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         // go. A player who lets go at tick 31 has eaten
                         // nothing, so this is a cancel and not a completion.
                         if (action->status == 5) {
+                            // ── projectiles: the bow is let go ──
+                            if (projectiles) {
+                                (void)projectiles->on_release(
+                                    shooter_of(player), server_tick.load(std::memory_order_relaxed));
+                            }
                             player.combat.on_release(combat_io(player));
                             return true;
                         }
@@ -5507,6 +5568,111 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         console.emplace([&commands](std::string line) { commands->enqueue_console(std::move(line)); });
     }
     // ── end commands ────────────────────────────────────────────────────────
+    // ── projectiles ─────────────────────────────────────────────────────────
+    // Built once, before the loop, like the TNT's. Every callback runs inside
+    // the entity pass, which holds players_mutex and chunk_mutex.
+    ProjectileHost projectile_host;
+    const auto     projectile_player = [&](i32 id) -> Player* {
+        for (auto& [key, who] : players) {
+            if (who.entity_id == id && who.connection && who.confirmed) {
+                return &who;
+            }
+        }
+        return nullptr;
+    };
+    projectile_host.players = [&](std::vector<ProjectilePlayer>& out) {
+        for (const auto& [key, who] : players) {
+            if (who.connection && who.confirmed) {
+                // ── commands: per player — creative and spectator are not hurt ──
+                out.push_back(ProjectilePlayer{who.entity_id, Vec3d{who.x, who.y, who.z},
+                                               !who.mortal(),
+                                               !who.survival.awaiting_respawn});
+            }
+        }
+    };
+    projectile_host.hurt_player = [&](i32 id, f32 amount, gameplay::DamageKind kind) {
+        Player* who = projectile_player(id);
+        // A creative player is not hurt, and the arrow bounces off it.
+        if (who == nullptr || !who->mortal()) {  // ── commands: per player ──
+            return false;
+        }
+        const SurvivalIo io{
+            .send =
+                [&](i32 packet, std::span<const u8> payload) {
+                    if (const auto framed = net::encode_packet(packet, payload);
+                        framed && who->connection) {
+                        who->connection->send(*framed);
+                    }
+                },
+            .broadcast = [&](i32 packet, std::span<const u8> payload) {
+                broadcast(who->connection.get(), packet, payload);
+            }};
+        return who->survival.hurt(kind, amount, io, who->entity_id).applied;
+    };
+    projectile_host.give = [&](i32 id, const net::ItemStack& stack) -> i8 {
+        Player* who = projectile_player(id);
+        return who == nullptr ? i8{0} : give_to_player(*who, stack);
+    };
+    projectile_host.teleport = [&](i32 id, Vec3d to) {
+        Player* who = projectile_player(id);
+        if (who == nullptr) {
+            return;
+        }
+        who->x                = to.x;
+        who->y                = to.y;
+        who->z                = to.z;
+        who->pending_teleport = who->entity_id * 1000 + 11;
+        if (const auto framed = net::encode_packet(
+                net::clientbound::kSynchronizePosition,
+                net::encode_synchronize_position(who->x, who->y, who->z, who->yaw, who->pitch,
+                                                 who->pending_teleport));
+            framed && who->connection) {
+            who->connection->send(*framed);
+        }
+    };
+    projectile_host.spawn_mob = [&](std::string_view type, Vec3d at) {
+        if (!mobs || !registries) {
+            return;
+        }
+        const auto spawned = mobs->spawn(type, at, net::Uuid{});
+        if (!spawned) {
+            return;
+        }
+        entity::EntityState* state = mobs->mutable_state(*spawned);
+        state->uuid                = uuid_for_entity(state->network_id);
+        state->broadcast_position  = state->position;
+        state->broadcast_valid     = true;
+        if (const gameplay::MobKind* kind = gameplay::mob_kind(type)) {
+            const auto entity_types = registries->find("minecraft:entity_type");
+            const auto player_type =
+                entity_types ? registries->protocol_id(*entity_types, "minecraft:player")
+                             : std::nullopt;
+            mobs->set_logic(*spawned, std::make_unique<gameplay::Mob>(
+                                          *kind, state->width, state->height, state->network_id,
+                                          player_type ? *player_type : gameplay::kNoQuarry));
+        } else {
+            mobs->set_logic(*spawned, std::make_unique<gameplay::FallingMob>());
+        }
+        mob_packets(*state, [&](i32 id, std::span<const u8> payload) {
+            broadcast(nullptr, id, payload);
+        });
+    };
+    projectile_host.spawn_orb = [&](Vec3d at, i32 value) {
+        GroundOrb orb;
+        orb.entity_id = next_entity_id.fetch_add(1);
+        orb.x         = at.x;
+        orb.y         = at.y;
+        orb.z         = at.z;
+        orb.value     = value;
+        orb.born      = server_tick.load(std::memory_order_relaxed);
+        broadcast(nullptr, net::clientbound::kSpawnExperienceOrb,
+                  net::encode_spawn_experience_orb(orb.entity_id, orb.x, orb.y, orb.z,
+                                                   static_cast<i16>(orb.value)));
+        ground_orbs.push_back(orb);
+    };
+    projectile_host.drop_item                 = tnt_host.drop_item;
+    const ProjectileDeliver projectile_deliver = tnt_deliver;
+    // ── end projectiles ─────────────────────────────────────────────────────
 
     const auto should_stop = [&]() {
         return g_stop_requested.load(std::memory_order_relaxed) ||
@@ -6073,7 +6239,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // happened. A delta packet when the move fits in one — six bytes rather
         // than twenty-eight — and a teleport when it does not.
         if (mobs && blocks &&
-            (!mobs->handles().empty() || (tnt_gravity && tnt_gravity->has_pending()))) {
+            (!mobs->handles().empty() || (tnt_gravity && tnt_gravity->has_pending()) ||
+             (projectiles && projectiles->has_pending()))) {  // ── projectiles ──
             std::unique_lock mob_lock{players_mutex, std::try_to_lock};
             if (mob_lock.owns_lock()) {
                 const std::scoped_lock chunk_lock{chunk_mutex};
@@ -6117,6 +6284,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 if (tnt_gravity) {
                     tnt_gravity->spawn_pending(*mobs, tnt_deliver);
                 }
+                // ── projectiles: the shots asked for, the boxes they may hit,
+                // and the skeletons (on normal: this server has no difficulty
+                // setting of its own) ──
+                if (projectiles) {
+                    projectiles->spawn_pending(*mobs, projectile_deliver);
+                    projectiles->before_entity_tick(*mobs, projectile_host);
+                    projectiles->tick_skeletons(*mobs, collisions, 2, projectile_deliver);
+                }
                 mobs->tick(entity::TickContext{clock.tick_count(), &mob_context});
                 // ── tnt and gravity: creepers, landings, explosions ──
                 if (tnt_gravity && level && world_ticks) {
@@ -6127,6 +6302,16 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         OV_LOG_DEBUG("tick {}: {} explosions, {} blocks, {} TNT lit",
                                      clock.tick_count(), tnt_stats.blasts,
                                      tnt_stats.blocks_destroyed, tnt_stats.primed);
+                    }
+                }
+                // ── projectiles: hits, landings, pickups ──
+                if (projectiles) {
+                    const ProjectileStats shots =
+                        projectiles->after_entity_tick(*mobs, projectile_host, projectile_deliver);
+                    if (shots.hits + shots.stuck + shots.broke + shots.picked_up > 0) {
+                        OV_LOG_DEBUG("tick {}: projectiles hit {}, stuck {}, broke {}, picked {}",
+                                     clock.tick_count(), shots.hits, shots.stuck, shots.broke,
+                                     shots.picked_up);
                     }
                 }
 
