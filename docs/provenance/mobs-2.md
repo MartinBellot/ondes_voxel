@@ -23,6 +23,10 @@ Le résultat court :
 | espèces vivantes | — | 8 | 20 |
 | biome des apparitions | celui de la **position** | plains partout | celui de la position |
 | monstre en surface, minuit | ≈ 70 au plafond (mobs.md § 4) | **aucun** (seuil « lumière 0 ») | tirage documenté, § 3 |
+| 19 espèces qui errent, sur notre serveur | — | jusqu'à +45 % | toutes à 0,2 % près (§ 1.6) |
+| slime tué : enfants 2 / 3 / 4 | 13/15/17 et 10/10/10, demi-taille | pas de slime | `2 + next_int(3)`, demi-taille, vérifié sur le fil |
+| zombie (husk) sous l'eau → noyé (zombie) | 903 ticks, 12/12 | jamais | 902 ticks |
+| composition par biome sur notre serveur | § 2.2 | — | **non mesurée** (Debug trop lent, § 2.2) |
 
 ---
 
@@ -365,7 +369,13 @@ de zéro si les yeux sortent avant les 30 s ; une fois lancée, la conversion va
 `conversion.cpp` porte la règle (601ᵉ tick : début, 902ᵉ : remplacement, testé), `drowning.cpp` le
 compteur par mob, et le bloc `mobs-2` de `server.cpp` remplace le mob à la même place.
 
-*(Mesure vanilla : § rempli à la mesure.)*
+**Mesuré** (`measure_mobs2.py drown`) : 8 zombies et 4 husks, chacun seul dans un puits d'eau
+d'un bloc sur trois, sous un couvercle de verre pour que les yeux ne sortent jamais ; les puits
+relus ensemble. **Les douze convertis, tous à 903 ticks** de l'invocation (zombie → noyé,
+husk → zombie). Notre règle remplace le mob à son 902ᵉ tick compté ; le tick d'écart est celui de
+l'invocation et du relevé, pas une autre règle. (Premier passage raté : l'objectif de tableau de
+score n'existait pas dans ce monde, aucun compte n'était lu, et « rien ne s'est converti » —
+corrigé, piège nommé au § 7.)
 
 Non fait : l'indice de métadonnée « en conversion » qui fait trembler le zombie chez le client (non
 relevé sur le fil), la conservation de l'équipement et de la santé à la conversion.
@@ -398,6 +408,14 @@ ne reçoit que le type.
   « Done ( » jusqu'à l'échéance, et le script a l'air bloqué.
 * **Le piège 32, encore** : un squelette invoqué avec NBT n'a pas d'arc, et poursuit au corps à corps
   à 1,2.
+* **Un objectif de tableau de score n'existe que dans le monde où on l'a créé.** Un comptage
+  `execute store result score` dans un monde neuf sans `scoreboard objectives add` échoue sans bruit
+  et ressemble exactement à « zéro » : le premier passage de `drown` a conclu qu'aucun zombie ne se
+  noyait. L'objectif est maintenant créé à l'installation de chaque serveur de campagne.
+* **Main a changé le format de `registry.ovpack`, et `normalized/` et `run/` sont des liens vers
+  main dans un worktree** : écrire un résultat de campagne dans `normalized/` l'écrit chez main. Ce
+  worktree a fait de `normalized/` un vrai dossier de liens par fichier, et ses mondes de sonde
+  vivent sous `.scratch/`.
 
 ---
 
