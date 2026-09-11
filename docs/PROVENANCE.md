@@ -50,6 +50,7 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`feu.md`](provenance/feu.md) | Le feu qui se propage, la lave qui allume deux fois par tirage, et une fenêtre de dégâts de 10 ticks et non 11 |
 | [`alchimie.md`](provenance/alchimie.md) | L'alambic et les 43 potions : 2709/2709 recettes, et l'éclaboussure qui part d'où était la fiole |
 | [`end.md`](provenance/end.md) | L'End à 100 % des biomes et 99,9996 % des blocs, son portail et son arène (le combat : `dragon.md`) |
+| [`worldgen-3.md`](provenance/worldgen-3.md) | Icebergs (passe de surface et feature), glace bleue, fossiles tirés du jar, couche gelée et bruits de température, zoom flou des biomes (SHA-256, FIPS 180-4), fluides réveillés à la publication d'un chunk |
 | [`commandes-solo.md`](provenance/commandes-solo.md) | « Autoriser les commandes » : la règle du bouton relevée sur le vrai client en onze étapes, `allowCommands` dans level.dat, et le niveau de l'hôte |
 | [`cassage-bloc.md`](provenance/cassage-bloc.md) | Casser un bloc dans notre client : fissures au pixel près, 151 ticks pour la pierre à la main comme le vrai client, et 64 éclats |
 | [`rails-wagonnets.md`](provenance/rails-wagonnets.md) | Les rails (Rail, Powered Rail, Minecart du wiki) : 1536/1536 formes, et 14 trajectoires de wagonnet à moins de 1e-9 du vrai serveur |
