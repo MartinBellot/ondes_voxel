@@ -281,6 +281,12 @@ inline constexpr i32 kWorldEventBlockBreak = 2001;
 /// `tp … facing` does.
 [[nodiscard]] std::vector<u8> encode_look_at(bool eyes, f64 x, f64 y, f64 z);
 
+/// ── tp ── Look At, the entity form: the target's position and then the
+/// entity itself and which of its points to face, as vanilla sends it for
+/// `tp … facing entity <target> [eyes|feet]` (captured: `…01 <id> 01` for eyes).
+[[nodiscard]] std::vector<u8> encode_look_at_entity(bool eyes, f64 x, f64 y, f64 z, i32 entity_id,
+                                                    bool entity_eyes);
+
 /// Synchronize Position with relative flags (0x01 x, 0x02 y, 0x04 z, 0x08 yaw,
 /// 0x10 pitch): a flagged field is an offset, which is how vanilla sends a
 /// `tp ~ ~5 ~` — the capture shows flags 0x1F and a y of 5.

@@ -1305,6 +1305,24 @@ void CommandService::register_commands() {
             const RotationArg* rotation = ctx.find<RotationArg>("rotation");
             const Coordinates* facing   = ctx.find<Coordinates>("facingLocation");
             const EntitySelector* facing_entity = ctx.find<EntitySelector>("facingEntity");
+            // ── tp ── What to face, resolved before anyone moves: vanilla
+            // answers `facing entity nobody` with its error and teleports no
+            // one (captured).
+            const EntityInfo* face_entity = nullptr;
+            const bool        face_eyes   = [&] {
+                const AnchorArg* anchor = ctx.find<AnchorArg>("facingAnchor");
+                return anchor != nullptr && anchor->eyes;
+            }();
+            if (facing_entity != nullptr) {
+                auto seen = find_entities(
+                    *facing_entity, src, world_snapshot_,
+                    [this](u32 n) { return static_cast<u32>(random_.next_int(static_cast<i32>(n))); },
+                    &env_);
+                if (!seen || seen->empty()) {
+                    return std::unexpected{error("argument.entity.notfound.entity")};
+                }
+                face_entity = seen->front();
+            }
             for (const EntityInfo* e : targets) {
                 f32 yaw   = e->yaw;
                 f32 pitch = e->pitch;
@@ -1330,27 +1348,26 @@ void CommandService::register_commands() {
                 } else {
                     (void)host_->teleport_entity(e->id, pos, yaw, pitch);
                 }
-                if (e->player && (facing != nullptr || facing_entity != nullptr)) {
-                    Vec3d at{};
-                    if (facing != nullptr) {
-                        at = facing->position(src);
-                    } else {
-                        auto seen = find_entities(
-                            *facing_entity, src, world_snapshot_,
-                            [this](u32 n) { return static_cast<u32>(random_.next_int(static_cast<i32>(n))); },
-                            &env_);
-                        if (!seen || seen->empty()) {
-                            return std::unexpected{error("argument.entity.notfound.entity")};
-                        }
-                        const EntityInfo& target = *seen->front();
-                        const AnchorArg*  anchor = ctx.find<AnchorArg>("facingAnchor");
-                        at = target.position;
-                        if (anchor != nullptr && anchor->eyes) {
-                            at.y += static_cast<f64>(target.eye_height);
-                        }
-                    }
+                if (e->player && facing != nullptr) {
+                    const Vec3d at = facing->position(src);
                     if (PlayerRef* p = player(e->id)) {
                         p->send(net::clientbound::kLookAt, net::encode_look_at(false, at.x, at.y, at.z));
+                    }
+                } else if (e->player && face_entity != nullptr) {
+                    // ── tp ── The entity form, and the target where it is
+                    // now: itself at its new position when it faces itself.
+                    Vec3d at = face_entity->id == e->id ? pos : face_entity->position;
+                    if (face_eyes) {
+                        // The one sample captured (y -60, eye height 1.62)
+                        // carries -58.380001068115234: the sum rounded to a
+                        // float, not the double -58.3799999952.
+                        at.y = static_cast<f64>(
+                            static_cast<f32>(at.y + static_cast<f64>(face_entity->eye_height)));
+                    }
+                    if (PlayerRef* p = player(e->id)) {
+                        p->send(net::clientbound::kLookAt,
+                                net::encode_look_at_entity(false, at.x, at.y, at.z, face_entity->id,
+                                                           face_eyes));
                     }
                 }
             }

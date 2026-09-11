@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import re
+import struct
 import sys
 from pathlib import Path
 
@@ -116,6 +117,46 @@ def main() -> int:
                 print(f"    vanilla: {a[:300]}")
                 print(f"    ours:    {b[:300]}")
                 break
+
+    # ── Teleports: Synchronize Player Position and Look At ──
+    # 0x3C and 0x3B in the capture, recognised by their shape (three doubles,
+    # two floats, the flags byte, the teleport id; a feet/eyes varint and three
+    # doubles), never by the id alone. The teleport id is a counter and is left
+    # out; the position is compared to a millionth, the rotation to a
+    # thousandth of a degree.
+    # Only the first sync of a command counts: vanilla sends the position again,
+    # absolute, about a second later, because the probe never confirms the
+    # teleport (its "awaiting position" resend) — that one is timing.
+    def teleports(packets: list[dict]) -> list[str]:
+        out = []
+        synced = False
+        for p in packets:
+            raw = bytes.fromhex(p["hex"]) if p.get("hex") else b""
+            if p["id"] == 0x3C and 34 <= len(raw) <= 38 and not synced:
+                synced = True
+                x, y, z, yaw, pitch, flags = struct.unpack_from(">dddffB", raw, 0)
+                out.append(f"sync flags={flags:05b} pos=({x:.6f},{y:.6f},{z:.6f}) "
+                           f"rot=({yaw:.3f},{pitch:.3f})")
+            elif p["id"] == 0x3B and len(raw) in (25, 26, 27, 28, 29, 30, 31, 32, 33, 34):
+                anchor = raw[0]
+                x, y, z = struct.unpack_from(">ddd", raw, 1)
+                out.append(f"look_at anchor={anchor} at=({x:.6f},{y:.6f},{z:.6f})")
+        return out
+
+    t_same = t_total = 0
+    t_diff = []
+    for v, o in zip(vanilla["commands"], ov["commands"]):
+        if not (v["command"].startswith("tp") or v["command"].startswith("teleport")):
+            continue
+        t_total += 1
+        vt_, ot_ = teleports(v["packets"]), teleports(o["packets"])
+        if vt_ == ot_:
+            t_same += 1
+        else:
+            t_diff.append((v["command"], vt_, ot_))
+    print(f"teleports: {t_same}/{t_total} tp commands send the same position packets")
+    for command, a, b in t_diff:
+        print(f"  /{command}: vanilla {a} / ours {b}")
 
     # ── /help, restricted to the commands this server has ──
     def help_lines(capture: dict) -> list[str]:
