@@ -3,6 +3,7 @@
 #include "brewing_session.hpp"
 
 #include "block_container.hpp"
+#include "entity_nbt.hpp"  // ── persistence ──
 
 #include "ov/base/log.hpp"
 #include "ov/nbt/binary.hpp"
@@ -878,9 +879,12 @@ void Brewing::spawn_cloud(const PotionHost& host, Vec3d at, PotionContents conte
     }
     CloudEntity cloud;
     cloud.id      = host.next_entity_id();
+    cloud.uuid    = cloud_uuid(cloud.id);
     cloud.at      = at;
     cloud.cloud   = gameplay::lingering_cloud();
     cloud.color   = gameplay::potion_color(contents.effects);
+    cloud.potion  = contents.potion;
+    cloud.own     = contents.own;
     cloud.effects = std::move(contents.effects);
     clouds_.push_back(std::move(cloud));
     ++stats_.clouds;
@@ -888,7 +892,7 @@ void Brewing::spawn_cloud(const PotionHost& host, Vec3d at, PotionContents conte
         const CloudEntity& made = clouds_.back();
         net::SpawnEntity   spawn;
         spawn.entity_id = made.id;
-        spawn.uuid      = cloud_uuid(made.id);
+        spawn.uuid      = made.uuid;
         spawn.type      = cloud_type_;
         spawn.x         = made.at.x;
         spawn.y         = made.at.y;
@@ -907,7 +911,7 @@ void Brewing::cloud_packets(const PacketSink& send) const {
     for (const CloudEntity& cloud : clouds_) {
         net::SpawnEntity spawn;
         spawn.entity_id = cloud.id;
-        spawn.uuid      = cloud_uuid(cloud.id);
+        spawn.uuid      = cloud.uuid;
         spawn.type      = cloud_type_;
         spawn.x         = cloud.at.x;
         spawn.y         = cloud.at.y;
@@ -979,6 +983,144 @@ void Brewing::tick_clouds(const PotionHost& host) {
         }
         ++i;
     }
+}
+
+// ── persistence: the clouds to and from entities/ ──────────────────────────
+
+nbt::Tag Brewing::cloud_nbt(const CloudEntity& cloud) const {
+    nbt::Tag out = cloud.saved.compound() != nullptr ? cloud.saved : nbt::Tag::make_compound();
+    put_entity_base(out, "minecraft:area_effect_cloud", cloud.at, Vec3d{}, 0.0F, 0.0F, cloud.uuid,
+                    false, i16{0});
+    (void)out.put("Age", nbt::Tag{cloud.cloud.age});
+    (void)out.put("Duration", nbt::Tag{cloud.cloud.duration});
+    (void)out.put("DurationOnUse", nbt::Tag{cloud.cloud.duration_on_use});
+    (void)out.put("WaitTime", nbt::Tag{cloud.cloud.wait_time});
+    (void)out.put("ReapplicationDelay", nbt::Tag{cloud.cloud.reapplication_delay});
+    (void)out.put("Radius", nbt::Tag{cloud.cloud.radius});
+    (void)out.put("RadiusOnUse", nbt::Tag{cloud.cloud.radius_on_use});
+    (void)out.put("RadiusPerTick", nbt::Tag{cloud.cloud.radius_per_tick});
+    default_to(out, "Particle", nbt::Tag{std::string{"minecraft:entity_effect"}});
+    if (cloud.potion != Potion::Empty) {
+        (void)out.put("Potion", nbt::Tag{std::string{gameplay::potion_info(cloud.potion).name}});
+    }
+    // The custom effects, in the 1.20.1 form (`Id` a number).
+    if (cloud.effects.size() > cloud.own) {
+        nbt::Tag list = nbt::Tag::make_list(nbt::TagType::Compound);
+        for (usize i = cloud.own; i < cloud.effects.size(); ++i) {
+            const PotionEffect& effect = cloud.effects[i];
+            nbt::Tag            entry  = nbt::Tag::make_compound();
+            (void)entry.put("Id", nbt::Tag{gameplay::effect_id(effect.effect)});
+            (void)entry.put("Amplifier", nbt::Tag{static_cast<i8>(effect.amplifier)});
+            (void)entry.put("Duration", nbt::Tag{effect.duration});
+            (void)entry.put("Ambient", nbt::Tag::make_bool(false));
+            (void)entry.put("ShowParticles", nbt::Tag::make_bool(true));
+            (void)entry.put("ShowIcon", nbt::Tag::make_bool(true));
+            (void)list.push(std::move(entry));
+        }
+        (void)out.put("Effects", std::move(list));
+    }
+    return out;
+}
+
+bool Brewing::adopt_saved(const nbt::Tag& compound) {
+    if (cloud_type_ < 0 || persistence_host_ == nullptr || !persistence_host_->next_entity_id) {
+        return false;
+    }
+    CloudEntity cloud;
+    cloud.id   = persistence_host_->next_entity_id();
+    cloud.uuid = uuid_from(compound.find("UUID")).value_or(cloud_uuid(cloud.id));
+    cloud.at   = list_vec3(compound, "Pos");
+    const auto number = [&](std::string_view name, i32 fallback) {
+        return static_cast<i32>(get_i64(compound, name, fallback));
+    };
+    const auto real = [&](std::string_view name, f32 fallback) {
+        return static_cast<f32>(get_f64(compound, name, static_cast<f64>(fallback)));
+    };
+    // Vanilla's defaults for an absent key (a summoned cloud with none of them
+    // reads back as 3.0 wide, 600 long, 20 between uses, 0 elsewhere).
+    cloud.cloud.age                 = number("Age", 0);
+    cloud.cloud.duration            = number("Duration", 600);
+    cloud.cloud.duration_on_use     = number("DurationOnUse", 0);
+    cloud.cloud.wait_time           = number("WaitTime", 20);
+    cloud.cloud.reapplication_delay = number("ReapplicationDelay", 20);
+    cloud.cloud.radius              = real("Radius", 3.0F);
+    cloud.cloud.radius_on_use       = real("RadiusOnUse", 0.0F);
+    cloud.cloud.radius_per_tick     = real("RadiusPerTick", 0.0F);
+    if (const nbt::Tag* potion = compound.find("Potion")) {
+        if (const auto known = gameplay::potion_from_name(potion->as_string())) {
+            cloud.potion = *known;
+        } else {
+            OV_LOG_WARN("entities: a cloud of potion {}, which this server does not know — its "
+                        "own effects are left out",
+                        potion->as_string());
+        }
+    }
+    const auto own = gameplay::potion_info(cloud.potion).effects;
+    cloud.effects.assign(own.begin(), own.end());
+    cloud.own = cloud.effects.size();
+    if (const nbt::Tag* custom = compound.find("Effects");
+        custom != nullptr && custom->list() != nullptr) {
+        for (const nbt::Tag& entry : *custom->list()) {
+            const auto effect = gameplay::effect_from_id(static_cast<i32>(get_i64(entry, "Id", -1)));
+            if (!effect) {
+                continue;  // stays in `saved`, written back as it came
+            }
+            cloud.effects.push_back(PotionEffect{*effect,
+                                                 static_cast<i32>(get_i64(entry, "Duration", 0)),
+                                                 static_cast<u8>(get_i64(entry, "Amplifier", 0))});
+        }
+    }
+    cloud.color = compound.contains("Color")
+                      ? static_cast<u32>(get_i64(compound, "Color", 0))
+                      : gameplay::potion_color(cloud.effects);
+    cloud.sent_waiting = gameplay::cloud_waiting(cloud.cloud);
+    cloud.saved        = compound;
+    clouds_.push_back(std::move(cloud));
+    if (persistence_host_->broadcast) {
+        const CloudEntity& made = clouds_.back();
+        net::SpawnEntity   spawn;
+        spawn.entity_id = made.id;
+        spawn.uuid      = made.uuid;
+        spawn.type      = cloud_type_;
+        spawn.x         = made.at.x;
+        spawn.y         = made.at.y;
+        spawn.z         = made.at.z;
+        persistence_host_->broadcast(net::clientbound::kSpawnEntity,
+                                     net::encode_spawn_entity(spawn));
+        net::MetadataWriter fields;
+        fields.float_value(kCloudRadius, made.cloud.radius);
+        fields.varint_value(kCloudColor, static_cast<i32>(made.color));
+        fields.boolean_value(kCloudWaiting, made.sent_waiting);
+        persistence_host_->broadcast(net::clientbound::kEntityMetadata,
+                                     net::encode_entity_metadata(made.id, fields.take()));
+    }
+    return true;
+}
+
+void Brewing::positions(std::vector<Vec3d>& out) const {
+    for (const CloudEntity& cloud : clouds_) {
+        out.push_back(cloud.at);
+    }
+}
+
+void Brewing::save(std::vector<LooseEntity>& out) const {
+    for (const CloudEntity& cloud : clouds_) {
+        out.push_back(LooseEntity{cloud.at, cloud_nbt(cloud)});
+    }
+}
+
+void Brewing::release(const std::function<bool(ChunkPos)>& leaving, std::vector<LooseEntity>& out,
+                      std::vector<i32>& removed) {
+    std::erase_if(clouds_, [&](const CloudEntity& cloud) {
+        const ChunkPos chunk{static_cast<i32>(std::floor(cloud.at.x)) >> 4,
+                             static_cast<i32>(std::floor(cloud.at.z)) >> 4};
+        if (!leaving(chunk)) {
+            return false;
+        }
+        out.push_back(LooseEntity{cloud.at, cloud_nbt(cloud)});
+        removed.push_back(cloud.id);
+        return true;
+    });
 }
 
 }  // namespace ov::server

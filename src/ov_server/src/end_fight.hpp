@@ -43,6 +43,8 @@
 #include "ov/math/random.hpp"
 #include "ov/math/vec.hpp"
 #include "ov/nbt/tag.hpp"
+
+#include "entity_storage.hpp"  // ── persistence ──
 #include "ov/protocol/types.hpp"
 #include "ov/registry/block_states.hpp"
 #include "ov/world/level.hpp"
@@ -114,7 +116,7 @@ struct EndFightEntity {
     f32              height{0.0F};
 };
 
-class EndFight {
+class EndFight final : public LooseAdopter {
 public:
     /// `immune` and `transparent` are the blocks of `#dragon_immune` and
     /// `#dragon_transparent`: the body breaks neither; the first stops it.
@@ -212,6 +214,42 @@ public:
     /// breath cloud within reach filled it (the cloud shrinks by half a block).
     bool take_breath(Vec3d feet);
 
+    // ── persistence: DIM1/entities, a LooseAdopter ──────────────────────────
+    //
+    // `minecraft:ender_dragon`: a living entity's keys, `Health`,
+    // `DragonPhase` (int), `DragonDeathTime` (int); `minecraft:end_crystal`:
+    // `ShowBottom` (byte), `BeamTarget` {X, Y, Z} (ints) — measured on the
+    // real server. A crystal that was destroyed is not in the file, so it does
+    // not come back; the dragon comes back where it was, with its health and
+    // phase. The fight's fireballs, clouds and orbs are not saved (named).
+
+    /// What an entity read from disk is given its ids with and announced
+    /// through. Not owned; must outlive the last read.
+    void set_host(const EndFightHost* host) noexcept { host_ = host; }
+
+    /// Has the End's storage read the four chunks round the origin? Until it
+    /// has, a fight read from level.dat with a living dragon waits for the
+    /// dragon to come back from disk rather than making a new one.
+    void set_arena_read(bool read) noexcept { arena_read_ = read; }
+
+    /// Ticks a restored fight waits, arena read, for its dragon to come back
+    /// from disk before it makes a new one. Ours, not the game's.
+    static constexpr i32 kDragonRestoreWait = 100;
+
+    [[nodiscard]] bool owns_type(std::string_view type) const noexcept override {
+        return type == "minecraft:ender_dragon" || type == "minecraft:end_crystal";
+    }
+    bool adopt_saved(const nbt::Tag& compound) override;
+    void positions(std::vector<Vec3d>& out) const override;
+    void save(std::vector<LooseEntity>& out) const override;
+    void release(const std::function<bool(ChunkPos)>& leaving, std::vector<LooseEntity>& out,
+                 std::vector<i32>& removed) override;
+
+    /// The dragon's compound, as vanilla writes it. Nullopt with no dragon.
+    [[nodiscard]] std::optional<nbt::Tag> dragon_nbt() const;
+    /// Is the fight waiting for its dragon to come back from disk?
+    [[nodiscard]] bool awaiting_dragon() const noexcept { return awaiting_dragon_; }
+
 private:
     struct Crystal {
         i32                     entity_id{0};
@@ -262,6 +300,9 @@ private:
     };
 
     void spawn_dragon(const EndFightHost& host);
+    /// The dragon's spawn, metadata and boss bar. ── persistence ──
+    void send_dragon(const std::function<void(i32, std::span<const u8>)>& send) const;
+    [[nodiscard]] nbt::Tag crystal_nbt(const Crystal& crystal) const;
     void set_health_packets(const EndFightHost& host);
     void send_phase(const EndFightHost& host);
     /// The lethal hit's packets, when `before` / `before_health` say it was.
@@ -349,6 +390,15 @@ private:
     bool                 respawn_check_{false};
     /// A `/kill` of the dragon, carried out by the next tick.
     bool                 kill_pending_{false};
+
+    // ── persistence ──
+    const EndFightHost* host_{nullptr};
+    /// A fight with a living dragon that is on disk, not here.
+    bool awaiting_dragon_{false};
+    bool arena_read_{false};
+    i32  awaiting_ticks_{0};
+    /// The compound the dragon was read with: what is not modelled goes back.
+    nbt::Tag dragon_saved_{};
 
     /// The fight's own draws (which crystal is looked for when, the dragon's
     /// phases, the orbs' scatter). Seeded from the world seed; not the game's

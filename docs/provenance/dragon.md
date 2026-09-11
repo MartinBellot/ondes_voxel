@@ -192,8 +192,14 @@ Relu dans `level.dat` après une mort, au milieu d'une réinvocation et après :
 
 L'ordre des clés est celui du jeu ; la comparaison se fait clé par clé (piège 25 du briefing). Une
 sauvegarde écrite par le jeu se relit (test : le composé mesuré, relu, redonne le même `Dragon`).
-Ce qui n'est pas sauvé : la santé et la position du dragon, les cristaux détruits (un redémarrage
-avec un dragon vivant en redonne un neuf, à (0, 128, 0), avec son UUID).
+**Le dragon et les cristaux** (2026-09-11, `persistance-entites.md`) : ce sont des entités, dans
+`DIM1/entities` — le vrai serveur y range les dix cristaux des piliers (`ShowBottom` 1b) et le dragon
+(`Health`, `DragonPhase` entier, `DragonDeathTime` entier). `EndFight` est un `LooseAdopter` du
+stockage de l'End : le dragon revient avec sa santé, sa phase, sa position et son UUID, et un cristal
+détruit, absent du fichier, **ne revient pas**. Un combat lu avec `NeedsStateScanning` 0 ne redémarre
+plus (avant : dragon neuf à (0, 128, 0) et dix cristaux neufs à chaque redémarrage). Un dragon qui
+n'est pas revenu 100 ticks après la lecture de l'arène (un monde sauvé avant) est refait neuf — délai
+choisi ici, pas mesuré.
 
 ---
 
@@ -278,8 +284,8 @@ précédent en ayant compté 60 avant correction.
 | Suivi du dragon | vu dans un rayon de 192 blocs de (0, 128, 0) ; le jeu le suit à 160 blocs de chaque joueur |
 | Butin des blocs cassés | aucun (le jeu vide les conteneurs) |
 | Flèches et tridents | ne touchent ni le dragon ni un cristal (les projectiles vivent dans le monde d'entités de l'overworld) |
-| Orbes de l'End | ne fusionnent pas, ne sont pas sauvées |
-| Santé et position du dragon, cristaux détruits | non sauvés (§ 6) |
+| Orbes de l'End | ne fusionnent pas, ne sont pas sauvées (ni les boules de feu, ni les nuages de souffle) |
+| Santé et position du dragon, cristaux détruits | **sauvés** depuis le 2026-09-11 (§ 6) ; un dragon relu en phase `dying` reprend son animation depuis 0 |
 
 ---
 

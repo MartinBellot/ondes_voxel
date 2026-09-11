@@ -146,6 +146,13 @@ struct PlayerRecord {
     // ── Effects ─────────────────────────────────────────────────────────────
     gameplay::ActiveEffects effects{};
     gameplay::AttributeMap  attributes = gameplay::AttributeMap::player();
+
+    // ── persistence ── `RootVehicle`: what the player was riding when they
+    // left — `Attach`, the UUID of the entity they sat in, and `Entity`, the
+    // root vehicle's own compound (measured on the real server: a minecart's,
+    // without the player in its `Passengers`). Nullopt: riding nothing, and
+    // the key is taken out of the file.
+    std::optional<nbt::Tag> root_vehicle;
 };
 
 /// Why a file was not read.

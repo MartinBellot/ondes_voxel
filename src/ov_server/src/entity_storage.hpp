@@ -84,6 +84,57 @@ struct EntityStorageHost {
     std::function<gameplay::VillagerState*(i32 network_id)> zombie_villager;
     std::function<i32(i32 network_id)>                      conversion_time;
     std::function<void(i32 network_id, i32 ticks)>          set_conversion_time;
+    // ── persistence ──
+    /// Entities of the world that are not saved whatever their type: the
+    /// Nether's stand-ins for its players (a villager-typed quarry). Null:
+    /// none.
+    std::function<bool(i32 network_id)> ignore;
+    /// A mob's fields only the host models (what a Nether mob holds, its
+    /// anger), written after the storage's own and read once it is spawned.
+    std::function<void(const entity::EntityState& state, nbt::Tag& out)>      write_extra;
+    std::function<void(entity::EntityState& state, const nbt::Tag& compound)> read_extra;
+};
+
+/// ── persistence ── One entity a loose adopter keeps, as it goes to disk.
+struct LooseEntity {
+    Vec3d    position{};
+    nbt::Tag compound;
+};
+
+/// ── persistence ── A module whose entities do not live in an `EntityWorld`
+/// — the items and orbs on the ground, the lingering clouds, the End fight's
+/// dragon and crystals — stored in the same chunks. Like an `EntityAdopter`
+/// it never opens `entities/`: the storage hands it what it reads and asks it
+/// for what it writes, where each entity stands at that moment.
+class LooseAdopter {
+public:
+    LooseAdopter()                               = default;
+    LooseAdopter(const LooseAdopter&)            = delete;
+    LooseAdopter& operator=(const LooseAdopter&) = delete;
+    virtual ~LooseAdopter()                      = default;
+
+    /// Is this entity type ("minecraft:item") one this adopter brings back?
+    [[nodiscard]] virtual bool owns_type(std::string_view type) const noexcept = 0;
+
+    /// Bring one entity back from its compound. False when refused: the
+    /// storage then carries the compound through untouched, and names it.
+    virtual bool adopt_saved(const nbt::Tag& compound) = 0;
+
+    /// Where each live entity stands: the chunks a write must read first.
+    virtual void positions(std::vector<Vec3d>& out) const = 0;
+
+    /// Every live entity, as it is saved. Nothing leaves.
+    virtual void save(std::vector<LooseEntity>& out) const = 0;
+
+    /// The chunks `leaving` says yes to go away: their entities are appended
+    /// to `out` as they are saved and forgotten, their wire ids to `removed`
+    /// (the caller's Remove Entities).
+    virtual void release(const std::function<bool(ChunkPos)>& leaving,
+                         std::vector<LooseEntity>& out, std::vector<i32>& removed) = 0;
+
+protected:
+    LooseAdopter(LooseAdopter&&)            = default;
+    LooseAdopter& operator=(LooseAdopter&&) = default;
 };
 
 /// A module that runs entities of its own, stored in the same chunks as the
@@ -130,15 +181,25 @@ struct EntityStorageStats {
 
 class EntityStorage {
 public:
-    /// `directory` is the world's `entities/`, created on first write.
-    EntityStorage(const registry::Registries& registries, std::filesystem::path directory);
+    /// `directory` is the world's `entities/` (or a dimension's), created on
+    /// first write. `spawn_mobs` false: no mob is brought to life here — a
+    /// level with no mob world of its own (the End) carries them through.
+    EntityStorage(const registry::Registries& registries, std::filesystem::path directory,
+                  bool spawn_mobs = true);
 
     /// Let `adopter` run the entities of the types it owns. Not owned; must
     /// outlive the storage's last read or write.
     void add_adopter(EntityAdopter& adopter) { adopters_.push_back(&adopter); }
+    /// ── persistence ── The same for a module whose entities are not in the
+    /// entity world.
+    void add_loose(LooseAdopter& adopter) { loose_.push_back(&adopter); }
 
     /// The adopter that runs this entity type, or null.
     [[nodiscard]] EntityAdopter* adopter_of(i32 type) const noexcept;
+    /// The loose adopter that brings this type back ("minecraft:item"), or null.
+    [[nodiscard]] LooseAdopter* loose_of(std::string_view type) const noexcept;
+
+    [[nodiscard]] const std::filesystem::path& directory() const noexcept { return directory_; }
 
     /// Read a chunk's entities into the world, once. A chunk with nothing on
     /// disk is marked loaded all the same.
@@ -194,6 +255,10 @@ private:
 
     const registry::Registries*         registries_{nullptr};
     std::vector<EntityAdopter*>         adopters_;
+    std::vector<LooseAdopter*>          loose_;  // ── persistence ──
+    bool                                spawn_mobs_{true};
+    std::vector<LooseEntity>            loose_scratch_;
+    std::vector<Vec3d>                  loose_positions_;
     std::optional<registry::RegistryId> types_;
     std::optional<registry::RegistryId> items_;
     std::filesystem::path               directory_;

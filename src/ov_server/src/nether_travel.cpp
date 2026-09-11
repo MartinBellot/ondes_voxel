@@ -218,6 +218,7 @@ void NetherWorld::tick(i64 tick_count) {
         for (const ChunkPos pos : to_evict_) {
             (void)chunks_.evict(pos);
         }
+        evicted_.insert(evicted_.end(), to_evict_.begin(), to_evict_.end());  // ── persistence ──
     }
 }
 
