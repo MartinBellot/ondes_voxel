@@ -136,6 +136,18 @@ TEST_CASE("the typed options read and write vanilla's encodings", "[options]") {
     CHECK(*written.get("key_key.attack") == "key.mouse.left");
 }
 
+// ── allow-commands ── Controls' "Operator Items Tab": `operatorItemsTab`,
+// false by default, as the real client's file has it.
+TEST_CASE("operatorItemsTab reads and writes", "[options]") {
+    CHECK_FALSE(GameOptions::from(OptionsFile::parse("")).operator_items_tab);
+    OptionsFile file = OptionsFile::parse("fov:0.0\noperatorItemsTab:true\n");
+    GameOptions options = GameOptions::from(file);
+    CHECK(options.operator_items_tab);
+    options.operator_items_tab = false;
+    options.store(file);
+    CHECK(file.get("operatorItemsTab") == std::optional<std::string_view>{"false"});
+}
+
 TEST_CASE("a value that does not read is named, and the default kept", "[options]") {
     std::vector<std::string> problems;
     const GameOptions        options =

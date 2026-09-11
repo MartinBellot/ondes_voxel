@@ -127,6 +127,9 @@ struct GameOptions {
     /// Indexed as kSoundCategoryNames.
     std::array<f64, 10> volumes{1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
     bool                    pause_on_lost_focus{true};
+    /// ── allow-commands ── `operatorItemsTab`, Controls' "Operator Items
+    /// Tab". The tab also needs permission level 2 and creative.
+    bool                    operator_items_tab{false};
     std::vector<KeyBinding> keys{default_key_bindings()};
 
     /// Read the keys this client knows. A value that does not parse keeps the

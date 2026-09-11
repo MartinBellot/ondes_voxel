@@ -314,6 +314,13 @@ struct ClientEvents {
     std::optional<bool> hardcore;
     // ── end screens ──
 
+    // ── allow-commands ──
+    /// Entity Event (0x1C) statuses 24..28 on this player: the permission
+    /// level the server gives it, 0..4. The vanilla client keeps it and asks
+    /// it before F3+N, F3+F4 and the creative inventory's operator tab (level
+    /// 2). Sent at join and on every change (/op, /deop, Open to LAN).
+    std::optional<i32> op_level;
+
     [[nodiscard]] bool empty() const noexcept {
         return loaded.empty() && unloaded.empty() && changed.empty() && !teleport &&
                !time_of_day && !health && !experience && containers.empty() &&
@@ -323,6 +330,7 @@ struct ClientEvents {
                entity_sounds.empty() && stop_sounds.empty() && world_events.empty() &&
                explosions.empty() && pickups.empty() && !rain_level && !thunder_level &&
                !death_message && !respawned && !hardcore &&  // ── screens ──
+               !op_level &&                                  // ── allow-commands ──
                destroy_stages.empty() && !own_entity_id && own_effects.empty();  // ── breaking ──
     }
     void clear();

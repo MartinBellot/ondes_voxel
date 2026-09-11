@@ -379,6 +379,7 @@ GameOptions GameOptions::from(const OptionsFile& file, std::vector<std::string>*
     integer("maxFps", options.max_fps, 10, 260);
     real("gamma", options.gamma, 0.0, 1.0);
     flag("pauseOnLostFocus", options.pause_on_lost_focus);
+    flag("operatorItemsTab", options.operator_items_tab);  // ── allow-commands ──
     if (const auto value = file.get("lang")) {
         options.language = std::string(unquote(*value));
     }
@@ -410,6 +411,7 @@ void GameOptions::store(OptionsFile& file) const {
     file.set("maxFps", std::to_string(max_fps));
     file.set("gamma", java_double(gamma));
     file.set("pauseOnLostFocus", pause_on_lost_focus ? "true" : "false");
+    file.set("operatorItemsTab", operator_items_tab ? "true" : "false");  // ── allow-commands ──
     file.set("lang", language);
     for (const KeyBinding& key : keys) {
         file.set("key_" + std::string(key.name), key_name(key.code));
