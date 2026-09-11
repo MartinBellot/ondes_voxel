@@ -43,6 +43,7 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`combat.md`](provenance/combat.md) | Frapper, utiliser, manger, user : la jauge d'attaque, 34 armes, 91 tables de butin |
 | [`verbes.md`](provenance/verbes.md) | Les verbes branchés au serveur, et le levier enfin tiré |
 | [`explosions.md`](provenance/explosions.md) | La résistance au souffle des 987 blocs, mesurée — et le plafond au-delà duquel aucune explosion ne peut plus distinguer deux valeurs |
+| [`performance-tick.md`](provenance/performance-tick.md) | Pourquoi casser un bloc prenait 5 s : la lumière sur le thread réseau, des chunks générés sur le tick, et la part de la machine saturée |
 | [`enchantement.md`](provenance/enchantement.md) | La table à 512/512 offres, l'enclume à 93/93, et l'archive du protocole qui se trompait sur la graine |
 | [`ecrans.md`](provenance/ecrans.md) | Le menu principal, les mondes par graine, la pause et `options.txt` relu à l'octet |
 | [`meteo-sommeil.md`](provenance/meteo-sommeil.md) | La pluie qui vient seule, la glace des océans gelés à 11 285/11 285, la foudre et les lits |

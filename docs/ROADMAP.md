@@ -240,6 +240,12 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] Propagation de lumière inter-chunks *(voisinage 3×3 chargé)*
 - [x] Lumière de bloc : émission mesurée par état, propagation depuis les sources
 - [ ] Suppression incrémentale de la lumière (aujourd'hui le voisinage est refait en entier)
+      *(**2026-09-11** : le recalcul n'est plus fait sur le thread réseau avant
+      chaque Block Update mais sur le tick, une fois par chunk touché — un bloc
+      cassé coûtait ~11-88 ms au thread qui écrit tous les paquets, ~10-40 µs
+      maintenant ; casser un bloc sur un monde généré en Release passe de 5,2 s
+      à **62 ms au p99**. Le voisinage est toujours refait en entier : ce qui
+      manque ici reste l'incrémental. Voir `docs/provenance/performance-tick.md`)*
 - [x] Tableaux de lumière nullables à valeur uniforme (divise l'empreinte par 2)
 - [x] Heightmaps : stockage, packing 9 bits, sémantique vérifiée sur monde réel
 - [x] `WORLD_SURFACE` calculé et maintenu incrémentalement *(air suffit)*
