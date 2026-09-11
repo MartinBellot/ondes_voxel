@@ -85,6 +85,9 @@ TEST_CASE("music: a missing track waits a full silence instead of retrying every
     MusicManager music{1, 0};
     music.tick(**engine, default_music(true));
     CHECK_FALSE(music.playing());
-    CHECK(music.ticks_until_next() == 12000);
+    // The choice's longest silence, not its shortest: the music is not
+    // imported by default, and the menu's 20-tick minimum would warn every
+    // second.
+    CHECK(music.ticks_until_next() == 24000);
     CHECK((*engine)->stats().refused == 1);
 }
