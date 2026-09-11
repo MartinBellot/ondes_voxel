@@ -70,6 +70,7 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`effets.md`](provenance/effets.md) | Les 33 effets et leurs modificateurs : 522/522 intervalles, et l'ordre des seaux de hachage de Java |
 | [`tnt-et-gravite.md`](provenance/tnt-et-gravite.md) | La TNT qui saute, le creeper qui siffle, le sable qui tombe — et le paquet Explosion qui n'est pas là où l'archive le met |
 | [`branchement.md`](provenance/branchement.md) | Le câblage au tick, et les deux bugs qu'il a révélés |
+| [`protocole-763.md`](provenance/protocole-763.md) | Les 176 paquets de 763 (deux sources d'accord sur chaque id), la matrice de conformité générée depuis le code, et Set Cooldown qui partait en 0x16 |
 | **Client** | |
 | [`interface.md`](provenance/interface.md) | Police, HUD, inventaire : 2414 glyphes validés glyphe par glyphe |
 | [`inventaire-creatif.md`](provenance/inventaire-creatif.md) | Les 14 onglets demandés au jar serveur, 1689 cases, et la géométrie comptée dans les pixels |

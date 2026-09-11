@@ -96,7 +96,12 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 
 ## M1 — Protocole 763
 
-- [ ] `data/protocol/763.json` — schéma des paquets (dérivé de minecraft-data, MIT) 🔒
+- [~] `data/protocol/763.json` — schéma des paquets (dérivé de minecraft-data, MIT) 🔒
+      *(2026-09-11 : le **catalogue** — état, sens, id, noms des 176 paquets —
+      dérivé de minecraft-data **et** de l'archive figée, qui s'accordent sur
+      176/176 ids ; il sert de vérité à la matrice. Les **champs** n'y sont pas :
+      tant qu'`ov-pktgen` n'existe pas, ils seraient une seconde copie de ce que
+      le C++ spécifie et teste octet à octet)*
 - [ ] `ov-pktgen` : **génération** des encodeurs, décodeurs, dumps de debug et
       harnais de fuzz. Écrire 250 paquets à la main est 2 mois de dette 🔒
 - [x] VarInt (≤ 5 o) et VarLong (≤ 10 o) — table de la spec vérifiée 🔒
@@ -137,7 +142,13 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       sur 24 chunks réels comparés cellule par cellule — blocs, biomes, les deux
       lumières et les heightmaps)*
 - [ ] Cibles de fuzz sur le décodeur, aucun crash sur entrée malveillante
-- [ ] Matrice de conformité `docs/protocol/763/`
+- [x] Matrice de conformité `docs/protocol/763/`
+      *(2026-09-11 : **générée depuis le code** par `scripts/protocol_matrix.py` —
+      les 176 paquets, par état et par sens, avec constante, encodeur, décodeur,
+      test, aller-retour, octets vanilla, usage serveur/client. Chaque constante
+      d'id est comparée au catalogue ; `--check` en CI. Elle a trouvé **Set
+      Cooldown envoyé en 0x16** (Chat Suggestions) au lieu de 0x15 — voir
+      `docs/provenance/protocole-763.md`)*
 
 ---
 

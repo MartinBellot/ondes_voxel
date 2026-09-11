@@ -1,0 +1,1239 @@
+{
+ "$comment": "Every packet of protocol 763 (Minecraft Java 1.20.1): state, direction, id and names. Derived by scripts/derive_protocol_catalog.py from two sources that agree on every id: PrismarineJS/minecraft-data data/pc/1.20/protocol.json (MIT, copyright PrismarineJS) and the frozen wiki.vg archive, minecraft.wiki oldid 2773082. Names only, no field layouts. See docs/provenance/protocole-763.md.",
+ "protocol": 763,
+ "version": "1.20.1",
+ "packets": [
+  {
+   "state": "handshaking",
+   "direction": "serverbound",
+   "id": "0x00",
+   "name": "Handshake",
+   "mcdata": "set_protocol"
+  },
+  {
+   "state": "handshaking",
+   "direction": "serverbound",
+   "id": "0xFE",
+   "name": "Legacy Server List Ping",
+   "mcdata": "legacy_server_list_ping"
+  },
+  {
+   "state": "status",
+   "direction": "clientbound",
+   "id": "0x00",
+   "name": "Status Response",
+   "mcdata": "server_info"
+  },
+  {
+   "state": "status",
+   "direction": "clientbound",
+   "id": "0x01",
+   "name": "Ping Response",
+   "mcdata": "ping"
+  },
+  {
+   "state": "status",
+   "direction": "serverbound",
+   "id": "0x00",
+   "name": "Status Request",
+   "mcdata": "ping_start"
+  },
+  {
+   "state": "status",
+   "direction": "serverbound",
+   "id": "0x01",
+   "name": "Ping Request",
+   "mcdata": "ping"
+  },
+  {
+   "state": "login",
+   "direction": "clientbound",
+   "id": "0x00",
+   "name": "Disconnect (login)",
+   "mcdata": "disconnect"
+  },
+  {
+   "state": "login",
+   "direction": "clientbound",
+   "id": "0x01",
+   "name": "Encryption Request",
+   "mcdata": "encryption_begin"
+  },
+  {
+   "state": "login",
+   "direction": "clientbound",
+   "id": "0x02",
+   "name": "Login Success",
+   "mcdata": "success"
+  },
+  {
+   "state": "login",
+   "direction": "clientbound",
+   "id": "0x03",
+   "name": "Set Compression",
+   "mcdata": "compress"
+  },
+  {
+   "state": "login",
+   "direction": "clientbound",
+   "id": "0x04",
+   "name": "Login Plugin Request",
+   "mcdata": "login_plugin_request"
+  },
+  {
+   "state": "login",
+   "direction": "serverbound",
+   "id": "0x00",
+   "name": "Login Start",
+   "mcdata": "login_start"
+  },
+  {
+   "state": "login",
+   "direction": "serverbound",
+   "id": "0x01",
+   "name": "Encryption Response",
+   "mcdata": "encryption_begin"
+  },
+  {
+   "state": "login",
+   "direction": "serverbound",
+   "id": "0x02",
+   "name": "Login Plugin Response",
+   "mcdata": "login_plugin_response"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x00",
+   "name": "Bundle Delimiter",
+   "mcdata": "bundle_delimiter"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x01",
+   "name": "Spawn Entity",
+   "mcdata": "spawn_entity"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x02",
+   "name": "Spawn Experience Orb",
+   "mcdata": "spawn_entity_experience_orb"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x03",
+   "name": "Spawn Player",
+   "mcdata": "named_entity_spawn"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x04",
+   "name": "Entity Animation",
+   "mcdata": "animation"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x05",
+   "name": "Award Statistics",
+   "mcdata": "statistics"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x06",
+   "name": "Acknowledge Block Change",
+   "mcdata": "acknowledge_player_digging"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x07",
+   "name": "Set Block Destroy Stage",
+   "mcdata": "block_break_animation"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x08",
+   "name": "Block Entity Data",
+   "mcdata": "tile_entity_data"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x09",
+   "name": "Block Action",
+   "mcdata": "block_action"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x0A",
+   "name": "Block Update",
+   "mcdata": "block_change"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x0B",
+   "name": "Boss Bar",
+   "mcdata": "boss_bar"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x0C",
+   "name": "Change Difficulty",
+   "mcdata": "difficulty"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x0D",
+   "name": "Chunk Biomes",
+   "mcdata": "chunk_biomes"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x0E",
+   "name": "Clear Titles",
+   "mcdata": "clear_titles"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x0F",
+   "name": "Command Suggestions Response",
+   "mcdata": "tab_complete"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x10",
+   "name": "Commands",
+   "mcdata": "declare_commands"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x11",
+   "name": "Close Container",
+   "mcdata": "close_window"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x12",
+   "name": "Set Container Content",
+   "mcdata": "window_items"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x13",
+   "name": "Set Container Property",
+   "mcdata": "craft_progress_bar"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x14",
+   "name": "Set Container Slot",
+   "mcdata": "set_slot"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x15",
+   "name": "Set Cooldown",
+   "mcdata": "set_cooldown"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x16",
+   "name": "Chat Suggestions",
+   "mcdata": "chat_suggestions"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x17",
+   "name": "Plugin Message",
+   "mcdata": "custom_payload"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x18",
+   "name": "Damage Event",
+   "mcdata": "damage_event"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x19",
+   "name": "Delete Message",
+   "mcdata": "hide_message"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x1A",
+   "name": "Disconnect (play)",
+   "mcdata": "kick_disconnect"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x1B",
+   "name": "Disguised Chat Message",
+   "mcdata": "profileless_chat"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x1C",
+   "name": "Entity Event",
+   "mcdata": "entity_status"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x1D",
+   "name": "Explosion",
+   "mcdata": "explosion"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x1E",
+   "name": "Unload Chunk",
+   "mcdata": "unload_chunk"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x1F",
+   "name": "Game Event",
+   "mcdata": "game_state_change"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x20",
+   "name": "Open Horse Screen",
+   "mcdata": "open_horse_window"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x21",
+   "name": "Hurt Animation",
+   "mcdata": "hurt_animation"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x22",
+   "name": "Initialize World Border",
+   "mcdata": "initialize_world_border"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x23",
+   "name": "Keep Alive",
+   "mcdata": "keep_alive"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x24",
+   "name": "Chunk Data and Update Light",
+   "mcdata": "map_chunk"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x25",
+   "name": "World Event",
+   "mcdata": "world_event"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x26",
+   "name": "Particle",
+   "mcdata": "world_particles"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x27",
+   "name": "Update Light",
+   "mcdata": "update_light"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x28",
+   "name": "Login (play)",
+   "mcdata": "login"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x29",
+   "name": "Map Data",
+   "mcdata": "map"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x2A",
+   "name": "Merchant Offers",
+   "mcdata": "trade_list"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x2B",
+   "name": "Update Entity Position",
+   "mcdata": "rel_entity_move"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x2C",
+   "name": "Update Entity Position and Rotation",
+   "mcdata": "entity_move_look"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x2D",
+   "name": "Update Entity Rotation",
+   "mcdata": "entity_look"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x2E",
+   "name": "Move Vehicle",
+   "mcdata": "vehicle_move"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x2F",
+   "name": "Open Book",
+   "mcdata": "open_book"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x30",
+   "name": "Open Screen",
+   "mcdata": "open_window"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x31",
+   "name": "Open Sign Editor",
+   "mcdata": "open_sign_entity"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x32",
+   "name": "Ping (play)",
+   "mcdata": "ping"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x33",
+   "name": "Place Ghost Recipe",
+   "mcdata": "craft_recipe_response"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x34",
+   "name": "Player Abilities",
+   "mcdata": "abilities"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x35",
+   "name": "Player Chat Message",
+   "mcdata": "player_chat"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x36",
+   "name": "End Combat",
+   "mcdata": "end_combat_event"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x37",
+   "name": "Enter Combat",
+   "mcdata": "enter_combat_event"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x38",
+   "name": "Combat Death",
+   "mcdata": "death_combat_event"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x39",
+   "name": "Player Info Remove",
+   "mcdata": "player_remove"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x3A",
+   "name": "Player Info Update",
+   "mcdata": "player_info"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x3B",
+   "name": "Look At",
+   "mcdata": "face_player"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x3C",
+   "name": "Synchronize Player Position",
+   "mcdata": "position"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x3D",
+   "name": "Update Recipe Book",
+   "mcdata": "unlock_recipes"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x3E",
+   "name": "Remove Entities",
+   "mcdata": "entity_destroy"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x3F",
+   "name": "Remove Entity Effect",
+   "mcdata": "remove_entity_effect"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x40",
+   "name": "Resource Pack",
+   "mcdata": "resource_pack_send"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x41",
+   "name": "Respawn",
+   "mcdata": "respawn"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x42",
+   "name": "Set Head Rotation",
+   "mcdata": "entity_head_rotation"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x43",
+   "name": "Update Section Blocks",
+   "mcdata": "multi_block_change"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x44",
+   "name": "Select Advancements Tab",
+   "mcdata": "select_advancement_tab"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x45",
+   "name": "Server Data",
+   "mcdata": "server_data"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x46",
+   "name": "Set Action Bar Text",
+   "mcdata": "action_bar"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x47",
+   "name": "Set Border Center",
+   "mcdata": "world_border_center"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x48",
+   "name": "Set Border Lerp Size",
+   "mcdata": "world_border_lerp_size"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x49",
+   "name": "Set Border Size",
+   "mcdata": "world_border_size"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x4A",
+   "name": "Set Border Warning Delay",
+   "mcdata": "world_border_warning_delay"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x4B",
+   "name": "Set Border Warning Distance",
+   "mcdata": "world_border_warning_reach"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x4C",
+   "name": "Set Camera",
+   "mcdata": "camera"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x4D",
+   "name": "Set Held Item",
+   "mcdata": "held_item_slot"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x4E",
+   "name": "Set Center Chunk",
+   "mcdata": "update_view_position"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x4F",
+   "name": "Set Render Distance",
+   "mcdata": "update_view_distance"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x50",
+   "name": "Set Default Spawn Position",
+   "mcdata": "spawn_position"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x51",
+   "name": "Display Objective",
+   "mcdata": "scoreboard_display_objective"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x52",
+   "name": "Set Entity Metadata",
+   "mcdata": "entity_metadata"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x53",
+   "name": "Link Entities",
+   "mcdata": "attach_entity"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x54",
+   "name": "Set Entity Velocity",
+   "mcdata": "entity_velocity"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x55",
+   "name": "Set Equipment",
+   "mcdata": "entity_equipment"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x56",
+   "name": "Set Experience",
+   "mcdata": "experience"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x57",
+   "name": "Set Health",
+   "mcdata": "update_health"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x58",
+   "name": "Update Objectives",
+   "mcdata": "scoreboard_objective"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x59",
+   "name": "Set Passengers",
+   "mcdata": "set_passengers"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x5A",
+   "name": "Update Teams",
+   "mcdata": "teams"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x5B",
+   "name": "Update Score",
+   "mcdata": "scoreboard_score"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x5C",
+   "name": "Set Simulation Distance",
+   "mcdata": "simulation_distance"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x5D",
+   "name": "Set Subtitle Text",
+   "mcdata": "set_title_subtitle"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x5E",
+   "name": "Update Time",
+   "mcdata": "update_time"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x5F",
+   "name": "Set Title Text",
+   "mcdata": "set_title_text"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x60",
+   "name": "Set Title Animation Times",
+   "mcdata": "set_title_time"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x61",
+   "name": "Entity Sound Effect",
+   "mcdata": "entity_sound_effect"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x62",
+   "name": "Sound Effect",
+   "mcdata": "sound_effect"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x63",
+   "name": "Stop Sound",
+   "mcdata": "stop_sound"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x64",
+   "name": "System Chat Message",
+   "mcdata": "system_chat"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x65",
+   "name": "Set Tab List Header And Footer",
+   "mcdata": "playerlist_header"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x66",
+   "name": "Tag Query Response",
+   "mcdata": "nbt_query_response"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x67",
+   "name": "Pickup Item",
+   "mcdata": "collect"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x68",
+   "name": "Teleport Entity",
+   "mcdata": "entity_teleport"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x69",
+   "name": "Update Advancements",
+   "mcdata": "advancements"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x6A",
+   "name": "Update Attributes",
+   "mcdata": "entity_update_attributes"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x6B",
+   "name": "Feature Flags",
+   "mcdata": "feature_flags"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x6C",
+   "name": "Entity Effect",
+   "mcdata": "entity_effect"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x6D",
+   "name": "Update Recipes",
+   "mcdata": "declare_recipes"
+  },
+  {
+   "state": "play",
+   "direction": "clientbound",
+   "id": "0x6E",
+   "name": "Update Tags",
+   "mcdata": "tags"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x00",
+   "name": "Confirm Teleportation",
+   "mcdata": "teleport_confirm"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x01",
+   "name": "Query Block Entity Tag",
+   "mcdata": "query_block_nbt"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x02",
+   "name": "Change Difficulty",
+   "mcdata": "set_difficulty"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x03",
+   "name": "Message Acknowledgment",
+   "mcdata": "message_acknowledgement"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x04",
+   "name": "Chat Command",
+   "mcdata": "chat_command"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x05",
+   "name": "Chat Message",
+   "mcdata": "chat_message"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x06",
+   "name": "Player Session",
+   "mcdata": "chat_session_update"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x07",
+   "name": "Client Command",
+   "mcdata": "client_command"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x08",
+   "name": "Client Information",
+   "mcdata": "settings"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x09",
+   "name": "Command Suggestions Request",
+   "mcdata": "tab_complete"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x0A",
+   "name": "Click Container Button",
+   "mcdata": "enchant_item"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x0B",
+   "name": "Click Container",
+   "mcdata": "window_click"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x0C",
+   "name": "Close Container",
+   "mcdata": "close_window"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x0D",
+   "name": "Plugin Message",
+   "mcdata": "custom_payload"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x0E",
+   "name": "Edit Book",
+   "mcdata": "edit_book"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x0F",
+   "name": "Query Entity Tag",
+   "mcdata": "query_entity_nbt"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x10",
+   "name": "Interact",
+   "mcdata": "use_entity"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x11",
+   "name": "Jigsaw Generate",
+   "mcdata": "generate_structure"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x12",
+   "name": "Keep Alive",
+   "mcdata": "keep_alive"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x13",
+   "name": "Lock Difficulty",
+   "mcdata": "lock_difficulty"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x14",
+   "name": "Set Player Position",
+   "mcdata": "position"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x15",
+   "name": "Set Player Position and Rotation",
+   "mcdata": "position_look"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x16",
+   "name": "Set Player Rotation",
+   "mcdata": "look"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x17",
+   "name": "Set Player On Ground",
+   "mcdata": "flying"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x18",
+   "name": "Move Vehicle",
+   "mcdata": "vehicle_move"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x19",
+   "name": "Paddle Boat",
+   "mcdata": "steer_boat"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x1A",
+   "name": "Pick Item",
+   "mcdata": "pick_item"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x1B",
+   "name": "Place Recipe",
+   "mcdata": "craft_recipe_request"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x1C",
+   "name": "Player Abilities",
+   "mcdata": "abilities"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x1D",
+   "name": "Player Action",
+   "mcdata": "block_dig"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x1E",
+   "name": "Player Command",
+   "mcdata": "entity_action"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x1F",
+   "name": "Player Input",
+   "mcdata": "steer_vehicle"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x20",
+   "name": "Pong (play)",
+   "mcdata": "pong"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x21",
+   "name": "Change Recipe Book Settings",
+   "mcdata": "recipe_book"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x22",
+   "name": "Set Seen Recipe",
+   "mcdata": "displayed_recipe"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x23",
+   "name": "Rename Item",
+   "mcdata": "name_item"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x24",
+   "name": "Resource Pack",
+   "mcdata": "resource_pack_receive"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x25",
+   "name": "Seen Advancements",
+   "mcdata": "advancement_tab"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x26",
+   "name": "Select Trade",
+   "mcdata": "select_trade"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x27",
+   "name": "Set Beacon Effect",
+   "mcdata": "set_beacon_effect"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x28",
+   "name": "Set Held Item",
+   "mcdata": "held_item_slot"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x29",
+   "name": "Program Command Block",
+   "mcdata": "update_command_block"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x2A",
+   "name": "Program Command Block Minecart",
+   "mcdata": "update_command_block_minecart"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x2B",
+   "name": "Set Creative Mode Slot",
+   "mcdata": "set_creative_slot"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x2C",
+   "name": "Program Jigsaw Block",
+   "mcdata": "update_jigsaw_block"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x2D",
+   "name": "Program Structure Block",
+   "mcdata": "update_structure_block"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x2E",
+   "name": "Update Sign",
+   "mcdata": "update_sign"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x2F",
+   "name": "Swing Arm",
+   "mcdata": "arm_animation"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x30",
+   "name": "Teleport To Entity",
+   "mcdata": "spectate"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x31",
+   "name": "Use Item On",
+   "mcdata": "block_place"
+  },
+  {
+   "state": "play",
+   "direction": "serverbound",
+   "id": "0x32",
+   "name": "Use Item",
+   "mcdata": "use_item"
+  }
+ ]
+}
