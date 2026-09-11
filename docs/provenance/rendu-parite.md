@@ -114,7 +114,33 @@ le jeu :
 * la lumière est la **somme des quatre niveaux**, gardée en quarts de niveau
   (0..60) et non arrondie ;
 * le verre et les feuilles, cubes pleins, assombrissent un coin comme la
-  pierre ; seule la diagonale derrière deux côtés *opaques* est masquée.
+  pierre ;
+* la diagonale n'est masquée que si les blocs **un cran au-delà des deux
+  côtés, le long de la normale**, arrêtent la vue — et elle est alors
+  remplacée par **le côté opposé** du coin le long du premier axe de la face.
+
+Tout cela est **mesuré sur l'`AmbientOcclusionFace` du jeu lui-même**
+(directive `ao` de l'oracle, 27 faces) :
+
+| configuration | le jeu | ancienne règle | nouvelle |
+|---|---|---|---|
+| coin ouvert | 1,0 | 1,0 | 1,0 |
+| un bloc à côté | 0,8 | 0,733 | 0,8 |
+| un côté + la diagonale | 0,6 | 0,467 | 0,6 |
+| L de deux blocs, diagonale pleine | 0,4 | 0,2 | 0,4 |
+| L de deux blocs, **diagonale vide** | **0,6** | 0,2 | 0,6 |
+| coin de salle (murs de 5 à 7 de haut) | **0,6**, lumière 10,25 | 0,2 | 0,6 / 10,25 |
+| même coin, un bloc posé du côté opposé | **0,4**, lumière 10,00 | 0,2 | 0,4 / 10,00 |
+| dessous de plateforme | lumière 14,5 · 14,75 · 13,75 (quarts) | entiers | quarts |
+
+La première version de ce document masquait la diagonale derrière deux côtés
+opaques quels qu'ils soient (0,4 pour les deux L) : l'oracle a donné 0,6 au L
+sans diagonale, et c'est ce qui a fait trouver le test « au-delà des côtés ».
+Le coin de salle a ensuite départagé le remplaçant : le centre donnait la
+bonne luminosité mais un quart de niveau de lumière en moins ; le côté opposé
+tombe juste sur les deux configurations. Vérifié sur les faces du dessus
+seulement — l'ordre des axes des autres faces suit le même code et n'est pas
+mesuré séparément.
 
 Le sommet passe de 4+4 bits de lumière et 2 bits d'AO à **6+6 bits et 8 bits**,
 dans les bits libres : toujours 16 octets.
@@ -166,6 +192,55 @@ plus par image, les plus proches d'abord** — le budget du jeu est du même ord
 le GPU lit peut-être encore. Si le tampon (16 Mio par image) est plein, la
 couche retombe sur l'ordre du maillage pour l'image, sans rien perdre.
 
+### 2.7 Le modèle que le jeu dessine à chaque position
+
+La carte des écarts d'`aolab` (après les corrections de lumière) montrait le
+sol en plein soleil **bruité texel par texel**, avec pourtant exactement les
+mêmes niveaux de gris des deux côtés (97, 108, 118, 133) : les bonnes
+couleurs sur les mauvais texels. La pierre a quatre variantes (normale et
+miroir, chacune tournée de 0 ou 180°), l'herbe quatre rotations, la terre, le
+sable… et le jeu en choisit une **par position**. Nous prenions toujours la
+première.
+
+L'oracle (`variants`) a imprimé, pour 459 positions, la graine de position du
+jeu (`BlockState.getSeed`) et les coordonnées de texture du modèle qu'il a
+tiré :
+
+* **459 graines sur 459** égales à notre `render::position_seed` ;
+* notre tirage (générateur congruentiel 48 bits du JDK, un `nextLong`, ses
+  32 bits bas en valeur absolue, modulo le poids total) correspond **un pour
+  un** au choix du jeu pour la pierre (121 positions), la terre (37) et le bloc
+  d'herbe (43).
+
+Effet sur la capture : `aolab` passe de 53,8 % à **94,1 %** de pixels
+identiques (écart moyen 5,77 → 0,36), au niveau du témoin décalé d'un pixel.
+
+### 2.8 Le décalage des plantes
+
+Les fleurs, l'herbe, les fougères… sont décalées du centre de leur bloc par
+position. Les 22 décalages imprimés par l'oracle pour l'herbe de la plaine sont
+reproduits **exactement** (graine de position à y = 0 ; quartets 0 et 2 → ±0,25
+en x et z, quartet 1 → −0,2..0 en y). La passe `offsets` de l'oracle a ensuite
+parcouru **tous les blocs** : 33 ont un décalage — horizontal ±0,25 (±0,125
+pour la stalactite), vertical jusqu'à −0,2 pour l'herbe et la fougère, −0,1
+pour la petite grande-feuille. La table de `block_models.cpp` est celle-là.
+
+### 2.9 Le crépuscule, le soleil et la lune
+
+* **Couleur de la bande** : reproduit la valeur imprimée
+  (`getSunriseColor`) à 12300, 12700 et 23300 à 1e-4 près.
+* **Brouillard vers le soleil** : au crépuscule, le brouillard est d'abord
+  mêlé à la couleur de la bande selon l'orientation du regard vers le soleil ×
+  l'opacité de la bande, *puis* tiré vers le ciel — l'ordre qui redonne
+  (187, 100, 71) regardant l'ouest à 12700, là où nous avions (110, 124, 150).
+* **La bande** est un éventail de seize triangles sur l'horizon du soleil,
+  dessiné après le disque de ciel.
+* **Le soleil et la lune** : quadrilatères à 100 blocs, demi-côté 30 et 20,
+  ajoutés au ciel (mélange additif, nouveau dans `ov_rhi`), la lune en huit
+  phases. Tailles lues sur les captures vanilla : cœur blanc de 102 pixels pour
+  le soleil au zénith, disque de 51 pour la lune, à 1708×960 — ce que ces
+  demi-côtés donnent avec le FOV de 70° et les textures du pack.
+
 ---
 
 ## 3. Chiffres
@@ -211,17 +286,19 @@ que le nôtre ; il est plus sombre, et la moyenne des texels 14 et 15,
 (224 + 251)/2 = 237,5, rend compte de l'écart restant avec notre ancien
 lightmap.
 
-**Le lightmap, reconstruit sur les texels du jeu.** Les 512 texels des deux
-frames de midi (256 chacune, scintillement relevé à chaque fois) sont
-reproduits **exactement, 512 sur 512**, par une seule structure : lumière de
+**Le lightmap, reconstruit sur les texels du jeu — 12 800 sur 12 800.** Le
+balayage de l'oracle (12 heures × 3 réglages de luminosité, plus les frames
+des scènes : 50 lightmaps, scintillement relevé à chaque fois) est reproduit
+**exactement, texel pour texel**, par une seule structure : lumière de
 bloc chaude sur deux polynômes (vert `b·((0,6b+0,4)·0,6+0,4)`, bleu
 `b·(0,6b²+0,4)`), scintillement ajouté à 1,5, rappel vers 0,75 de 0,04
 **avant et après** l'adoucissement de la luminosité, et **troncature** (arrondir
 met 63 % des texels à une unité au-dessus). L'ancien lightmap ne tenait ni les
 polynômes, ni le double rappel, ni la troncature. Les deux constantes qui ne
-jouent qu'hors du plein jour — plancher du ciel et bleuissement nocturne — ne
-sont pas départagées par des frames de midi : le balayage nocturne de l'oracle
-les fixe *(second passage, en attente du verrou)*.
+jouent qu'hors du plein jour, que les frames de midi ne départageaient pas,
+sont fixées par le balayage nocturne : **plancher du ciel 0,05, bleuissement
+0,35** (sans l'un ou l'autre, 46 à 51 % d'exacts seulement). Ce sont donc les
+« deux constantes du lightmap non documentées » de la roadmap : mesurées.
 
 ### 3.3 Parité par scène
 
@@ -279,11 +356,31 @@ mesurent quelque chose ici.
    une image trop lente qui l'affame. Non élucidé ; le script relance une scène
    sans capture jusqu'à trois fois et signale une capture manquante au lieu de
    la taire.
-8. **Notre serveur ne rallume pas une salle fermée par `/fill`** : la salle de la
+9. **Les deux mondes servis dérivent** : `world-vanilla` a tourné trois passes
+   d'oracle, `world-ours` beaucoup plus de captures, et notre serveur fait
+   couler les fluides. Au fond de la rivière de la scène `underwater`, le monde
+   vanilla n'avait plus d'eau (herbes marines à l'air libre, brouillard d'air
+   imprimé par l'oracle) quand le nôtre en avait : **cette scène ne compare pas
+   le même contenu** et ses chiffres ne sont pas retenus. Le brouillard sous
+   l'eau reste donc non mesuré.
+10. **Une capture prise à une autre taille** (l'OS a donné 2940×1618 à une
+    fenêtre demandée en 854×480) se compare mal sans le dire : le script la
+    rejette et relance.
+11. **Un corps de joueur resté d'une connexion coupée** se dessinait dans le
+    champ : nos captures se font sans entités (les scènes vanilla n'en ont
+    aucune).
+12. **Notre serveur ne rallume pas une salle fermée par `/fill`** : la salle de la
    scène `cave` garde la lumière du ciel qu'elle avait à l'air libre. C'est un
    écart du serveur, pas du rendu — mais il fausse la scène : vanilla, qui
    recalcule la lumière côté client à chaque changement de bloc, la voit noire
-   et orangée ; nous la voyons en plein jour. Nommé ici, chiffré en section 3.
+   et orangée ; nous la voyons en plein jour. La salle creusée dans la
+   deepslate (`cave_deep`), prévue pour y échapper, ne s'en sort pas mieux :
+   moyenne vanilla (45, 39, 32), chaude et sombre, la nôtre (71, 71, 71), grise
+   — une lumière de ciel que la roche n'a jamais eue. Les deux grottes ne
+   mesurent donc pas le rendu ; **le rendu de la lumière de bloc est vérifié
+   ailleurs** : les colonnes chaudes du lightmap (12 800 texels exacts) et les
+   sommes de lumière lissée de la salle (10,25 / 10,00 / 4,25, identiques à
+   l'oracle).
 
 ---
 
@@ -294,17 +391,19 @@ section 3 quand la mesure le donne.
 
 | écart | où il se voit | pourquoi il reste |
 |---|---|---|
-| Soleil, lune (phases), étoiles | `sky_noon`, `sky_midnight`, `plains_night` | le mécanisme de dessin (mélange additif) est prêt dans `ov_rhi` ; la taille et la position se prennent sur les captures vanilla |
-| Bande de l'aube et du crépuscule | `sunrise`, `dusk_west`, `plains_sunset` | la couleur est donnée par l'oracle (`getSunriseColor`) ; la forme de l'éventail reste à mesurer |
-| Nuages | toute scène de jour | hauteur donnée par l'oracle (`cloudHeight`), forme « fancy » à mesurer |
-| Couleur du brouillard | horizon de toute scène extérieure | le jeu tire le brouillard vers le ciel selon la distance de rendu et vers le soleil levant selon la direction de vue ; notre formule n'a que le facteur du jour |
-| Deux constantes du lightmap | tout ce qui n'est pas en plein jour | le balayage de l'oracle (12 heures × 3 luminosités, 9216 texels) est ce qui les fixe — `.scratch/fit_lightmap.py` |
-| Brouillard sous l'eau | `underwater` | les distances dépendent du temps passé sous l'eau ; seule la couleur est mesurée |
-| Main et objet tenus, particules, block entities (coffres, panneaux, lits) | — | non commencés ; hors du temps de cette branche |
+| **Nuages** | la moitié du ciel de `sky_noon`, le haut de `plains`, `sunrise` | non faits. Hauteur mesurée (192) ; leur dérive suit un compteur de ticks *du client* : des nuages mal placés feraient un pire score que pas de nuages, il faut d'abord que l'oracle imprime ce compteur pour les aligner |
+| **Étoiles** | `sky_midnight`, `plains_night`, `sunrise` (luminosité 0,25 à 0,5 imprimée) | non faites : la position des 1 500 étoiles vient d'un générateur dont la graine n'est documentée nulle part que ce projet puisse lire |
+| Couleur du ciel mêlée entre biomes | `jungle`, `underwater` : 1 à 3 niveaux | le jeu mélange la couleur de ciel des biomes voisins ; nous prenons celle du biome sous l'œil |
+| Brouillard et vue sous l'eau, eau vue de dessous | `underwater` | scène invalide (contenu différent, piège 9) ; distances du brouillard d'eau non mesurées |
+| Forme exacte de la bande du crépuscule | `sunrise`, `dusk_west`, `plains_sunset` | couleur et brouillard mesurés ; l'éventail est jugé sur les captures seulement |
+| Disque sombre sous l'horizon | œil sous y = 63 en regardant vers le bas au-delà du terrain | non fait (aucune scène ne le montre) |
+| Main et objet tenus, particules, block entities (coffres, panneaux, lits) | — | non commencés dans cette branche |
 | Marais en plaques | non mesurable ici (aucun marais dans les régions) | le bruit du modificateur `swamp` n'est documenté nulle part que ce projet puisse lire |
 | Filtrage entre niveaux de mip | terrain lointain | fait en linéaire (atlas sRGB) et non sur les octets |
-| Phase des animations | eau, lave | l'horloge part au chargement des ressources, des deux côtés |
-| Salle fermée par `/fill` | `cave` | notre serveur ne rallume pas ; écart du serveur, pas du rendu (`cave_deep` l'évite) |
+| Phase des animations | eau, lave, feu | l'horloge part au chargement des ressources, des deux côtés ; interpolation `.mcmeta` non vérifiée contre le jeu |
+| Axes de l'AO des faces latérales | toute face verticale en coin fermé | la règle du remplaçant est mesurée sur les faces du dessus seulement |
+| Multipart à pièces pondérées | aucun bloc de terrain | prend la première pièce |
+| Salles fermées par `/fill` | `cave`, `cave_deep` | notre **serveur** ne rallume pas (piège 12) ; pas un écart de rendu |
 
 ---
 
