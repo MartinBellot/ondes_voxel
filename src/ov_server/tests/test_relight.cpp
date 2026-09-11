@@ -451,5 +451,22 @@ TEST_CASE("relight cost per edit, previous engine and rewrite", "[.relight-bench
     const double new_us = measure([&] { relight_after_edit(lookup_in(terrain), 0, 0, blocks); });
     std::printf("relight per edit: previous %.0f us, rewrite %.0f us (x%.1f)\n", old_us, new_us,
                 old_us / new_us);
+
+    // The two halves apart: which one is left to win on.
+    const ChunkLookup lookup  = lookup_in(terrain);
+    const double      old_sky = measure([&] { reference::relight_neighbourhood(lookup, 0, 0, blocks); });
+    const double      new_sky = measure([&] { relight_neighbourhood(lookup, 0, 0, blocks); });
+    const double      old_blk = measure([&] {
+        for (auto& [pos, chunk] : terrain) {
+            reference::relight_blocks(chunk, *blocks);
+        }
+    });
+    const double new_blk = measure([&] {
+        for (auto& [pos, chunk] : terrain) {
+            relight_blocks(chunk, *blocks);
+        }
+    });
+    std::printf("  sky over the 3x3: previous %.0f us, rewrite %.0f us\n", old_sky, new_sky);
+    std::printf("  block light, 9 chunks: previous %.0f us, rewrite %.0f us\n", old_blk, new_blk);
     SUCCEED();
 }

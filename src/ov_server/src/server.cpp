@@ -47,6 +47,7 @@
 #include "player_inventory.hpp"
 #include "world_ticks.hpp"
 #include "tick_profile.hpp"  // ── perf ──
+#include "relight.hpp"       // ── perf ──
 #include "sounds.hpp"  // ── sound ──
 #include "agriculture.hpp"  // ── agriculture ──
 #include "ov/world/chunk.hpp"
@@ -123,13 +124,6 @@ using namespace ov::server;
 
 std::atomic<bool> g_stop_requested{false};
 
-/// The registry the light engine consults for opacity.
-///
-/// Set once at start-up. Relighting is called from the generator, from block
-/// edits and from the neighbourhood pass, and threading the registry through
-/// every one of those would add a parameter that never varies.
-const registry::BlockRegistry* light_blocks = nullptr;
-
 extern "C" void handle_signal(int) noexcept {
     // Only async-signal-safe work here: flip a flag and let the tick loop exit
     // on its own so the world is saved rather than truncated.
@@ -193,431 +187,6 @@ struct Options {
 /// connection or the ids are ambiguous.
 enum class ConnectionState { Handshaking, Status, Login, Play };
 
-/// Sky light for a whole chunk: direct sunlight, then flood fill.
-///
-/// Two phases, and the second is the one that makes builds look right.
-///
-/// Direct sunlight first: every column is lit to 15 from the top down to its
-/// first obstruction, which WORLD_SURFACE already knows. That alone lights open
-/// ground and the inside of a shaft correctly.
-///
-/// Then the light spreads sideways and downward, losing one level per step.
-/// Without this, a single block placed as a roof leaves a hard black square
-/// underneath with a sharp edge against the lit ground beside it — measured, and
-/// exactly what a player notices first.
-///
-/// Two limits, both stated rather than implied:
-///
-///   * Propagation stops at the chunk's edge. A build straddling a border casts
-///     no shadow into its neighbour, so a seam is visible there. Cross-chunk
-///     light needs the neighbours loaded and a scheduler to order the work.
-///   * Opacity comes from the registry's measured table rather than from
-///     "anything that is not air". A sign or a torch no longer casts a shadow,
-///     which it did — and which only showed after a reload, because a client
-///     lights its own edits itself.
-/// The lowest y a column still sees full sunlight.
-///
-/// Not WORLD_SURFACE: that counts the highest **non-air** block, and a sign or
-/// a torch raises it while letting light straight through. Direct sunlight
-/// descends without losing a level until it meets something opaque, so this
-/// scans for that instead — which is why it needs the measured opacity and
-/// could not be written before.
-[[nodiscard]] i32 sky_floor(const world::Chunk& chunk, usize x, usize z, i32 top);
-
-/// Does sky light stop at this block?
-///
-/// Measured, not assumed. "Anything that is not air" was the previous rule and
-/// it made signs, torches and fences cast full shadows — visible only after a
-/// reload, since a client lights its own placements locally.
-///
-/// Attenuating blocks (water, leaves, ice) are treated as transparent for now:
-/// passing light through at full strength is wrong by a level or two, whereas
-/// stopping it is wrong by fifteen.
-[[nodiscard]] bool stops_sky_light(const registry::BlockRegistry* blocks,
-                                   registry::BlockStateId         state) {
-    if (blocks == nullptr) {
-        return false;
-    }
-    return blocks->blocks_sky_light(blocks->block_of(state));
-}
-
-i32 sky_floor(const world::Chunk& chunk, usize x, usize z, i32 top) {
-    for (i32 y = top; y >= chunk.shape().min_y; --y) {
-        if (stops_sky_light(light_blocks, chunk.get_block(x, y, z))) {
-            return y + 1;
-        }
-    }
-    return chunk.shape().min_y;
-}
-
-/// Fill in the light the blocks themselves give off.
-///
-/// Separate from the sky pass and stored in its own nibble array, because the
-/// two answer different questions: sky light is what reaches a cell from above
-/// and block light is what a torch puts there. A client shown one in place of
-/// the other lights caves like noon.
-///
-/// The emission is per state — a candle by how many are in the cluster, an ore
-/// by whether it is lit — and it is measured, not guessed.
-void relight_blocks(world::Chunk& chunk, const registry::BlockRegistry& blocks) {
-    const auto shape = chunk.shape();
-
-    struct Cell {
-        u8  x;
-        i32 y;
-        u8  z;
-    };
-
-    const auto light_at = [&](usize x, i32 y, usize z) -> u8 {
-        const world::ChunkSection* section = chunk.section_for_y(y);
-        return section == nullptr ? 0
-                                  : section->block_light().get(
-                                        world::section_index(x, static_cast<usize>(y & 15), z));
-    };
-    const auto set_light = [&](usize x, i32 y, usize z, u8 value) {
-        world::ChunkSection* section = chunk.section_for_y(y);
-        if (section != nullptr) {
-            section->block_light().set(world::section_index(x, static_cast<usize>(y & 15), z),
-                                       value);
-        }
-    };
-
-    std::vector<Cell> frontier;
-
-    // Clear first, then seed. Relighting without clearing leaves the light of a
-    // torch that was broken, which is invisible until someone walks back into
-    // the room they lit yesterday.
-    for (usize i = 0; i < shape.section_count(); ++i) {
-        world::ChunkSection* section = chunk.section_for_y(shape.min_y + static_cast<i32>(i) * 16);
-        if (section == nullptr) {
-            continue;
-        }
-        for (usize index = 0;
-             index < world::kSectionSize * world::kSectionSize * world::kSectionSize; ++index) {
-            section->block_light().set(index, 0);
-        }
-    }
-
-    for (usize z = 0; z < 16; ++z) {
-        for (usize x = 0; x < 16; ++x) {
-            for (i32 y = shape.min_y; y <= shape.max_y(); ++y) {
-                const u8 emission = blocks.light_emission(chunk.get_block(x, y, z));
-                if (emission > 0) {
-                    set_light(x, y, z, emission);
-                    frontier.push_back(Cell{static_cast<u8>(x), y, static_cast<u8>(z)});
-                }
-            }
-        }
-    }
-
-    for (usize head = 0; head < frontier.size(); ++head) {
-        const Cell cell    = frontier[head];
-        const u8   current = light_at(cell.x, cell.y, cell.z);
-        if (current <= 1) {
-            continue;
-        }
-        const u8 spread = static_cast<u8>(current - 1);
-
-        const std::array<Cell, 6> neighbours{{
-            {static_cast<u8>(cell.x - 1), cell.y, cell.z},
-            {static_cast<u8>(cell.x + 1), cell.y, cell.z},
-            {cell.x, cell.y, static_cast<u8>(cell.z - 1)},
-            {cell.x, cell.y, static_cast<u8>(cell.z + 1)},
-            {cell.x, cell.y - 1, cell.z},
-            {cell.x, cell.y + 1, cell.z},
-        }};
-
-        for (const Cell& next : neighbours) {
-            if (next.x >= 16 || next.z >= 16 || next.y < shape.min_y || next.y > shape.max_y()) {
-                continue;
-            }
-            if (stops_sky_light(&blocks, chunk.get_block(next.x, next.y, next.z))) {
-                continue;
-            }
-            if (light_at(next.x, next.y, next.z) >= spread) {
-                continue;
-            }
-            set_light(next.x, next.y, next.z, spread);
-            frontier.push_back(next);
-        }
-    }
-
-    for (usize i = 0; i < shape.section_count(); ++i) {
-        world::ChunkSection* section = chunk.section_for_y(shape.min_y + static_cast<i32>(i) * 16);
-        if (section != nullptr) {
-            section->block_light().compact();
-        }
-    }
-}
-
-void relight_chunk(world::Chunk& chunk) {
-    const auto  shape   = chunk.shape();
-    const auto& surface = chunk.heightmap(world::HeightmapType::WorldSurface);
-
-    // Only the occupied band needs work. Everything above the tallest column is
-    // open sky and everything below the world is nothing, and walking all 384
-    // levels of 289 chunks on every join would be felt.
-    i32 highest = shape.min_y;
-    for (usize z = 0; z < 16; ++z) {
-        for (usize x = 0; x < 16; ++x) {
-            highest = std::max(highest, surface.first_free(x, z));
-        }
-    }
-    const i32 top = std::min(highest + 1, shape.max_y());
-
-    const auto light_at = [&](usize x, i32 y, usize z) -> u8 {
-        const world::ChunkSection* section = chunk.section_for_y(y);
-        return section == nullptr ? 0
-                                  : section->sky_light().get(
-                                        world::section_index(x, static_cast<usize>(y & 15), z));
-    };
-    const auto set_light = [&](usize x, i32 y, usize z, u8 value) {
-        world::ChunkSection* section = chunk.section_for_y(y);
-        if (section != nullptr) {
-            section->sky_light().set(world::section_index(x, static_cast<usize>(y & 15), z), value);
-        }
-    };
-
-    // ── Direct sunlight ─────────────────────────────────────────────────────
-    struct Cell {
-        u8  x;
-        i32 y;
-        u8  z;
-    };
-
-    std::vector<Cell> frontier;
-
-    for (usize z = 0; z < 16; ++z) {
-        for (usize x = 0; x < 16; ++x) {
-            const i32 first_free = sky_floor(chunk, x, z, top);
-            for (usize i = 0; i < shape.section_count(); ++i) {
-                const i32            bottom  = shape.min_y + static_cast<i32>(i) * 16;
-                world::ChunkSection* section = chunk.section_for_y(bottom);
-                if (section == nullptr) {
-                    continue;
-                }
-                for (usize local_y = 0; local_y < 16; ++local_y) {
-                    const i32 y = bottom + static_cast<i32>(local_y);
-                    section->sky_light().set(world::section_index(x, local_y, z),
-                                             y >= first_free ? world::kMaxLightLevel : 0);
-                }
-            }
-            // Every directly lit cell in the band is a source, not just the
-            // lowest one of each column. Seeding only the lowest assumes
-            // everything above it is surrounded by light, which is false wherever
-            // two columns have different heights — and that boundary is exactly
-            // where a build casts its shadow. Measured: the cell under a
-            // one-block roof came out at 13 instead of 14, because the lit cell
-            // beside it at the same height was never a source.
-            for (i32 y = std::max(first_free, shape.min_y); y <= top; ++y) {
-                frontier.push_back(Cell{static_cast<u8>(x), y, static_cast<u8>(z)});
-            }
-        }
-    }
-
-    // ── Flood fill ──────────────────────────────────────────────────────────
-    for (usize head = 0; head < frontier.size(); ++head) {
-        const Cell cell    = frontier[head];
-        const u8   current = light_at(cell.x, cell.y, cell.z);
-        if (current <= 1) {
-            continue;
-        }
-        const u8 spread = static_cast<u8>(current - 1);
-
-        const std::array<Cell, 6> neighbours{{
-            {static_cast<u8>(cell.x - 1), cell.y, cell.z},
-            {static_cast<u8>(cell.x + 1), cell.y, cell.z},
-            {cell.x, cell.y, static_cast<u8>(cell.z - 1)},
-            {cell.x, cell.y, static_cast<u8>(cell.z + 1)},
-            {cell.x, cell.y - 1, cell.z},
-            {cell.x, cell.y + 1, cell.z},
-        }};
-
-        for (const Cell& next : neighbours) {
-            // Unsigned wrap makes an x of -1 become 255, so one comparison
-            // covers both edges.
-            if (next.x >= 16 || next.z >= 16 || next.y < shape.min_y || next.y > top) {
-                continue;
-            }
-            if (stops_sky_light(light_blocks, chunk.get_block(next.x, next.y, next.z))) {
-                continue;
-            }
-            if (light_at(next.x, next.y, next.z) >= spread) {
-                continue;
-            }
-            set_light(next.x, next.y, next.z, spread);
-            frontier.push_back(next);
-        }
-    }
-
-    for (usize i = 0; i < shape.section_count(); ++i) {
-        world::ChunkSection* section = chunk.section_for_y(shape.min_y + static_cast<i32>(i) * 16);
-        if (section != nullptr) {
-            section->sky_light().compact();
-        }
-    }
-}
-
-/// Sky light across a chunk and its eight neighbours.
-///
-/// The single-chunk version stops propagation at the border, so a build sitting
-/// against one casts no shadow into the chunk beside it and the seam shows as a
-/// straight line of wrongly-lit ground. Light does not respect chunk boundaries
-/// and neither can the fill.
-///
-/// Only chunks already loaded take part. Pulling neighbours in would cascade —
-/// generating one chunk would generate its neighbours, and theirs — so a build
-/// against the edge of the loaded area still seams there. That edge moves with
-/// the player and is out of sight; a chunk boundary in the middle of a base is
-/// not.
-///
-/// The correction goes to storage and is not resent. The client lights its own
-/// edits locally, so the seam is invisible until the chunk is loaded again —
-/// which is exactly when the stored value is the one that matters.
-void relight_neighbourhood(const std::function<world::Chunk*(i32, i32)>& lookup, i32 centre_x,
-                           i32 centre_z) {
-    const auto shape = world::WorldShape::overworld();
-
-    struct Loaded {
-        world::Chunk* chunk;
-        i32           origin_x;
-        i32           origin_z;
-    };
-
-    std::vector<Loaded> loaded;
-    for (i32 dz = -1; dz <= 1; ++dz) {
-        for (i32 dx = -1; dx <= 1; ++dx) {
-            if (world::Chunk* chunk = lookup(centre_x + dx, centre_z + dz)) {
-                loaded.push_back(Loaded{chunk, (centre_x + dx) * 16, (centre_z + dz) * 16});
-            }
-        }
-    }
-    if (loaded.empty()) {
-        return;
-    }
-
-    // World coordinates throughout: the whole point is that the fill does not
-    // know where the borders are.
-    const auto chunk_for = [&](i32 x, i32 z) -> world::Chunk* {
-        for (const Loaded& entry : loaded) {
-            if (x >= entry.origin_x && x < entry.origin_x + 16 && z >= entry.origin_z &&
-                z < entry.origin_z + 16) {
-                return entry.chunk;
-            }
-        }
-        return nullptr;
-    };
-
-    i32 top = shape.min_y;
-    for (const Loaded& entry : loaded) {
-        const auto& surface = entry.chunk->heightmap(world::HeightmapType::WorldSurface);
-        for (usize z = 0; z < 16; ++z) {
-            for (usize x = 0; x < 16; ++x) {
-                top = std::max(top, surface.first_free(x, z));
-            }
-        }
-    }
-    top = std::min(top + 1, shape.max_y());
-
-    const auto light_at = [&](i32 x, i32 y, i32 z) -> u8 {
-        world::Chunk* chunk = chunk_for(x, z);
-        if (chunk == nullptr) {
-            return 0;
-        }
-        const world::ChunkSection* section = chunk->section_for_y(y);
-        return section == nullptr ? 0
-                                  : section->sky_light().get(world::section_index(
-                                        static_cast<usize>(x & 15), static_cast<usize>(y & 15),
-                                        static_cast<usize>(z & 15)));
-    };
-    const auto set_light = [&](i32 x, i32 y, i32 z, u8 value) {
-        world::Chunk* chunk = chunk_for(x, z);
-        if (chunk == nullptr) {
-            return;
-        }
-        world::ChunkSection* section = chunk->section_for_y(y);
-        if (section != nullptr) {
-            section->sky_light().set(
-                world::section_index(static_cast<usize>(x & 15), static_cast<usize>(y & 15),
-                                     static_cast<usize>(z & 15)),
-                value);
-        }
-    };
-
-    struct Cell {
-        i32 x;
-        i32 y;
-        i32 z;
-    };
-
-    std::vector<Cell> frontier;
-
-    for (const Loaded& entry : loaded) {
-        for (usize lz = 0; lz < 16; ++lz) {
-            for (usize lx = 0; lx < 16; ++lx) {
-                const i32 first_free = sky_floor(*entry.chunk, lx, lz, top);
-                const i32 x          = entry.origin_x + static_cast<i32>(lx);
-                const i32 z          = entry.origin_z + static_cast<i32>(lz);
-                for (i32 y = shape.min_y; y <= top; ++y) {
-                    const bool lit = y >= first_free;
-                    set_light(x, y, z, lit ? world::kMaxLightLevel : 0);
-                    if (lit) {
-                        frontier.push_back(Cell{x, y, z});
-                    }
-                }
-            }
-        }
-    }
-
-    for (usize head = 0; head < frontier.size(); ++head) {
-        const Cell cell    = frontier[head];
-        const u8   current = light_at(cell.x, cell.y, cell.z);
-        if (current <= 1) {
-            continue;
-        }
-        const u8 spread = static_cast<u8>(current - 1);
-
-        const std::array<Cell, 6> neighbours{{
-            {cell.x - 1, cell.y, cell.z},
-            {cell.x + 1, cell.y, cell.z},
-            {cell.x, cell.y, cell.z - 1},
-            {cell.x, cell.y, cell.z + 1},
-            {cell.x, cell.y - 1, cell.z},
-            {cell.x, cell.y + 1, cell.z},
-        }};
-
-        for (const Cell& next : neighbours) {
-            if (next.y < shape.min_y || next.y > top) {
-                continue;
-            }
-            world::Chunk* chunk = chunk_for(next.x, next.z);
-            if (chunk == nullptr) {
-                continue;  // outside the loaded neighbourhood
-            }
-            if (stops_sky_light(light_blocks,
-                                chunk->get_block(static_cast<usize>(next.x & 15), next.y,
-                                                 static_cast<usize>(next.z & 15)))) {
-                continue;
-            }
-            if (light_at(next.x, next.y, next.z) >= spread) {
-                continue;
-            }
-            set_light(next.x, next.y, next.z, spread);
-            frontier.push_back(next);
-        }
-    }
-
-    for (const Loaded& entry : loaded) {
-        for (usize i = 0; i < shape.section_count(); ++i) {
-            world::ChunkSection* section =
-                entry.chunk->section_for_y(shape.min_y + static_cast<i32>(i) * 16);
-            if (section != nullptr) {
-                section->sky_light().compact();
-            }
-        }
-    }
-}
-
 /// The superflat preset, bottom to top: bedrock, two dirt, one grass.
 ///
 /// A generator rather than a stored world, so a fresh server needs no save
@@ -670,7 +239,7 @@ struct Superflat {
         // Light comes from the heightmap, through the same function block edits
         // use. Two code paths that compute light differently agree right up
         // until someone digs.
-        relight_chunk(chunk);
+        relight_chunk(chunk, blocks);
         if (blocks != nullptr) {
             relight_blocks(chunk, *blocks);
         }
@@ -1300,8 +869,6 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         registry::BlockRegistry::load(data_dir / "vanilla" / "1.20.1" / "registry.ovpack");
     const auto codec_bytes = io::read_file(data_dir / "vanilla" / "1.20.1" / "registry_codec.nbt");
 
-    light_blocks = blocks ? &*blocks : nullptr;
-
     const bool world_available = blocks.has_value() && codec_bytes.has_value();
     if (!world_available) {
         OV_LOG_WARN("no registry pack or codec under {} — players can ping but not join",
@@ -1734,7 +1301,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                                         return !section.sky_light().is_absent();
                                                     });
                             if (!has_sky_light) {
-                                relight_chunk(placed);
+                                relight_chunk(placed, blocks ? &*blocks : nullptr);
                             }
                             // The ticks the chunk was written with. `t` on disk
                             // is a delay relative to the chunk's game time, so
@@ -2302,6 +1869,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     // lambda that feeds it; on the heap because it is ~100 KiB of counters and
     // an integrated server runs this on a thread with a small stack.
     const auto perf = std::make_unique<TickProfile>();
+    /// The chunks written since the last relight, relit **once each, on the
+    /// tick thread**, by `flush_tick_writes`. Every writer feeds it: the drain,
+    /// a command's fill, and a player's dig or place on the network thread —
+    /// which used to relight a 3x3 neighbourhood itself, per block, before it
+    /// could send the Block Update. Guarded by `chunk_mutex`.
+    std::unordered_set<i64> tick_relight;
     // ── end perf ──
 
     std::vector<net::WirePosition> pending_notifications;
@@ -2373,19 +1946,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         dirty_chunks.insert(chunk_key(chunk_x, chunk_z));
 
         if (relight) {
-            relight_neighbourhood(
-                [&](i32 nx, i32 nz) -> world::Chunk* { return chunks.find(ChunkPos{nx, nz}); },
-                chunk_x, chunk_z);
-            if (blocks) {
-                for (i32 dz = -1; dz <= 1; ++dz) {
-                    for (i32 dx = -1; dx <= 1; ++dx) {
-                        if (world::Chunk* found = chunks.find(ChunkPos{chunk_x + dx, chunk_z + dz});
-                            found != nullptr) {
-                            relight_blocks(*found, *blocks);
-                        }
-                    }
-                }
-            }
+            tick_relight.insert(chunk_key(chunk_x, chunk_z));  // ── perf ── on the tick
         }
 
         for (i32 dz = -1; dz <= 1; ++dz) {
@@ -2414,32 +1975,15 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             write_block(chunk, position.x, position.y, position.z, state);
             dirty_chunks.insert(chunk_key(chunk_x, chunk_z));
 
-            // WORLD_SURFACE has just moved, so the chunk's sky light has too.
-            // Relighting the whole chunk rather than the column: light spreads
-            // sideways, so one block placed changes cells several away from it.
-            // Without this a hole stays lit as if it were still filled, and the
-            // error only shows after a reload — the client lights its own edits
-            // locally and never notices the server disagreeing.
-            // Across the neighbourhood, not just this chunk: light does not
-            // respect chunk borders, so a block placed against one changes cells
-            // on the other side of it.
-            relight_neighbourhood(
-                [&](i32 nx, i32 nz) -> world::Chunk* { return chunks.find(ChunkPos{nx, nz}); },
-                chunk_x, chunk_z);
-
-            // Block light too, chunk by chunk. A torch placed at a border lights
-            // the chunk next door, so the whole neighbourhood is redone rather
-            // than only the one that changed.
-            if (blocks) {
-                for (i32 dz = -1; dz <= 1; ++dz) {
-                    for (i32 dx = -1; dx <= 1; ++dx) {
-                        if (world::Chunk* found = chunks.find(ChunkPos{chunk_x + dx, chunk_z + dz});
-                            found != nullptr) {
-                            relight_blocks(*found, *blocks);
-                        }
-                    }
-                }
-            }
+            // ── perf ── WORLD_SURFACE has just moved, so the light has too —
+            // across the 3x3, since light does not respect chunk borders. Not
+            // here, though: relighting nine chunks before the Block Update
+            // went out was the break latency players felt (measured in
+            // docs/provenance/performance-tick.md). The tick relights every
+            // chunk written since its last pass once, however many blocks
+            // changed in it; the client lights its own edits meanwhile.
+            tick_relight.insert(chunk_key(chunk_x, chunk_z));
+            // ── end perf ──
 
             for (i32 dz = -1; dz <= 1; ++dz) {
                 for (i32 dx = -1; dx <= 1; ++dx) {
@@ -2542,9 +2086,6 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     /// Positions written by the drain, to be broadcast once the lock is
     /// released. Reused between ticks so the drain never allocates.
     std::vector<std::pair<net::WirePosition, registry::BlockStateId>> tick_broadcasts;
-    /// The chunks the drain touched, relit once at the end instead of once per
-    /// block. Reused for the same reason.
-    std::unordered_set<i64> tick_relight;
 
     // ── containers: the machines that move items on their own ─────
     //
@@ -2749,29 +2290,22 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     /// map under `players_mutex`, and the two locks taken in the other order
     /// anywhere else would be a deadlock waiting for a busy server.
     const auto flush_tick_writes = [&] {
-        if (!tick_relight.empty()) {
-            const TickPhase perf_was = perf->enter(TickPhase::Relight);  // ── perf ──
+        {  // ── perf ── under the lock: the network thread feeds the set too
             const std::scoped_lock lock{chunk_mutex};
-            for (const i64 key : tick_relight) {
-                const auto cx = static_cast<i32>(key >> 32);
-                const auto cz = static_cast<i32>(static_cast<u32>(key & 0xFFFFFFFF));
-                relight_neighbourhood(
-                    [&](i32 nx, i32 nz) -> world::Chunk* { return chunks.find(ChunkPos{nx, nz}); },
-                    cx, cz);
-                if (blocks) {
-                    for (i32 dz = -1; dz <= 1; ++dz) {
-                        for (i32 dx = -1; dx <= 1; ++dx) {
-                            if (world::Chunk* found = chunks.find(ChunkPos{cx + dx, cz + dz});
-                                found != nullptr) {
-                                relight_blocks(*found, *blocks);
-                            }
-                        }
-                    }
+            if (!tick_relight.empty()) {
+                const TickPhase perf_was = perf->enter(TickPhase::Relight);
+                const ChunkLookup lookup = [&](i32 nx, i32 nz) -> world::Chunk* {
+                    return chunks.find(ChunkPos{nx, nz});
+                };
+                for (const i64 key : tick_relight) {
+                    relight_after_edit(lookup, static_cast<i32>(key >> 32),
+                                       static_cast<i32>(static_cast<u32>(key & 0xFFFFFFFF)),
+                                       blocks ? &*blocks : nullptr);
                 }
+                tick_relight.clear();
+                perf->enter(perf_was);
             }
-            tick_relight.clear();
-            perf->enter(perf_was);  // ── perf ──
-        }
+        }  // ── end perf ──
 
         if (tick_broadcasts.empty()) {
             return;
@@ -3687,20 +3221,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                       static_cast<u8>(at.z & 15),
                                       static_cast<i32>(change.state.value())});
             }
-            for (const i64 key : touched) {
-                const auto cx = static_cast<i32>(key >> 32);
-                const auto cz = static_cast<i32>(static_cast<u32>(key & 0xFFFFFFFF));
-                relight_neighbourhood(
-                    [&](i32 nx, i32 nz) -> world::Chunk* { return chunks.find(ChunkPos{nx, nz}); },
-                    cx, cz);
-                for (i32 dz = -1; dz <= 1 && blocks; ++dz) {
-                    for (i32 dx = -1; dx <= 1; ++dx) {
-                        if (world::Chunk* found = chunks.find(ChunkPos{cx + dx, cz + dz})) {
-                            relight_blocks(*found, *blocks);
-                        }
-                    }
-                }
-            }
+            tick_relight.insert(touched.begin(), touched.end());  // ── perf ── on the tick
         }
         for (const auto& [section, list] : sections) {
             broadcast(nullptr, net::clientbound::kUpdateSectionBlocks,

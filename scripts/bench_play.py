@@ -335,6 +335,10 @@ class Player(Miner):
                 self.lost[kind] += 1
 
 
+class _NoJoin(Exception):
+    """The probe never got in. Caught in run_once, which still collects the report."""
+
+
 def connect(port: int, name: str, patience: float) -> Player:
     """Réessaie tant que le serveur prépare son spawn (piège 29 du briefing)."""
     deadline = time.monotonic() + patience
@@ -472,7 +476,9 @@ def prepare_world(kind: str, preset: str, label: str) -> tuple[Path, dict]:
 
 
 def run_once(args: argparse.Namespace, label: str) -> dict:
-    binary = ROOT / "build" / args.preset / "bin" / "ov_dedicated"
+    # --binary: a server kept aside, so a "before" build can still be measured
+    # after the tree it came from has been rebuilt with the fix.
+    binary = Path(args.binary) if args.binary else ROOT / "build" / args.preset / "bin" / "ov_dedicated"
     world, env = prepare_world(args.world, args.preset, label)
     if args.workers is not None:
         env["OV_WORLDGEN_WORKERS"] = str(args.workers)
@@ -491,7 +497,15 @@ def run_once(args: argparse.Namespace, label: str) -> dict:
         sampler.start()
         try:
             joined = time.monotonic()
-            player = connect(args.port, "BenchPlayer", patience=args.patience)
+            try:
+                player = connect(args.port, "BenchPlayer", patience=args.patience)
+            except (OSError, EOFError, ValueError) as error:
+                # A server that never lets the probe in — a Debug seed world on a
+                # busy machine prepared no chunk at all in five minutes — is a
+                # result: record it, stop the server, keep its report.
+                result["join_failed_after_s"] = round(time.monotonic() - joined, 1)
+                result["join_error"] = str(error) or type(error).__name__
+                raise _NoJoin() from error
             result["join_s"] = round(time.monotonic() - joined, 1)
             played = time.monotonic()
             try:
@@ -512,6 +526,8 @@ def run_once(args: argparse.Namespace, label: str) -> dict:
             result["lost"] = player.lost
             result["chunks_received"] = player.chunks
             player.s.close()
+        except _NoJoin:
+            pass  # recorded above; the server is stopped and read below as usual
         finally:
             sampler.stop.set()
             server.send_signal(signal.SIGINT)
@@ -535,6 +551,8 @@ def show(result: dict) -> None:
     mach = result.get("machine", {})
     print(f"\n── {result['label']} — {result['world']}, {result['preset']}, "
           f"workers={result['workers']}, nice={result['nice']}, burn={result['burn']}")
+    if "join_failed_after_s" in result:
+        print(f"  could not join after {result['join_failed_after_s']} s: {result['join_error']}")
     for kind in ("break", "place"):
         v = lat.get(kind)
         if v:
@@ -574,6 +592,8 @@ def show(result: dict) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--preset", default=os.environ.get("OV_PRESET", "macos-debug"))
+    parser.add_argument("--binary", default=None,
+                        help="ov_dedicated to run instead of build/<preset>/bin/ov_dedicated")
     parser.add_argument("--world", default="seed:12345", help="seed:<n> or lab")
     parser.add_argument("--seconds", type=float, default=60.0)
     parser.add_argument("--walk", type=float, default=1.0, help="blocks per second along +x")
