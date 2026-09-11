@@ -331,7 +331,10 @@ def check_anvil() -> dict:
     out: dict = {}
     try:
         probe = connect()
-        probe.settle(20.0)
+        # 45 s, not 20: a world read from disk has no spawn area kept resident,
+        # its chunks arrive with the player, and a Debug server on a loaded
+        # machine ran 147 ticks in the first 27 s — the first run saw nothing.
+        probe.settle(45.0)
         seen: dict[str, int] = {}
         ids: dict[str, list[int]] = {}
         for eid, t in probe.types.items():

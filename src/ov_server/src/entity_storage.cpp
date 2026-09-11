@@ -146,7 +146,11 @@ const nbt::RegionFile* EntityStorage::region(i32 region_x, i32 region_z) {
     const auto key = std::pair{region_x, region_z};
     auto       it  = regions_.find(key);
     if (it == regions_.end()) {
-        auto opened = nbt::RegionFile::open(region_path(region_x, region_z));
+        const auto path   = region_path(region_x, region_z);
+        auto       opened = nbt::RegionFile::open(path);
+        OV_LOG_DEBUG("entities: {} — {}", path.string(),
+                     opened ? fmt::format("{} chunks", opened->chunk_count())
+                            : std::string{nbt::to_string(opened.error())});
         it = regions_.emplace(key, opened ? std::optional<nbt::RegionFile>{std::move(*opened)}
                                           : std::nullopt)
                  .first;

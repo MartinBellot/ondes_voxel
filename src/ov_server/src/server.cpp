@@ -8591,8 +8591,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     read += entity_storage->load_chunk(pos, *mobs, mob_records, entity_storage_host)
                                 .entities;
                 }
-                if (read > 0) {
-                    OV_LOG_DEBUG("entities: {} mobs read from {} chunks", read, mobs3_to_load.size());
+                if (!mobs3_to_load.empty()) {
+                    OV_LOG_DEBUG("entities: {} mobs read from {} new chunks", read,
+                                 mobs3_to_load.size());
                 }
             }
         }
