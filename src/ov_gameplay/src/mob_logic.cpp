@@ -128,9 +128,12 @@ void Mob::frighten(i32 ticks) noexcept {
     if (panic_ != nullptr) {
         panic_->frighten(ticks);
     }
-    // ── villagers ── a hurt villager runs (VillagerPanicGoal)
+    // ── villagers ── a hurt villager runs (VillagerPanicGoal), for its own
+    // measured span rather than the caller's: a villager's panic is not the
+    // goal-driven one (docs/provenance/villageois.md).
     if (brain_.villager.active) {
-        brain_.villager.hurt_ticks = std::max(brain_.villager.hurt_ticks, ticks);
+        (void)ticks;
+        brain_.villager.hurt_ticks = std::max(brain_.villager.hurt_ticks, kHurtPanicTicks);
     }
 }
 

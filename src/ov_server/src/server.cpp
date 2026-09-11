@@ -3581,6 +3581,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             // difference to decide whether the swing reached anything at all.
             return true;
         }
+        // ── panic ── A hit frightens: `PanicGoal` reads what `frighten` records
+        // (goals.hpp), and nothing on this server called it — a cow that was
+        // hit went on grazing. For as long as the game remembers who last hurt
+        // a mob, 100 ticks. A villager's panic is switched on by the same call.
+        if (auto* hit = dynamic_cast<gameplay::Mob*>(mobs->logic(handle)); hit != nullptr) {
+            constexpr i32 kLastHurtByMemoryTicks = 100;
+            hit->frighten(kLastHurtByMemoryTicks);
+        }
 
         broadcast(nullptr, net::clientbound::kDamageEvent,
                   net::encode_damage_event(state->network_id,
