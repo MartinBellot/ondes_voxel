@@ -16,7 +16,15 @@ struct Named {
 /// The types whose predicate is not the category's default. Everything a biome
 /// file lists in the overworld is either here or takes the default, and the
 /// default is the game's own (`animals_spawnable_on`, the monster darkness).
-constexpr std::array<Named, 11> kRules{{
+constexpr std::array<Named, 17> kRules{{
+    // ── nether-2 ── the Nether's own predicates (spawn_rules.hpp)
+    {"minecraft:piglin", {SpawnRule::NetherFloor, {}}},
+    {"minecraft:hoglin", {SpawnRule::NetherFloor, {}}},
+    {"minecraft:zombified_piglin", {SpawnRule::NetherFloor, {}}},
+    {"minecraft:ghast", {SpawnRule::Ghast, {}}},
+    {"minecraft:magma_cube", {SpawnRule::Anywhere, {}}},
+    {"minecraft:strider", {SpawnRule::Strider, {}}},
+    // ── end nether-2 ──
     {"minecraft:husk", {SpawnRule::MonsterUnderSky, {}}},
     {"minecraft:stray", {SpawnRule::MonsterUnderSky, {}}},
     {"minecraft:slime", {SpawnRule::Slime, {}}},

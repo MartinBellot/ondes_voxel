@@ -52,8 +52,51 @@ constexpr MobKind neutral(MobKind kind) {
     return kind;
 }
 
+// ── nether-2 ── The stroll modifiers of the Nether's walkers, as measured on
+// bare grass (scripts/measure_nether_mobs.py stroll, nether-2.md § 3.1):
+// piglin and brute 0.09517 b/t (0.6 of 0.35), hoglin and zoglin 0.03108 (0.4 of
+// 0.3), zombified piglin 0.11414 (1.0 of 0.23), wither skeleton 0.13485 (1.0 of
+// 0.25), strider on lava 0.06610 (1.0 of 0.175) and cold on grass 0.02880
+// (0.66). The blaze hovers and the magma cube hops: neither cruise is a walk,
+// both stay at 1.0 through the walker and are named.
+struct NetherStroll {
+    f64 piglin{0.6};
+    f64 piglin_brute{0.6};
+    f64 hoglin{0.4};
+    f64 zoglin{0.4};
+    f64 zombified_piglin{1.0};
+    f64 wither_skeleton{1.0};
+    f64 blaze{1.0};
+    f64 magma_cube{1.0};
+    f64 strider{1.0};
+    f64 strider_cold{0.66};
+};
+constexpr NetherStroll kNetherStroll{};
+
 //                         type                    attribute  stroll   doors  sun
-constexpr std::array<MobKind, 20> kAll{{
+constexpr MobKind creature(MobKind kind) {
+    kind.category = MobCategory::Creature;
+    return kind;
+}
+
+constexpr std::array<MobKind, 29> kAll{{
+    // ── nether-2 ── The Nether's walkers. Attributes measured
+    // (normalized/entities.json); stroll modifiers read off a real server by
+    // scripts/measure_nether_mobs.py, docs/provenance/nether-2.md § 3.1. The
+    // ghast is not here: it floats (GhastFlight, nether_mobs.hpp).
+    monster("minecraft:piglin", 0.35, kNetherStroll.piglin, true, false),
+    monster("minecraft:piglin_brute", 0.35, kNetherStroll.piglin_brute, true, false),
+    monster("minecraft:hoglin", 0.3, kNetherStroll.hoglin, false, false),
+    monster("minecraft:zoglin", 0.3, kNetherStroll.zoglin, false, false),
+    // Hostile for its goals, but it hunts nobody until angered: the Nether's
+    // session gives it no quarry and sets its target when it is hit.
+    monster("minecraft:zombified_piglin", 0.23, kNetherStroll.zombified_piglin, true, false),
+    monster("minecraft:wither_skeleton", 0.25, kNetherStroll.wither_skeleton, false, false),
+    monster("minecraft:blaze", 0.23, kNetherStroll.blaze, false, false),
+    monster("minecraft:magma_cube", 0.3, kNetherStroll.magma_cube, false, false),
+    creature(neutral(monster("minecraft:strider", 0.175, kNetherStroll.strider, false, false))),
+    // ── end nether-2 ──
+
     // The eight of M2. Stroll measured: zombie 0.11417 b/t, skeleton 0.13488,
     // creeper 0.08633 (modifier 0.8), spider 0.12429 (0.8).
     monster("minecraft:zombie", 0.23, 1.0, true, true),
@@ -95,6 +138,13 @@ constexpr std::array<MobKind, 20> kAll{{
 }};
 
 }  // namespace
+
+// ── nether-2 ── A strider out of lava: the same, at its cold pace.
+const MobKind& strider_cold_kind() noexcept {
+    static constexpr MobKind kCold = creature(
+        neutral(monster("minecraft:strider", 0.175, kNetherStroll.strider_cold, false, false)));
+    return kCold;
+}
 
 std::span<const MobKind> mob_kinds() noexcept {
     return kAll;

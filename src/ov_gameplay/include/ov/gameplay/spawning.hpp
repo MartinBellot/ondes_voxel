@@ -209,6 +209,18 @@ struct SpawnEnvironment {
     /// For the moon phase a swamp slime is drawn against. -1: no moon, so no
     /// swamp slime — refused rather than assumed full.
     i64 day_time{-1};
+
+    // ── nether-2 ──
+    /// The Nether's rules (the_nether dimension type): no category-wide light
+    /// gate — each type asks its own predicate, most of them none at all — and a
+    /// monster's darkness is a sky draw and a constant light level of 7, with no
+    /// block-light limit. See docs/provenance/nether-2.md § 3.
+    bool nether{false};
+    /// The highest y an attempt is drawn at: vanilla draws between the floor of
+    /// the world and one above the column's WORLD_SURFACE, which in the Nether is
+    /// the bedrock roof (128), not the top of the level (256). The default keeps
+    /// the overworld's draw over the whole height, named in mobs-2.md § 8.
+    i32 spawn_top{2147483647};
 };
 
 /// Which mob types a category may put in a biome, and how many at a time.

@@ -76,6 +76,18 @@ constexpr CategoryName kCategories[] = {
     {"minecraft:parrot", MobCategory::Creature},
     {"minecraft:turtle", MobCategory::Creature},
     {"minecraft:ocelot", MobCategory::Creature},
+
+    // ── nether-2 ── what the Nether's biome files list, and the fortress's own
+    {"minecraft:zombified_piglin", MobCategory::Monster},
+    {"minecraft:piglin", MobCategory::Monster},
+    {"minecraft:piglin_brute", MobCategory::Monster},
+    {"minecraft:hoglin", MobCategory::Monster},
+    {"minecraft:zoglin", MobCategory::Monster},
+    {"minecraft:ghast", MobCategory::Monster},
+    {"minecraft:magma_cube", MobCategory::Monster},
+    {"minecraft:blaze", MobCategory::Monster},
+    {"minecraft:wither_skeleton", MobCategory::Monster},
+    {"minecraft:strider", MobCategory::Creature},
 };
 
 [[nodiscard]] usize category_index(MobCategory category) noexcept {
@@ -244,6 +256,11 @@ bool NaturalSpawner::position_plausible(const SpawnEnvironment& environment,
     // no draw can rescue — block light over the dimension's limit of 0, or a
     // light level above the provider's 7 — so a lit position costs no draw.
     // The draw itself is the type's (`can_spawn_type_at`): a slime has its own.
+    // ── nether-2 ── In the Nether no category asks for light: each type's own
+    // predicate does, and most of them ask nothing (`can_spawn_type_at`).
+    if (environment.nether) {
+        return true;
+    }
     if (category == MobCategory::Monster) {
         if (environment.light == nullptr) {
             return false;  // refused, not assumed dark
@@ -376,8 +393,12 @@ void NaturalSpawner::spawn_tick(const SpawnEnvironment& environment,
                 const i32 x = chunk.min_block_x() + random_.next_int(kSectionSize);
                 const i32 z = chunk.min_block_z() + random_.next_int(kSectionSize);
                 const world::WorldShape shape = environment.level->shape();
-                const i32               y =
-                    shape.min_y + random_.next_int(static_cast<i32>(shape.height));
+                // ── nether-2 ── up to `spawn_top` (the Nether's roof), not the
+                // level's top; the default is the whole height, as before.
+                const i64 span = std::min<i64>(static_cast<i64>(shape.height),
+                                               static_cast<i64>(environment.spawn_top) -
+                                                   static_cast<i64>(shape.min_y) + 1);
+                const i32 y = shape.min_y + random_.next_int(static_cast<i32>(span));
                 const BlockPos          pos{x, y, z};
 
                 // The position first, and only then the type.
@@ -533,6 +554,63 @@ bool NaturalSpawner::can_spawn_type_at(const SpawnEnvironment& environment, MobC
                                        std::string_view type_name, BlockPos pos, f32 width,
                                        f32 height) {
     const TypeSpawnRule rule = spawn_rule_of(type_name, category == MobCategory::Creature);
+
+    // ── nether-2 ── The Nether's predicates (minecraft.wiki, each mob's
+    // "Spawning" section, and the_nether dimension type).
+    if (environment.nether) {
+        if (environment.level == nullptr || environment.light == nullptr) {
+            return false;  // refused, not assumed
+        }
+        const world::LevelView&        level  = *environment.level;
+        const registry::BlockRegistry& blocks = level.blocks();
+        const auto named = [&](BlockPos at) {
+            return blocks.block_name(blocks.block_of(level.block_at(at)));
+        };
+        // Nothing stands up on bedrock — the roof of the Nether above all
+        // (`isValidSpawn` is never for it). Our draw reaches y 129, the roof's
+        // top, as the game's does.
+        if (rule.rule != SpawnRule::Strider && named(pos.below()) == "minecraft:bedrock") {
+            return false;
+        }
+        switch (rule.rule) {
+            case SpawnRule::NetherFloor:
+                // Piglin, hoglin, zombified piglin: anywhere but on wart block.
+                if (named(pos.below()) == "minecraft:nether_wart_block") {
+                    return false;
+                }
+                return can_spawn_at(environment, category, pos, width, height);
+            case SpawnRule::Ghast: {
+                // One attempt in twenty, then an ordinary floor.
+                const i32 draw = random_.next_int(20);
+                return draw == 0 && can_spawn_at(environment, category, pos, width, height);
+            }
+            case SpawnRule::Anywhere:
+                return can_spawn_at(environment, category, pos, width, height);
+            case SpawnRule::Strider: {
+                // In lava, with air above the lava column.
+                if (!position_plausible(environment, category, pos) ||
+                    named(pos) != "minecraft:lava") {
+                    return false;
+                }
+                BlockPos up = pos.above();
+                while (level.shape().contains_y(up.y) && named(up) == "minecraft:lava") {
+                    up = up.above();
+                }
+                return blocks.is_air(blocks.block_of(level.block_at(up)));
+            }
+            default: {
+                // Enderman, skeleton: the monster darkness under the Nether's
+                // dimension type — a sky draw (no sky light, so it always
+                // passes), no block-light limit (15), a constant level of 7.
+                const i32 sky_draw = random_.next_int(32);
+                if (static_cast<i32>(environment.light->sky_light(pos)) > sky_draw ||
+                    environment.light->effective_light(pos) > 7) {
+                    return false;
+                }
+                return can_spawn_at(environment, category, pos, width, height);
+            }
+        }
+    }
 
     if (rule.rule == SpawnRule::Animal) {
         // The category's checks, then the type's floor instead of grass.
