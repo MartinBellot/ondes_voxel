@@ -49,6 +49,9 @@ TEST_CASE("a press starts, and the press's own tick already counts", "[dig]") {
     CHECK(out.actions[0].pos == kStone);
     CHECK(out.actions[0].face == 2);
     CHECK(out.swing);
+    // Two Swing Arm on the press tick, as the real client sends: the press's,
+    // and the tick of digging that follows it in the same tick.
+    CHECK(out.swings == 2);
     CHECK(out.hit_sound);  // the fourth-tick rule starts at zero
     CHECK(out.crack_particle);
     CHECK(dig.progress() > 0.0F);
@@ -216,4 +219,5 @@ TEST_CASE("water, lava and air are not dug", "[dig]") {
     const DigOutcome out = dig.tick(input);
     CHECK(out.action_count == 0);
     CHECK(out.swing);  // the press still swings
+    CHECK(out.swings == 1);
 }

@@ -86,7 +86,11 @@ struct DigOutcome {
     std::array<DigAction, 3> actions{};
     u8                       action_count{0};
 
-    /// The arm swings (and Swing Arm is sent) this tick.
+    /// Swing Arm packets this tick: one for the press, one for a tick of
+    /// digging. A press on a block is both, and the real 1.20.1 client sends
+    /// two on that tick (docs/provenance/cassage-bloc.md, the swing clock).
+    u8 swings{0};
+    /// The arm swings this tick.
     bool swing{false};
     /// One crack particle on the target's face this tick.
     bool crack_particle{false};

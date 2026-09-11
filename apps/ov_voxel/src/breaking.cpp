@@ -336,7 +336,7 @@ void Breaking::tick(const BreakingTick& input, const BlockAt& block_at, netclien
         OV_LOG_INFO("broke ({}, {}, {}) at tick {}", out.broken->x, out.broken->y, out.broken->z,
                     ticks_);
     }
-    if (out.swing) {
+    for (u8 i = 0; i < out.swings; ++i) {
         swing(client);
     }
 

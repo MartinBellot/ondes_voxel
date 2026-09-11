@@ -111,6 +111,7 @@ DigOutcome DigController::tick(const DigInput& input) {
             start(input, *input.target, out);
         }
         out.swing = true;
+        ++out.swings;
         // A block the press broke is air for the hold that follows: the hold
         // aims where the press did, and finds nothing to dig.
         if (out.broken) {
@@ -136,6 +137,7 @@ DigOutcome DigController::tick(const DigInput& input) {
         // to chip at.
         out.crack_particle = !out.broken.has_value();
         out.swing          = true;
+        ++out.swings;
     }
     return out;
 }
