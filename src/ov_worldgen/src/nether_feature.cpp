@@ -138,13 +138,13 @@ void vine_column(const registry::BlockRegistry& blocks, FeatureLevel& level,
                  const VineBlocks& vine, i32 dy) {
     const Reader read{blocks, level};
     BlockPos     pos = at;
-    // Measurement arm (nether-2.md § 1): `OV_NETHER_VINE_EXTRA=1` grows one
-    // block more than `length`, the other reading of "a column of length n".
-    static const i32 extra = [] {
-        const char* setting = std::getenv("OV_NETHER_VINE_EXTRA");
-        return setting != nullptr && std::string_view{setting} == "1" ? 1 : 0;
-    }();
-    const i32 last = length - 1 + extra;
+    // A weeping column runs `length + 1` blocks, a twisting one `length`.
+    // Measured (nether-2.md § 1.3): with one block more, the heads the game
+    // hangs are found 54 times out of 184 instead of 30, the plants 147 of 412
+    // instead of 121. The twisting vines are not in the sample; they keep the
+    // reading the documentation gives.
+    const i32 extra = dy < 0 ? 1 : 0;
+    const i32 last  = length - 1 + extra;
     for (i32 i = 0; i <= last; ++i) {
         if (read.empty(pos)) {
             if (i == last || !read.empty(pos.offset(0, dy, 0))) {
