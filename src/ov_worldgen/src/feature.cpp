@@ -843,6 +843,7 @@ std::expected<FeatureRegistry, FeatureError> FeatureRegistry::load(
     std::map<std::string, FeatureError> failed_configured;
     std::map<std::string, FeatureError> failed_placed;
     FeatureResolver                     resolve;
+    resolve.data_root = data_root;  // ── worldgen-3 ── the fossils' processor lists
 
     resolve.configured = [&](std::string_view raw) -> std::expected<FeatureRef, FeatureError> {
         const std::string name = qualify(raw);
@@ -947,6 +948,42 @@ const PlacedFeature* FeatureRegistry::placed(std::string_view name) const {
 const Feature* FeatureRegistry::configured(std::string_view name) const {
     const auto found = impl_->configured.find(qualify(name));
     return found == impl_->configured.end() ? nullptr : found->second.get();
+}
+
+std::expected<std::shared_ptr<const PlacedFeature>, FeatureError> FeatureRegistry::parse_placed(
+    std::string_view json, std::string name, const registry::BlockRegistry& blocks) const {
+    // ── worldgen-3 ── Resolution only looks up what `load` built: a probe's body
+    // never names a file the registry has not read.
+    FeatureResolver resolve;
+    resolve.configured = [&](std::string_view raw) -> std::expected<FeatureRef, FeatureError> {
+        const auto found = impl_->configured.find(qualify(raw));
+        if (found == impl_->configured.end()) {
+            return std::unexpected(FeatureError::Missing);
+        }
+        return found->second;
+    };
+    resolve.placed = [&](std::string_view raw)
+        -> std::expected<std::shared_ptr<const PlacedFeature>, FeatureError> {
+        const auto found = impl_->placed.find(qualify(raw));
+        if (found == impl_->placed.end()) {
+            return std::unexpected(FeatureError::Missing);
+        }
+        return found->second;
+    };
+    const simdjson::padded_string text{json};
+    simdjson::dom::parser         parser;
+    auto                          document = parser.parse(text);
+    if (document.error() != simdjson::SUCCESS) {
+        return std::unexpected(FeatureError::Malformed);
+    }
+    auto built = parse_inline_placed_feature(document.value(), blocks, impl_->tags, resolve);
+    if (!built) {
+        return built;
+    }
+    // A fresh object, so the name can be set without touching a shared one.
+    auto named  = std::make_shared<PlacedFeature>(**built);
+    named->name = std::move(name);
+    return std::static_pointer_cast<const PlacedFeature>(named);
 }
 
 usize FeatureRegistry::placed_count() const noexcept {
