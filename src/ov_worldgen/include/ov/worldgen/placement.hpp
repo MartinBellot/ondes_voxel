@@ -264,6 +264,14 @@ public:
     [[nodiscard]] bool contains(std::string_view tag, registry::BlockId block) const;
     [[nodiscard]] bool known(std::string_view tag) const;
 
+    /// A tag's members in the order its file lists them, nested `#tag`
+    /// references expanded in place, a repeat kept at its first appearance.
+    ///
+    /// For the features that draw an *index* into a tag — the corals pick
+    /// their block with `tag.getRandomElement(random)` — where the order is
+    /// part of the seed and a set would not do. Empty for an unknown tag.
+    [[nodiscard]] std::vector<registry::BlockId> ordered(std::string_view tag) const;
+
     [[nodiscard]] usize tag_count() const noexcept;
 
 private:

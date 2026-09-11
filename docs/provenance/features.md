@@ -1342,6 +1342,17 @@ c'est le plancher contre lequel lire le chiffre, pas zéro. Les trois features
 partagent le même monde sonde, donc cette mesure **ne dit pas laquelle** est
 fausse ; un monde par feature la départagerait. **Non résolu.**
 
+**Correction après coup, et bornée.** Le filtre « fluide qui s'est posé
+autrement » de l'outil écartait aussi les cellules où le jeu avait remplacé de
+l'eau par un bloc que nous n'avions pas posé — donc des manques réels. Il a été
+corrigé (voir « L'océan » plus bas), mais le monde des grottes était déjà
+effacé. La borne se calcule sur les chiffres ci-dessus : 1852 cellules écartées
+avec la bonne graine contre 3149 pour le témoin, donc au pire
+59 091 / 100 727 = **58,7 %** au lieu de 59,8 %, et **19,1 %** pour le témoin.
+La géode n'est pas concernée — ses comptes par bloc sont égaux des deux côtés —
+et les plaines et les champignons non plus : leurs 3193 cellules écartées sont
+les mêmes avec la bonne graine et avec le témoin, donc du bruit de terrain pur.
+
 ## Les plaines : `BIOME_INFO_NOISE` et les fleurs
 
 Monde `probe-f2-plains`, graine 1234, les placed features de vanilla
@@ -1372,24 +1383,66 @@ chunks décide qui gagne ; c'est l'hypothèse la plus probable et elle **n'est
 pas mesurée**. Le témoin de l'herbe est haut pour la même raison que celui du
 dripstone : des touffes denses se recouvrent par hasard.
 
-## L'océan : la mesure n'a pas eu lieu
-
-La famille marine (`seagrass`, `kelp`, `sea_pickle`, les trois coraux,
-`underwater_magma`) est écrite et **n'est pas mesurée**. La tentative a raté,
-et la raison vaut d'être écrite.
+## L'océan
 
 Une sonde marine demande une zone de mer : le preset `plains` ne change pas le
-terrain, donc une plaine reste une plaine et un océan reste un océan. La zone a
-été choisie dans le monde de référence (région `r.-205.13`, biomes
-`lukewarm_ocean`), mais **à partir du premier chunk océanique rencontré**, en
-z = 437, avec une zone qui commençait en z = 420 : elle frôlait l'océan par un
-coin et couvrait surtout de la terre et des grottes. Résultat, sur 200 chunks
-finis : le jeu n'a posé **aucune** herbe marine, aucun cornichon, aucun varech,
-aucun corail, et nous non plus — trois blocs de magma de part et d'autre, à
-l'identique. Un score de 100 % sur trois blocs ne dit rien, et il n'est pas
-retenu.
+terrain, donc une plaine reste une plaine et un océan reste un océan. Graine
+1234567890, zone prise dans la bande océanique du monde de référence (région
+`r.-205.13`, x −6565 à −6553, z 435 à 447, qui ne s'arrête que là où la
+référence cessait de générer) : patch à partir du chunk (−6570, 435). Deux
+mondes sonde contre un témoin, 200 chunks chacun.
 
-Deux leçons, payées là :
+| monde | features | blocs identiques | témoin absurde |
+|---|---|---:|---:|
+| `sea-a` | `seagrass_warm`, `sea_pickle`, `underwater_magma` | **88,513 %** | 11,367 % |
+| `sea-b` | `kelp_warm`, `warm_ocean_vegetation` (coraux) | **62,762 %** | 4,028 % |
+
+| bloc | jeu | nous | identiques |
+|---|---:|---:|---:|
+| `seagrass` | 8021 | 8074 | 90,3 % |
+| `tall_seagrass` | 6692 | 6596 | 86,2 % |
+| `sea_pickle` (seul) | 225 | 225 | 98,2 % |
+| `magma_block` | 82 | 82 | **100,0 %** |
+| `kelp_plant` | 13 321 | 13 198 | 90,7 % |
+| `kelp` | 2496 | 2494 | 89,5 % |
+| blocs de corail (5) | 14 503 | 15 833 | 44 à 53 % |
+| éventails muraux (5) | 8992 | 9736 | 44 à 47 % |
+| coraux et éventails (10) | ~2500 | ~2700 | 37 à 50 % |
+
+**L'herbe marine, le cornichon de mer, le magma et le varech sont justes à 86 à
+100 %.** Les comptes par espèce concordent à quelques pour cent près, donc
+`noise_based_count` (qui décide combien de varech par chunk) et les tirages de
+position sont les bons.
+
+**Les coraux ne le sont qu'à moitié.** Ils sont posés aux bons endroits — les
+comptes concordent (2965 blocs de corail tube pour le jeu, 3454 pour nous) — et
+ce sont leurs **formes** qui divergent : arbre, pince et champignon de corail
+tirent chacun des dizaines de flottants, et une seule branche qui s'arrête
+autrement décale tout le reste du chunk. Lequel des trois est faux n'est pas
+isolé. **Non résolu.**
+
+**La première tentative avait raté la mer**, et la raison vaut d'être écrite :
+la zone était partie du premier chunk océanique rencontré (z = 437) mais
+commençait en z = 420. Elle frôlait l'océan par un coin, et sur 200 chunks ni le
+jeu ni nous n'avions posé la moindre herbe — un « 100 % » sur trois blocs de
+magma, qui n'a pas été retenu.
+
+**La mesure a d'abord été trop flatteuse, et c'est l'outil qui mentait.** Son
+filtre « fluide qui s'est posé autrement » écartait toute cellule où le jeu
+avait changé de l'eau et où nous n'avions rien écrit. Pour l'herbe, le varech
+et le corail — posés *dans* l'eau —, chaque manque de notre part passait pour du
+bruit : 97,6 % au lieu de 88,5 %, et 58 % pour le témoin. Le filtre n'écarte
+plus que ce qui était un fluide *et* en est resté un ; sur l'océan il n'écarte
+alors plus rien. La borne qui en découle pour le dripstone est donnée plus haut.
+
+**Et les coraux ne se chargeaient pas sous `ctest`.** Leurs trois tags étaient
+relus dans l'ordre du fichier par un chemin relatif au répertoire courant :
+juste depuis la racine du dépôt, faux depuis le répertoire de build — donc faux
+aussi pour un serveur lancé d'ailleurs. `BlockTags` garde désormais l'ordre de
+chaque tag (`ordered()`) au chargement, et le corail ne lit plus aucun fichier.
+Ce sont les deux tests de chargement de ce mandat qui l'ont attrapé.
+
+Trois leçons, payées là :
 
 * **Un recensement « chunk avec de l'eau sous le niveau de la mer » ne
   distingue pas la mer d'un aquifère.** Il comptait 105 chunks « mouillés » dans
@@ -1402,6 +1455,11 @@ Deux leçons, payées là :
   tronquée. Les mesures des grottes, des champignons et des plaines n'en
   dépendaient pas — leurs mondes sont décorés partout et les chunks comparés
   étaient des chunks finis près de l'apparition.
+* **Un filtre de bruit se contrôle sur le témoin.** Le nombre de cellules que
+  le filtre de fluide écartait n'était pas le même avec la bonne graine et avec
+  la fausse (1396 contre 12 103 sur l'océan) : un bruit de terrain ne dépend
+  pas de la graine de la feature, donc ce n'était pas du bruit. C'est ce seul
+  écart qui a trahi le filtre.
 
 ## Les prédicats et fournisseurs débloqués
 
@@ -1468,3 +1526,11 @@ Deux leçons, payées là :
   partie de la graine. `ocean_feature.cpp` relit ces trois tags dans l'ordre.
 * **Un `HashSet<BlockPos>` parcouru avec un tirage par élément** — les patches
   de végétation comme les décorateurs d'arbre — impose `java_hash_order`.
+* **Un filtre de mesure peut mentir dans le sens flatteur.** Écarter « ce qui a
+  changé dans l'eau et que nous n'avons pas touché » cachait tous nos manques
+  pour les features posées dans l'eau. Le contrôle : ce qu'un filtre écarte doit
+  être identique avec la bonne graine et avec le témoin décalé.
+* **Jamais de chemin de données relatif au répertoire courant.** `ctest` lance
+  les tests depuis le répertoire de build ; un fichier relu par
+  `data/vanilla/...` se trouvait depuis la racine du dépôt et nulle part
+  ailleurs. Ce qui vient des données passe par la racine donnée au chargement.

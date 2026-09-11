@@ -1015,9 +1015,12 @@ int main(int argc, char** argv) {
                         // Water and lava that settled differently in the two
                         // worlds — a fluid tick that ran in one and not the
                         // other — are the terrain's, not the feature's. Counted
-                        // apart, and only when we left the cell alone.
-                        if (game && !mine &&
-                            (is_fluid(pack->block_of(theirs)) || is_fluid(pack->block_of(was)))) {
+                        // apart, and only when the cell was a fluid *and* is
+                        // still one: seagrass, kelp and coral are placed into
+                        // water, and treating "water became seagrass" as noise
+                        // hid every one of them we missed.
+                        if (game && !mine && is_fluid(pack->block_of(theirs)) &&
+                            is_fluid(pack->block_of(was))) {
                             ++fluid_noise;
                             continue;
                         }

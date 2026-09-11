@@ -14,9 +14,6 @@
 #include "ov/base/log.hpp"
 
 #include <array>
-#include <fstream>
-#include <set>
-#include <sstream>
 
 namespace ov::worldgen {
 
@@ -240,58 +237,6 @@ private:
 };
 
 // ── The corals ──────────────────────────────────────────────────────────────
-
-/// A tag's members in the order the tag file lists them, nested tags expanded
-/// in place and repeats dropped at their second appearance.
-[[nodiscard]] std::expected<std::vector<registry::BlockId>, FeatureError> ordered_tag(
-    const std::filesystem::path& tag_dir, std::string_view name,
-    const registry::BlockRegistry& blocks, std::set<std::string>& seen_tags) {
-    const std::string bare = strip_namespace(name);
-    if (!seen_tags.insert(bare).second) {
-        return std::unexpected(FeatureError::Malformed);
-    }
-    std::ifstream file(tag_dir / (bare + ".json"));
-    if (!file) {
-        OV_LOG_ERROR("worldgen: tag file {} is missing", bare);
-        return std::unexpected(FeatureError::Missing);
-    }
-    std::stringstream text;
-    text << file.rdbuf();
-    simdjson::dom::parser parser;
-    const auto            padded   = simdjson::padded_string(text.str());
-    auto                  document = parser.parse(padded);
-    simdjson::dom::array  values;
-    if (document.error() != simdjson::SUCCESS ||
-        document.value().at_key("values").get(values) != simdjson::SUCCESS) {
-        return std::unexpected(FeatureError::Malformed);
-    }
-    std::vector<registry::BlockId> out;
-    for (auto value : values) {
-        std::string_view entry;
-        if (value.get(entry) != simdjson::SUCCESS) {
-            // `{"id": ..., "required": false}` — in the format, not in these tags.
-            return std::unexpected(FeatureError::Unsupported);
-        }
-        if (entry.starts_with('#')) {
-            auto nested = ordered_tag(tag_dir, entry.substr(1), blocks, seen_tags);
-            if (!nested) return nested;
-            for (const auto block : *nested) {
-                if (std::ranges::find(out, block) == out.end()) {
-                    out.push_back(block);
-                }
-            }
-            continue;
-        }
-        const auto block = blocks.find_block(qualify(entry));
-        if (!block) {
-            return std::unexpected(FeatureError::Malformed);
-        }
-        if (std::ranges::find(out, *block) == out.end()) {
-            out.push_back(*block);
-        }
-    }
-    return out;
-}
 
 struct Coral {
     Sea                            sea;
@@ -621,22 +566,17 @@ ClaimedFeature parse_ocean_feature(std::string_view kind, Json config,
             static_cast<f32>(number_field(config, "placement_probability_per_valid_position", 0.5))));
     }
 
-    // The tags live next to the worldgen directory the registry was read from;
-    // BlockTags does not remember where, so the path is rebuilt from the one
-    // fixed layout the generated data has.
-    const std::filesystem::path tag_dir = "data/vanilla/1.20.1/generated/data/minecraft/tags/blocks";
-    std::set<std::string>       seen_a;
-    std::set<std::string>       seen_b;
-    std::set<std::string>       seen_c;
-    auto coral_blocks = ordered_tag(tag_dir, "minecraft:coral_blocks", blocks, seen_a);
-    auto corals       = ordered_tag(tag_dir, "minecraft:corals", blocks, seen_b);
-    auto wall_corals  = ordered_tag(tag_dir, "minecraft:wall_corals", blocks, seen_c);
-    if (!coral_blocks || !corals || !wall_corals || coral_blocks->empty() || corals->empty() ||
-        wall_corals->empty()) {
-        OV_LOG_ERROR("worldgen: the coral tags could not be read in order, so {} is refused", kind);
+    // In file order, from the tags already loaded: the index a coral draws is
+    // into this order. (An earlier form re-read the tag files through a path
+    // relative to the working directory, and failed under ctest.)
+    auto coral_blocks = tags.ordered("minecraft:coral_blocks");
+    auto corals       = tags.ordered("minecraft:corals");
+    auto wall_corals  = tags.ordered("minecraft:wall_corals");
+    if (coral_blocks.empty() || corals.empty() || wall_corals.empty()) {
+        OV_LOG_ERROR("worldgen: a coral tag is empty or unknown, so {} is refused", kind);
         return std::unexpected(FeatureError::Missing);
     }
-    Coral c{std::move(*sea), std::move(*coral_blocks), std::move(*corals), std::move(*wall_corals)};
+    Coral c{std::move(*sea), std::move(coral_blocks), std::move(corals), std::move(wall_corals)};
     const auto shape = kind == "coral_tree"   ? CoralFeature::Shape::Tree
                        : kind == "coral_claw" ? CoralFeature::Shape::Claw
                                               : CoralFeature::Shape::Mushroom;

@@ -321,6 +321,8 @@ private:
 
 struct BlockTags::Impl {
     std::unordered_map<std::string, std::unordered_set<u16>> tags;
+    /// The same members in file order (features-2: the corals draw an index).
+    std::unordered_map<std::string, std::vector<u16>> ordered;
 };
 
 std::expected<BlockTags, FeatureError> BlockTags::load(const std::filesystem::path& data_root,
@@ -404,6 +406,39 @@ std::expected<BlockTags, FeatureError> BlockTags::load(const std::filesystem::pa
         impl->tags.emplace(name, std::move(resolved));
     }
 
+    // The ordered form: file order, a nested tag expanded where it is named,
+    // a repeat dropped at its second appearance. Depth-first with an explicit
+    // stack of (tag, next entry) so that a cycle is a no-op, not an overflow.
+    for (const auto& [name, members] : raw) {
+        (void)members;
+        std::vector<u16>                              out;
+        std::unordered_set<u16>                       placed;
+        std::unordered_set<std::string>               open{name};
+        std::vector<std::pair<std::string, usize>>    stack{{name, 0}};
+        while (!stack.empty()) {
+            auto& [current, next] = stack.back();
+            const auto found      = raw.find(current);
+            if (found == raw.end() || next >= found->second.size()) {
+                stack.pop_back();
+                continue;
+            }
+            const std::string member = found->second[next++];
+            if (member.starts_with('#')) {
+                std::string referenced = qualify(std::string_view(member).substr(1));
+                if (open.insert(referenced).second) {
+                    stack.emplace_back(std::move(referenced), 0);
+                }
+                continue;
+            }
+            if (const auto block = blocks.find_block(qualify(member))) {
+                if (placed.insert(block->value()).second) {
+                    out.push_back(block->value());
+                }
+            }
+        }
+        impl->ordered.emplace(name, std::move(out));
+    }
+
     BlockTags result;
     result.impl_ = std::move(impl);
     OV_LOG_INFO("worldgen: {} block tags", result.impl_->tags.size());
@@ -420,6 +455,22 @@ bool BlockTags::contains(std::string_view tag, registry::BlockId block) const {
 
 bool BlockTags::known(std::string_view tag) const {
     return impl_ != nullptr && impl_->tags.contains(qualify(tag));
+}
+
+std::vector<registry::BlockId> BlockTags::ordered(std::string_view tag) const {
+    std::vector<registry::BlockId> out;
+    if (impl_ == nullptr) {
+        return out;
+    }
+    const auto found = impl_->ordered.find(qualify(tag));
+    if (found == impl_->ordered.end()) {
+        return out;
+    }
+    out.reserve(found->second.size());
+    for (const u16 block : found->second) {
+        out.push_back(registry::BlockId{block});
+    }
+    return out;
 }
 
 usize BlockTags::tag_count() const noexcept {
