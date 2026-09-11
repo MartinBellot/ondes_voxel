@@ -1358,11 +1358,9 @@ void CommandService::register_commands() {
                     // now: itself at its new position when it faces itself.
                     Vec3d at = face_entity->id == e->id ? pos : face_entity->position;
                     if (face_eyes) {
-                        // The one sample captured (y -60, eye height 1.62)
-                        // carries -58.380001068115234: the sum rounded to a
-                        // float, not the double -58.3799999952.
-                        at.y = static_cast<f64>(
-                            static_cast<f32>(at.y + static_cast<f64>(face_entity->eye_height)));
+                        // A double sum, the float eye height widened: the jar
+                        // sends -58.37999999523163 for y -60 (captured twice).
+                        at.y += static_cast<f64>(face_entity->eye_height);
                     }
                     if (PlayerRef* p = player(e->id)) {
                         p->send(net::clientbound::kLookAt,

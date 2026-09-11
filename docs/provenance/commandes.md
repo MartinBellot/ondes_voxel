@@ -334,9 +334,25 @@ position (`teleports:` dans `check_commands.py`) :
   `encode_look_at_entity` la produit maintenant.
 * **`facing entity nobody` ne téléporte personne.** Le jar répond l'erreur et ne bouge pas ; nous
   téléportions d'abord et répondions l'erreur ensuite. La cible est maintenant résolue avant.
-* **La hauteur des yeux** dans Look At : le seul échantillon (y −60, hauteur 1,62) porte
-  **−58,380001068115234**, la somme arrondie à un flottant — pas le double −58,3799999952. Un
-  échantillon : c'est une observation, pas une règle établie.
+* **La hauteur des yeux** dans Look At : **−58,37999999523163** pour y −60 dans les deux captures du
+  jar — la somme en double, la hauteur flottante 1,62 élargie. Un premier décodage fautif de
+  l'hexadécimal avait fait croire à un arrondi flottant ; mis en code, il a donné le seul écart de
+  paquet de la mesure (−58,380001 contre −58,380000) — retiré.
+
+**La mesure, sur une machine calme** (`capture_commands.py` vanilla puis ov, ports 25661/25662,
+`check_commands.py`) :
+
+| | |
+|---|---|
+| réponses | **274 / 282** identiques ; les **onze formes nouvelles** de `/tp` toutes identiques |
+| paquets de position des commandes `tp` (premier Synchronize Position, Look At) | **26 / 26** — 25 / 26 avant le retrait de l'arrondi flottant de la hauteur des yeux (ci-dessus) |
+| arbre Commands, `/help` restreint à nos commandes | 34 / 34, 34 / 34 |
+
+Les huit réponses différentes : cinq sont des **glissements de fenêtre** du jar (`time set day` →
+`noon` ; `tp nobody …`, `tp @s 0 -60 0 foo`, `tp @s 30000000 0 0` — vanilla répond « — » puis la
+fenêtre suivante porte la réponse précédente), trois sont connues d'avant ce mandat : le succès
+« Diamonds! » de `give` (§ 6), le nombre de mobs de `kill @e[type=!player,distance=..30]` (5 contre
+6 : l'apparition des mobs du monde plat) et `/help`, qui liste 79 commandes chez le jar.
 
 **Deux pièges du banc, payés ici :**
 
