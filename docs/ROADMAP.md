@@ -239,13 +239,20 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] Lumière du ciel : sunlight direct + propagation par flood fill *(intra-chunk)*
 - [x] Propagation de lumière inter-chunks *(voisinage 3×3 chargé)*
 - [x] Lumière de bloc : émission mesurée par état, propagation depuis les sources
-- [ ] Suppression incrémentale de la lumière (aujourd'hui le voisinage est refait en entier)
-      *(**2026-09-11** : le recalcul n'est plus fait sur le thread réseau avant
-      chaque Block Update mais sur le tick, une fois par chunk touché — un bloc
-      cassé coûtait ~11-88 ms au thread qui écrit tous les paquets, ~10-40 µs
-      maintenant ; casser un bloc sur un monde généré en Release passe de 5,2 s
-      à **62 ms au p99**. Le voisinage est toujours refait en entier : ce qui
-      manque ici reste l'incrémental. Voir `docs/provenance/performance-tick.md`)*
+- [x] Suppression incrémentale de la lumière (aujourd'hui le voisinage est refait en entier)
+      *(**2026-09-11** : `ov_world::LightEngine` — augmentation en largeur,
+      suppression à deux files, chunk éclairé seul puis cousu à son arrivée.
+      **0 différence** contre un recalcul complet indépendant après 8 000 lots
+      de gestes aléatoires sur `ov_lab` et un vrai monde 1.20.1 (et 1 200 sur
+      terrain plat, comparés à chaque lot) ; le témoin sans passe de
+      suppression est faux. Un geste coûte p50 40,6 ms → **30 µs** (Debug), la
+      phase `relight` du tick 4,2-4,7 s → 16-23 ms par minute de jeu (p99
+      ~35 ms → < 1 ms) ; le p99 du tick entier, fait par les autres phases, ne
+      bouge pas. Les chunks générés arrivent éclairés, la lumière de bloc
+      traverse les frontières, le Nether et l'End passent au même moteur, et le
+      client `ov_voxel` éclaire ses propres gestes. Restent les formes
+      directionnelles (dalles, escaliers). Voir
+      `docs/provenance/incremental-light.md`)*
 - [x] Tableaux de lumière nullables à valeur uniforme (divise l'empreinte par 2)
 - [x] Heightmaps : stockage, packing 9 bits, sémantique vérifiée sur monde réel
 - [x] `WORLD_SURFACE` calculé et maintenu incrémentalement *(air suffit)*

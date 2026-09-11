@@ -1253,6 +1253,13 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     if (blocks) {
         light.emplace(*blocks, kOverworldLight);
     }
+    /// Measurement only: `OV_LIGHT_FULL=1` repairs edits the way the server did
+    /// before this engine — the 3x3 around each chunk touched, from nothing —
+    /// so that one binary measures both sides of scripts/bench_play.py.
+    const bool light_full_recompute = [] {
+        const char* setting = std::getenv("OV_LIGHT_FULL");
+        return setting != nullptr && std::string_view{setting} == "1";
+    }();
     /// Caller holds chunk_mutex. Pending edits go first, so that the stitch
     /// never floods from light an edit has already made stale.
     const auto light_arrived = [&](ChunkPos pos, bool keep_sky) {
@@ -3078,7 +3085,20 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             const std::scoped_lock lock{chunk_mutex};
             if (light && light->pending() > 0) {  // ── light ── incremental
                 const TickPhase perf_was = perf->enter(TickPhase::Relight);
-                (void)light->propagate(light_chunks);
+                if (light_full_recompute) {
+                    std::unordered_set<i64> relit;
+                    const ChunkLookup       lookup = [&](i32 nx, i32 nz) -> world::Chunk* {
+                        return chunks.find(ChunkPos{nx, nz});
+                    };
+                    for (const BlockPos pos : light->pending_positions()) {
+                        if (relit.insert(chunk_key(pos.x >> 4, pos.z >> 4)).second) {
+                            relight_after_edit(lookup, pos.x >> 4, pos.z >> 4, &*blocks);
+                        }
+                    }
+                    light->discard_pending();
+                } else {
+                    (void)light->propagate(light_chunks);
+                }
                 perf->enter(perf_was);
             }
         }  // ── end perf ──

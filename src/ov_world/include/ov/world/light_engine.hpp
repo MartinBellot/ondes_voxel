@@ -96,6 +96,12 @@ public:
     /// Edits waiting for `propagate`.
     [[nodiscard]] usize pending() const noexcept;
 
+    /// The positions themselves, and forgetting them — for a caller that
+    /// repairs the light some other way (the server's full-recompute
+    /// measurement mode, `OV_LIGHT_FULL=1`).
+    [[nodiscard]] std::span<const BlockPos> pending_positions() const noexcept;
+    void                                    discard_pending() noexcept;
+
     /// Bring the light of every loaded chunk in line with the edits noted since
     /// the last call. Sections whose light turned uniform are compacted.
     LightStats propagate(LightChunkSource& chunks);

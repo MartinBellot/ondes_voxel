@@ -541,6 +541,12 @@ void LightEngine::block_changed(BlockPos pos) { impl_->pending.push_back(pos); }
 
 usize LightEngine::pending() const noexcept { return impl_->pending.size(); }
 
+std::span<const BlockPos> LightEngine::pending_positions() const noexcept {
+    return impl_->pending;
+}
+
+void LightEngine::discard_pending() noexcept { impl_->pending.clear(); }
+
 LightStats LightEngine::propagate(LightChunkSource& chunks) { return impl_->propagate(chunks); }
 
 void LightEngine::light_chunk(Chunk& chunk, bool keep_sky) { impl_->light_chunk(chunk, keep_sky); }

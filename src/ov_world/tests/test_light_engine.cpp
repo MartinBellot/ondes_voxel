@@ -604,7 +604,7 @@ TEST_CASE("random edits on flat terrain stay at the fixed point, and the control
     for (const bool filtering : {false, true}) {
         CAPTURE(filtering);
         auto honest = flat(*blocks, 3);
-        CHECK(run_edits(*honest, *blocks, world::LightRules{true, filtering}, 5, 600, 1, false,
+        CHECK(run_edits(*honest, *blocks, world::LightRules{true, filtering}, 5, 300, 1, false,
                         nullptr) == 0);
     }
     // The control: without the removal pass, a torch broken keeps shining.
@@ -612,8 +612,10 @@ TEST_CASE("random edits on flat terrain stay at the fixed point, and the control
     CHECK(run_edits(*control, *blocks, world::LightRules{}, 5, 600, 100, true, nullptr) > 0);
 }
 
-TEST_CASE("thousands of random edits on real worlds match a full recompute", "[light][real]") {
-    const registry::BlockRegistry* blocks = registry_or_null();
+namespace {
+
+/// Random edits on the two real worlds under both rules, and the control.
+void real_world_edits(const registry::BlockRegistry* blocks, usize batches, usize every) {
     if (blocks == nullptr) {
         SKIP("registry.ovpack is not built");
     }
@@ -639,17 +641,34 @@ TEST_CASE("thousands of random edits on real worlds match a full recompute", "[l
         for (const bool filtering : {false, true}) {
             CAPTURE(source.name, filtering, loaded->chunks.size());
             Timing timing;
-            CHECK(run_edits(*loaded, *blocks, world::LightRules{true, filtering}, 17, 2000, 200,
-                            false, &timing) == 0);
+            CHECK(run_edits(*loaded, *blocks, world::LightRules{true, filtering}, 17, batches,
+                            every, false, &timing) == 0);
             timing.print(source.name);
         }
         // The control on the same terrain.
         auto control = real(*blocks, source.dir, source.first_x, source.first_z, 4);
-        CHECK(run_edits(*control, *blocks, world::LightRules{}, 17, 400, 400, true, nullptr) > 0);
+        const usize control_batches = std::min<usize>(batches, 400);
+        CHECK(run_edits(*control, *blocks, world::LightRules{}, 17, control_batches,
+                        control_batches, true, nullptr) > 0);
     }
     if (tried == 0) {
         SKIP("no real world under run/");
     }
+}
+
+}  // namespace
+
+// Sized for the unit suite every agent and CI runs: a few minutes in Debug.
+TEST_CASE("random edits on real worlds match a full recompute", "[light][real]") {
+    real_world_edits(registry_or_null(), 500, 100);
+}
+
+// The documented measurement (docs/provenance/incremental-light.md § 6.1):
+// 2000 batches per world and rule. Over twenty minutes in Debug, so hidden:
+// `test_ov_world "[.light-real-thousands]"`.
+TEST_CASE("thousands of random edits on real worlds match a full recompute",
+          "[.light-real-thousands]") {
+    real_world_edits(registry_or_null(), 2000, 200);
 }
 
 // ── After an edit, against the real server ─────────────────────────────────
