@@ -53,6 +53,7 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`rendu-parite.md`](provenance/rendu-parite.md) | Le rendu mesuré contre le vrai client : 12 800/12 800 texels de lightmap, l'AO du jeu, et un sRGB caché qui délavait l'herbe |
 | [`villageois.md`](provenance/villageois.md) | Métiers, commerce et niveaux : 4298/4298 offres vanilla retrouvées, et l'ordre d'un `HashSet` Java qui se voit à l'écran |
 | [`mobs-2.md`](provenance/mobs-2.md) | La loi de marche, l'apparition par biome, douze espèces, et les monstres qui n'apparaissaient jamais en surface la nuit |
+| [`mobs-3.md`](provenance/mobs-3.md) | Le coup des mobs hostiles (22/22 cellules difficulté × armure), le despawn mesuré, les mobs dans `entities/`, et le villageois zombie — et des zombies qui ne voyaient pas les joueurs |
 | [`nether.md`](provenance/nether.md) | Le Nether à 99,9 %, des portails là où le jeu les met, et le bruit de l'Overworld qui lisait ses octaves à l'envers |
 | [`son.md`](provenance/son.md) | Les sons de 1003 blocs et 79 créatures, relevés sur le fil, et le client qui les joue |
 | [`elevage.md`](provenance/elevage.md) | Veaux, agneaux et poussins : reproduction à 59-62 ticks, couleurs héritées, et une vitesse de marche qui n'est pas l'attribut divisé par deux |
