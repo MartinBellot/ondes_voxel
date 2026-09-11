@@ -53,6 +53,7 @@
 #include "tick_profile.hpp"  // ── perf ──
 #include "relight.hpp"       // ── perf ──
 #include "sounds.hpp"  // ── sound ──
+#include "destroy_stages.hpp"  // ── breaking ──
 #include "agriculture.hpp"  // ── agriculture ──
 #include "weather_session.hpp"  // ── weather ──
 #include "ov/world/chunk.hpp"
@@ -663,6 +664,8 @@ struct Player {
     i32  dig_y{0};
     i32  dig_z{0};
     i64  dig_started_tick{0};
+    /// ── breaking ── What the others were last told about this dig.
+    DestroyStageState destroy_stage;
 
     /// Health, hunger and experience, and the packets they owe this client.
     /// Everything about it lives in survival_session.{hpp,cpp}.
@@ -3379,6 +3382,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             // nullptr, not the attacker's connection: a player has to see their
             // own arm swing, and the client does not draw it for itself.
             broadcast(nullptr, id, payload);
+        };
+        io.broadcast_others = [&](i32 id, std::span<const u8> payload) {  // ── breaking ──
+            broadcast(who.connection.get(), id, payload);
         };
         io.hurt_entity = [&](i32 entity_id, f32 damage, bool /*critical*/) {
             return hurt_mob(who, entity_id, damage, held_weapon(who).looting);
@@ -8478,6 +8484,28 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // ── end survival ───────────────────────────────────────────────────
 
         perf->enter(TickPhase::Digs);  // ── perf ──
+        {  // ── breaking ── the cracks the others see (destroy_stages.hpp)
+            std::unique_lock stage_lock{players_mutex, std::try_to_lock};
+            if (stage_lock.owns_lock()) {
+                for (auto& [key, digger] : players) {
+                    const bool counting = digger.digging || digger.delayed_dig;
+                    const net::WirePosition where{digger.dig_x, digger.dig_y, digger.dig_z};
+                    // The start was recorded on the network thread a tick
+                    // early, so the elapsed count already holds vanilla's +1.
+                    const f32 count =
+                        counting ? dig_progress_for(digger, where) *
+                                       static_cast<f32>(clock.tick_count() - digger.dig_started_tick)
+                                 : 0.0F;
+                    if (const auto stage = next_destroy_stage(digger.destroy_stage, digger.entity_id,
+                                                              counting, where, count)) {
+                        sound_host.send_near(key, Vec3d{where.x + 0.5, where.y + 0.5, where.z + 0.5},
+                                             kDestroyStageRadius,
+                                             net::clientbound::kSetBlockDestroyStage,
+                                             net::encode_block_destroy_stage(*stage));
+                    }
+                }
+            }
+        }
         {  // ── commands: a delayed dig only ever starts in survival ──
             std::unique_lock dig_lock{players_mutex, std::try_to_lock};
             if (dig_lock.owns_lock()) {
@@ -8502,6 +8530,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         static_cast<f32>(clock.tick_count() - digger.dig_started_tick);
                     if (progress * elapsed >= 1.0F) {
                         digger.delayed_dig = false;
+                        forget_destroy_stage(digger.destroy_stage);  // ── breaking ── no -1 here
                         std::vector<ItemEntity> dropped;
                         drop_loot(digger, where, dropped);
                         registry::BlockStateId broken{};  // ── sound ──

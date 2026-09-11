@@ -43,6 +43,12 @@ struct CombatIo {
     /// attacker has to see their own swing.
     std::function<void(i32 packet_id, std::span<const u8> payload)> broadcast;
 
+    /// ── breaking ── To every client that can see this player *except* its
+    /// own. A Swing Arm reaches the others only: on a real 1.20.1 server the
+    /// swinger received no Entity Animation (docs/provenance/cassage-bloc.md).
+    /// Unset, on_swing falls back to `broadcast`.
+    std::function<void(i32 packet_id, std::span<const u8> payload)> broadcast_others;
+
     /// Hurt an entity. Returns false when there is no such entity, which is not
     /// an error: a client can name one that died on the tick it swung.
     std::function<bool(i32 entity_id, f32 damage, bool critical)> hurt_entity;
