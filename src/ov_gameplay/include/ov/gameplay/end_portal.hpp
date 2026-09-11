@@ -16,9 +16,9 @@
 //     `end_portal`, at the frames' height;
 //   * an entity whose box meets a portal block's shape — the slab from 6/16 to
 //     12/16 of the block — goes to the End at once: no wait, no cooldown;
-//   * it arrives at (100.5, 50, 0.5), facing yaw 90, over a 5 x 5 obsidian
-//     platform at y = 48 — two below the spawn point, measured — whose three
-//     layers above (49..51) are cleared to air; rebuilt on every arrival.
+//   * it arrives at (100.5, 49, 0.5), facing yaw 90, on a 5 x 5 obsidian
+//     platform at y = 48 whose three layers above (49..51) are cleared to
+//     air; rebuilt on every arrival. Both measured.
 //
 // The arrival and the platform are measured against the real server by
 // scripts/measure_end_portal.py (docs/provenance/end.md).
@@ -37,7 +37,9 @@
 namespace ov::gameplay {
 
 /// Where an entity crossing into the End is put: the block it stands in.
-inline constexpr BlockPos kEndSpawnPoint{100, 50, 0};
+/// Measured on the real server: the arrival is (100.5, 49.0, 0.5), on the
+/// platform's obsidian at y = 48.
+inline constexpr BlockPos kEndSpawnPoint{100, 49, 0};
 
 /// The yaw a player arrives with.
 inline constexpr f32 kEndArrivalYaw = 90.0F;
@@ -97,8 +99,8 @@ public:
     /// Does a box meet the shape of an end portal block in `level`?
     [[nodiscard]] bool box_in_portal(const world::LevelView& level, const AABB& box) const;
 
-    /// The arrival platform round `spawn`: obsidian two below it, three layers
-    /// of air over that, five by five.
+    /// The arrival platform round `spawn`: obsidian under it, the block it
+    /// stands in and the two above cleared to air, five by five.
     void build_platform(world::LevelWriter& level, BlockPos spawn = kEndSpawnPoint) const;
 
     /// The exit portal — the game's `end_podium` — with its top ring at

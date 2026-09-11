@@ -208,7 +208,7 @@ TEST_CASE("the twenty gateways are on a circle of radius 96", "[gameplay][end]")
 
 TEST_CASE("the arrival platform: obsidian at y = 48 under three layers of air", "[gameplay][end]") {
     // Measured on the real server (scripts/measure_end_portal.py): 25 obsidian
-    // at y = 48 for the spawn point (100, 50, 0).
+    // at y = 48, the player arriving at (100.5, 49.0, 0.5).
     const EndPortalRules rules{blocks()};
     MapLevel             level;
     const auto           stone = blocks().default_state(*blocks().find_block("minecraft:end_stone"));

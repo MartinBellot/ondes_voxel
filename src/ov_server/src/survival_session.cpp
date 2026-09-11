@@ -316,7 +316,7 @@ bool SurvivalSession::perform_respawn(const SurvivalPlayer& player, const Surviv
         // metadata both — leaves the client showing the corpse's health bar
         // until something else happens to change it.
         respawn.data_kept       = 0;
-        respawn.death_dimension = std::string_view{"minecraft:overworld"};
+        respawn.death_dimension = std::string_view{death_dimension};  // ── end ──
         respawn.death_position  = net::WirePosition{static_cast<i32>(std::floor(player.x)),
                                                     static_cast<i32>(std::floor(player.y)),
                                                     static_cast<i32>(std::floor(player.z))};

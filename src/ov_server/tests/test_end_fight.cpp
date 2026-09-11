@@ -198,12 +198,26 @@ TEST_CASE("a death dealt between two ticks is carried out on the next", "[end]")
     sent.clear();
     CHECK_FALSE(session.tick(player, io, gameplay::Difficulty::Normal, true, 0.0).died);
     CHECK(std::ranges::count(sent, net::clientbound::kCombatDeath) == 0);
+
+    // The Respawn names the level of the death: the End, as the game's does.
+    session.death_dimension = "minecraft:the_end";
+    std::vector<u8> respawn;
+    const SurvivalIo capture{.send = [&](i32 id, std::span<const u8> payload) {
+                                 if (id == net::clientbound::kRespawn) {
+                                     respawn.assign(payload.begin(), payload.end());
+                                 }
+                             },
+                             .broadcast = [](i32, std::span<const u8>) {}};
+    SurvivalOutcome back;
+    REQUIRE(session.perform_respawn(player, capture, back, 0));
+    const std::string bytes(respawn.begin(), respawn.end());
+    CHECK(bytes.find("minecraft:the_end") != std::string::npos);
 }
 
 TEST_CASE("the End's arrival and its chunks", "[end]") {
     const EndArrival arrival = end_arrival();
     CHECK(arrival.position.x == 100.5);
-    CHECK(arrival.position.y == 50.0);
+    CHECK(arrival.position.y == 49.0);  // measured: on the obsidian at y = 48
     CHECK(arrival.position.z == 0.5);
     CHECK(arrival.yaw == 90.0F);
     const auto chunks = end_platform_chunks();

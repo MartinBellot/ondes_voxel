@@ -208,9 +208,15 @@ class Ender(Probe):
         state << 12 | x << 8 | z << 4 | y. Whether a boolean follows the
         position is decided by which reading consumes the payload exactly."""
         packed_section = struct.unpack_from(">q", payload, 0)[0]
-        sx = packed_section >> 42
-        sy = packed_section << 44 >> 44
-        sz = packed_section << 22 >> 42
+
+        def signed(value: int, bits: int) -> int:
+            return value - (1 << bits) if value >= 1 << (bits - 1) else value
+
+        # x 22 bits, z 22 bits, y 20 bits, high to low. Python's integers do
+        # not wrap, so the fields are masked, not shifted into place.
+        sx = signed((packed_section >> 42) & 0x3FFFFF, 22)
+        sz = signed((packed_section >> 20) & 0x3FFFFF, 22)
+        sy = signed(packed_section & 0xFFFFF, 20)
 
         def varlong(buf: bytes, i: int) -> tuple[int, int]:
             value, shift = 0, 0

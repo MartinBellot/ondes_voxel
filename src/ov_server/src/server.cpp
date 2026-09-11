@@ -8407,6 +8407,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     if (!outcome.died) {
                         continue;
                     }
+                    // ── end ── The Respawn's death location names this level.
+                    who.survival.death_dimension = std::string{dimension_info(who.dimension).name};
                     // ── effects: gone with the body; Respawn tells the client ──
                     who.effects.on_death();
                     OV_LOG_INFO("{} died at {:.1f} {:.1f} {:.1f}, dropping {} experience",

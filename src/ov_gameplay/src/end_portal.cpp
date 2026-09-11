@@ -303,14 +303,14 @@ bool EndPortalRules::box_in_portal(const world::LevelView& level, const AABB& bo
 }
 
 void EndPortalRules::build_platform(world::LevelWriter& level, BlockPos spawn) const {
-    // Obsidian two below the spawn point, air on the three layers above it.
-    // Measured on the real server: 25 obsidian at y = 48 for a spawn point at
-    // y = 50 — not one below it, which is what older descriptions give.
+    // Obsidian under the spawn point, air in it and on the two layers above.
+    // Measured on the real server: 25 obsidian at y = 48, the player arriving
+    // at y = 49.
     for (i32 dz = -2; dz <= 2; ++dz) {
         for (i32 dx = -2; dx <= 2; ++dx) {
-            for (i32 dy = -2; dy <= 1; ++dy) {
+            for (i32 dy = -1; dy <= 2; ++dy) {
                 level.set_block(BlockPos{spawn.x + dx, spawn.y + dy, spawn.z + dz},
-                                dy == -2 ? obsidian_ : registry::kAirState);
+                                dy == -1 ? obsidian_ : registry::kAirState);
             }
         }
     }
