@@ -23,6 +23,7 @@ Ce dossier décrit ce qui est branché, **mesuré contre le vrai serveur 1.20.1*
 | Conversions par la foudre | cochon → piglin zombifié, villageois → sorcière, creeper chargé (métadonnée 17), mooshroom rouge ⇄ marron sans dégât, tortue tuée | cochon, villageois, creeper, tortue ; mooshroom **nommé** |
 | Dégâts d'un éclair | 5 (vache 10 → 5), **un coup par flash** (zombie 20 → 15,06 → 10,14 → 5,22) | un coup par tick allumé, fenêtre d'invulnérabilité de `MobCombat` |
 | Seuils jour/nuit d'un lit | 12541 / 12542, 23459 / 23460 ; pluie 12009 / 12010, 23991 / 23992 ; orage de midi : nuit | **identiques** (voir § 5.1) |
+| Conditions d'un lit (portée, obstruction, monstres, occupé), pose, réveil, réapparition | 38 cas sur le vrai serveur | **38 / 38** même réponse (§ 5.4) ; l'explosion dans le Nether non mesurée |
 
 Reproduire : `python3 scripts/measure_weather.py [draws sleep precip lightning strike]` (sous
 `lockf /tmp/ov-vanilla.lock`), `python3 scripts/analyse_weather.py`,
@@ -250,14 +251,31 @@ ses clics, piège 2 du § 8) :
 * `playersSleepingPercentage 50`, un couché sur deux : `sleep.skipping_night` aux deux, et l'heure
   relue juste après le réveil vaut 41 — le multiple de 24 000 suivant, plus le temps de la requête.
 
-Les seuils jour/nuit, la portée, l'obstruction (verre, dalle), les monstres à 8,2 / 8,4 blocs,
-le lit occupé et l'explosion dans le Nether sont dans la même campagne ; ses deux premières passes
-ont été perdues au piège 2 et **la troisième attendait encore le verrou de la machine** à l'écriture
-de ce paragraphe. Nos réponses à ces cas sont fixées par `test_weather.cpp` (seuils du wiki,
-boîte des monstres, portée 3/2, verre et dalle qui n'étouffent pas) ; leur comparaison au vrai
-serveur est ce qui reste à relire une fois la passe finie :
-`python3 scripts/analyse_weather.py` imprime, cas par cas, « couché ? », « téléportation
-confirmée ? » (une passe où ce champ est faux n'a rien mesuré) et les clés de traduction reçues.
+Puis la campagne complète, troisième passe (les deux premières perdues au piège 2 ; celle-ci a
+toutes ses téléportations confirmées). **Chaque cas donne la réponse que nos règles donnent** :
+
+| Cas | Vanilla | Nous |
+|---|---|---|
+| ciel clair 1000 / 12541 / 12542 / 23459 / 23460 | jour / jour / **nuit** / nuit / jour | identique |
+| pluie 12009 / 12010 / 23991 / 23992 / 6000 | jour / **nuit** / nuit / jour / jour | identique |
+| orage 6000 et 1000 | nuit | identique |
+| portée : 3,0 / 3,1 en x et en z ; 2,0 / 3,0 en y | couché / `too_far_away` | identique |
+| pierre au-dessus de la tête ou du pied ; verre ; dalle | `obstructed` ; couché ; couché | identique |
+| zombie à 8,2 / 8,4 (devant, de côté), 8,2 / 9,2 (derrière), +4,9 / +5,1 | `not_safe` / couché | identique (boîte ±8, ±5) |
+| piglin zombifié à 2 blocs | couché | identique |
+| creeper, araignée, enderman à 6 blocs | `not_safe` | identique |
+| lit pris par l'autre sonde | `block.minecraft.bed.occupied` en barre d'action | identique |
+| métadonnées couché / levé | 6 = 2 et 14 = (5, −60, 0) / 6 = 0 et 14 vide | identique |
+| 100 ticks couché, cycle actif, pluie | réveil (animation 2), heure 18 021 → **61**, pluie arrêtée et nouvelle attente tirée (rainTime 70 554) | identique (24 000, météo remise à zéro puis retirée) |
+| mort avec le lit | réapparu en **(5,5 ; −60 ; −0,5)** | notre position debout, au bloc près |
+| mort sans le lit | Game Event **0**, puis le point du monde | identique |
+
+Au premier coucher, vanilla envoie aussi l'annonce du progrès (`chat.type.advancement.task`) —
+nommé, non fait. **Non mesuré** : l'explosion d'un lit dans le Nether — la sonde envoyée dans le
+Nether n'a reçu aucun paquet Explosion ; la règle reste en test unitaire.
+
+`python3 scripts/analyse_weather.py` réimprime ce tableau depuis `.scratch/weather-oracle.json`,
+avec « téléportation confirmée ? » par cas : une passe où ce champ est faux n'a rien mesuré.
 
 ---
 
