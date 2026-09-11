@@ -96,6 +96,18 @@ au premier passage, soit 6 cas et 28 929 assertions. **Aucun crash trouvé** :
 les décodeurs existants bornaient déjà leurs comptes avant d'allouer. Le fuzz
 n'a donc rien corrigé ; il empêche que ça régresse.
 
+Une campagne longue (`OV_FUZZ_SEED=0x1CEB00DA`, `OV_FUZZ_ITERATIONS=100000`) a
+été **arrêtée à la main** après 20 minutes, dans le cas des mutations : environ
+79 000 paquets mutés passés à tous les décodeurs, sans erreur ASan ni UBSan
+(`halt_on_error` aurait arrêté au premier). Elle n'a pas été menée à son terme.
+Une seconde graine (`0xBADC0FFEE`) aux réglages par défaut passe aussi, en entier
+(6 cas, 28 694 assertions).
+
+**Coût** : 4 à 7 s en Debug. Sous ASan sur macOS, environ 100 s de CPU (dont 70
+de système), la moitié mangée par les octets aléatoires longs. C'est à
+surveiller dans le job CI *Sanitizers* : si le temps devient gênant, baisser
+`OV_FUZZ_ITERATIONS` pour ce job plutôt que dans le code.
+
 `protocol_matrix.py` ignore les fichiers `fuzz_*` : un harnais qui appelle tous
 les décodeurs sans vérifier ce qu'ils rendent marquerait chaque paquet « testé ».
 
