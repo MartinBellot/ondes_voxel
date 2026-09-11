@@ -88,6 +88,14 @@ struct ProjectileHost {
     std::function<void(Vec3d at, i32 value)> spawn_orb;
     /// Put a stack on the ground (a mob an arrow killed).
     std::function<void(Vec3d at, const net::ItemStack& stack)> drop_item;
+    // ── brewing ──
+    /// A splash or lingering potion broke here. `target` is what it hit
+    /// directly, 0 for a block.
+    std::function<void(Vec3d at, const net::ItemStack& potion, i32 target, bool target_is_player)>
+        potion_broke;
+    /// An arrow's hit landed on `target`. `arrow` is what a pickup would give
+    /// back — a tipped arrow carries its potion there.
+    std::function<void(const net::ItemStack& arrow, i32 target, bool target_is_player)> arrow_hit;
 };
 
 /// What one tick did, for the log and the end-to-end check.
@@ -208,6 +216,8 @@ private:
 
     /// What a stuck arrow or trident gives back, by wire id.
     std::unordered_map<i32, net::ItemStack> pickup_items_;
+    /// What a thrown potion holds, by wire id. ── brewing ──
+    std::unordered_map<i32, net::ItemStack> potion_items_;
 
     /// Each skeleton's bow: ticks until the next arrow while it sees a player.
     std::unordered_map<i32, i32>  skeletons_;

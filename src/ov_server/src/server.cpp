@@ -71,6 +71,7 @@
 // ── tnt and gravity ─────────────────────────────────────────────────
 #include "tnt_gravity.hpp"
 #include "projectiles.hpp"  // ── projectiles ──
+#include "brewing_session.hpp"  // ── brewing ──
 #include "husbandry.hpp"    // ── husbandry ──
 
 #include <fmt/format.h>
@@ -1024,6 +1025,8 @@ struct Player {
     /// `window_open` below, which is the chest's: the two screens obey
     /// different rules and sharing one flag would make a click land in both.
     std::optional<Workbench> bench;
+    // ── brewing ── the brewing stand screen, window 3.
+    std::optional<BrewingWindow> brewing_window;
 
     /// The container this player has open, if any.
     u8             window_id{0};
@@ -2175,6 +2178,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     std::optional<TntGravity> tnt_gravity;
     // ── projectiles ──
     std::optional<Projectiles> projectiles;
+    std::optional<Brewing>     brewing;  // ── brewing ──
+    std::vector<ChunkPos>      brewing_chunks;  // ── brewing ──
     // ── husbandry ──
     std::optional<Husbandry> husbandry;
 
@@ -2619,6 +2624,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         world_ticks->set_extension(&*tnt_gravity);
         // ── projectiles ──
         projectiles.emplace(*registries, *blocks, mob_combat ? &*mob_combat : nullptr);
+        brewing.emplace(*registries);  // ── brewing ──
+        brewing_chunks.reserve(1024);  // ── brewing ──
         // ── husbandry ──
         husbandry.emplace(*registries, *blocks);
         tick_broadcasts.reserve(4096);
@@ -2873,6 +2880,59 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         };
         return host;
     };
+
+    // ── brewing ─────────────────────────────────────────────────────────────
+    // What a brewing stand reaches outside itself for (brewing_session.hpp).
+    // Built once; every caller holds players_mutex then chunk_mutex.
+    StandHost brewing_stand_host;
+    brewing_stand_host.chunk      = [&](i32 cx, i32 cz) { return chunk_if_resident(cx, cz); };
+    brewing_stand_host.mark_dirty = [&](i32 cx, i32 cz) { dirty_chunks.insert(chunk_key(cx, cz)); };
+    brewing_stand_host.set_bottles = [&](BlockPos at, std::array<bool, 3> bottles) {
+        world::Chunk* chunk = blocks ? chunk_if_resident(at.x >> 4, at.z >> 4) : nullptr;
+        if (chunk == nullptr) {
+            return;
+        }
+        const net::WirePosition      where{at.x, at.y, at.z};
+        const registry::BlockStateId before = block_at(where);
+        registry::BlockStateId       state  = before;
+        constexpr std::array<std::string_view, 3> kNames{"has_bottle_0", "has_bottle_1",
+                                                         "has_bottle_2"};
+        for (usize i = 0; i < kNames.size(); ++i) {
+            const auto property = blocks->find_property(blocks->block_of(state), kNames[i]);
+            if (!property) {
+                return;
+            }
+            for (u16 v = 0; v < property->values.size(); ++v) {
+                if (property->values[v] == (bottles[i] ? "true" : "false")) {
+                    state = blocks->with_property(state, *property, v);
+                }
+            }
+        }
+        if (state == before) {
+            return;
+        }
+        // `write_block`: a property change keeps the block entity — the stand's
+        // potions — as vanilla's `setBlock` does.
+        write_block(*chunk, at.x, at.y, at.z, state);
+        dirty_chunks.insert(chunk_key(at.x >> 4, at.z >> 4));
+        broadcast(nullptr, net::clientbound::kBlockUpdate,
+                  net::encode_block_update(where, static_cast<i32>(state.value())));
+    };
+    brewing_stand_host.drop = [&](BlockPos at, const net::ItemStack& stack) {
+        ItemEntity item;
+        item.entity_id = next_entity_id.fetch_add(1);
+        item.uuid      = net::Uuid{0x4f564954454d0000ULL | static_cast<u64>(item.entity_id),
+                                   static_cast<u64>(item.entity_id) * 0x9E3779B97F4A7C15ULL};
+        item.x         = static_cast<f64>(at.x) + 0.5;
+        item.y         = static_cast<f64>(at.y) + 0.5;
+        item.z         = static_cast<f64>(at.z) + 0.5;
+        item.stack     = stack;
+        item.born      = server_tick.load(std::memory_order_relaxed);
+        std::vector<ItemEntity> one;
+        one.push_back(std::move(item));
+        publish_items(one);
+    };
+    // ── end brewing ─────────────────────────────────────────────────────────
 
     // ── combat and interaction ──────────────────────────────────────────────
     //
@@ -4666,6 +4726,20 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                             }
                         }
 
+                        // ── brewing ── a brewing stand opens its own screen
+                        if (brewing &&
+                            (!player.sneaking ||
+                             player.inventory[36 + static_cast<usize>(player.held_slot)].empty())) {
+                            const std::scoped_lock chunk_lock{chunk_mutex};
+                            if (brewing->open(brewing_stand_host,
+                                              BlockPos{place->position.x, place->position.y,
+                                                       place->position.z},
+                                              send_packet, player.inventory, player.brewing_window)) {
+                                player.window_open = false;
+                                return true;
+                            }
+                        }
+
                         // Clicking a container opens it rather than placing
                         // against it — **unless** the player is sneaking, which
                         // is vanilla's own rule and is what makes it possible to
@@ -5042,6 +5116,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     }
 
                     case net::serverbound::kCloseContainer: {
+                        player.brewing_window.reset();  // ── brewing ──
                         // ── crafting and smelting ───────────────────────────
                         if (player.bench) {
                             const std::scoped_lock chunk_lock{chunk_mutex};
@@ -5093,6 +5168,17 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
 
                         const auto click = net::parse_container_click(body);
                         if (!click) {
+                            return true;
+                        }
+                        // ── brewing ── the brewing stand's screen
+                        if (brewing && player.brewing_window &&
+                            click->window_id == player.brewing_window->window_id) {
+                            const std::scoped_lock chunk_lock{chunk_mutex};
+                            brewing->click(brewing_stand_host, *player.brewing_window, *click,
+                                           player.inventory, player.carried, send_packet,
+                                           [&](const net::ItemStack& stack) {
+                                               workbench_host(player, send_packet).drop(stack);
+                                           });
                             return true;
                         }
 
@@ -5927,6 +6013,39 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         ground_orbs.push_back(orb);
     };
     projectile_host.drop_item                 = tnt_host.drop_item;
+    // ── brewing ── what a broken potion, a cloud and a tipped arrow reach for
+    PotionHost potion_host;
+    potion_host.players = [&](std::vector<PotionPlayer>& out) {
+        for (const auto& [key, who] : players) {
+            if (who.connection && who.confirmed) {
+                out.push_back(PotionPlayer{who.entity_id, Vec3d{who.x, who.y, who.z},
+                                           !who.survival.awaiting_respawn &&
+                                               !who.survival.health.dead});
+            }
+        }
+    };
+    potion_host.affect = [&](i32 id, const EffectRule& rule) {
+        if (Player* who = projectile_player(id); who != nullptr) {
+            who->effects.with_target(who->survival, effect_io_for(*who), effect_bearer_for(*who),
+                                     rule);
+        }
+    };
+    potion_host.next_entity_id = [&] { return next_entity_id.fetch_add(1); };
+    potion_host.broadcast      = [&](i32 id, std::span<const u8> payload) {
+        broadcast(nullptr, id, payload);
+    };
+    projectile_host.potion_broke = [&](Vec3d at, const net::ItemStack& potion, i32 target,
+                                       bool is_player) {
+        if (brewing) {
+            brewing->potion_broke(potion_host, at, potion, target, is_player);
+        }
+    };
+    projectile_host.arrow_hit = [&](const net::ItemStack& arrow, i32 target, bool is_player) {
+        if (brewing) {
+            brewing->arrow_hit(potion_host, arrow, target, is_player);
+        }
+    };
+    // ── end brewing ──
     const ProjectileDeliver projectile_deliver = tnt_deliver;
     // ── end projectiles ─────────────────────────────────────────────────────
 
@@ -6311,6 +6430,38 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             }
         }
         // ── end agriculture ─────────────────────────────────────────
+
+        // ── brewing ── Every brewing stand in the loaded chunks, watched or
+        // not: a ticked block entity, like the furnace (brewing_session.hpp).
+        if (brewing) {
+            const std::scoped_lock brewing_pass{players_mutex, chunk_mutex};
+            brewing_chunks.clear();
+            chunks.for_each(
+                [&](ChunkPos pos, const world::Chunk&) { brewing_chunks.push_back(pos); });
+            const BrewingStats brewed =
+                brewing->tick_stands(brewing_stand_host, brewing_chunks, clock.tick_count());
+            if (brewed.brewed + brewed.refuelled > 0) {
+                OV_LOG_INFO("tick {}: {} stands, {} brewed, {} refuelled", clock.tick_count(),
+                            brewed.stands, brewed.brewed, brewed.refuelled);
+            }
+            for (auto& [key, player] : players) {
+                if (!player.brewing_window || !player.connection) {
+                    continue;
+                }
+                const auto send = [&](i32 id, std::span<const u8> payload) {
+                    if (const auto framed = net::encode_packet(id, payload)) {
+                        player.connection->send(*framed);
+                    }
+                };
+                if (!brewing->refresh(brewing_stand_host, *player.brewing_window, player.inventory,
+                                      player.carried, send)) {
+                    send(net::clientbound::kCloseContainer,
+                         net::encode_close_container(player.brewing_window->window_id));
+                    player.brewing_window.reset();
+                }
+            }
+        }
+        // ── end brewing ──
 
         // ── Containers: hoppers, droppers, dispensers ───────────────
         //
@@ -6699,6 +6850,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                      shots.picked_up);
                     }
                 }
+                // ── brewing: the lingering clouds ──
+                if (brewing) {
+                    brewing->tick_clouds(potion_host);
+                }
 
                 for (const i32 gone : mobs->removed_ids()) {
                     broadcast(nullptr, net::clientbound::kRemoveEntities,
@@ -6894,6 +7049,24 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         continue;
                     }
                     // ── end effects ─────────────────────────────────────────
+                    // ── brewing: a potion is drunk, and leaves its bottle ──
+                    if (!value && finished == "minecraft:potion" && registries) {
+                        const usize slot = 36 + static_cast<usize>(who.held_slot);
+                        const DrinkOutcome drunk =
+                            drink_potion(*registries, who.inventory[slot], !who.mortal(),
+                                         who.effects, who.survival, effect_io_for(who),
+                                         effect_bearer_for(who));
+                        if (drunk.give_bottle && item_registry) {
+                            (void)give_to_player(
+                                who, net::ItemStack{registries->protocol_id(*item_registry,
+                                                                            "minecraft:glass_bottle")
+                                                        .value_or(0),
+                                                    1,
+                                                    {}});
+                        }
+                        send_slot(who, slot);
+                        continue;
+                    }
                     if (!value) {
                         // Refused and named. A potion, a milk bucket and a
                         // chorus fruit all finish a use and none of them is
@@ -6908,8 +7081,26 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     // nutrition, in the game's order ──
                     (void)who.effects.on_consumed(finished, who.survival, effect_io_for(who),
                                                   effect_bearer_for(who));
+                    // ── brewing: a suspicious stew's effects are in its NBT ──
+                    const bool stew = finished == "minecraft:suspicious_stew";
+                    if (stew) {
+                        (void)eat_stew(who.inventory[36 + static_cast<usize>(who.held_slot)],
+                                       who.effects, who.survival, effect_io_for(who),
+                                       effect_bearer_for(who));
+                    }
                     if (who.mortal()) {  // ── commands: per player ──
                         consume_one_held(who);
+                    }
+                    if (stew && who.mortal() && registries && item_registry) {  // ── brewing ──
+                        // The bowl comes back into the hand (`stew` campaign).
+                        const usize slot = 36 + static_cast<usize>(who.held_slot);
+                        if (who.inventory[slot].empty()) {
+                            who.inventory[slot] = net::ItemStack{
+                                registries->protocol_id(*item_registry, "minecraft:bowl").value_or(0),
+                                1,
+                                {}};
+                            send_slot(who, slot);
+                        }
                     }
                     who.survival.send_state(SurvivalIo{
                         .send =

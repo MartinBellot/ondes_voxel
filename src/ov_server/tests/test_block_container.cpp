@@ -86,8 +86,20 @@ TEST_CASE("the catalogue answers for every container the server opens", "[contai
     CHECK(container_spec_for_block("minecraft:not_a_block") == nullptr);
 
     // A container this project does not model is *named*, not silently absent.
-    CHECK(container_spec_for_block("minecraft:brewing_stand") == nullptr);
-    CHECK(std::ranges::find(unmodelled_containers(), "minecraft:brewing_stand") !=
+    CHECK(container_spec_for_block("minecraft:ender_chest") == nullptr);
+    CHECK(std::ranges::find(unmodelled_containers(), "minecraft:ender_chest") !=
+          unmodelled_containers().end());
+
+    // ── brewing ── The brewing stand left that list: five slots, its own
+    // block entity type, and a screen that is brewing_session's, not the plain
+    // container window's.
+    const ContainerSpec* stand = container_spec_for_block("minecraft:brewing_stand");
+    REQUIRE(stand != nullptr);
+    CHECK(stand->entity_type == "minecraft:brewing_stand");
+    CHECK(stand->slots == 5);
+    CHECK(stand->workbench);
+    CHECK(stand->access == SidedAccess::BrewingStand);
+    CHECK(std::ranges::find(unmodelled_containers(), "minecraft:brewing_stand") ==
           unmodelled_containers().end());
 }
 

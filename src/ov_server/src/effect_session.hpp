@@ -95,6 +95,13 @@ public:
     /// Remove Entity Effect arrived at a vanilla death.
     void on_death();
 
+    // ── brewing ──
+    /// Run a rule against this player's effects — a drink, a splash, a cloud,
+    /// a tipped arrow, a stew — then send what changed, as `apply` does.
+    void with_target(SurvivalSession& survival, const EffectIo& io, const EffectBearer& bearer,
+                     const std::function<void(gameplay::ActiveEffects&, gameplay::EffectTarget&)>&
+                         rule);
+
     // ── player data ──
     /// Send what is pending now, before any tick: a player whose effects were
     /// read from their file is told at the join with the durations the file
