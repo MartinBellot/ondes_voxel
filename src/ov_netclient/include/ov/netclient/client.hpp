@@ -93,6 +93,9 @@ struct ClientEvents {
 
     /// The world's clock, when it was sent this poll.
     std::optional<i64> time_of_day;
+    /// The server sent the time negative: doDaylightCycle is off and the sun
+    /// stands still. Meaningful only with time_of_day.
+    bool time_frozen{false};
 
     // ── What an interface needs ─────────────────────────────────────────────
     //
