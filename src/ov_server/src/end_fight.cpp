@@ -2,6 +2,8 @@
 
 #include "end_fight.hpp"
 
+#include "entity_nbt.hpp"  // ── persistence ──
+
 #include "ov/base/log.hpp"
 #include "ov/gameplay/experience.hpp"
 #include "ov/io/byte_writer.hpp"
@@ -281,7 +283,12 @@ void EndFight::load(const nbt::Tag& fight) {
         }
     }
     // A fight whose dragon is dead has its arena: nothing to build on arrival.
-    started_ = killed_ && portal_.has_value();
+    // ── persistence ── Nor has one that began (`NeedsStateScanning` 0): its
+    // portal is in the blocks, its dragon and crystals in DIM1/entities, and
+    // a second start would build a new dragon and ten new crystals over them.
+    started_         = portal_.has_value() && (killed_ || !needs_scanning_);
+    awaiting_dragon_ = started_ && !killed_;
+    awaiting_ticks_  = 0;
     OV_LOG_INFO("end: DragonFight read — killed {}, previously killed {}, {} gateways left{}",
                 killed_, previously_killed_, gateways_.size(),
                 portal_ ? " , exit portal known" : "");
@@ -319,15 +326,23 @@ void EndFight::start(world::LevelWriter& level, i32 origin_top, const EndFightHo
     if (killed_) {
         return;
     }
-    spawn_dragon(host);
+    if (!dragon_) {  // ── persistence ── one may have come back from disk already
+        spawn_dragon(host);
+    }
     const auto spikes = worldgen::end_spikes(seed_);
     for (const worldgen::EndSpike& spike : spikes) {
         Crystal crystal;
-        crystal.entity_id   = host.reserve_entity_ids(1);
-        crystal.uuid        = next_uuid();
         crystal.position    = Vec3d{static_cast<f64>(spike.centre_x) + 0.5,
                                  static_cast<f64>(spike.height) + 1.0,
                                  static_cast<f64>(spike.centre_z) + 0.5};
+        // ── persistence ── a crystal read from DIM1/entities stands there.
+        if (std::ranges::any_of(crystals_, [&](const Crystal& c) {
+                return c.alive && (c.position - crystal.position).length_squared() < 1.0;
+            })) {
+            continue;
+        }
+        crystal.entity_id   = host.reserve_entity_ids(1);
+        crystal.uuid        = next_uuid();
         crystals_.push_back(crystal);
     }
     OV_LOG_INFO("end: the dragon fight starts — exit portal at ({}, {}, {}), the dragon at "
@@ -414,27 +429,7 @@ void EndFight::show_to(const std::function<void(i32, std::span<const u8>)>& send
     if (!started_) {
         return;
     }
-    if (dragon_) {
-        net::SpawnEntity spawn;
-        spawn.entity_id = dragon_id_;
-        spawn.uuid      = *dragon_uuid_;
-        spawn.type      = types_.dragon;
-        spawn.x         = dragon_->position().x;
-        spawn.y         = dragon_->position().y;
-        spawn.z         = dragon_->position().z;
-        spawn.yaw       = dragon_->wire_yaw();
-        spawn.head_yaw  = dragon_->wire_yaw();
-        send(net::clientbound::kSpawnEntity, net::encode_spawn_entity(spawn));
-        net::MetadataWriter fields;
-        fields.float_value(kMetadataHealth, dragon_->health());
-        fields.varint_value(kMetadataPhase, static_cast<i32>(dragon_->phase()));
-        if (dragon_->phase() == DragonPhase::Dying || dragon_->health() <= 0.0F) {
-            fields.pose_value(kMetadataPose, kPoseDying);
-        }
-        send(net::clientbound::kEntityMetadata,
-             net::encode_entity_metadata(dragon_id_, fields.take()));
-        send(kBossBarPacket, boss_bar_add());
-    }
+    send_dragon(send);
     for (const Crystal& crystal : crystals_) {
         if (crystal.alive) {
             send_crystal(crystal, send);
@@ -707,6 +702,17 @@ void EndFight::tick(world::LevelWriter& level, const EndFightHost& host) {
         blast(level, pending, host);
     }
     blasts_.clear();
+    // ── persistence ── A living dragon that has not come back from disk once
+    // the arena's entities are read: a new one, with the fight's UUID.
+    if (awaiting_dragon_ && !dragon_ && !killed_ && respawn_ticks_ < 0 && arena_read_ &&
+        ++awaiting_ticks_ >= kDragonRestoreWait) {
+        awaiting_dragon_ = false;
+        spawn_dragon(host);
+        send_dragon(host.broadcast);
+        OV_LOG_WARN("end: the dragon did not come back from DIM1/entities in {} ticks — a new "
+                    "one at (0, 128, 0)",
+                    kDragonRestoreWait);
+    }
     tick_respawn(level, host);
     tick_dragon(level, host);
     tick_crystals(level, host);
@@ -1534,6 +1540,230 @@ void EndFight::tick_respawn(world::LevelWriter& level, const EndFightHost& host)
             dragon_->crystal_destroyed(strafe_target(std::nullopt, true, *last));
         }
         OV_LOG_INFO("end: the dragon is back");
+    }
+}
+
+// ── persistence: DIM1/entities ──────────────────────────────────────────────
+
+namespace {
+
+[[nodiscard]] nbt::Tag float_list(std::initializer_list<f32> values) {
+    nbt::Tag list = nbt::Tag::make_list(nbt::TagType::Float);
+    for (const f32 value : values) {
+        (void)list.push(nbt::Tag{value});
+    }
+    return list;
+}
+
+[[nodiscard]] nbt::Tag empty_compounds(usize count) {
+    nbt::Tag list = nbt::Tag::make_list(nbt::TagType::Compound);
+    for (usize i = 0; i < count; ++i) {
+        (void)list.push(nbt::Tag::make_compound());
+    }
+    return list;
+}
+
+[[nodiscard]] ChunkPos chunk_of(Vec3d at) noexcept {
+    return ChunkPos{static_cast<i32>(std::floor(at.x)) >> 4, static_cast<i32>(std::floor(at.z)) >> 4};
+}
+
+}  // namespace
+
+void EndFight::send_dragon(const std::function<void(i32, std::span<const u8>)>& send) const {
+    if (!dragon_ || !dragon_uuid_) {
+        return;
+    }
+    net::SpawnEntity spawn;
+    spawn.entity_id = dragon_id_;
+    spawn.uuid      = *dragon_uuid_;
+    spawn.type      = types_.dragon;
+    spawn.x         = dragon_->position().x;
+    spawn.y         = dragon_->position().y;
+    spawn.z         = dragon_->position().z;
+    spawn.yaw       = dragon_->wire_yaw();
+    spawn.head_yaw  = dragon_->wire_yaw();
+    send(net::clientbound::kSpawnEntity, net::encode_spawn_entity(spawn));
+    net::MetadataWriter fields;
+    fields.float_value(kMetadataHealth, dragon_->health());
+    fields.varint_value(kMetadataPhase, static_cast<i32>(dragon_->phase()));
+    if (dragon_->phase() == DragonPhase::Dying || dragon_->health() <= 0.0F) {
+        fields.pose_value(kMetadataPose, kPoseDying);
+    }
+    send(net::clientbound::kEntityMetadata, net::encode_entity_metadata(dragon_id_, fields.take()));
+    send(kBossBarPacket, boss_bar_add());
+}
+
+std::optional<nbt::Tag> EndFight::dragon_nbt() const {
+    if (!dragon_ || !dragon_uuid_) {
+        return std::nullopt;
+    }
+    const gameplay::Dragon& dragon = *dragon_;
+    nbt::Tag out = dragon_saved_.compound() != nullptr ? dragon_saved_ : nbt::Tag::make_compound();
+    // `Rotation` is the entity's own yaw — the one the wire carries, the
+    // heading turned half round (dragon.hpp).
+    put_entity_base(out, "minecraft:ender_dragon", dragon.position(), dragon.velocity(),
+                    dragon.wire_yaw(), dragon.pitch(), *dragon_uuid_, false, i16{0});
+    (void)out.put("Health", nbt::Tag{std::max(dragon.health(), 0.0F)});
+    (void)out.put("DragonPhase", nbt::Tag{static_cast<i32>(dragon.phase())});
+    (void)out.put("DragonDeathTime", nbt::Tag{dragon.death_time()});
+    // The rest of a living entity's keys, as the real server wrote them for
+    // a summoned dragon.
+    default_to(out, "AbsorptionAmount", nbt::Tag{0.0F});
+    default_to(out, "HurtTime", nbt::Tag{i16{0}});
+    default_to(out, "HurtByTimestamp", nbt::Tag{i32{0}});
+    default_to(out, "DeathTime", nbt::Tag{i16{0}});
+    default_to(out, "FallFlying", nbt::Tag::make_bool(false));
+    default_to(out, "CanPickUpLoot", nbt::Tag::make_bool(false));
+    default_to(out, "LeftHanded", nbt::Tag::make_bool(false));
+    default_to(out, "PersistenceRequired", nbt::Tag::make_bool(false));
+    default_to(out, "HandItems", empty_compounds(2));
+    default_to(out, "ArmorItems", empty_compounds(4));
+    default_to(out, "HandDropChances", float_list({0.085F, 0.085F}));
+    default_to(out, "ArmorDropChances", float_list({0.085F, 0.085F, 0.085F, 0.085F}));
+    if (!out.contains("Brain")) {
+        nbt::Tag brain = nbt::Tag::make_compound();
+        (void)brain.put("memories", nbt::Tag::make_compound());
+        (void)out.put("Brain", std::move(brain));
+    }
+    return out;
+}
+
+nbt::Tag EndFight::crystal_nbt(const Crystal& crystal) const {
+    nbt::Tag out = nbt::Tag::make_compound();
+    put_entity_base(out, "minecraft:end_crystal", crystal.position, Vec3d{}, 0.0F, 0.0F,
+                    crystal.uuid, false, i16{0});
+    (void)out.put("ShowBottom", nbt::Tag::make_bool(crystal.show_bottom));
+    if (crystal.beam) {
+        nbt::Tag beam = nbt::Tag::make_compound();
+        (void)beam.put("X", nbt::Tag{crystal.beam->x});
+        (void)beam.put("Y", nbt::Tag{crystal.beam->y});
+        (void)beam.put("Z", nbt::Tag{crystal.beam->z});
+        (void)out.put("BeamTarget", std::move(beam));
+    }
+    return out;
+}
+
+bool EndFight::adopt_saved(const nbt::Tag& compound) {
+    const nbt::Tag* id = compound.find("id");
+    if (id == nullptr || host_ == nullptr || !host_->reserve_entity_ids) {
+        return false;
+    }
+    const Vec3d at = list_vec3(compound, "Pos");
+    if (id->as_string() == "minecraft:end_crystal") {
+        // One read twice — the fight's own start put one on the spike too —
+        // is one crystal, not two.
+        if (std::ranges::any_of(crystals_, [&](const Crystal& c) {
+                return c.alive && (c.position - at).length_squared() < 1.0;
+            })) {
+            OV_LOG_DEBUG("end: a crystal at ({:.1f}, {:.1f}, {:.1f}) is already there", at.x,
+                         at.y, at.z);
+            return true;
+        }
+        Crystal crystal;
+        crystal.entity_id   = host_->reserve_entity_ids(1);
+        crystal.uuid        = uuid_from(compound.find("UUID")).value_or(next_uuid());
+        crystal.position    = at;
+        crystal.show_bottom = get_bool(compound, "ShowBottom", true);
+        if (const nbt::Tag* beam = compound.find("BeamTarget"); beam != nullptr) {
+            crystal.beam = BlockPos{static_cast<i32>(get_i64(*beam, "X", 0)),
+                                    static_cast<i32>(get_i64(*beam, "Y", 0)),
+                                    static_cast<i32>(get_i64(*beam, "Z", 0))};
+        }
+        crystals_.push_back(crystal);
+        if (host_->broadcast) {
+            send_crystal(crystals_.back(), host_->broadcast);
+        }
+        recount_crystals();
+        return true;
+    }
+    // The dragon.
+    if (dragon_) {
+        OV_LOG_WARN("end: a second dragon read from DIM1/entities — the fight has one; dropped");
+        return true;
+    }
+    if (killed_ && respawn_ticks_ < 0) {
+        // A dragon in a fight that is over (a summoned one): not this fight's
+        // to run. Carried through untouched.
+        return false;
+    }
+    dragon_id_ = host_->reserve_entity_ids(9);
+    if (const auto uuid = uuid_from(compound.find("UUID"))) {
+        dragon_uuid_ = *uuid;
+    } else if (!dragon_uuid_) {
+        dragon_uuid_ = next_uuid();
+    }
+    bar_uuid_          = next_uuid();
+    const f32 health =
+        static_cast<f32>(get_f64(compound, "Health", static_cast<f64>(kDragonMaxHealth)));
+    const f32 wire_yaw = static_cast<f32>(list_f64(compound, "Rotation", 0));
+    dragon_.emplace(at, wire_yaw - 180.0F, health, previously_killed_);
+    const auto phase = std::clamp<i64>(get_i64(compound, "DragonPhase", 0), 0,
+                                       static_cast<i64>(DragonPhase::Hover));
+    dragon_->set_phase(static_cast<DragonPhase>(phase));
+    world_.sees      = sees_;
+    sent_health_     = health;
+    nearest_         = -1;
+    dragon_saved_    = compound;
+    awaiting_dragon_ = false;
+    awaiting_ticks_  = 0;
+    if (host_->broadcast) {
+        send_dragon(host_->broadcast);
+    }
+    OV_LOG_INFO("end: the dragon is back from disk at ({:.1f}, {:.1f}, {:.1f}), {} health, "
+                "phase {}",
+                at.x, at.y, at.z, health, gameplay::dragon_phase_name(dragon_->phase()));
+    return true;
+}
+
+void EndFight::positions(std::vector<Vec3d>& out) const {
+    if (dragon_) {
+        out.push_back(dragon_->position());
+    }
+    for (const Crystal& crystal : crystals_) {
+        if (crystal.alive) {
+            out.push_back(crystal.position);
+        }
+    }
+}
+
+void EndFight::save(std::vector<LooseEntity>& out) const {
+    if (auto dragon = dragon_nbt()) {
+        out.push_back(LooseEntity{dragon_->position(), std::move(*dragon)});
+    }
+    for (const Crystal& crystal : crystals_) {
+        if (crystal.alive) {
+            out.push_back(LooseEntity{crystal.position, crystal_nbt(crystal)});
+        }
+    }
+}
+
+void EndFight::release(const std::function<bool(ChunkPos)>& leaving,
+                       std::vector<LooseEntity>& out, std::vector<i32>& removed) {
+    if (dragon_ && leaving(chunk_of(dragon_->position()))) {
+        if (auto dragon = dragon_nbt()) {
+            out.push_back(LooseEntity{dragon_->position(), std::move(*dragon)});
+        }
+        removed.push_back(dragon_id_);
+        if (host_ != nullptr && host_->broadcast) {
+            host_->broadcast(kBossBarPacket, bar_packet(bar_uuid_, kBarRemove));
+        }
+        dragon_.reset();
+        nearest_         = -1;
+        awaiting_dragon_ = true;
+        awaiting_ticks_  = 0;
+    }
+    for (usize i = 0; i < crystals_.size(); ++i) {
+        Crystal& crystal = crystals_[i];
+        if (!crystal.alive || !leaving(chunk_of(crystal.position))) {
+            continue;
+        }
+        out.push_back(LooseEntity{crystal.position, crystal_nbt(crystal)});
+        removed.push_back(crystal.entity_id);
+        // Gone with its chunk, not destroyed: no blast, no lost health.
+        crystal.alive = false;
+        if (nearest_ == static_cast<i32>(i)) {
+            nearest_ = -1;
+        }
     }
 }
 

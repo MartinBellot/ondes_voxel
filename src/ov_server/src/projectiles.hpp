@@ -19,6 +19,7 @@
 // source a shot's spread is drawn from are only ever touched by one thread.
 #pragma once
 
+#include "entity_storage.hpp"  // ── persistence ──
 #include "mob_combat.hpp"
 
 #include "ov/entity/world.hpp"
@@ -110,7 +111,7 @@ struct ProjectileStats {
     usize expired{0};
 };
 
-class Projectiles {
+class Projectiles final : public EntityAdopter {
 public:
     /// `mob_combat` may be null: then a mob an arrow reaches is not hurt, and
     /// the arrow bounces off it.
@@ -153,11 +154,35 @@ public:
                                       const ProjectileDeliver& deliver);
 
     /// Is this entity type one this module spawns and speaks for?
-    [[nodiscard]] bool owns(i32 type) const noexcept;
+    [[nodiscard]] bool owns(i32 type) const noexcept override;
 
     /// The packets that make one of this module's entities appear.
     void spawn_packets(entity::EntityWorld& world, const entity::EntityState& state,
                        const ProjectileDeliver& deliver) const;
+
+    // ── persistence: EntityAdopter, called by EntityStorage ─────────────────
+    //
+    // An arrow, a spectral arrow, a trident: `life` (short), `shake`,
+    // `inGround`, `pickup`, `crit`, `ShotFromCrossbow`, `PierceLevel` (bytes),
+    // `inBlockState` (in the ground), `damage` (double), `SoundEvent`,
+    // `HasBeenShot`, `LeftOwner`, `Owner`; a tipped arrow's `Potion` and
+    // `CustomPotionEffects`, a spectral arrow's `Duration`, a trident's
+    // `Trident` item and `DealtDamage`. A snowball, an egg, a pearl, a bottle
+    // o' enchanting, a thrown potion: the base keys, `HasBeenShot`, `Owner`,
+    // and a potion's `Item`. Keys and types measured on the real server.
+
+    std::optional<entity::EntityHandle> adopt_saved(entity::EntityWorld& world,
+                                                    const nbt::Tag&      compound) override;
+    [[nodiscard]] std::optional<nbt::Tag> save_entity(entity::EntityWorld& world,
+                                                      entity::EntityHandle handle) const override;
+    void release(entity::EntityWorld& world, entity::EntityHandle handle) override;
+
+    /// The UUID of whoever shot a projectile, by wire id — the player's, for
+    /// the `Owner` a save writes. Unset: no `Owner` is written for a shot
+    /// made here.
+    void set_owner_lookup(std::function<std::optional<net::Uuid>(i32 id)> lookup) {
+        owner_uuid_ = std::move(lookup);
+    }
 
 private:
     /// A shot the network thread decided and the tick will spawn.
@@ -221,6 +246,10 @@ private:
     std::unordered_map<i32, net::ItemStack> pickup_items_;
     /// What a thrown potion holds, by wire id. ── brewing ──
     std::unordered_map<i32, net::ItemStack> potion_items_;
+    /// ── persistence ── The compound each projectile was read with, by wire
+    /// id, and who shot what.
+    std::unordered_map<i32, nbt::Tag>                  saved_;
+    std::function<std::optional<net::Uuid>(i32 id)>    owner_uuid_;
 
     /// Each skeleton's bow: ticks until the next arrow while it sees a player.
     std::unordered_map<i32, i32>  skeletons_;

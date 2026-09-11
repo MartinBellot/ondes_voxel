@@ -31,6 +31,7 @@
 
 #include "mob_combat.hpp"
 #include "slimes.hpp"
+#include "entity_storage.hpp"  // ── persistence ──
 #include "world_ticks.hpp"
 
 #include "ov/entity/world.hpp"
@@ -151,6 +152,21 @@ public:
 
     [[nodiscard]] usize size() const noexcept;
     [[nodiscard]] bool  spawning_ready() const noexcept { return spawning_ready_; }
+
+    // ── persistence ── DIM-1/entities, through an entity storage of its own.
+
+    /// The Nether's entity world: what its storage reads mobs into.
+    [[nodiscard]] entity::EntityWorld& world() noexcept;
+
+    /// The storage's reach into this module: a mob read from disk gets the
+    /// behaviour a spawned one gets (its brain, a blaze's volley, a ghast's
+    /// charge), keeps what it held (`HandItems`) and a magma cube its `Size`;
+    /// the stand-ins for the players are never saved. `host` must outlive
+    /// the result.
+    [[nodiscard]] EntityStorageHost storage_host(const NetherMobHost& host);
+
+    /// Mobs the storage took away with their chunks: forget their state.
+    void forget(std::span<const i32> ids);
 
     static constexpr i32 kFirstId = 3'000'000;
 

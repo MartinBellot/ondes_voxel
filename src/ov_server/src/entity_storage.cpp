@@ -128,8 +128,9 @@ template<typename Lookup>
 }  // namespace
 
 EntityStorage::EntityStorage(const registry::Registries& registries,
-                             std::filesystem::path directory)
+                             std::filesystem::path directory, bool spawn_mobs)
     : registries_{&registries},
+      spawn_mobs_{spawn_mobs},
       types_{registries.find("minecraft:entity_type")},
       items_{registries.find("minecraft:item")},
       directory_{std::move(directory)} {}
@@ -172,16 +173,33 @@ EntityAdopter* EntityStorage::adopter_of(i32 type) const noexcept {
     return nullptr;
 }
 
+LooseAdopter* EntityStorage::loose_of(std::string_view type) const noexcept {
+    for (LooseAdopter* adopter : loose_) {
+        if (adopter->owns_type(type)) {
+            return adopter;
+        }
+    }
+    return nullptr;
+}
+
 bool EntityStorage::saved(const entity::EntityState& state, const EntityStorageHost& host) const {
     if (state.removed || !types_) {
         return false;
     }
+    // An adopted entity is not a living one: a minecart has no health. And
+    // an adopter's type is saved even where the host calls it transient —
+    // the TNT and the arrows, which despawn must leave alone.
+    if (adopter_of(state.type) != nullptr) {
+        return true;
+    }
     if (host.transient && host.transient(state.type)) {
         return false;
     }
-    // An adopted entity is not a living one: a minecart has no health.
-    if (adopter_of(state.type) != nullptr) {
-        return true;
+    if (host.ignore && host.ignore(state.network_id)) {
+        return false;
+    }
+    if (!spawn_mobs_) {
+        return false;
     }
     if (state.health <= 0.0F) {
         return false;
@@ -213,6 +231,20 @@ void EntityStorage::read_before_write(entity::EntityWorld& world, MobRecords& re
             continue;
         }
         const ChunkPos chunk = chunk_of(state->position);
+        const i64      key   = key_of(chunk);
+        if (loaded_.contains(key) || (only != nullptr && !only->contains(key)) ||
+            std::ranges::find(unread, chunk) != unread.end()) {
+            continue;
+        }
+        unread.push_back(chunk);
+    }
+    // ── persistence ── and where the loose adopters' entities stand.
+    loose_positions_.clear();
+    for (const LooseAdopter* adopter : loose_) {
+        adopter->positions(loose_positions_);
+    }
+    for (const Vec3d& at : loose_positions_) {
+        const ChunkPos chunk = chunk_of(at);
         const i64      key   = key_of(chunk);
         if (loaded_.contains(key) || (only != nullptr && !only->contains(key)) ||
             std::ranges::find(unread, chunk) != unread.end()) {
@@ -499,6 +531,9 @@ nbt::Tag EntityStorage::encode(entity::EntityWorld& world, entity::EntityHandle 
         default_to(out, "ExplosionRadius", nbt::Tag{i8{3}});
         default_to(out, "ignited", nbt::Tag::make_bool(false));
     }
+    if (host.write_extra) {  // ── persistence ──
+        host.write_extra(*state, out);
+    }
     return out;
 }
 
@@ -512,7 +547,7 @@ std::optional<entity::EntityHandle> EntityStorage::decode(const nbt::Tag& compou
         return std::nullopt;
     }
     const std::string_view type = id->as_string();
-    if (!spawns(type)) {
+    if (!spawn_mobs_ || !spawns(type)) {
         return std::nullopt;
     }
     const Vec3d at{element(pos, 0, 0.0), element(pos, 1, 0.0), element(pos, 2, 0.0)};
@@ -595,6 +630,9 @@ std::optional<entity::EntityHandle> EntityStorage::decode(const nbt::Tag& compou
             host.charge_creeper(state->network_id);
         }
     }
+    if (host.read_extra) {  // ── persistence ──
+        host.read_extra(*state, compound);
+    }
     carried_[state->network_id] = compound;
     if (host.announce) {
         host.announce(*state);
@@ -643,6 +681,19 @@ EntityStorageStats EntityStorage::load_chunk(ChunkPos chunk, entity::EntityWorld
     for (const nbt::Tag& compound : *entities->list()) {
         // A type an adopter runs goes to it, and to nothing else.
         const nbt::Tag* id = compound.find("id");
+        // ── persistence ── the entities kept outside the entity world
+        if (LooseAdopter* loose = id != nullptr ? loose_of(namespaced(id->as_string())) : nullptr) {
+            if (loose->adopt_saved(compound)) {
+                ++stats.entities;
+                ++stats.adopted;
+            } else {
+                OV_LOG_WARN("entities: a {} in chunk {},{} refused — carried through",
+                            id->as_string(), chunk.x, chunk.z);
+                foreign_[key].push_back(compound);
+                ++stats.carried;
+            }
+            continue;
+        }
         const auto type = id != nullptr && types_
                               ? registries_->protocol_id(*types_, namespaced(id->as_string()))
                               : std::nullopt;
@@ -773,6 +824,19 @@ EntityStorageStats EntityStorage::unload_chunks(std::span<const ChunkPos> chunks
         carried_.erase(id);
         ++stats.entities;
     }
+    // ── persistence ── the loose adopters' entities of those chunks
+    loose_scratch_.clear();
+    const auto is_leaving = [&](ChunkPos chunk) { return leaving.contains(key_of(chunk)); };
+    for (LooseAdopter* adopter : loose_) {
+        const usize before = loose_scratch_.size();
+        adopter->release(is_leaving, loose_scratch_, removed);
+        stats.adopted += loose_scratch_.size() - before;
+    }
+    for (LooseEntity& entity : loose_scratch_) {
+        lists[key_of(chunk_of(entity.position))].push_back(std::move(entity.compound));
+        ++stats.entities;
+    }
+    loose_scratch_.clear();
     if (!lists.empty()) {
         write(lists);
     }
@@ -817,6 +881,17 @@ EntityStorageStats EntityStorage::save_all(entity::EntityWorld& world, MobRecord
             ++stats.adopted;
         }
     }
+    // ── persistence ── the loose adopters', where each stands now
+    loose_scratch_.clear();
+    for (const LooseAdopter* adopter : loose_) {
+        adopter->save(loose_scratch_);
+    }
+    for (LooseEntity& entity : loose_scratch_) {
+        lists[key_of(chunk_of(entity.position))].push_back(std::move(entity.compound));
+        ++stats.entities;
+        ++stats.adopted;
+    }
+    loose_scratch_.clear();
     stats.chunks = lists.size();
     if (!lists.empty()) {
         write(lists);
