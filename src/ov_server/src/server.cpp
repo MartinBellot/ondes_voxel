@@ -82,6 +82,7 @@
 #include "ov/protocol/interaction.hpp"
 // ── tnt and gravity ─────────────────────────────────────────────────
 #include "tnt_gravity.hpp"
+#include "rails_session.hpp"  // ── rails ──
 #include "projectiles.hpp"  // ── projectiles ──
 #include "brewing_session.hpp"  // ── brewing ──
 #include "husbandry.hpp"    // ── husbandry ──
@@ -1617,8 +1618,15 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     // ── end nether ──
 
     /// Write every changed chunk, grouped by region so each file opens once.
+    // ── rails ── Declared before the save, which writes its carts; emplaced
+    // once the world ticks exist.
+    std::optional<RailsSession> rails_session;
+    // ── end rails ──
     const auto save_world = [&] {
         const std::scoped_lock lock{chunk_mutex};
+        if (rails_session && mobs) {  // ── rails ── the carts, into entities/
+            (void)rails_session->save(level_dir, *mobs);
+        }
         // ── nether ── DIM-1/region, with the Nether level's own ticks.
         if (nether) {
             std::vector<world::ScheduledTick> block_snapshot;
@@ -2094,6 +2102,13 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     /// from the two that follow.
     const auto mob_packets = [&](const entity::EntityState& state,
                                  const auto&                deliver) {
+        // ── rails: a minecart is not a mob ──
+        if (rails_session && mobs && rails_session->owns(state.type)) {
+            rails_session->spawn_packets(*mobs, state, [&](i32 id, std::span<const u8> payload) {
+                deliver(id, payload);
+            });
+            return;
+        }
         // ── tnt and gravity: a primed TNT and a falling block are not mobs ──
         if (tnt_gravity && mobs && tnt_gravity->owns(state.type)) {
             tnt_gravity->spawn_packets(*mobs, state, [&](i32 id, std::span<const u8> payload) {
@@ -2549,6 +2564,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             tick_relight.insert(chunk_key(pos.x >> 4, pos.z >> 4));
         };
         hooks.container_signal = [&](BlockPos pos) -> i32 {
+            // ── rails ── a detector rail reads the container cart on it
+            if (rails_session && level) {
+                if (const i32 cart = rails_session->comparator_signal(*level, pos); cart >= 0) {
+                    return cart;
+                }
+            }
             // A comparator behind a chest reads how full it is. -1 for "there
             // is no container here", which a comparator has to tell apart from
             // an empty one: an empty container gives 0 and a missing one lets
@@ -2637,6 +2658,16 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                             mob_combat ? &*mob_combat : nullptr);
         tnt_gravity->set_redstone(&world_ticks->redstone());
         world_ticks->set_extension(&*tnt_gravity);
+        // ── rails ── rails and carts; the carts a save left in entities/
+        rails_session.emplace(*blocks, *registries);
+        world_ticks->set_rails_extension(&*rails_session);
+        rails_session->set_blasts(&tnt_gravity->blasts());
+        if (mobs) {
+            if (const usize loaded = rails_session->load(level_dir, *mobs); loaded > 0) {
+                OV_LOG_INFO("rails: {} minecarts read from entities/", loaded);
+            }
+        }
+        // ── end rails ──
         // ── projectiles ──
         projectiles.emplace(*registries, *blocks, mob_combat ? &*mob_combat : nullptr);
         brewing.emplace(*registries);  // ── brewing ──
@@ -2902,8 +2933,13 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     }
                 }
             }
+            // ── rails ── Cleared only once sent. Cleared unconditionally, a
+            // tick whose try-lock lost to the network thread threw its Block
+            // Updates away: the world held the rails' new shapes and the
+            // client kept the placement's, two rails of fourteen in one run
+            // of scripts/check_rails_e2e.py. Kept, they go with the next flush.
+            tick_broadcasts.clear();
         }
-        tick_broadcasts.clear();
     };
 
     // ── nether ── The same for the Nether level's drain: block light only.
@@ -4009,7 +4045,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         }
         // The same behaviour a natural spawn gets: a brain for a species with
         // goals, the falling floor for one without — refused, not invented.
-        if (const gameplay::MobKind* kind = gameplay::mob_kind(type)) {
+        if (rails_session && rails_session->owns(state->type)) {  // ── rails ── a cart
+            rails_session->adopt(*mobs, *spawned);
+        } else if (const gameplay::MobKind* kind = gameplay::mob_kind(type)) {
             const auto entity_types = registries->find("minecraft:entity_type");
             const auto player_type =
                 entity_types ? registries->protocol_id(*entity_types, "minecraft:player") : std::nullopt;
@@ -4888,6 +4926,25 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
 
                     // Sprinting is the only movement that costs hunger, and it
                     // cannot be told from a walk by watching positions.
+                    // ── rails ── Player Input: a rider's controls, and 0x02 to
+                    // get off. 0x1F: a probe riding a cart on the real server
+                    // sent it with that flag and was set down.
+                    case 0x1F: {
+                        if (body.size() >= 9 && rails_session) {
+                            const auto word = [&](usize at) {
+                                u32 bits = 0;
+                                for (usize i = 0; i < 4; ++i) {
+                                    bits = (bits << 8U) | body[at + i];
+                                }
+                                return std::bit_cast<f32>(bits);
+                            };
+                            rails_session->request_input(
+                                RiderInput{player.entity_id, word(0), word(4), body[8], player.yaw});
+                        }
+                        return true;
+                    }
+                    // ── end rails ──
+
                     case net::serverbound::kPlayerCommand: {
                         if (const auto command = net::parse_player_command(body)) {
                             if (command->action == net::PlayerCommandAction::StartSprinting) {
@@ -4952,6 +5009,24 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         // Player Command.
                         player.sneaking = interact->sneaking;
 
+                        // ── rails ── a cart ridden, fed or hit, for the tick. Every
+                        // touch goes: the session ignores what is not a cart.
+                        if (rails_session && interact->kind != net::InteractKind::InteractAt) {
+                            CartTouch touch;
+                            touch.player_id   = player.entity_id;
+                            touch.cart_id     = interact->entity_id;
+                            touch.attack      = interact->kind == net::InteractKind::Attack;
+                            touch.creative    = player.game_mode == 1;
+                            touch.sneaking    = interact->sneaking;
+                            touch.player_feet = Vec3d{player.x, player.y, player.z};
+                            const net::ItemStack& touch_hand =
+                                player.inventory[36 + static_cast<usize>(player.held_slot)];
+                            if (!touch_hand.empty() && registries && item_registry) {
+                                touch.held = std::string{
+                                    registries->entry_of(*item_registry, touch_hand.item_id)};
+                            }
+                            rails_session->request_touch(std::move(touch));
+                        }
                         // ── husbandry: a right-click on an entity, for the tick ──
                         if (husbandry && interact->kind == net::InteractKind::Interact) {
                             husbandry->queue_interact(player.entity_id, interact->entity_id,
@@ -5509,6 +5584,34 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         }
                         // ── end spawn eggs ──────────────────────────────────
 
+                        // ── rails ── a cart item on a rail puts a cart on it;
+                        // on anything else it does nothing, as vanilla's.
+                        if (rails_session && registries && item_registry) {
+                            const net::ItemStack& cart_hand =
+                                player.inventory[36 + static_cast<usize>(player.held_slot)];
+                            const std::string_view cart_item =
+                                cart_hand.empty()
+                                    ? std::string_view{}
+                                    : registries->entry_of(*item_registry, cart_hand.item_id);
+                            if (const auto cart_kind = gameplay::minecart_for_item(cart_item)) {
+                                registry::BlockStateId under{0};
+                                {
+                                    const std::scoped_lock rail_lock{chunk_mutex};
+                                    under = block_at(place->position);
+                                }
+                                if (rails_session->request_cart(
+                                        *cart_kind,
+                                        BlockPos{place->position.x, place->position.y,
+                                                 place->position.z},
+                                        under, player.yaw) &&
+                                    player.game_mode != 1) {
+                                    consume_one_held(player);
+                                }
+                                return true;
+                            }
+                        }
+                        // ── end rails ──
+
                         // ── agriculture ─────────────────────────────────────
                         // ── fire ── raw food onto a campfire's grill: the
                         // campfire's own use, before anything is placed.
@@ -5681,6 +5784,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                             }
                         }
                         set_block_connected(target, placed);
+                        // ── rails ── shaped among its neighbours on the next tick
+                        if (rails_session &&
+                            rails_session->rails().kind_of_block(*held_block) !=
+                                gameplay::RailKind::None) {
+                            const usize facing = facing_index(player.yaw);
+                            rails_session->request_shape(BlockPos{target.x, target.y, target.z},
+                                                         facing == 1 || facing == 3);
+                        }
                         if (sounds) {  // ── sound ── heard by all but the placer
                             sounds->block_placed(sound_host, connection.get(),
                                                  BlockPos{target.x, target.y, target.z}, placed);
@@ -6660,6 +6771,41 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             who->connection->send(*framed);
         }
     };
+    // ── rails ── what the carts reach outside themselves for
+    RailsHost rails_host;
+    rails_host.broadcast = [&](i32 id, std::span<const u8> payload) {
+        broadcast(nullptr, id, payload);
+    };
+    rails_host.drop_item = [&](Vec3d at, std::string_view name, i32 count) {
+        const auto id = registries && item_registry
+                            ? registries->protocol_id(*item_registry, name)
+                            : std::nullopt;
+        if (!id) {
+            OV_LOG_WARN("rails: {} is not an item this server knows", name);
+            return;
+        }
+        net::ItemStack stack;
+        stack.item_id = *id;
+        stack.count   = static_cast<i8>(std::clamp(count, 1, 64));
+        tnt_host.drop_item(at, stack);
+    };
+    rails_host.carry_rider = [&](i32 id, Vec3d seat) {
+        Player* who = projectile_player(id);
+        if (who == nullptr) {
+            return false;
+        }
+        who->x = seat.x;
+        who->y = seat.y;
+        who->z = seat.z;
+        return true;
+    };
+    rails_host.set_down     = [&](i32 id, Vec3d at) { projectile_host.teleport(id, at); };
+    rails_host.consume_held = [&](i32 id) {
+        if (Player* who = projectile_player(id)) {
+            consume_one_held(*who);
+        }
+    };
+    // ── end rails ──
     projectile_host.spawn_mob = [&](std::string_view type, Vec3d at) {
         if (!mobs || !registries) {
             return;
@@ -8320,7 +8466,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // than twenty-eight — and a teleport when it does not.
         if (mobs && blocks &&
             (!mobs->handles().empty() || (tnt_gravity && tnt_gravity->has_pending()) ||
-             (projectiles && projectiles->has_pending()))) {  // ── projectiles ──
+             (projectiles && projectiles->has_pending()) ||    // ── projectiles ──
+             (rails_session && rails_session->has_pending()))) {  // ── rails ──
             std::unique_lock mob_lock{players_mutex, std::try_to_lock};
             if (mob_lock.owns_lock()) {
                 const std::scoped_lock chunk_lock{chunk_mutex};
@@ -8403,7 +8550,15 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     (void)husbandry->before_entity_tick(*mobs, mob_context, husbandry_host,
                                                        husbandry_deliver);
                 }
+                // ── rails: shapes, placed carts, touches and riders' controls ──
+                if (rails_session && level && world_ticks) {
+                    rails_session->before_entity_tick(*mobs, *level, *world_ticks, rails_host);
+                }
                 mobs->tick(entity::TickContext{clock.tick_count(), &mob_context});
+                // ── rails: detector and activator rails, riders carried ──
+                if (rails_session && level && world_ticks) {
+                    (void)rails_session->after_entity_tick(*mobs, *level, *world_ticks, rails_host);
+                }
                 if (husbandry) {
                     const HusbandryStats bred = husbandry->after_entity_tick(
                         *mobs, level ? &*level : nullptr, husbandry_host, husbandry_deliver);

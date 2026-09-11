@@ -781,7 +781,44 @@ def measure_capture() -> int:
     return 0
 
 
+# ── readback ─────────────────────────────────────────────────────────────────
+
+def measure_readback() -> int:
+    """Vanilla opens a world our server saved (scripts/check_rails_e2e.py with
+    OV_RAILS_KEEP=1 leaves it in run/rails-e2e-world) and says what carts it
+    finds there: the proof that entities/ is written the way vanilla reads it."""
+    source = ROOT / "run" / "rails-e2e-world"
+    if not source.exists():
+        print(f"{source} not found: run OV_RAILS_KEEP=1 python3 scripts/check_rails_e2e.py")
+        return 2
+    name = "readback"
+    directory = RUN / name
+    if directory.exists():
+        shutil.rmtree(directory)
+    directory.mkdir(parents=True)
+    shutil.copytree(source, directory / "world")
+    # Our level.dat may lack what a fresh vanilla one has; the region and
+    # entity files are what is being tested, and vanilla keeps them.
+    server = Server(directory, port=PORT)
+    try:
+        server.batch(["forceload add -16 -16 32 32"])
+        time.sleep(3.0)
+        lines = server.batch(["execute as @e[type=minecraft:minecart] run data get entity @s"])
+        carts = [parse_entity(line) for line in lines if "has the following entity data" in line]
+        carts = [c for c in carts if c]
+        for cart in carts:
+            print("vanilla reads:", cart)
+        write(name, {"carts": carts, "lines": lines})
+        print(f"{len(carts)} minecart(s) read by vanilla from our save")
+    finally:
+        server.stop()
+        shutil.rmtree(directory, ignore_errors=True)
+        shutil.rmtree(source, ignore_errors=True)
+    return 0 if carts else 1
+
+
 SCENARIOS = {
+    "readback": measure_readback,
     "shapes": measure_shapes,
     "busy": measure_busy,
     "power": measure_power,
