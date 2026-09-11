@@ -49,6 +49,7 @@
 #include "world_ticks.hpp"
 #include "sounds.hpp"  // ── sound ──
 #include "agriculture.hpp"  // ── agriculture ──
+#include "weather_session.hpp"  // ── weather ──
 #include "ov/world/chunk.hpp"
 #include "ov/world/chunk_map.hpp"
 #include "ov/world/chunk_storage.hpp"
@@ -2873,6 +2874,24 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         OV_LOG_WARN("no block registry — fluids and redstone stay inert");
     }
 
+    // ── weather ─────────────────────────────────────────────────────────────
+    // Precipitation, lightning and beds (weather_session.hpp), over the world
+    // state the command engine owns. A dedicated server announces the
+    // sleeping count; an integrated one, like the game's, does not.
+    std::optional<WeatherSession> weather;
+    if (blocks && registries && level && commands) {
+        weather.emplace(*blocks, *registries, mob_combat ? &*mob_combat : nullptr,
+                        0x5745'4154'4845'5231ULL);
+        weather->set_announce(external_stop == nullptr);
+        // A measurement knob, like OV_RANDOM_TICK_SPEED: the end-to-end check
+        // lowers the 1-in-100 000 so bolts fall in seconds. Read once.
+        if (const char* chance = std::getenv("OV_THUNDER_CHANCE"); chance != nullptr) {
+            weather->set_thunder_chance(static_cast<i32>(std::strtol(chance, nullptr, 10)));
+            OV_LOG_INFO("thunder chance 1 in {} (OV_THUNDER_CHANCE)", chance);
+        }
+    }
+    // ── end weather ─────────────────────────────────────────────────────────
+
     // ── agriculture ─────────────────────────────────────────────────────────
     //
     // The random tick and the plants that answer it. How they behave is in
@@ -2942,9 +2961,15 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         tick_hooks.block_light = [&](BlockPos pos) { return stored_light(pos, false); };
         tick_hooks.sky_light   = [&](BlockPos pos) { return stored_light(pos, true); };
         tick_hooks.sky_darken  = [&] {
-            return sky_darken_for(server_tick.load(std::memory_order_relaxed));
+            // ── weather: the day and the storm, not the tick count ──
+            return commands ? WeatherSession::sky_darken(commands->world())
+                            : sky_darken_for(server_tick.load(std::memory_order_relaxed));
         };
         tick_hooks.drop_block = plant_drop;
+        // ── weather: farmland counts rain as water ──
+        tick_hooks.is_raining_at = [&](BlockPos pos) {
+            return weather && commands && weather->is_raining_at(chunks, pos, commands->world().weather);
+        };
         plant_env.emplace(std::move(tick_hooks), tree_grower.get());
 
         PlantHooks player_hooks;
@@ -4111,6 +4136,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 // which is what the ticket system exists to stop.
                 {
                     const std::scoped_lock chunk_lock{chunk_mutex};
+                    if (weather && level) {  // ── weather: their bed is free again ──
+                        weather->forget(*level, entity_id);
+                    }
                     chunks.remove_ticket(world::TicketType::Player,
                                          static_cast<u64>(entity_id));
                     world::LevelChanges changes;
@@ -4535,6 +4563,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                             }
                         }
                     }
+                    if (weather) {  // ── weather: who is asleep ──
+                        weather->join_packets(send_packet);
+                    }
 
                     players[connection.get()] = player;
                 }
@@ -4754,6 +4785,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                             } else if (command->action ==
                                        net::PlayerCommandAction::StopSneaking) {
                                 player.sneaking = false;
+                            } else if (command->action == net::PlayerCommandAction::LeaveBed &&
+                                       weather) {  // ── weather ──
+                                weather->request_leave(player.entity_id);
                             }
                             // ── end combat and interaction ──────────────────
                         }
@@ -5065,6 +5099,22 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                             return true;
                         }
                         // ── end nether ──
+                        // ── weather: a bed is slept in, not built against ──
+                        if (weather &&
+                            (!player.sneaking ||
+                             player.inventory[36 + static_cast<usize>(player.held_slot)].empty())) {
+                            bool clicked_bed = false;
+                            {
+                                const std::scoped_lock chunk_lock{chunk_mutex};
+                                clicked_bed = weather->is_bed(block_at(place->position));
+                            }
+                            if (clicked_bed) {
+                                weather->request_bed(player.entity_id,
+                                                     BlockPos{place->position.x, place->position.y,
+                                                              place->position.z});
+                                return true;
+                            }
+                        }
 
                         // ── crafting and smelting ───────────────────────────
                         // A crafting table or a furnace opens instead of being
@@ -6137,8 +6187,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         };
         hooks.sky_darken = [&] {
             // ── commands: the sun the spawner sees is the clock /time sets ──
-            return sky_darken_for(commands ? commands->world().day_time
-                                           : server_tick.load(std::memory_order_relaxed));
+            // ── weather: a thunderstorm darkens the sky enough to spawn ──
+            return commands ? WeatherSession::sky_darken(commands->world())
+                            : sky_darken_for(server_tick.load(std::memory_order_relaxed));
         };
         return hooks;
     }()};
@@ -6462,6 +6513,110 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     husbandry_host.drop_item = tnt_host.drop_item;
     husbandry_host.spawn_orb = projectile_host.spawn_orb;
     // ── end husbandry ───────────────────────────────────────────────────────
+
+    // ── weather ─────────────────────────────────────────────────────────────
+    // Built once, like the TNT's. Every callback runs in the weather block of
+    // the tick, which holds players_mutex and chunk_mutex.
+    WeatherHost weather_host;
+    const auto  weather_player = [&](i32 id) -> Player* {
+        for (auto& [key, who] : players) {
+            if (who.entity_id == id && who.connection) {
+                return &who;
+            }
+        }
+        return nullptr;
+    };
+    weather_host.broadcast = tnt_deliver;
+    weather_host.send_to   = [&](i32 id, i32 packet, std::span<const u8> payload) {
+        Player* who = weather_player(id);
+        if (who == nullptr) {
+            return;
+        }
+        if (const auto framed = net::encode_packet(packet, payload)) {
+            who->connection->send(*framed);
+        }
+    };
+    weather_host.players = [&](std::vector<WeatherPlayer>& out) {
+        for (const auto& [key, who] : players) {
+            if (who.connection && who.confirmed) {
+                out.push_back(WeatherPlayer{who.entity_id, who.uuid, Vec3d{who.x, who.y, who.z},
+                                            who.yaw, who.pitch, !who.mortal(), who.game_mode == 3,
+                                            !who.survival.awaiting_respawn});
+            }
+        }
+    };
+    weather_host.allocate_entity_id = [&] { return next_entity_id.fetch_add(1); };
+    weather_host.place_player = [&](i32 id, Vec3d feet, f32 yaw, f32 pitch, bool sync) {
+        Player* who = weather_player(id);
+        if (who == nullptr) {
+            return;
+        }
+        who->x     = feet.x;
+        who->y     = feet.y;
+        who->z     = feet.z;
+        who->yaw   = yaw;
+        who->pitch = pitch;
+        if (sync) {
+            who->pending_teleport = who->entity_id * 1000 + 13;
+            if (const auto framed = net::encode_packet(
+                    net::clientbound::kSynchronizePosition,
+                    net::encode_synchronize_position(who->x, who->y, who->z, who->yaw, who->pitch,
+                                                     who->pending_teleport))) {
+                who->connection->send(*framed);
+            }
+        }
+    };
+    weather_host.hurt_player = [&](i32 id, f32 amount) {
+        (void)projectile_host.hurt_player(id, amount, gameplay::DamageKind::LightningBolt);
+    };
+    weather_host.convert_mob = [&](entity::EntityHandle old, std::string_view type) {
+        if (!mobs || !registries || mobs->state(old) == nullptr) {
+            return false;
+        }
+        const Vec3d at      = mobs->state(old)->position;
+        const f32   yaw     = mobs->state(old)->yaw;
+        const auto  spawned = mobs->spawn(type, at, net::Uuid{});
+        if (!spawned) {
+            return false;
+        }
+        if (entity::EntityState* was = mobs->mutable_state(old)) {
+            was->removed = true;
+        }
+        entity::EntityState* state = mobs->mutable_state(*spawned);
+        state->uuid                = uuid_for_entity(state->network_id);
+        state->yaw                 = yaw;
+        state->head_yaw            = yaw;
+        state->broadcast_position  = state->position;
+        state->broadcast_valid     = true;
+        if (const gameplay::MobKind* kind = gameplay::mob_kind(type)) {
+            const auto entity_types = registries->find("minecraft:entity_type");
+            const auto player_type =
+                entity_types ? registries->protocol_id(*entity_types, "minecraft:player") : std::nullopt;
+            mobs->set_logic(*spawned, std::make_unique<gameplay::Mob>(
+                                          *kind, state->width, state->height, state->network_id,
+                                          player_type ? *player_type : gameplay::kNoQuarry));
+        } else {
+            mobs->set_logic(*spawned, std::make_unique<gameplay::FallingMob>());
+        }
+        mob_packets(*state, [&](i32 id, std::span<const u8> payload) { broadcast(nullptr, id, payload); });
+        return true;
+    };
+    weather_host.charge_creeper = [&](i32 id) {
+        if (tnt_gravity) {
+            tnt_gravity->charge_creeper(id);
+        }
+        // Index 17, a boolean: measured by measure_weather.py `strike`.
+        net::MetadataWriter fields;
+        fields.boolean_value(17, true);
+        broadcast(nullptr, net::clientbound::kEntityMetadata,
+                  net::encode_entity_metadata(id, fields.take()));
+    };
+    weather_host.sweep_items = tnt_host.sweep_items;
+    weather_host.set_spawn   = [&](const net::Uuid& uuid, BlockPos head, f32 angle) {
+        return commands && commands->set_personal_spawn(uuid, cmd::PersonalSpawn{head.x, head.y, head.z, angle});
+    };
+    weather_host.drop_item = tnt_host.drop_item;
+    // ── end weather ─────────────────────────────────────────────────────────
 
     const auto should_stop = [&]() {
         return g_stop_requested.load(std::memory_order_relaxed) ||
@@ -7121,6 +7276,34 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             }
         }
         // ── end agriculture ─────────────────────────────────────────
+
+        // ── weather ─────────────────────────────────────────────────
+        // Precipitation and lightning over the chunks the random tick
+        // selected, the bolts, and the beds — after the random tick, as in
+        // the game's chunk tick. Both locks: a bolt hurts players and a bed
+        // moves them. The flush after, with neither held.
+        if (weather && commands && level && world_ticks) {
+            {
+                std::unique_lock weather_lock{players_mutex, std::try_to_lock};
+                if (weather_lock.owns_lock()) {
+                    const std::scoped_lock chunk_lock{chunk_mutex};
+                    level->set_game_time(clock.tick_count());
+                    level->clear_changed();
+                    const WeatherStats weather_stats =
+                        weather->tick(*level, chunks, random_ticks.selected(), commands->world(),
+                                      mobs ? &*mobs : nullptr, weather_host);
+                    (void)world_ticks->settle_writes(*level);
+                    if (weather_stats.strikes + weather_stats.slept + weather_stats.woke > 0 ||
+                        weather_stats.night_skipped) {
+                        OV_LOG_DEBUG("tick {}: {} bolts, {} asleep, {} woke, night skipped {}",
+                                     clock.tick_count(), weather_stats.strikes, weather_stats.slept,
+                                     weather_stats.woke, weather_stats.night_skipped);
+                    }
+                }
+            }
+            flush_tick_writes();
+        }
+        // ── end weather ─────────────────────────────────────────────
 
         // ── Containers: hoppers, droppers, dispensers ───────────────
         //
@@ -7878,7 +8061,33 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                 static_cast<f64>(own->x) + 0.5, static_cast<f64>(own->y),
                                 static_cast<f64>(own->z) + 0.5, false};
                         }
+                        // ── weather: a bed's respawn point needs its bed ──
+                        bool no_respawn_bed = false;
+                        if (const auto own = commands ? commands->personal_spawn(who.uuid) : std::nullopt;
+                            own && weather && level &&
+                            weather->spawn_is_bed(who.uuid, BlockPos{own->x, own->y, own->z})) {
+                            std::optional<Vec3d> stand;
+                            {
+                                const std::scoped_lock chunk_lock{chunk_mutex};
+                                stand = weather->bed_respawn(*level, BlockPos{own->x, own->y, own->z},
+                                                             own->angle);
+                            }
+                            if (stand) {
+                                who.survival.spawn =
+                                    SurvivalSession::SpawnPoint{stand->x, stand->y, stand->z, true};
+                            } else {
+                                no_respawn_bed = true;
+                                commands->clear_personal_spawn(who.uuid);
+                                who.survival.spawn = SurvivalSession::SpawnPoint{
+                                    static_cast<f64>(level_settings.spawn_x) + 0.5,
+                                    static_cast<f64>(level_settings.spawn_y),
+                                    static_cast<f64>(level_settings.spawn_z) + 0.5, false};
+                            }
+                        }
                         if (who.survival.perform_respawn(view, io, outcome, 0)) {
+                            if (no_respawn_bed) {  // ── weather: Game Event 0 ──
+                                io.send(net::clientbound::kGameEvent, net::encode_game_event(0, 0.0F));
+                            }
                             who.x = outcome.respawn_x;
                             who.y = outcome.respawn_y;
                             who.z = outcome.respawn_z;

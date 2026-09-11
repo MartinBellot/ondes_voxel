@@ -38,6 +38,8 @@
 #include "ov/render/entity_model.hpp"
 #include "ov/render/entity_pose.hpp"
 #include "ov/render/environment.hpp"
+#include "ov/render/precipitation.hpp"  // ── weather ──
+#include "ov/gameplay/weather.hpp"      // ── weather ──
 #include "ov/render/chunk_mesher.hpp"
 #include "ov/render/creative_items.hpp"
 #include "ov/render/creative_tabs.hpp"
@@ -1108,6 +1110,34 @@ int main(int argc, char** argv) {
         }
     }
 
+    // ── weather ── Rain and snow: the entity vertices, blended, both sides.
+    auto weather_renderer = client::EntityRenderer::create(
+        device, device.swapchain_format(), rhi::Format::Depth32Float, client::EntityPass::Translucent);
+    std::optional<client::EntityTexture> rain_texture;
+    std::optional<client::EntityTexture> snow_texture;
+    if (!weather_renderer) {
+        OV_LOG_WARN("weather renderer: {} — no rain or snow will be drawn",
+                    rhi::to_string(weather_renderer.error()));
+    } else {
+        for (const auto& [name, slot] :
+             std::array<std::pair<std::string_view, std::optional<client::EntityTexture>*>, 2>{
+                 {{"minecraft:environment/rain", &rain_texture},
+                  {"minecraft:environment/snow", &snow_texture}}}) {
+            const auto location = ResourceLocation::parse(name);
+            if (!location) {
+                continue;
+            }
+            auto image = render::load_texture(source, *location);
+            if (!image) {
+                OV_LOG_WARN("weather texture {} missing", name);
+                continue;
+            }
+            if (auto uploaded = (*weather_renderer)->add_texture(*image, name)) {
+                *slot = *uploaded;
+            }
+        }
+    }
+
     auto overlay = client::Overlay::create(device, device.swapchain_format(),
                                            rhi::Format::Depth32Float);
     if (!overlay) {
@@ -1326,6 +1356,17 @@ int main(int argc, char** argv) {
     // not where you are looking.
     render::Lightmap lightmap;
     i64              time_of_day = options.time;
+    // ── weather ── What the server's Game Events 7 and 8 said, and the flash of
+    // the last bolt. The client's thunder level is the thunder level times the
+    // rain level, as the game's is.
+    f32                                   rain_level    = 0.0F;
+    f32                                   thunder_level = 0.0F;
+    std::chrono::steady_clock::time_point flash_until{};
+    std::unordered_set<i32>               bolts_seen;
+    const gameplay::ClimateNoise          weather_climate;
+    std::vector<render::WeatherColumn>    weather_columns;
+    render::WeatherMesh                   weather_mesh;
+    std::vector<f64>                      weather_record_ms;
 
     if (!options.camera.empty()) {
         std::array<f32, 5> values{camera.position.x, camera.position.y, camera.position.z,
@@ -1687,8 +1728,22 @@ int main(int argc, char** argv) {
                                 .count();
             }
             // ── end sound ──
+            // ── weather ──
+            if (events.rain_level) {
+                rain_level = *events.rain_level;
+            }
+            if (events.thunder_level) {
+                thunder_level = *events.thunder_level;
+            }
             session->apply(events);
             entity_world.apply(events, registries);
+            // ── weather ── A bolt the client has not seen yet lights the sky
+            // for two ticks. The bolt itself is not drawn — named.
+            for (const auto& [id, entity] : entity_world.entities()) {
+                if (entity.type == "minecraft:lightning_bolt" && bolts_seen.insert(id).second) {
+                    flash_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+                }
+            }
 
             // A budget, not a queue drain. A hundred chunks arriving at once
             // must cost several frames rather than one long one; the frame
@@ -2096,7 +2151,10 @@ int main(int argc, char** argv) {
                                                .count() *
                                            20.0);
         }
-        const f32 darken = render::sky_darken(time_of_day, 0.0F, 0.0F);
+        // ── weather ── rain and a storm darken the sky; a flash lights it fully.
+        const bool flashing = std::chrono::steady_clock::now() < flash_until;
+        const f32  client_thunder = thunder_level * rain_level;
+        const f32  darken = flashing ? 1.0F : render::sky_darken(time_of_day, rain_level, client_thunder);
 
         // Is the eye under water? Vanilla asks this every frame and changes
         // the fog completely when the answer is yes, and the difference is
@@ -2119,8 +2177,12 @@ int main(int argc, char** argv) {
                                                      static_cast<i32>(std::floor(camera.position.z)))
                                  : camera_biome(*world, *blocks, camera.position);
         const auto effects = blocks->biome(biome);
+        // ── weather ── the fog dims under rain and thunder, and flashes with a bolt.
+        const u32 weather_fog = render::weather_fog_colour(render::fog_colour(effects.fog_colour, darken),
+                                                           rain_level, client_thunder);
         const u32 fog_rgb = eye_in_water ? effects.water_fog_colour
-                                        : render::fog_colour(effects.fog_colour, darken);
+                                         : (flashing ? render::weather_sky_colour(weather_fog, 0.0F, 0.0F, 1.0F)
+                                                     : weather_fog);
         const u32   sky_rgb   = render::sky_colour(effects.sky_colour, darken);
 
         auto frame = device.begin_frame();
@@ -2275,6 +2337,60 @@ int main(int argc, char** argv) {
                     .count());
         }
 
+        // ── weather ── Rain and snow after everything opaque, in the same pass.
+        if (online && weather_renderer && rain_level > 0.0F) {
+            const auto weather_start = std::chrono::steady_clock::now();
+            const f64  age_ticks =
+                std::chrono::duration<f64>(weather_start - start_time).count() * 20.0;
+            render::WeatherView view;
+            view.camera     = Vec3d{static_cast<f64>(camera.position.x),
+                                    static_cast<f64>(camera.position.y),
+                                    static_cast<f64>(camera.position.z)};
+            view.ticks      = static_cast<i64>(age_ticks);
+            view.partial    = static_cast<f32>(age_ticks - std::floor(age_ticks));
+            view.rain_level = rain_level;
+            view.radius     = render::kWeatherRadiusFancy;
+            render::weather_columns(view, weather_columns);
+            const i32 eye_y = static_cast<i32>(std::floor(camera.position.y));
+            for (render::WeatherColumn& column : weather_columns) {
+                const world::Chunk* chunk = session->chunk_at(column.x >> 4, column.z >> 4);
+                if (chunk == nullptr) {
+                    continue;  // kind stays None: nothing falls where nothing has arrived
+                }
+                column.top = chunk->heightmap(world::HeightmapType::MotionBlocking)
+                                 .first_free(static_cast<usize>(column.x & 15),
+                                             static_cast<usize>(column.z & 15));
+                // Rain or snow is decided at the bottom of the sheet.
+                const i32 at_y  = std::max(eye_y - view.radius, column.top);
+                const u32 column_biome = session->biome_at(column.x, at_y, column.z);
+                switch (weather_climate.precipitation_at(
+                            gameplay::climate_of(blocks->biome(column_biome)),
+                                                         BlockPos{column.x, at_y, column.z})) {
+                case gameplay::Precipitation::Rain: column.kind = render::WeatherKind::Rain; break;
+                case gameplay::Precipitation::Snow: column.kind = render::WeatherKind::Snow; break;
+                case gameplay::Precipitation::None: column.kind = render::WeatherKind::None; break;
+                }
+                column.light = entity_light_at(
+                    *session, lightmap,
+                    Vec3f{static_cast<f32>(column.x) + 0.5F,
+                          static_cast<f32>(std::max(column.top, eye_y)),
+                          static_cast<f32>(column.z) + 0.5F});
+            }
+            render::build_weather(view, weather_columns, weather_mesh);
+            (*weather_renderer)->begin();
+            if (rain_texture && !weather_mesh.rain.empty()) {
+                (void)(*weather_renderer)->submit(*rain_texture, weather_mesh.rain);
+            }
+            if (snow_texture && !weather_mesh.snow.empty()) {
+                (void)(*weather_renderer)->submit(*snow_texture, weather_mesh.snow);
+            }
+            (*weather_renderer)->draw(cmd, view_projection, camera.position,
+                                      client::EntitySky{sky.fog_colour, sky.fog_start, sky.fog_end});
+            weather_record_ms.push_back(std::chrono::duration<f64, std::milli>(
+                                            std::chrono::steady_clock::now() - weather_start)
+                                            .count());
+        }
+
         // The two lines the game is played with. After the terrain, so the
         // outline blends over the face it surrounds rather than under it.
         if (aimed) {
@@ -2411,6 +2527,13 @@ int main(int argc, char** argv) {
     fmt::print("gpu  p50 {:.2f} ms   p99 {:.2f} ms   max {:.2f} ms\n", percentile(gpu, 0.50),
                percentile(gpu, 0.99), percentile(gpu, 1.0));
 
+    if (!weather_record_ms.empty()) {  // ── weather ──
+        const auto weather_ms = drop(weather_record_ms);
+        fmt::print("wthr p50 {:.3f} ms   p99 {:.3f} ms   max {:.3f} ms   ({} frames with rain, "
+                   "{} sheets last frame)\n",
+                   percentile(weather_ms, 0.50), percentile(weather_ms, 0.99),
+                   percentile(weather_ms, 1.0), weather_record_ms.size(), weather_mesh.columns);
+    }
     if (online && options.entities) {
         const auto  entity_ms    = drop(entity_record_ms);
         const auto& entity_stats = (*entity_renderer)->stats();

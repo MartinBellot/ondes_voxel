@@ -195,6 +195,16 @@ public:
                         i64 timestamp = 0, i64 salt = 0);
 
     [[nodiscard]] std::optional<PersonalSpawn> personal_spawn(const net::Uuid& uuid) const;
+    // ── weather ── A bed sets the same respawn point /spawnpoint does. True
+    // when it moved — the game says "respawn point set" only then.
+    bool set_personal_spawn(const net::Uuid& uuid, PersonalSpawn spawn) {
+        PersonalSpawn& slot    = spawns_[uuid.to_string()];
+        const bool     changed = slot.x != spawn.x || slot.y != spawn.y || slot.z != spawn.z;
+        slot                   = spawn;
+        return changed;
+    }
+    /// A bed that is gone is forgotten as a respawn point.
+    void clear_personal_spawn(const net::Uuid& uuid) { spawns_.erase(uuid.to_string()); }
     [[nodiscard]] const Lang*       lang() const noexcept { return lang_ ? &*lang_ : nullptr; }
     [[nodiscard]] const Dispatcher& dispatcher() const noexcept { return dispatcher_; }
     [[nodiscard]] const ParseEnv&   env() const noexcept { return env_; }

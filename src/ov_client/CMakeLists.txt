@@ -61,4 +61,5 @@ ov_add_shaders(ov_client_shaders
         shaders/overlay.frag
         shaders/terrain.vert
         shaders/terrain.frag
+        shaders/weather.frag
 )

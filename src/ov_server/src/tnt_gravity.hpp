@@ -118,6 +118,9 @@ public:
     /// Spawn what the block drain and the network thread asked for.
     void spawn_pending(entity::EntityWorld& world, const Deliver& deliver);
 
+    // ── weather ── A creeper struck by lightning explodes at 6 from now on.
+    void charge_creeper(i32 network_id) { creepers_[network_id].powered = true; }
+
     /// One tick of every creeper's countdown, against the nearest player.
     void tick_creepers(entity::EntityWorld& world, const world::LevelView& level,
                        const TntGravityHost& host, const Deliver& deliver);

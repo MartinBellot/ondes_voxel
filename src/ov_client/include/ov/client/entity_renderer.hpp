@@ -70,6 +70,12 @@ struct EntitySky {
     f32 fog_end{192.0F};
 };
 
+/// Which pass a renderer draws. ── weather ── The translucent one is the rain's
+/// and the snow's: the same vertices and push block, blended rather than cut
+/// out, drawn both sides, never writing depth, with a repeating sampler so a
+/// sheet's texture can scroll.
+enum class EntityPass : u8 { Cutout, Translucent };
+
 class EntityRenderer {
 public:
     /// Quads per frame in flight. A hundred mobs of a dozen cubes each is about
@@ -78,7 +84,8 @@ public:
     static constexpr u32 kMaxQuads = 32768;
 
     [[nodiscard]] static std::expected<std::unique_ptr<EntityRenderer>, rhi::RhiError> create(
-        rhi::Device& device, rhi::Format colour_format, rhi::Format depth_format);
+        rhi::Device& device, rhi::Format colour_format, rhi::Format depth_format,
+        EntityPass pass = EntityPass::Cutout);
 
     EntityRenderer(const EntityRenderer&)            = delete;
     EntityRenderer& operator=(const EntityRenderer&) = delete;
