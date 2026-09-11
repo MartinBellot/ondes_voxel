@@ -25,16 +25,16 @@ Statut : le plus fort atteint — `vanilla` > `aller-retour` > `testé` > `codé
 
 ## Résumé
 
-**112 / 176** paquets ont au moins un id ou une fonction.
+**125 / 176** paquets ont au moins un id ou une fonction.
 
 | Statut | Paquets |
 |---|---:|
 | vanilla | 15 |
-| aller-retour | 19 |
+| aller-retour | 33 |
 | testé | 27 |
 | codé | 39 |
-| id seul | 12 |
-| absent | 64 |
+| id seul | 11 |
+| absent | 51 |
 
 | État · sens | Total | Présents | Enc. | Déc. | A/R | Vanilla |
 |---|---:|---:|---:|---:|---:|---:|
@@ -43,8 +43,8 @@ Statut : le plus fort atteint — `vanilla` > `aller-retour` > `testé` > `codé
 | Status · client → serveur | 2 | 2 | 0 | 0 | 0 | 0 |
 | Login · serveur → client | 5 | 3 | 3 | 0 | 0 | 0 |
 | Login · client → serveur | 3 | 1 | 0 | 1 | 0 | 0 |
-| Play · serveur → client | 111 | 73 | 69 | 22 | 22 | 15 |
-| Play · client → serveur | 51 | 30 | 7 | 24 | 6 | 0 |
+| Play · serveur → client | 111 | 85 | 82 | 35 | 35 | 15 |
+| Play · client → serveur | 51 | 31 | 8 | 25 | 7 | 0 |
 
 ## Handshaking — client → serveur
 
@@ -94,13 +94,13 @@ Statut : le plus fort atteint — `vanilla` > `aller-retour` > `testé` > `codé
 | `0x02` | Spawn Experience Orb | testé | ✓ | ✓ | · | ✓ | · | · | ✓ | ✓ |
 | `0x03` | Spawn Player | codé | ✓ | ✓ | · | · | · | · | ✓ | ✓ |
 | `0x04` | Entity Animation | codé | ✓ | ✓ | · | · | · | · | ✓ | · |
-| `0x05` | Award Statistics | absent | · | · | · | · | · | · | · | · |
+| `0x05` | Award Statistics | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | · | · |
 | `0x06` | Acknowledge Block Change | codé | ✓ | ✓ | · | · | · | · | ✓ | · |
 | `0x07` | Set Block Destroy Stage | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | ✓ | ✓ |
 | `0x08` | Block Entity Data | codé | ✓ | ✓ | · | · | · | · | ✓ | · |
 | `0x09` | Block Action | vanilla | ✓ | ✓ | · | ✓ | · | ✓ | · | · |
 | `0x0A` | Block Update | codé | ✓ | ✓ | · | · | · | · | ✓ | ✓ |
-| `0x0B` | Boss Bar | id seul | ✓ | · | · | · | · | · | ✓ | · |
+| `0x0B` | Boss Bar | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | ✓ | · |
 | `0x0C` | Change Difficulty | testé | ✓ | ✓ | · | ✓ | · | · | ✓ | · |
 | `0x0D` | Chunk Biomes | absent | · | · | · | · | · | · | · | · |
 | `0x0E` | Clear Titles | testé | ✓ | ✓ | · | ✓ | · | · | ✓ | ✓ |
@@ -123,7 +123,7 @@ Statut : le plus fort atteint — `vanilla` > `aller-retour` > `testé` > `codé
 | `0x1F` | Game Event | testé | ✓ | ✓ | · | ✓ | · | · | ✓ | ✓ |
 | `0x20` | Open Horse Screen | absent | · | · | · | · | · | · | · | · |
 | `0x21` | Hurt Animation | codé | ✓ | ✓ | · | · | · | · | · | · |
-| `0x22` | Initialize World Border | absent | · | · | · | · | · | · | · | · |
+| `0x22` | Initialize World Border | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | · | · |
 | `0x23` | Keep Alive | codé | ✓ | ✓ | · | · | · | · | ✓ | ✓ |
 | `0x24` | Chunk Data and Update Light | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | ✓ | ✓ |
 | `0x25` | World Event | vanilla | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -157,30 +157,30 @@ Statut : le plus fort atteint — `vanilla` > `aller-retour` > `testé` > `codé
 | `0x41` | Respawn | testé | ✓ | ✓ | · | ✓ | · | · | ✓ | ✓ |
 | `0x42` | Set Head Rotation | codé | ✓ | ✓ | · | · | · | · | ✓ | ✓ |
 | `0x43` | Update Section Blocks | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | ✓ | · |
-| `0x44` | Select Advancements Tab | absent | · | · | · | · | · | · | · | · |
+| `0x44` | Select Advancements Tab | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | · | · |
 | `0x45` | Server Data | testé | ✓ | ✓ | · | ✓ | · | · | ✓ | · |
 | `0x46` | Set Action Bar Text | codé | ✓ | ✓ | · | · | · | · | ✓ | ✓ |
-| `0x47` | Set Border Center | absent | · | · | · | · | · | · | · | · |
-| `0x48` | Set Border Lerp Size | absent | · | · | · | · | · | · | · | · |
-| `0x49` | Set Border Size | absent | · | · | · | · | · | · | · | · |
-| `0x4A` | Set Border Warning Delay | absent | · | · | · | · | · | · | · | · |
-| `0x4B` | Set Border Warning Distance | absent | · | · | · | · | · | · | · | · |
+| `0x47` | Set Border Center | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | · | · |
+| `0x48` | Set Border Lerp Size | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | · | · |
+| `0x49` | Set Border Size | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | · | · |
+| `0x4A` | Set Border Warning Delay | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | · | · |
+| `0x4B` | Set Border Warning Distance | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | · | · |
 | `0x4C` | Set Camera | absent | · | · | · | · | · | · | · | · |
 | `0x4D` | Set Held Item | absent | · | · | · | · | · | · | · | · |
 | `0x4E` | Set Center Chunk | codé | ✓ | ✓ | · | · | · | · | ✓ | · |
 | `0x4F` | Set Render Distance | absent | · | · | · | · | · | · | · | · |
 | `0x50` | Set Default Spawn Position | codé | ✓ | ✓ | · | · | · | · | ✓ | · |
-| `0x51` | Display Objective | absent | · | · | · | · | · | · | · | · |
+| `0x51` | Display Objective | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | · | · |
 | `0x52` | Set Entity Metadata | vanilla | ✓ | ✓ | · | ✓ | · | ✓ | ✓ | ✓ |
 | `0x53` | Link Entities | absent | · | · | · | · | · | · | · | · |
 | `0x54` | Set Entity Velocity | vanilla | ✓ | ✓ | · | ✓ | · | ✓ | ✓ | · |
 | `0x55` | Set Equipment | id seul | ✓ | · | · | · | · | · | ✓ | · |
 | `0x56` | Set Experience | vanilla | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `0x57` | Set Health | vanilla | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `0x58` | Update Objectives | absent | · | · | · | · | · | · | · | · |
+| `0x58` | Update Objectives | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | · | · |
 | `0x59` | Set Passengers | id seul | ✓ | · | · | · | · | · | ✓ | · |
-| `0x5A` | Update Teams | absent | · | · | · | · | · | · | · | · |
-| `0x5B` | Update Score | absent | · | · | · | · | · | · | · | · |
+| `0x5A` | Update Teams | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | · | · |
+| `0x5B` | Update Score | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | · | · |
 | `0x5C` | Set Simulation Distance | absent | · | · | · | · | · | · | · | · |
 | `0x5D` | Set Subtitle Text | codé | ✓ | ✓ | · | · | · | · | ✓ | ✓ |
 | `0x5E` | Update Time | testé | ✓ | ✓ | · | ✓ | · | · | ✓ | ✓ |
@@ -242,7 +242,7 @@ Statut : le plus fort atteint — `vanilla` > `aller-retour` > `testé` > `codé
 | `0x22` | Set Seen Recipe | absent | · | · | · | · | · | · | · | · |
 | `0x23` | Rename Item | id seul | ✓ | · | · | · | · | · | ✓ | · |
 | `0x24` | Resource Pack | absent | · | · | · | · | · | · | · | · |
-| `0x25` | Seen Advancements | absent | · | · | · | · | · | · | · | · |
+| `0x25` | Seen Advancements | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | · | · |
 | `0x26` | Select Trade | id seul | ✓ | · | · | · | · | · | ✓ | · |
 | `0x27` | Set Beacon Effect | absent | · | · | · | · | · | · | · | · |
 | `0x28` | Set Held Item | codé | ✓ | · | ✓ | · | · | · | ✓ | ✓ |

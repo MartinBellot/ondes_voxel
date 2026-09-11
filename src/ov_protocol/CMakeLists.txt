@@ -14,6 +14,7 @@ ov_add_library(ov_protocol
         src/effect_packets.cpp
         src/entity.cpp
         src/framing.cpp
+        src/hud.cpp
         src/interaction.cpp
         src/listener.cpp
         src/login.cpp
@@ -47,6 +48,7 @@ ov_add_test(test_ov_protocol
         tests/test_entities.cpp
         tests/test_entity_packets.cpp
         tests/test_framing.cpp
+        tests/test_hud_packets.cpp
         tests/test_interaction.cpp
         tests/test_login.cpp
         tests/test_status.cpp
@@ -56,4 +58,14 @@ ov_add_test(test_ov_protocol
         tests/test_varint.cpp
     DEPS ov_protocol
     LABELS unit
+)
+
+# Fixed-seed fuzzing of every decoder that reads socket bytes. A separate
+# executable so the sanitizer build can compile it alone (--target), and a
+# separate label so a long run (OV_FUZZ_ITERATIONS) can be selected with -L fuzz.
+ov_add_test(fuzz_ov_protocol
+    SOURCES
+        tests/fuzz_decoders.cpp
+    DEPS ov_protocol
+    LABELS unit fuzz
 )

@@ -50,3 +50,74 @@ Slot*) comme 0x17 (*Plugin Message*) encadrent la valeur. Un client vanilla qui
 lançait une perle recevait donc ses deux varints (objet, ticks) comme une action
 de suggestions de chat. Corrigé ; la constante est maintenant vérifiée à chaque
 push.
+
+## Le fuzz : `src/ov_protocol/tests/fuzz_decoders.cpp`
+
+Un exécutable de test à part, `fuzz_ov_protocol` (étiquettes `unit` et `fuzz`),
+pour que le build ASan puisse le compiler seul (`--target`).
+
+**Pourquoi pas libFuzzer** : il demande une chaîne instrumentée pour la
+couverture que macOS, Linux et Windows ne partagent pas, et un corpus qui dérive
+d'une machine à l'autre. Ici le générateur est un SplitMix64 à graine fixe : un
+échec se reproduit à partir de la graine seule, partout, et le passage tient dans
+le budget des tests unitaires. Sa valeur vient du preset ASan + UBSan, où une
+lecture hors bornes ou une allocation absurde devient un crash au lieu d'une
+réponse fausse et silencieuse.
+
+**72 points d'entrée** : tous les décodeurs qui lisent des octets de socket, dans
+les deux sens (un serveur hostile vise `ov_netclient` autant qu'un client hostile
+vise le serveur), le chunk dans les deux formes de monde, les primitives (VarInt,
+VarLong, chaîne, UUID, position, angle, slot) et le framer. Chaque entrée est
+donnée à **tous** les décodeurs, pas seulement au sien : une socket ne garantit
+pas que les octets correspondent à l'id.
+
+Quatre sortes d'entrées :
+
+1. chaque préfixe de chaque paquet valide (la troncature est l'attaque la plus
+   courante) ;
+2. des paquets valides mutés : bit inversé, octet remplacé par une valeur limite,
+   VarInt hostile inséré (2³¹−1, −1, une longueur au-delà du plafond de 2 Mio),
+   suite d'octets de continuation ;
+3. des octets aléatoires ;
+4. un flux de paquets bien encadrés, muté puis coupé à des endroits aléatoires et
+   passé au framer, sans compression, avec un seuil à 0 et à 256.
+
+Plus un cas ciblé : une trame compressée qui annonce une taille décompressée
+au-delà du plafond, que le framer doit refuser avant d'allouer.
+
+Les propriétés vérifiées : aucun crash ; un VarInt lu ne dépasse jamais 5
+octets (10 pour un VarLong) ; aucun corps accepté par le framer ne dépasse
+2 Mio. Le corpus de départ est lui-même vérifié : un cas contrôle que nos propres
+décodeurs acceptent les graines, sans quoi chaque mutation ne testerait que le
+premier champ.
+
+**Mesure (2026-09-11)** : vert sous ASan + UBSan (macOS, `-gline-tables-only`)
+au premier passage, soit 6 cas et 28 929 assertions. **Aucun crash trouvé** :
+les décodeurs existants bornaient déjà leurs comptes avant d'allouer. Le fuzz
+n'a donc rien corrigé ; il empêche que ça régresse.
+
+`protocol_matrix.py` ignore les fichiers `fuzz_*` : un harnais qui appelle tous
+les décodeurs sans vérifier ce qu'ils rendent marquerait chaque paquet « testé ».
+
+## Les paquets d'interface : `ov/protocol/hud.hpp`
+
+Boss Bar, les six paquets de bordure du monde, Display Objective, Update
+Objectives, Update Teams, Update Score, Award Statistics, Select Advancements Tab
+et Seen Advancements — encodeur **et** décodeur pour chacun.
+
+Les dispositions de champs viennent des tableaux de l'archive figée (oldid
+2773082), puis ont été **comparées champ par champ** à `data/pc/1.20/protocol.json`
+de minecraft-data. Les tests écrivent les octets attendus à la main depuis ces
+tableaux, pas depuis notre encodeur.
+
+**Un seul désaccord** : la durée d'interpolation de la bordure (*Speed* dans
+Initialize World Border et Set Border Lerp Size) est une **VarLong** pour
+l'archive, une **varint** pour minecraft-data. L'archive est suivie. Une durée en
+millisecondes dépasse 2³¹ au bout de 24 jours, ce qu'une commande
+`/worldborder set … <temps>` atteint facilement. Un test fixe le cas de 2⁴⁰ ms
+sur six octets, qu'un lecteur de varint refuserait. **Non vérifié sur le vrai
+serveur** : aucune capture n'a été faite pour ces paquets.
+
+Update Advancements (0x69), l'arbre complet des progrès avec affichage et
+critères, n'est **pas** fait : c'est un paquet d'une autre taille, qui mérite son
+propre lot.

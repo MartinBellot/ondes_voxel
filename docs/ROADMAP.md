@@ -25,6 +25,13 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] `bench_headers.py` — poids préprocessé, **déterministe**, seuil à 10 % (risque R5) 🔒
 - [x] `bench_build.sh` — temps mural, informatif (trop bruité pour un seuil)
 - [ ] Brancher `bench_headers.py` en CI
+      *(2026-09-11 : **volontairement pas branché**. Mesuré tel quel, la porte
+      échoue d'emblée : +19,3 % par unité de compilation, et la base de
+      référence date de 40 unités quand le projet en compte 445. Un seuil
+      global sur une moyenne ne dit rien de l'en-tête qui a grossi. Avant
+      d'activer : une comparaison **par fichier** et une référence
+      rafraîchie — sinon la CI passe au rouge au premier commit et on apprend
+      à l'ignorer)*
 - [ ] En-têtes précompilées — **mesuré comme inutile à 30 TU**, à revoir vers 200
 
 ### Verrous d'architecture 🔒
@@ -131,6 +138,13 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [~] Les ~130 paquets Play, round-trip octet à octet
       *(44 identifiants implémentés — ceux dont la tranche verticale a besoin.
       Le reste arrive avec les entités, l'inventaire complet et le son)*
+      *(2026-09-11 : **+14 paquets d'interface**, encodeur et décodeur, dans
+      `ov/protocol/hud.hpp` — Boss Bar, les six paquets de bordure, Display
+      Objective, Update Objectives, Update Teams, Update Score, Award
+      Statistics, Select Advancements Tab, Seen Advancements. Octets attendus
+      écrits à la main depuis l'archive ; la matrice passe à 125/176 paquets
+      couverts, 33 en aller-retour. Pas encore émis par le serveur, et Update
+      Advancements reste à faire)*
 - [x] Métadonnées d'entité (index / type / valeur)
       *(`MetadataWriter` couvre les 28 types de valeur de 763, et la table
       d'indices est **dérivée** plutôt que recopiée : un champ NBT à la fois sur
@@ -141,7 +155,14 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       *(et **relu** : `parse_chunk_data` est le miroir exact de l'encodeur, testé
       sur 24 chunks réels comparés cellule par cellule — blocs, biomes, les deux
       lumières et les heightmaps)*
-- [ ] Cibles de fuzz sur le décodeur, aucun crash sur entrée malveillante
+- [x] Cibles de fuzz sur le décodeur, aucun crash sur entrée malveillante
+      *(2026-09-11 : `fuzz_ov_protocol`, **déterministe à graine fixe** — pas
+      libFuzzer, que les trois OS de CI ne partagent pas. 72 points d'entrée
+      (tous les décodeurs d'octets de socket, framer compris) nourris de préfixes,
+      de mutations de paquets valides, d'octets aléatoires et de flux coupés au
+      hasard. Vert sous ASan + UBSan ; le job CI *Sanitizers* le lance avec le
+      reste. `OV_FUZZ_SEED` / `OV_FUZZ_ITERATIONS` pour une campagne longue —
+      voir `docs/provenance/protocole-763.md`)*
 - [x] Matrice de conformité `docs/protocol/763/`
       *(2026-09-11 : **générée depuis le code** par `scripts/protocol_matrix.py` —
       les 176 paquets, par état et par sens, avec constante, encodeur, décodeur,

@@ -298,6 +298,10 @@ class Matrix:
     def scan_tests(self) -> None:
         self.blocks: list[tuple[str, set[str], bool]] = []
         for test in sorted((ROOT / "src").glob("*/tests/*.cpp")):
+            # A fuzz harness calls every decoder and checks only that nothing
+            # crashes; counting it would mark every packet "tested".
+            if test.name.startswith("fuzz_"):
+                continue
             text = test.read_text(encoding="utf-8")
             parts = re.split(r"(?=\bTEST_CASE\s*\()", text)
             header = parts[0]
