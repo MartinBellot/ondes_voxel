@@ -10352,7 +10352,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                             continue;
                         }
 
-                        std::vector<u8> payload;
+                        // ── concurrency ── A snapshot, not bytes: the sections
+                        // are shared rather than copied, and the network
+                        // thread encodes it in send order
+                        // (`Connection::send_chunk`), so this loop no longer
+                        // pays for up to eight encodings per player per tick.
+                        std::shared_ptr<const world::Chunk> snapshot;
                         {
                             const std::scoped_lock chunk_lock{chunk_mutex};
                             // ── nether ── From the player's own level; the
@@ -10371,12 +10376,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                 // there is nothing to move off this thread.
                                 ready = &chunk_at(cx, cz);
                             }
-                            payload = net::encode_chunk_data(*ready);
+                            snapshot = ready->snapshot();
                         }
-                        if (const auto framed =
-                                net::encode_packet(net::clientbound::kChunkDataAndLight, payload)) {
-                            player.connection->send(*framed);
-                        }
+                        player.connection->send_chunk(std::move(snapshot));
                         player.loaded_chunks.insert(chunk);
                         sent_at[sent] = index;
                         ++sent;

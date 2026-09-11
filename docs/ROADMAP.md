@@ -221,11 +221,19 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       quatre étages de terrain ont un rayon nul, et paralléliser exigerait un
       cache de chunks partagé entre threads, exactement la structure mutable
       partagée que le principe 3 interdit. De la géométrie, jamais un mutex)*
-- [ ] Sections copy-on-write en `shared_ptr<const>` 🔒
-      *(pas encore nécessaire : rien ne demande d'instantané sans verrou. Le
-      `chunk_mutex` du serveur protège toujours la carte — ce qui l'a quittée
-      est la génération de 0,2 s, pas le verrou — et le retirer demande de
-      router le réseau vers le thread de tick, c'est-à-dire `ov_sim`)*
+- [x] Sections copy-on-write en `shared_ptr<const>` 🔒
+      *(**2026-09-11** : les paquets de jeu sont traités sur le thread de tick,
+      et `chunk_mutex` / `players_mutex` ne sont plus des mutex mais une
+      vérification que l'appelant est ce thread — 0 accès étranger sur une
+      série de 60 s. Une section garde blocs, biomes et lumière dans un
+      stockage partagé : copier une section marque les deux côtés, et le
+      premier qui écrit prend sa copie — **un stockage vu par deux sections
+      n'est plus jamais écrit**, sans lire `use_count()` d'un thread à l'autre.
+      `Chunk::snapshot()` coûte 24 pointeurs ; le thread réseau encode le
+      `Chunk Data` dans l'ordre d'envoi (`Connection::send_chunk`). Vérifié
+      sous TSan, dont un test sur socket réel où le réseau encode pendant que
+      le tick écrit (20 passes sur 20). Voir `docs/provenance/performance-tick.md`
+      § 5.5–5.6)*
 - [x] Pool de jobs : `std::jthread` et une file, **pas enkiTS**
       *(rien ici n'a besoin de vol de travail ni de graphe de tâches, et une
       dépendance vcpkg coûte plus sur cette machine qu'elle ne rapporte. Ce qui

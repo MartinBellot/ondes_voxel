@@ -760,6 +760,98 @@ Lecture :
   phase la plus lourde dans **0** des 152 ticks lents — il pesait dans le § 5.3 parce qu'il
   tenait les deux verrous, et les verrous n'excluent plus personne.
 
+### 5.6 Sections copy-on-write : le `Chunk Data` s'encode sur le thread réseau
+
+Le § 5.5 a retiré l'attente ; l'encodage, lui, restait sur le tick — jusqu'à 8 `Chunk Data`
+par joueur et par tick. Le principe 3 de `CLAUDE.md` dit comment le partager : par
+`shared_ptr<const>`, en copy-on-write. Ce qui est en place :
+
+- **une section garde blocs, biomes et lumière dans un stockage partagé**
+  (`src/ov_world/include/ov/world/chunk_section.hpp`). Copier une section copie un
+  pointeur et **marque les deux côtés** ; le premier qui écrit prend sa propre copie. La règle
+  est volontairement brutale — *un stockage vu par deux sections n'est plus jamais écrit* —
+  parce que l'alternative, lire `use_count()` sur le tick pendant que le réseau relâche sa
+  référence, demanderait une barrière isolée pour être correcte, et TSan ne les modélise pas ;
+- **`Chunk::snapshot()`** rend un `shared_ptr<const Chunk>` : 24 pointeurs de sections pour
+  l'Overworld, plus les heightmaps, les entités de bloc et les départs de structures, copiés
+  parce qu'ils sont petits ;
+- **`Connection::send_chunk`** (`src/ov_protocol/include/ov/protocol/listener.hpp`) : la
+  connexion TCP encode l'instantané **sur son propre thread, dans la même file que `send`** —
+  un `Block Update` envoyé après le chunk ne peut pas le doubler. La version par défaut
+  encode sur place et appelle `send`, octet pour octet ce que le serveur envoyait avant ;
+- **le piège évité** : le rallumage prend `section->blocks()` par référence puis écrit la
+  lumière de la même section. Si la copie avait lieu à cette écriture, la référence
+  pointerait dans un stockage que seul l'instantané possède — libéré par le thread réseau
+  quand il veut. `Chunk::section_for_y` en écriture **désolidarise donc avant de rendre la
+  section**, et le test « a reference from a writable section outlives the snapshot » fixe ce
+  comportement.
+
+Vérifié :
+
+| | Debug | TSan |
+|---|---|---|
+| `test_ov_world` (dont 6 cas `[snapshot]`) | 97 cas verts | 97 cas verts, 0 rapport |
+| `test_ov_protocol` (dont le test sur socket réel) | 150 verts, 1 sauté | 150 verts, 1 sauté, 0 rapport ; **20 passes sur 20** |
+| `test_ov_server` | 125 cas verts | 124 verts, 1 sauté, 0 rapport |
+
+Le cas sauté de `test_ov_protocol` demande un monde dans `run/world/region`, absent de ce
+worktree ; il l'était déjà avant. Le test sur socket réel envoie un paquet, un instantané,
+puis un autre paquet, **pendant que le thread du test réécrit le chunk** : les trois arrivent
+dans l'ordre, et le chunk reçu est celui d'avant la réécriture.
+
+**Une première mesure ratée, et ce qu'elle montre.** La série « après copy-on-write » lancée
+juste après ces tests n'a jamais fait entrer la sonde : **0 bloc généré (0 chunk) en 3,6 min
+avec 4 ouvriers**, zone de spawn à 0 %, 7 connexions refusées « refused for now » puis fermées
+après 30 s de silence. Le serveur n'avait pas de problème de tick (20 tours/s, aucun au-delà
+de 50 ms) : il n'avait simplement rien à envoyer. Sa part de CPU était de **42 %** contre 190 %
+sur la série du § 5.5, avec **7,7 Go de swap relus** pendant la mesure — les ouvriers de
+génération affamés, exactement le § 4.3. Le code des ouvriers ne copie jamais de chunk (le
+pipeline déplace, `pipeline.cpp:390`) : le copy-on-write n'y ajoute aucune copie.
+
+**La seconde tentative réfute la famine comme explication suffisante.** Relancée après la suite
+complète (16 exécutables verts, `test_ov_worldgen` en 352 s contre 512 s avant le changement,
+0 avertissement), sur une machine plus calme — charge médiane **16**, **300 Mo** de swap relus,
+**148 %** de CPU pour le serveur —, la sonde n'entre toujours pas : 0 bloc généré en 4 min.
+Les quatre ouvriers ne sont pas bloqués pour autant : chacun écrit dans le journal du début à
+l'arrêt du serveur (dernières lignes 24 à 53 s *après* le rapport d'arrêt), ils travaillent.
+Le chiffre qui recadre tout est dans la série du § 5.5, faite *avant* le copy-on-write : la
+sonde y est entrée à **195,3 s**, pour une patience de 240 s. En Debug sur cette machine, la
+préparation du spawn consommait déjà 80 % de la patience ; deux échecs à 254–256 s restent dans
+cette marge.
+
+**Une patience de 600 s ne suffit pas non plus** : troisième tentative, 0 bloc en 620 s, charge
+médiane 25 (17,4 à 57,8), **26 %** d'un cœur pour le serveur. Des ouvriers qui n'obtiennent
+qu'un quart de cœur à eux quatre ressemblent à la famine du § 4.3 — mais c'est aussi ce que
+montrerait un ouvrier ralenti par le changement. Une seule expérience sépare les deux.
+
+**A/B à conditions identiques : les deux binaires lancés en même temps.** Le serveur d'avant le
+copy-on-write (sources de `fa3b709` recompilées — `chunk.cpp`, `chunk_section.cpp`,
+`listener.cpp` et `server.cpp` dans le journal de construction) et celui d'après, deux mondes
+et deux ports distincts, même graine, même sonde, patience 600 s :
+
+| | avant copy-on-write | **après copy-on-write** |
+|---|---|---|
+| blocs générés en ~600 s | 0 | 0 |
+| entrée de la sonde | refusée, abandon à 604,7 s | refusée, abandon à 605,9 s |
+| CPU du serveur | 13 % d'un cœur | 13 % d'un cœur |
+| tours de boucle du tick | 19,96 /s | 19,96 /s |
+
+Charge pendant la paire : `uptime` **29,21 / 37,27 / 32,22** avant, **51,68 / 50,32 / 41,38**
+après ; médiane 37,9 (27,2 à 64,1), 1,5 Go de swap relus. Selon l'agent coordinateur, la
+machine faisait tourner au même moment des outils de parité, plusieurs suites de tests et deux
+JVM.
+
+**Verdict** : le binaire d'avant échoue exactement comme celui d'après. Ce n'est pas le
+copy-on-write qui empêche la génération ; ce sont des ouvriers en QoS `UTILITY` sans temps de
+CPU sur une machine à 40–50 de charge — le point 2 du § 7, qui reste la prochaine correction.
+
+**Non mesuré, et dit comme tel.** Aucune de ces séries n'a fait entrer un joueur : il n'y a donc
+**pas de chiffre** de latence de cassage ni d'envoi de chunks après le copy-on-write, et ceux
+qu'une série contendue aurait donnés ne seraient pas comparables au § 5.5. La série qui les
+fournira doit passer par la voie de construction partagée des agents (aucune compilation à
+côté), avec `uptime` avant et après — et une charge encore bien au-dessus de ~10 notée à côté
+des chiffres.
+
 ## 6. Côté client
 
 Le client (`ov_voxel`) imprimait déjà `cpu`, `rec` et `gpu` ; un `max` à 733 ms n'y disait
@@ -840,6 +932,11 @@ propositions, chacune adossée à une mesure de ce fichier.
    Non fait ici parce qu'il restructure un bloc de `server.cpp` que l'agent des écrans
    modifie en parallèle (fours et établis vivent dans la même section verrouillée) : une
    fusion à trois voies y serait un risque réel pour un gain qui mérite sa propre mesure.
+   **Appliqué dans le code aux § 5.5–5.6**, sous une autre forme que celle proposée ici : il
+   n'y a plus de verrou à tenir (§ 5.5), et l'encodage a quitté le tick — le tick prend un
+   instantané (`Chunk::snapshot`), le thread réseau encode (`Connection::send_chunk`). Le
+   bloc de `server.cpp` n'a changé que sur ces quelques lignes. **Le gain n'est pas encore
+   mesuré** (§ 5.6, fin).
 7. **La troisième cause : la génération synchrone sur le thread réseau.** Mesurée (§ 5.4) :
    2 chunks générés hors du tick en une minute, un paquet de 19,7 s, et le tick bloqué
    autant de temps derrière `chunk_mutex`. Deux pas, dans l'ordre : (1) **attribuer** —

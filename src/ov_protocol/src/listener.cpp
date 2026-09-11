@@ -4,6 +4,8 @@
 
 #include "ov/base/log.hpp"
 #include "ov/protocol/framing.hpp"
+#include "ov/protocol/play.hpp"
+#include "ov/world/chunk.hpp"
 
 #include <asio.hpp>
 #include <atomic>
@@ -14,6 +16,17 @@
 #include <system_error>
 
 namespace ov::net {
+
+void Connection::send_chunk(std::shared_ptr<const world::Chunk> chunk) {
+    if (!chunk) {
+        return;
+    }
+    const auto payload = encode_chunk_data(*chunk);
+    if (const auto framed = encode_packet(clientbound::kChunkDataAndLight, payload)) {
+        send(*framed);
+    }
+}
+
 namespace {
 
 /// Idle connections are dropped after this long.
@@ -38,6 +51,7 @@ public:
     void start();
 
     void send(std::span<const u8> bytes) override;
+    void send_chunk(std::shared_ptr<const world::Chunk> chunk) override;
     void close() override;
 
     [[nodiscard]] std::string peer_address() const override {
@@ -226,6 +240,29 @@ void AsioConnection::send(std::span<const u8> bytes) {
     auto payload = std::make_shared<std::vector<u8>>(bytes.begin(), bytes.end());
     asio::post(socket_.get_executor(), [self = shared_from_this(), payload] {
         self->write_queue_.push_back(std::move(*payload));
+        if (!self->writing_) {
+            self->write_next();
+        }
+    });
+}
+
+void AsioConnection::send_chunk(std::shared_ptr<const world::Chunk> chunk) {
+    if (closed_ || !chunk) {
+        return;
+    }
+    // Posted like `send`, so the chunk keeps its place among the packets
+    // queued around it; encoded in the handler, so the tick thread only paid
+    // for the snapshot. The snapshot is released here, on the loop, once the
+    // bytes exist — that is the moment the tick's sections stop being shared.
+    asio::post(socket_.get_executor(), [self = shared_from_this(), chunk = std::move(chunk)] {
+        const auto payload = encode_chunk_data(*chunk);
+        auto       framed  = encode_packet(clientbound::kChunkDataAndLight, payload);
+        if (!framed) {
+            OV_LOG_WARN("{}: chunk ({}, {}) not sent: {}", self->peer_address(),
+                        chunk->position().x, chunk->position().z, to_string(framed.error()));
+            return;
+        }
+        self->write_queue_.push_back(std::move(*framed));
         if (!self->writing_) {
             self->write_next();
         }
