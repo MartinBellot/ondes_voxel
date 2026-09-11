@@ -14,7 +14,8 @@ EYE = 1.62
 SPACING = 32
 
 # name, summon (type and NBT, position filled in), distance, centre height the
-# camera aims at, whether it expires before our client gets to it.
+# camera aims at, whether it expires before our client gets to it — or changes:
+# a baby grows up in 24 000 ticks even without AI, a TNT's fuse runs out.
 _MOB = "NoAI:1b,PersistenceRequired:1b"
 
 RAW = [
@@ -42,7 +43,7 @@ RAW = [
     ("slime", "slime {%s,Size:1}" % _MOB, 3.0, 0.5, False),
     ("magma_cube", "magma_cube {%s,Size:1}" % _MOB, 3.0, 0.5, False),
     ("cow", "cow {%s}" % _MOB, 3.4, 0.8, False),
-    ("baby_cow", "cow {%s,Age:-24000}" % _MOB, 2.4, 0.4, False),
+    ("baby_cow", "cow {%s,Age:-24000}" % _MOB, 2.4, 0.4, True),
     ("pig", "pig {%s,Saddle:1b}" % _MOB, 3.0, 0.5, False),
     ("sheep_lime", "sheep {%s,Color:5b}" % _MOB, 3.2, 0.7, False),
     ("sheep_sheared", "sheep {%s,Sheared:1b}" % _MOB, 3.2, 0.7, False),
@@ -56,7 +57,7 @@ RAW = [
                  "profession:\"librarian\",level:3}}" % _MOB, 3.2, 1.0, False),
     ("villager_desert", "villager {%s,VillagerData:{type:\"desert\","
                         "profession:\"armorer\",level:5}}" % _MOB, 3.2, 1.0, False),
-    ("baby_villager", "villager {%s,Age:-24000}" % _MOB, 2.4, 0.5, False),
+    ("baby_villager", "villager {%s,Age:-24000}" % _MOB, 2.4, 0.5, True),
     ("zombie_villager", "zombie_villager {%s,VillagerData:{type:\"taiga\","
                         "profession:\"farmer\",level:2}}" % _MOB, 3.2, 1.0, False),
     ("piglin", "piglin {%s,IsImmuneToZombification:1b}" % _MOB, 3.2, 1.0, False),
@@ -78,7 +79,7 @@ RAW = [
     ("end_crystal", "end_crystal {ShowBottom:1b}", 3.6, 1.0, False),
     ("end_crystal_beam", "end_crystal {ShowBottom:0b,BeamTarget:{X:%d,Y:-56,Z:-3}}", 5.0, 2.0,
      False),
-    ("tnt", "tnt {Fuse:32767s}", 2.6, 0.5, False),
+    ("tnt", "tnt {Fuse:32767s}", 2.6, 0.5, True),
     ("falling_block", "falling_block {BlockState:{Name:\"sand\"},NoGravity:1b,Time:1}",
      2.6, 0.5, True),
     ("experience_orb", "experience_orb {Value:20s,Age:0s}", 1.6, 0.2, True),
@@ -88,15 +89,15 @@ RAW = [
     ("dragon_fireball", "dragon_fireball {power:[0.0,0.0,0.0],Motion:[0.0,0.0,0.0]}", 4.0, 1.0, True),
     ("ender_dragon", "ender_dragon {NoAI:1b,Silent:1b,Rotation:[0f,0f]}", 22.0, 3.0, False),
     # Babies of every species with a head of its own, and a second held item.
-    ("baby_pig", "pig {%s,Age:-24000}" % _MOB, 2.2, 0.3, False),
-    ("baby_sheep", "sheep {%s,Age:-24000}" % _MOB, 2.2, 0.4, False),
-    ("baby_chicken", "chicken {%s,Age:-24000}" % _MOB, 1.8, 0.2, False),
-    ("baby_wolf", "wolf {%s,Age:-24000}" % _MOB, 2.2, 0.3, False),
-    ("baby_cat", "cat {%s,Age:-24000,variant:\"jellie\"}" % _MOB, 1.8, 0.2, False),
-    ("baby_fox", "fox {%s,Age:-24000}" % _MOB, 2.0, 0.2, False),
-    ("baby_horse", "horse {%s,Age:-24000,Variant:515}" % _MOB, 3.0, 0.6, False),
-    ("baby_rabbit", "rabbit {%s,Age:-24000,RabbitType:3}" % _MOB, 1.8, 0.2, False),
-    ("baby_hoglin", "hoglin {%s,Age:-24000,IsImmuneToZombification:1b}" % _MOB, 2.8, 0.5, False),
+    ("baby_pig", "pig {%s,Age:-24000}" % _MOB, 2.2, 0.3, True),
+    ("baby_sheep", "sheep {%s,Age:-24000}" % _MOB, 2.2, 0.4, True),
+    ("baby_chicken", "chicken {%s,Age:-24000}" % _MOB, 1.8, 0.2, True),
+    ("baby_wolf", "wolf {%s,Age:-24000}" % _MOB, 2.2, 0.3, True),
+    ("baby_cat", "cat {%s,Age:-24000,variant:\"jellie\"}" % _MOB, 1.8, 0.2, True),
+    ("baby_fox", "fox {%s,Age:-24000}" % _MOB, 2.0, 0.2, True),
+    ("baby_horse", "horse {%s,Age:-24000,Variant:515}" % _MOB, 3.0, 0.6, True),
+    ("baby_rabbit", "rabbit {%s,Age:-24000,RabbitType:3}" % _MOB, 1.8, 0.2, True),
+    ("baby_hoglin", "hoglin {%s,Age:-24000,IsImmuneToZombification:1b}" % _MOB, 2.8, 0.5, True),
     ("skeleton_bow", "skeleton {%s,HandItems:[{id:\"bow\",Count:1b},{}]}" % _MOB, 3.2, 1.0, False),
 ]
 
