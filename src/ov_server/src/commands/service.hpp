@@ -134,12 +134,26 @@ struct ServiceConfig {
     const registry::Registries*    registries{nullptr};
     std::filesystem::path          ops_file;
     std::filesystem::path          lang_file;
-    /// An integrated server grants its players level 4, as singleplayer with
-    /// cheats does. A dedicated one reads ops.json.
+    /// An integrated server has no ops.json: its host gets level 4 when the
+    /// world allows commands (level.dat's allowCommands, read by
+    /// load_world) and 0 when it does not. A dedicated one reads ops.json.
     bool        integrated{false};
     i32         max_players{20};
     std::string motd{"Ondes VOXEL"};
+    // ── allow-commands ── the singleplayer host's name (--host-player), the
+    // one player an integrated server's Allow Cheats applies to. Last, so the
+    // positional initialisations above it keep their meaning.
+    std::string host_player;
 };
+
+// ── allow-commands ──
+/// The permission level a player joins with. Dedicated: ops.json's level, or
+/// 0. Integrated: ops.json is not read; the host has 4 when the world allows
+/// commands and 0 when it does not, and any other player 0 (Open to LAN's
+/// "Allow Cheats", which would raise them, is not implemented). Measured on
+/// the vanilla client, docs/provenance/commandes-solo.md.
+[[nodiscard]] i32 join_permission(bool integrated, bool allow_commands, bool is_host,
+                                  std::optional<i32> ops_level) noexcept;
 
 struct PersonalSpawn {
     i32 x{0};
@@ -231,6 +245,8 @@ private:
     void set_game_mode(PlayerRef& player, u8 mode);
     [[nodiscard]] std::vector<EntityInfo> snapshot() const;
     [[nodiscard]] CommandSource source_for(const PlayerRef& player) const;
+    /// ── allow-commands ── join_permission for this player and this world.
+    [[nodiscard]] i32 permission_for(const PlayerRef& player) const;
 
     // Feedback, the way vanilla's CommandSourceStack gives it.
     void reply(const CommandSource& source, const Text& text);
@@ -263,6 +279,7 @@ private:
     std::unordered_set<i32> welcomed_;
     std::unordered_map<std::string, PersonalSpawn> spawns_;
     std::atomic<u8>        default_mode_{1};
+    bool                   allow_commands_{true};  // ── allow-commands ── level.dat's
     math::XoroshiroRandomSource random_{0x4F56434F4D4D414EULL, 0x44535F52414E4430ULL};
 
     // Valid only inside run() / execute().

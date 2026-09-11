@@ -1244,6 +1244,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             command_config.integrated ? std::filesystem::path{} : std::filesystem::path{"ops.json"};
         command_config.lang_file = data_dir.parent_path() / "run" / "assets" / "assets" /
                                    "minecraft" / "lang" / "en_us.json";
+        // ── allow-commands ── Allow Cheats (level.dat) applies to the host.
+        command_config.host_player = options.host_player;
         command_config.max_players = options.max_players;
         command_config.motd        = options.motd;
         commands = std::make_unique<cmd::CommandService>(std::move(command_config));
