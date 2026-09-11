@@ -3,6 +3,7 @@
 #include "projectiles.hpp"
 
 #include "brewing_session.hpp"  // ── brewing ──
+#include "entity_nbt.hpp"       // ── persistence ──
 #include "survival_session.hpp"
 
 #include "ov/base/log.hpp"
@@ -860,6 +861,7 @@ ProjectileStats Projectiles::after_entity_tick(entity::EntityWorld& world,
     ProjectileStats stats;
     for (const i32 gone : world.removed_ids()) {
         pickup_items_.erase(gone);
+        saved_.erase(gone);  // ── persistence ──
     }
 
     doomed_.clear();
@@ -1067,9 +1069,191 @@ ProjectileStats Projectiles::after_entity_tick(entity::EntityWorld& world,
             deliver(net::clientbound::kRemoveEntities, net::encode_remove_entity(id));
         }
         pickup_items_.erase(id);
+        saved_.erase(id);  // ── persistence ──
     }
     doomed_.clear();
     return stats;
+}
+
+// ── persistence ─────────────────────────────────────────────────────────────
+
+std::optional<entity::EntityHandle> Projectiles::adopt_saved(entity::EntityWorld& world,
+                                                             const nbt::Tag&      compound) {
+    const nbt::Tag* id   = compound.find("id");
+    const auto      kind = id != nullptr ? gameplay::projectile_kind(id->as_string()) : std::nullopt;
+    if (!kind || type_of(*kind) < 0) {
+        return std::nullopt;
+    }
+    // What a pickup gives back, or what the bottle holds: from the keys
+    // 1.20.1 keeps them under.
+    net::ItemStack item{};
+    if (*kind == ProjectileKind::Trident) {
+        if (item_registry_) {
+            item = item_stack_from(*registries_, *item_registry_, compound.find("Trident"))
+                       .value_or(net::ItemStack{item_id("minecraft:trident"), 1, {}});
+        }
+    } else if (*kind == ProjectileKind::SpectralArrow) {
+        item = net::ItemStack{item_id("minecraft:spectral_arrow"), 1, {}};
+    } else if (*kind == ProjectileKind::Arrow) {
+        const nbt::Tag* potion = compound.find("Potion");
+        const nbt::Tag* custom = compound.find("CustomPotionEffects");
+        if (potion != nullptr || custom != nullptr) {
+            nbt::Tag tag = nbt::Tag::make_compound();
+            if (potion != nullptr) {
+                (void)tag.put("Potion", *potion);
+            }
+            if (custom != nullptr) {
+                (void)tag.put("CustomPotionEffects", *custom);
+            }
+            item = net::ItemStack{item_id("minecraft:tipped_arrow"), 1,
+                                  nbt::write(nbt::Document{"tag", std::move(tag)})};
+        } else {
+            item = net::ItemStack{item_id("minecraft:arrow"), 1, {}};
+        }
+    } else if (*kind == ProjectileKind::Potion) {
+        if (item_registry_) {
+            item = item_stack_from(*registries_, *item_registry_, compound.find("Item"))
+                       .value_or(net::ItemStack{});
+        }
+        if (item.empty()) {
+            OV_LOG_WARN("entities: a thrown potion with no potion in it — refused");
+            return std::nullopt;
+        }
+    }
+
+    const auto handle = world.spawn(type_of(*kind), list_vec3(compound, "Pos"),
+                                    uuid_from(compound.find("UUID")).value_or(net::Uuid{}));
+    if (!handle) {
+        OV_LOG_WARN("entities: cannot spawn a {} read from disk: {}", id->as_string(),
+                    entity::to_string(handle.error()));
+        return std::nullopt;
+    }
+    entity::EntityState* state = world.mutable_state(*handle);
+    if (state->uuid == net::Uuid{}) {
+        state->uuid = uuid_for(state->network_id);
+    }
+    state->velocity           = list_vec3(compound, "Motion");
+    state->yaw                = static_cast<f32>(list_f64(compound, "Rotation", 0));
+    state->pitch              = static_cast<f32>(list_f64(compound, "Rotation", 1));
+    state->head_yaw           = state->yaw;
+    state->broadcast_position = state->position;
+    state->broadcast_valid    = true;
+
+    gameplay::ProjectileData data;
+    data.kind = *kind;
+    // Whoever shot it is a UUID on disk and a wire id here: not resolved. It
+    // stays in the compound and goes back out.
+    data.owner         = 0;
+    data.left_owner    = true;
+    data.age           = 1000;
+    data.base_damage   = get_f64(compound, "damage", 2.0);
+    data.critical      = get_bool(compound, "crit", false);
+    data.pickup        = static_cast<u8>(std::clamp<i64>(get_i64(compound, "pickup", 0), 0, 2));
+    data.pierce        = static_cast<u8>(std::clamp<i64>(get_i64(compound, "PierceLevel", 0), 0, 127));
+    data.from_crossbow = get_bool(compound, "ShotFromCrossbow", false);
+    data.dealt_damage  = get_bool(compound, "DealtDamage", false);
+    data.in_ground     = gameplay::is_arrow_like(*kind) && get_bool(compound, "inGround", false);
+    data.life          = static_cast<i32>(get_i64(compound, "life", 0));
+    if (data.in_ground) {
+        // The tip is in the block, 0.05 along the way it came (measured on
+        // the stuck arrow, projectile.cpp); `Motion` still points that way.
+        const Vec3d  v   = state->velocity;
+        const f64    len = v.length();
+        const Vec3d  tip = len > 1e-9 ? state->position + v * (0.1 / len) : state->position;
+        data.stuck       = BlockPos{static_cast<i32>(std::floor(tip.x)),
+                                    static_cast<i32>(std::floor(tip.y)),
+                                    static_cast<i32>(std::floor(tip.z))};
+        data.stuck_state = block_state_from(*blocks_, compound.find("inBlockState"))
+                               .value_or(registry::BlockStateId{});
+    }
+    world.set_logic(*handle, std::make_unique<gameplay::ProjectileLogic>(data, world_));
+    if (gameplay::is_arrow_like(*kind) && item.item_id != 0) {
+        pickup_items_[state->network_id] = item;
+    }
+    if (*kind == ProjectileKind::Potion) {
+        potion_items_[state->network_id] = item;
+    }
+    saved_[state->network_id] = compound;
+    return *handle;
+}
+
+std::optional<nbt::Tag> Projectiles::save_entity(entity::EntityWorld& world,
+                                                 entity::EntityHandle handle) const {
+    const entity::EntityState* state = world.state(handle);
+    const auto* logic = dynamic_cast<const gameplay::ProjectileLogic*>(world.logic(handle));
+    if (state == nullptr || logic == nullptr || state->removed) {
+        return std::nullopt;
+    }
+    const gameplay::ProjectileData& data = logic->data();
+    const auto                      kept = saved_.find(state->network_id);
+    nbt::Tag out = kept != saved_.end() ? kept->second : nbt::Tag::make_compound();
+    put_entity_base(out, gameplay::projectile_type_name(data.kind), state->position,
+                    state->velocity, state->yaw, state->pitch, state->uuid, state->on_ground,
+                    i16{0});
+    default_to(out, "HasBeenShot", nbt::Tag::make_bool(true));
+    if (data.left_owner) {
+        (void)out.put("LeftOwner", nbt::Tag::make_bool(true));
+    }
+    if (data.owner != 0 && owner_uuid_) {
+        if (const auto owner = owner_uuid_(data.owner)) {
+            (void)out.put("Owner", uuid_tag(*owner));
+        }
+    }
+    const auto pickup = pickup_items_.find(state->network_id);
+    if (gameplay::is_arrow_like(data.kind)) {
+        (void)out.put("life", nbt::Tag{static_cast<i16>(std::clamp(data.life, 0, 32767))});
+        default_to(out, "shake", nbt::Tag{i8{0}});
+        (void)out.put("inGround", nbt::Tag::make_bool(data.in_ground));
+        if (data.in_ground && data.stuck_state != registry::BlockStateId{}) {
+            (void)out.put("inBlockState", block_state_tag(*blocks_, data.stuck_state));
+        } else if (!data.in_ground) {
+            (void)out.erase("inBlockState");
+        }
+        (void)out.put("pickup", nbt::Tag{static_cast<i8>(data.pickup)});
+        (void)out.put("damage", nbt::Tag{data.base_damage});
+        (void)out.put("crit", nbt::Tag::make_bool(data.critical));
+        (void)out.put("ShotFromCrossbow", nbt::Tag::make_bool(data.from_crossbow));
+        (void)out.put("PierceLevel", nbt::Tag{static_cast<i8>(data.pierce)});
+        default_to(out, "SoundEvent", nbt::Tag{std::string{"minecraft:entity.arrow.hit"}});
+        if (data.kind == ProjectileKind::SpectralArrow) {
+            default_to(out, "Duration", nbt::Tag{i32{200}});
+        } else if (data.kind == ProjectileKind::Trident) {
+            (void)out.put("DealtDamage", nbt::Tag::make_bool(data.dealt_damage));
+            if (pickup != pickup_items_.end() && item_registry_) {
+                if (auto trident = item_stack_tag(*registries_, *item_registry_, pickup->second)) {
+                    (void)out.put("Trident", std::move(*trident));
+                }
+            }
+        } else if (pickup != pickup_items_.end() &&
+                   item_name(pickup->second.item_id) == "minecraft:tipped_arrow") {
+            if (const auto tag = read_tag(pickup->second)) {
+                if (const nbt::Tag* potion = tag->root.find("Potion")) {
+                    (void)out.put("Potion", *potion);
+                }
+                if (const nbt::Tag* custom = tag->root.find("CustomPotionEffects")) {
+                    (void)out.put("CustomPotionEffects", *custom);
+                }
+            }
+        }
+    } else if (data.kind == ProjectileKind::Potion) {
+        // Measured: a thrown potion always carries its `Item`; a snowball,
+        // an egg, a pearl, a bottle o' enchanting do not, even when given one.
+        if (const auto potion = potion_items_.find(state->network_id);
+            potion != potion_items_.end() && item_registry_) {
+            if (auto stack = item_stack_tag(*registries_, *item_registry_, potion->second)) {
+                (void)out.put("Item", std::move(*stack));
+            }
+        }
+    }
+    return out;
+}
+
+void Projectiles::release(entity::EntityWorld& world, entity::EntityHandle handle) {
+    if (const entity::EntityState* state = world.state(handle)) {
+        pickup_items_.erase(state->network_id);
+        potion_items_.erase(state->network_id);
+        saved_.erase(state->network_id);
+    }
 }
 
 }  // namespace ov::server

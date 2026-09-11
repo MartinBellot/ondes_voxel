@@ -19,6 +19,7 @@
 // random source and the entity world are only ever touched by one thread.
 #pragma once
 
+#include "entity_storage.hpp"  // ── persistence ──
 #include "mob_combat.hpp"
 #include "world_ticks.hpp"
 
@@ -82,7 +83,7 @@ struct TntGravityStats {
     usize dropped{0};
 };
 
-class TntGravity final : public BlockRuleExtension {
+class TntGravity final : public BlockRuleExtension, public EntityAdopter {
 public:
     TntGravity(const registry::BlockRegistry& blocks, const registry::Registries& registries,
                const gameplay::LootTables* loot, MobCombat* mob_combat);
@@ -98,9 +99,23 @@ public:
     // ── Entities ────────────────────────────────────────────────────────────
 
     /// Is this entity type one this module spawns and speaks for?
-    [[nodiscard]] bool owns(i32 type) const noexcept {
+    [[nodiscard]] bool owns(i32 type) const noexcept override {
         return type == tnt_type_ || type == falling_type_;
     }
+
+    // ── persistence: EntityAdopter, called by EntityStorage ─────────────────
+    //
+    // `minecraft:tnt`: `Fuse` (short, the ticks left — measured under that
+    // name in 1.20.1). `minecraft:falling_block`: `BlockState` {Name,
+    // Properties}, `Time` (int), `DropItem`, `HurtEntities`, `CancelDrop`
+    // (bytes), `FallHurtMax` (int), `FallHurtAmount` (float); the last four
+    // are carried, not modelled — `DropItem` 0 is honoured.
+
+    std::optional<entity::EntityHandle> adopt_saved(entity::EntityWorld& world,
+                                                    const nbt::Tag&      compound) override;
+    [[nodiscard]] std::optional<nbt::Tag> save_entity(entity::EntityWorld& world,
+                                                      entity::EntityHandle handle) const override;
+    void release(entity::EntityWorld& world, entity::EntityHandle handle) override;
 
     /// The packets that make one of this module's entities appear, for a
     /// player joining after it was spawned.
@@ -197,6 +212,10 @@ private:
     /// Swapped out under the lock, so spawning happens outside it.
     std::vector<gameplay::FallStart> spawning_falls_;
     std::vector<PendingPrime>        spawning_primes_;
+
+    /// ── persistence ── The compound each TNT or falling block was read with,
+    /// by wire id: what this server does not model goes back out through it.
+    std::unordered_map<i32, nbt::Tag> saved_;
 
     /// Each creeper's countdown, by wire id.
     std::unordered_map<i32, gameplay::CreeperSwell> creepers_;

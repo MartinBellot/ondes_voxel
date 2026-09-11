@@ -36,6 +36,9 @@ ov_add_library(ov_server
         src/mob_attacks.cpp  # ── mobs-3 ──
         src/mob_despawn.cpp  # ── mobs-3 ──
         src/entity_storage.cpp  # ── mobs-3 ──
+        src/entity_nbt.cpp  # ── persistence ──
+        src/ground_entities.cpp  # ── persistence ──
+        src/dimension_entities.cpp  # ── persistence ──
         src/zombie_villagers.cpp  # ── mobs-3 ──
         src/player_level.cpp
         src/player_data.cpp
@@ -110,6 +113,7 @@ ov_add_test(test_ov_server
         tests/test_tick_thread_lock.cpp  # ── concurrency ──
         tests/test_end_fight.cpp
         tests/test_rails_session.cpp
+        tests/test_persistence.cpp  # ── persistence ──
         tests/test_nether_mobs.cpp  # ── nether-2 ──
         tests/test_mobs3_server.cpp  # ── mobs-3 ──
         tests/test_world_structures.cpp  # ── structures ──

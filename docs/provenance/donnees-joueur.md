@@ -88,7 +88,8 @@ reste repart tel qu'il est venu.
 | `playerGameType`, `previousPlayerGameType`, `abilities` | `EnderItems` (pas de coffre de l'Ender ici) |
 | `Health`, `AbsorptionAmount`, `HurtTime`, `DeathTime`, `Air` | `Spawn*` (voir § 7), `Score`, `XpSeed`, `Fire` |
 | `foodLevel`, `foodSaturationLevel`, `foodExhaustionLevel`, `foodTickTimer` | `Invulnerable`, `PortalCooldown`, `FallFlying`, `SleepTimer`, `HurtByTimestamp` |
-| `XpLevel`, `XpP`, `XpTotal` | `LastDeathLocation`, `ShoulderEntity*`, `RootVehicle`… |
+| `XpLevel`, `XpP`, `XpTotal` | `LastDeathLocation`, `ShoulderEntity*`… |
+| `RootVehicle` (2026-09-11, `persistance-entites.md` : le wagonnet du joueur parti assis dedans ; retiré quand il ne monte plus rien) | |
 | `Inventory`, `SelectedItemSlot`, `ActiveEffects`, `Attributes` (fusionnés) | tout ce qu'une autre version ou un mod ajoute |
 | `DataVersion` 3465, `UUID` | |
 

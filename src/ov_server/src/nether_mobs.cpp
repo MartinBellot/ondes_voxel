@@ -3,6 +3,7 @@
 
 #include "nether_mobs.hpp"
 
+#include "entity_nbt.hpp"  // ── persistence ──
 #include "natural_spawning.hpp"
 #include "survival_session.hpp"  // damage_type_id
 
@@ -315,31 +316,7 @@ struct NetherMobs::Impl {
         if (state->type == magma_type) {
             magma.on_spawn(*state, random, 0.0F);
         }
-        if (state->type == ghast_type) {
-            world.set_logic(*spawned, std::make_unique<gameplay::GhastFlight>(id));
-            charges[id] = gameplay::GhastCharge{};
-        } else if (const gameplay::MobKind* kind = gameplay::mob_kind(type)) {
-            // Who a species hunts: a piglin, only players without gold (the
-            // villager-typed proxy); a zombified piglin and a strider, nobody
-            // until angered; every other hostile, any player.
-            i32 quarry = kind->hostile ? player_type : gameplay::kNoQuarry;
-            if (state->type == piglin_type || state->type == brute_type) {
-                quarry = villager_type;
-            }
-            if (state->type == zombified_type) {
-                quarry = gameplay::kNoQuarry;
-            }
-            world.set_logic(*spawned, std::make_unique<gameplay::Mob>(*kind, state->width,
-                                                                       state->height, id, quarry));
-        } else {
-            world.set_logic(*spawned, std::make_unique<gameplay::FallingMob>());
-        }
-        if (state->type == blaze_type) {
-            volleys[id] = gameplay::BlazeVolley{};
-        }
-        if (state->type == strider_type) {
-            shaking[id] = false;
-        }
+        behaviour(*spawned, type);
         // What they hold (minecraft.wiki: a piglin a golden sword or a
         // crossbow, even odds; a brute a golden axe; a zombified piglin a
         // golden sword; a wither skeleton a stone sword). Armour: named, not
@@ -360,6 +337,38 @@ struct NetherMobs::Impl {
         ++stats.spawned;
         announce(*state);
         return *spawned;
+    }
+
+    /// ── persistence ── The brain and the per-mob state a species runs on:
+    /// what a spawn and a read from disk both give a mob.
+    void behaviour(entity::EntityHandle handle, std::string_view type) {
+        const entity::EntityState* state = world.state(handle);
+        const i32                  id    = state->network_id;
+        if (state->type == ghast_type) {
+            world.set_logic(handle, std::make_unique<gameplay::GhastFlight>(id));
+            charges[id] = gameplay::GhastCharge{};
+        } else if (const gameplay::MobKind* kind = gameplay::mob_kind(type)) {
+            // Who a species hunts: a piglin, only players without gold (the
+            // villager-typed proxy); a zombified piglin and a strider, nobody
+            // until angered; every other hostile, any player.
+            i32 quarry = kind->hostile ? player_type : gameplay::kNoQuarry;
+            if (state->type == piglin_type || state->type == brute_type) {
+                quarry = villager_type;
+            }
+            if (state->type == zombified_type) {
+                quarry = gameplay::kNoQuarry;
+            }
+            world.set_logic(handle, std::make_unique<gameplay::Mob>(*kind, state->width,
+                                                                     state->height, id, quarry));
+        } else {
+            world.set_logic(handle, std::make_unique<gameplay::FallingMob>());
+        }
+        if (state->type == blaze_type) {
+            volleys[id] = gameplay::BlazeVolley{};
+        }
+        if (state->type == strider_type) {
+            shaking[id] = false;
+        }
     }
 
     // ── Players, as the brains see them ─────────────────────────────────────
@@ -1230,6 +1239,82 @@ std::string_view NetherMobs::type_of(i32 network_id) const {
 
 usize NetherMobs::size() const noexcept {
     return impl_->world.size();
+}
+
+// ── persistence ─────────────────────────────────────────────────────────────
+
+entity::EntityWorld& NetherMobs::world() noexcept {
+    return impl_->world;
+}
+
+void NetherMobs::forget(std::span<const i32> ids) {
+    Impl& impl = *impl_;
+    for (const i32 gone : ids) {
+        if (impl.combat != nullptr) {
+            impl.combat->forget(gone);
+        }
+        impl.volleys.erase(gone);
+        impl.charges.erase(gone);
+        impl.shaking.erase(gone);
+        impl.admiring.erase(gone);
+        impl.anger.erase(gone);
+        impl.main_hand.erase(gone);
+    }
+}
+
+EntityStorageHost NetherMobs::storage_host(const NetherMobHost& host) {
+    Impl*             impl = impl_.get();
+    EntityStorageHost out;
+    out.attach = [impl](entity::EntityHandle handle, std::string_view type) {
+        impl->behaviour(handle, type);
+    };
+    out.announce = [impl, &host](const entity::EntityState& state) {
+        if (host.broadcast) {
+            impl->packets(state, host.broadcast);
+        }
+    };
+    out.ignore = [impl](i32 network_id) {
+        const entity::EntityHandle handle = impl->world.find(network_id);
+        const entity::EntityState* state  = impl->world.state(handle);
+        return state == nullptr || impl->is_proxy(handle) || impl->is_fireball(state->type);
+    };
+    out.write_extra = [impl](const entity::EntityState& state, nbt::Tag& out_tag) {
+        if (state.type == impl->magma_type) {
+            (void)out_tag.put("Size", nbt::Tag{std::max(impl->magma.size_of(state.network_id), 1) - 1});
+            if (!out_tag.contains("wasOnGround")) {
+                (void)out_tag.put("wasOnGround", nbt::Tag::make_bool(state.on_ground));
+            }
+        }
+        // The main hand, as a mob's `HandItems` holds it: [main, off].
+        if (const auto hand = impl->main_hand.find(state.network_id);
+            hand != impl->main_hand.end() && impl->item_registry) {
+            nbt::Tag hands = nbt::Tag::make_list(nbt::TagType::Compound);
+            (void)hands.push(item_stack_tag(impl->registries, *impl->item_registry, hand->second)
+                                 .value_or(nbt::Tag::make_compound()));
+            (void)hands.push(nbt::Tag::make_compound());
+            (void)out_tag.put("HandItems", std::move(hands));
+        }
+        if (state.type == impl->zombified_type && !out_tag.contains("AngerTime")) {
+            (void)out_tag.put("AngerTime", nbt::Tag{i32{0}});
+        }
+        if (state.type == impl->ghast_type && !out_tag.contains("ExplosionPower")) {
+            (void)out_tag.put("ExplosionPower", nbt::Tag{i8{1}});
+        }
+    };
+    out.read_extra = [impl](entity::EntityState& state, const nbt::Tag& compound) {
+        if (state.type == impl->magma_type) {
+            impl->magma.set_size(state, static_cast<i32>(get_i64(compound, "Size", 0)) + 1);
+        }
+        const nbt::Tag* hands = compound.find("HandItems");
+        if (hands != nullptr && hands->list() != nullptr && !hands->list()->empty() &&
+            impl->item_registry) {
+            if (const auto held = item_stack_from(impl->registries, *impl->item_registry,
+                                                  &hands->list()->front())) {
+                impl->main_hand[state.network_id] = *held;
+            }
+        }
+    };
+    return out;
 }
 
 }  // namespace ov::server
