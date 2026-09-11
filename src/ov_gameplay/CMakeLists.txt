@@ -25,6 +25,7 @@ ov_add_library(ov_gameplay
         src/item_use.cpp
         src/nether_portal.cpp
         src/end_portal.cpp
+        src/dragon.cpp
         src/food.cpp
         src/mob_logic.cpp
         src/mob_species.cpp
@@ -74,6 +75,7 @@ ov_add_test(test_ov_gameplay
         tests/test_entity_physics.cpp
         tests/test_experience.cpp
         tests/test_nether_portal.cpp
+        tests/test_dragon.cpp
         tests/test_explosion.cpp
         tests/test_falling_block.cpp
         tests/test_primed_tnt.cpp

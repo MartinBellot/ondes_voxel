@@ -146,7 +146,7 @@ BlockPos EndPortalRules::exit_portal_origin(const world::LevelView& level, i32 t
     return at;
 }
 
-std::array<BlockPos, 20> end_gateway_order(i64 seed) {
+std::array<i32, 20> end_gateway_indices(i64 seed) {
     std::array<i32, 20> order{};
     for (i32 i = 0; i < 20; ++i) {
         order[static_cast<usize>(i)] = i;
@@ -156,15 +156,22 @@ std::array<BlockPos, 20> end_gateway_order(i64 seed) {
         const i32 j = random.next_int(i);
         std::swap(order[static_cast<usize>(i - 1)], order[static_cast<usize>(j)]);
     }
-    std::array<BlockPos, 20> positions{};
+    return order;
+}
+
+BlockPos end_gateway_position(i32 index) {
+    const f64 angle = 2.0 * (-std::numbers::pi + 0.15707963267948966 * static_cast<f64>(index));
+    const f64 x     = 96.0 * std::cos(angle);
+    const f64 z     = 96.0 * std::sin(angle);
+    return BlockPos{static_cast<i32>(std::floor(x)), 75, static_cast<i32>(std::floor(z))};
+}
+
+std::array<BlockPos, 20> end_gateway_order(i64 seed) {
+    const std::array<i32, 20> order = end_gateway_indices(seed);
+    std::array<BlockPos, 20>  positions{};
     for (usize taken = 0; taken < 20; ++taken) {
         // From the back of the list.
-        const i32 index = order[19 - taken];
-        const f64 angle = 2.0 * (-std::numbers::pi + 0.15707963267948966 * static_cast<f64>(index));
-        const f64 x     = 96.0 * std::cos(angle);
-        const f64 z     = 96.0 * std::sin(angle);
-        positions[taken] = BlockPos{static_cast<i32>(std::floor(x)), 75,
-                                    static_cast<i32>(std::floor(z))};
+        positions[taken] = end_gateway_position(order[19 - taken]);
     }
     return positions;
 }
