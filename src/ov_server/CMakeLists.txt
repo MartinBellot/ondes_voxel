@@ -113,6 +113,7 @@ ov_add_test(test_ov_server
         tests/test_nether_mobs.cpp  # ── nether-2 ──
         tests/test_mobs3_server.cpp  # ── mobs-3 ──
         tests/test_world_structures.cpp  # ── structures ──
+        tests/test_fluid_wakeups.cpp  # ── worldgen-3 ──
     DEPS ov_server
     LABELS unit
 )

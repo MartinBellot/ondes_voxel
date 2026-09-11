@@ -55,6 +55,11 @@ struct GeneratedBlock {
     i32 block_z{0};
 
     std::vector<std::pair<ChunkPos, world::Chunk>> chunks;
+
+    /// ── worldgen-3 ── The fluids the generator wants woken in these chunks
+    /// (world positions), for the tick thread to schedule once it publishes
+    /// them.
+    std::vector<BlockPos> fluid_wakeups;
 };
 
 class AsyncChunkSource {
