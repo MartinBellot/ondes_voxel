@@ -51,7 +51,7 @@ public:
 
     void set_compression_threshold(i32 threshold) override {
         decoder_.set_compression_threshold(threshold);
-        write_threshold_ = threshold;
+        write_threshold_.store(threshold, std::memory_order_release);
     }
 
 private:
@@ -68,7 +68,10 @@ private:
     std::deque<std::vector<u8>> write_queue_;
     bool                        writing_{false};
     bool                        closed_{false};
-    i32                         write_threshold_{kNoCompression};
+    /// Read by send() on whichever thread calls it: a packet takes the
+    /// threshold in force when it was sent, so Set Compression itself leaves
+    /// uncompressed and everything after it compressed.
+    std::atomic<i32>            write_threshold_{kNoCompression};
 };
 
 class AsioListener final : public Listener {
@@ -221,7 +224,20 @@ void AsioConnection::send(std::span<const u8> bytes) {
     // Posted rather than written directly: send() may be called from a handler
     // running on the loop, and queueing keeps the ordering obvious.
     auto payload = std::make_shared<std::vector<u8>>(bytes.begin(), bytes.end());
-    asio::post(socket_.get_executor(), [self = shared_from_this(), payload] {
+    const i32 threshold = write_threshold_.load(std::memory_order_acquire);
+    asio::post(socket_.get_executor(), [self = shared_from_this(), payload, threshold] {
+        if (threshold >= 0) {
+            // Compressed here, on the connection's thread, never on the
+            // caller's: the tick thread sends chunks and must not deflate them.
+            auto framed = compress_frames(*payload, threshold);
+            if (!framed) {
+                OV_LOG_WARN("{}: unframed bytes sent on a compressed connection, closing",
+                            self->peer_address());
+                self->close();
+                return;
+            }
+            *payload = std::move(*framed);
+        }
         self->write_queue_.push_back(std::move(*payload));
         if (!self->writing_) {
             self->write_next();
