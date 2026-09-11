@@ -448,6 +448,7 @@ permettent pas.
 | Rendu dans notre client | aucun mob du Nether n'est dessiné : la table d'espèces du rendu (`ov_render/src/entity_pose.cpp`, `species_of`) ne les nomme pas, `entity_model_name` rend vide et le client ne dessine rien plutôt qu'une boîte par défaut — la même règle qui laisse l'enderman et les douze espèces de `mobs-2` sans modèle. Un client vanilla les voit, puisqu'il ne reçoit que le type |
 | Indices de métadonnée | 16 (blaze : drapeaux ; ghast : attaque ; cube : taille) et 18 (strider : frisson) sont pris à la place que le protocole 763 leur donne ; **non relevés sur le fil d'un vrai serveur** |
 | `/kill`, `/tp` d'un mob du Nether | les commandes d'entité ne voient que les mobs de l'Overworld |
+| Sauvegarde des mobs du Nether | **faite** le 2026-09-11 (`persistance-entites.md`) : `DIM-1/entities`, par un stockage à lui qui lit dans le monde d'entités du Nether ; main principale et taille du cube relues, doublures des joueurs jamais écrites. Restent la colère d'un zombifié (`AngerTime`, `AngryAt` non relus), l'armure, et les boules de feu, non sauvées |
 
 ---
 
