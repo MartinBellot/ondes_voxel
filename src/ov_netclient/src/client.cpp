@@ -190,6 +190,7 @@ void ClientEvents::clear() {
     time_of_day.reset();
     rain_level.reset();     // ── weather ──
     thunder_level.reset();  // ── weather ──
+    time_frozen = false;
     health.reset();
     experience.reset();
     containers.clear();
@@ -432,6 +433,7 @@ void Client::Impl::handle_play(i32 packet_id, std::span<const u8> body) {
             // Negative means the cycle is frozen; the magnitude is still the
             // time, so it is the absolute value that matters.
             inbox.time_of_day = *time < 0 ? -*time : *time;
+            inbox.time_frozen = *time < 0;
             break;
         }
 
@@ -1150,6 +1152,7 @@ void Client::poll(ClientEvents& out) {
     out.entities.swap(impl_->inbox.entities);
     out.teleport    = impl_->inbox.teleport;
     out.time_of_day = impl_->inbox.time_of_day;
+    out.time_frozen = impl_->inbox.time_frozen;
     impl_->inbox.teleport.reset();
     impl_->inbox.time_of_day.reset();
     // ── weather ── copied like every other field: the inbox is not handed out

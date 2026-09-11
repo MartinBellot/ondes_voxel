@@ -327,8 +327,10 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] **Pipeline blockstate → variant → model → parent → elements → faces →
       rotations → uvlock** *(1005 blockstates, 6081 références, 62227 quads,
       0 échec — `ov_modelbake run/assets`)*
-- [x] Stitcher d'atlas, mips, animations `.mcmeta` *(animations lues et
-      conservées, pas encore jouées)*
+- [x] Stitcher d'atlas, mips, animations `.mcmeta` *(animations **jouées**
+      depuis le 2026-09-11 — eau, lave, feu, portail —, tous les niveaux de mip,
+      copie par région ; phase non alignée sur vanilla, voir
+      `docs/provenance/rendu-parite.md`)*
 - [x] Mailleur **par face depuis le modèle**, occlusion ambiante par sommet
       *(pas greedy : le plan se trompait, voir PROVENANCE)*
 - [x] Vertex packé **16 octets** *(12 d'abord ; le quatrième mot est la teinte
@@ -348,9 +350,9 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       sections dessinées en 3 appels ; l'origine de section, qui ne peut plus
       être poussée, est lue dans un storage buffer indexé par le
       `firstInstance` de la commande)*
-- [~] Passe translucide triée, index buffer mutable dédié *(les sections sont
-      maintenant triées d'arrière en avant ; le tri des quads à l'intérieur
-      d'une section reste, et demande son propre index buffer)*
+- [x] Passe translucide triée, index buffer mutable dédié *(les sections sont
+      triées d'arrière en avant, et depuis le 2026-09-11 les quads translucides
+      **à l'intérieur** de chaque section aussi — `render/translucent_sort`)*
 - [ ] Plafond d'upload par frame (les spikes, pas le FPS moyen, sont le risque)
 - [~] Ciel, soleil, lune, étoiles, nuages, brouillard, météo
       *(**2026-09-11 — la météo** : cycle naturel de pluie et d'orage (durées
@@ -371,6 +373,17 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       dérivée du biome sont faits. Soleil, lune, étoiles, nuages et météo
       restent — et deux constantes du lightmap ne sont documentées nulle part,
       voir PROVENANCE)*
+      *(**2026-09-11 — parité de rendu**, mesurée scène par scène contre le vrai
+      client : monde composé en valeurs stockées (cible UNORM, plus de sRGB
+      caché), lightmap **12 800/12 800** texels exacts — les deux constantes
+      manquantes mesurées (plancher du ciel 0,05, bleuissement 0,35) —, AO et
+      lumière lissée du jeu, variante de modèle par position (459/459 graines),
+      décalage des plantes 22/22, brouillard tiré vers le ciel et teinté au
+      crépuscule, disque de ciel, bande de l'aube, soleil et lune avec phases.
+      Scène `aolab` 23 → **98 %** des pixels à ±8, `desert` 95 %, `plains`
+      84 %. Restent nuages, étoiles, mélange du ciel entre biomes, vue sous
+      l'eau, et des pics d'image isolés à investiguer. Voir
+      `docs/provenance/rendu-parite.md`)*
 - [x] Courbe `f/(4-3f)` et lightmap : une torche à 7 rend 18 % et non 47 %
 
 ### `ov_client` (L15) et `ov_audio` (L14)

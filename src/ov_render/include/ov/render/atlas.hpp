@@ -26,7 +26,8 @@
 //     black into the visible colour. Distant foliage goes grey-black and the
 //     cause is invisible at mip 0. See mip_level() and the tests.
 //
-// Animation is parsed but not played: see SpriteAnimation.
+// Animation is parsed here and played by TextureAnimator
+// (texture_animation.hpp): the atlas keeps every cell of an animated strip.
 #pragma once
 
 #include "ov/base/types.hpp"
@@ -66,10 +67,9 @@ struct AnimationFrame {
 
 /// A texture's `.mcmeta` animation, parsed.
 ///
-/// ⚠️ Recorded, not played. The atlas holds frame 0 and nothing else: playing
-/// an animation means re-uploading its rect every few ticks, which is a job for
-/// the upload path in ov_rhi and does not exist yet. Everything needed to drive
-/// it is kept here so that adding it later does not mean re-reading the pack.
+/// The atlas's level 0 holds the first frame of the sequence; the cells are
+/// kept in TextureAtlas::animations(), and TextureAnimator re-composes the
+/// sprite's rect every tick its frame changes.
 struct SpriteAnimation {
     /// One frame's size in *source* texels, before the atlas scales the sprite.
     u32 frame_width{0};
@@ -112,6 +112,27 @@ struct AtlasMip {
     std::vector<u8> rgba;
 };
 
+/// One box-filtered halving, alpha-weighted — the one every atlas level is
+/// built with, public so that an animated sprite's levels are rebuilt the same
+/// way when its frame changes.
+[[nodiscard]] AtlasMip halve(const AtlasMip& source);
+
+/// An animated sprite, ready to be played: where it sits in the atlas, its
+/// `.mcmeta` sequence, and every cell of its source strip already scaled to the
+/// atlas resolution, so that playing it is copying and blending, never loading.
+struct AtlasAnimation {
+    /// Canonical sprite name.
+    std::string name;
+    /// The sprite's rect, in mip level 0 texels.
+    u32             x{0};
+    u32             y{0};
+    u32             width{0};
+    u32             height{0};
+    SpriteAnimation animation;
+    /// RGBA8, width x height each, indexed by AnimationFrame::index.
+    std::vector<std::vector<u8>> cells;
+};
+
 /// A stitched atlas: the pixels, and where every sprite went.
 class TextureAtlas {
 public:
@@ -146,6 +167,12 @@ public:
     /// Sorted by name, which makes a stitch reproducible and a diff readable.
     [[nodiscard]] const std::vector<AtlasSprite>& sprites() const noexcept { return sprites_; }
 
+    /// Every sprite with a `.mcmeta` animation, sorted by name. Level 0 of the
+    /// atlas holds each one's first frame; TextureAnimator plays the rest.
+    [[nodiscard]] const std::vector<AtlasAnimation>& animations() const noexcept {
+        return animations_;
+    }
+
     /// Null when the name was never given to the builder. A name that *was*
     /// given but failed to load is present, with `missing` set.
     ///
@@ -161,8 +188,9 @@ public:
 private:
     friend class AtlasBuilder;
 
-    std::vector<AtlasMip>    mips_;
-    std::vector<AtlasSprite> sprites_;
+    std::vector<AtlasMip>       mips_;
+    std::vector<AtlasSprite>    sprites_;
+    std::vector<AtlasAnimation> animations_;
     /// Name to index into sprites_. std::map, not unordered: it looks up by
     /// string_view without a transparent hash in a public header, and stitching
     /// happens once at load, never in a frame.

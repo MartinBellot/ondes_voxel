@@ -18,9 +18,12 @@
 #pragma once
 
 #include "ov/base/types.hpp"
+#include "ov/math/vec.hpp"
 
 #include <array>
+#include <optional>
 #include <span>
+#include <vector>
 
 namespace ov::render {
 
@@ -78,6 +81,68 @@ inline constexpr f32 kNetherAmbientLight    = 0.1F;
 /// The sky under rain and thunder, drawn towards a grey of its own luminance,
 /// and a lightning flash (0..1) pulling it towards a pale blue-white.
 [[nodiscard]] u32 weather_sky_colour(u32 sky, f32 rain, f32 thunder, f32 flash) noexcept;
+
+/// How far the fog colour is pulled towards the sky's, for a render distance
+/// in chunks: 1 - (0.25 + 0.75 * chunks / 32)^0.25. At 8 chunks 0.1867, which
+/// the real client's fog colour at noon over plains reproduces on all three
+/// channels (0.7002 0.8112 1.0 from 0xC0D8FF towards 0x78A7FF).
+[[nodiscard]] f32 fog_sky_blend(f32 render_distance_chunks) noexcept;
+
+/// The fog colour a frame clears to and fades into: fog_colour(), then pulled
+/// towards the sky by fog_sky_blend().
+[[nodiscard]] u32 blend_fog_towards_sky(u32 fog, u32 sky, f32 render_distance_chunks) noexcept;
+
+/// Where the terrain fog begins, for a render distance in blocks: the distance
+/// less a tenth of it, the tenth held between 4 and 64. The real client at 128
+/// blocks prints 115.2 to 128, cylindrical — not the 92 % this used to take.
+[[nodiscard]] f32 terrain_fog_start(f32 render_distance_blocks) noexcept;
+
+/// The colour of the dawn and dusk band, and how opaque at its middle; none
+/// outside the two twilights. Checked against the real client's printed
+/// values at 12300, 12700 and 23300 (test_environment.cpp).
+struct SunriseColour {
+    f32 r{0.0F};
+    f32 g{0.0F};
+    f32 b{0.0F};
+    f32 a{0.0F};
+};
+[[nodiscard]] std::optional<SunriseColour> sunrise_colour(f64 celestial) noexcept;
+
+/// The fog seen towards the sun at twilight: mixed towards the band's colour
+/// by how directly the view faces the sun (never below zero), times the band's
+/// opacity. Applied before blend_fog_towards_sky — the order that gives the
+/// real client's dusk fog, (187, 100, 71) looking west at 12700.
+[[nodiscard]] u32 tint_fog_towards_sunrise(u32 fog, const SunriseColour& sunrise, Vec3f forward,
+                                           f64 celestial) noexcept;
+
+/// The twilight band's geometry, relative to the eye: a fan of sixteen
+/// triangles from a centre on the horizon towards the sun, 100 blocks out, to
+/// a rim 120 across tilted by the band's opacity. Seven floats a vertex —
+/// x y z r g b a — the centre in the band's colour, the rim transparent.
+[[nodiscard]] std::vector<f32> sunrise_fan(const SunriseColour& sunrise, f64 celestial);
+
+/// Corners of the sun's quad (half-size 30, 100 blocks out) and the moon's
+/// (half-size 20, opposite), relative to the eye, turned by the time of day:
+/// at noon the sun is at the zenith, at 12000 on the west horizon.
+[[nodiscard]] std::array<Vec3f, 4> sun_quad(f64 celestial) noexcept;
+[[nodiscard]] std::array<Vec3f, 4> moon_quad(f64 celestial) noexcept;
+
+/// 0..7, the phase on moon_phases.png: 0 is full, and it advances a day at a
+/// time.
+[[nodiscard]] i32 moon_phase(i64 day_time) noexcept;
+
+/// The sky disc: a flat fan of eight triangles `height` blocks above the eye,
+/// 512 blocks across the radius, its rim vertices every 45 degrees starting
+/// from -X. Nine floats a triangle, positions relative to the eye. A negative
+/// height gives the dark disc under the horizon, wound the other way.
+///
+/// Eight triangles and not a smooth dome because the fog is interpolated
+/// linearly across each one, so the fan shows in the gradient — and a smooth
+/// dome would put the fog's colour at a different height in every direction
+/// but eight.
+inline constexpr f32 kSkyDiscHeight = 16.0F;
+inline constexpr f32 kSkyDiscRadius = 512.0F;
+[[nodiscard]] std::vector<f32> sky_disc(f32 height);
 
 /// Vanilla's 16x16 lightmap, rebuilt every frame.
 ///

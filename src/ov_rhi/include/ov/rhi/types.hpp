@@ -153,6 +153,10 @@ enum class BlendMode : u8 {
     None,
     /// Source alpha over destination. The translucent layer.
     Alpha,
+    /// Source times its alpha, added to the destination: light, not paint.
+    /// The sun and the moon are drawn this way, which is why the moon's dark
+    /// side shows the sky through it instead of a black disc.
+    Additive,
 };
 
 enum class VertexInputRate : u8 { Vertex, Instance };

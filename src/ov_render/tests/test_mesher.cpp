@@ -2,6 +2,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cmath>
 #include <map>
 #include <set>
 #include <string>
@@ -181,11 +182,14 @@ TEST_CASE("a corner with two solid sides is fully occluded", "[mesher]") {
         if (attributes.facing != Direction::Up) {
             continue;
         }
+        // 0.6: the two sides at 0.2, and — the blocks above them being air —
+        // the diagonal still seen, and empty: the game's own value for an L
+        // of two single blocks.
         if (attributes.position.x > 0.9F && attributes.position.z > 0.9F) {
-            found_dark = found_dark || attributes.ao == 0;
+            found_dark = found_dark || std::abs(attributes.occlusion - 0.6F) < 0.01F;
         }
         if (attributes.position.x < 0.1F && attributes.position.z < 0.1F) {
-            found_open = found_open || attributes.ao == 3;
+            found_open = found_open || attributes.occlusion == 1.0F;
         }
     }
     CHECK(found_dark);

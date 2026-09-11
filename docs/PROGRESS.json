@@ -60,7 +60,7 @@
     "M5": {
       "name": "Client Ondes VOXEL",
       "status": "in_progress",
-      "done": 20,
+      "done": 21,
       "total": 30,
       "exit_criterion": "Deux clients pour un même serveur ; p99 de frame time <= 20 ms à 12 chunks sur M2 ; golden images vertes sur lavapipe.",
       "blocked": []

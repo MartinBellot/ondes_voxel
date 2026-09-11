@@ -61,6 +61,8 @@ public:
 
     [[nodiscard]] bool occludes(Vec3i position, Direction towards) const override;
     [[nodiscard]] bool casts_ambient_occlusion(Vec3i position) const override;
+    [[nodiscard]] f32  ao_shade(Vec3i position) const override;
+    [[nodiscard]] bool blocks_view(Vec3i position) const override;
     [[nodiscard]] u8   sky_light(Vec3i position) const override;
     [[nodiscard]] u8   block_light(Vec3i position) const override;
     [[nodiscard]] u16  fluid_at(Vec3i position) const override;
@@ -72,6 +74,12 @@ public:
     /// pitch black, and "the mesher is broken" and "the file has no light in
     /// it" look identical on screen.
     [[nodiscard]] bool any_light_stored() const noexcept { return light_seen_; }
+
+    /// The world position of a section-local one: what the position random
+    /// of a block's model alternatives is seeded from.
+    [[nodiscard]] Vec3i world_position(Vec3i local) const noexcept {
+        return Vec3i{origin_x_ + local.x, origin_y_ + local.y, origin_z_ + local.z};
+    }
 
 private:
     [[nodiscard]] const world::Chunk* chunk_for(i32 world_x, i32 world_z) const noexcept;

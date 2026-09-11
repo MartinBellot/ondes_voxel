@@ -1,97 +1,95 @@
-// Vanilla's smooth lighting: one ambient occlusion level and one light value
-// per vertex, from the three blocks that share that corner.
+// Vanilla's smooth lighting: a brightness and a light value per corner of a
+// face, from the four blocks that share that corner.
 //
-// The rule is small and the consequences are not. Each corner of a face has
-// three neighbours: the two blocks beside it along the face, and the one
-// diagonally across. Ambient occlusion counts how many of them are solid — and
-// the special case, that two solid sides darken the corner fully whatever the
-// diagonal does, is what produces the crease in an inside corner instead of a
-// smooth ramp. Get that special case wrong and every staircase looks inflated.
+// Each corner of a face touches four blocks in the layer the face looks into:
+// the one straight in front (the centre), the two beside the corner along the
+// face's own axes, and the one diagonally across. The corner takes
 //
-// Light works the same way but averages instead of counting, which is why a
-// torch in a corner spills onto the neighbouring faces rather than lighting one
-// square.
+//   brightness = mean of the four blocks' shade brightness
+//   light      = sum of the four blocks' light levels, in quarter levels
+//
+// with two substitutions:
+//
+//   * a diagonal is hidden only when the blocks one step *beyond* both sides,
+//     along the face's normal, are opaque — an inside corner between two
+//     single blocks still sees its diagonal (0.6 with it empty, 0.4 with it
+//     full), a corner walled two high does not — and a hidden diagonal is
+//     replaced by the centre;
+//   * a block that carries no light at all (the inside of an opaque block)
+//     lends the centre's instead, so an occluder darkens a corner once, through
+//     its shade, and not a second time through the average.
+//
+// A block's shade brightness is 0.2 when its collision shape is a full cube and
+// 1.0 otherwise. Mean of four such values: 1.0, 0.8, 0.6 or 0.4 — four steps,
+// not the 0.2 .. 1.0 ramp this file used to carry, whose inside corner was half
+// as bright as the game's.
+//
+// None of this is guessed at the level of a number. The values are the game's
+// own: scripts/render_parity_oracle.java runs vanilla's AmbientOcclusionFace on
+// the faces of a test platform and prints what it computed, and
+// test_ambient_occlusion.cpp holds those answers (see
+// docs/provenance/rendu-parite.md).
 #pragma once
 
 #include "ov/base/types.hpp"
 #include "ov/math/vec.hpp"
 
-#include <array>
-
 namespace ov::render {
 
-/// The three neighbours of one corner of a face.
-struct CornerNeighbours {
-    /// The two blocks beside the corner, in the face's own plane.
-    bool side1{false};
-    bool side2{false};
-    /// The block diagonally across the corner.
-    bool corner{false};
+/// Shade brightness of a block whose collision shape is a full cube. Anything
+/// else — air, a torch, a slab, a fence — is 1.0.
+inline constexpr f32 kOccluderShade = 0.2F;
+
+/// What smooth lighting needs to know about one of the four blocks.
+struct AoSample {
+    /// 0.2 for a full-cube collision shape, 1.0 otherwise.
+    f32 shade{1.0F};
+    /// Stored light levels, 0..15.
+    u8 sky{0};
+    u8 block{0};
 };
 
-/// Ambient occlusion level for one vertex: 3 is open, 0 is fully occluded.
-///
-/// Two solid sides give 0 regardless of the corner, because the corner block
-/// cannot be seen past them. That single line is the difference between a
-/// convincing inside corner and a bloated one.
-[[nodiscard]] constexpr u8 ao_level(const CornerNeighbours& neighbours) noexcept {
-    if (neighbours.side1 && neighbours.side2) {
-        return 0;
-    }
-    const auto occluders = static_cast<u8>(neighbours.side1) + static_cast<u8>(neighbours.side2) +
-                           static_cast<u8>(neighbours.corner);
-    return static_cast<u8>(3 - occluders);
-}
-
-/// The brightness multiplier an ambient occlusion level stands for.
-///
-/// Four evenly spaced steps ending at 1.0, which is what vanilla's smooth
-/// lighting produces for a face with no neighbours.
-[[nodiscard]] constexpr f32 ao_brightness(u8 level) noexcept {
-    constexpr std::array<f32, 4> kSteps{0.2F, 0.4666667F, 0.7333333F, 1.0F};
-    return kSteps[level > 3 ? 3 : level];
-}
-
-/// Light levels of the four blocks around a vertex: the block the face looks
-/// into, and its three corner neighbours.
-struct CornerLight {
-    u8 self{0};
-    u8 side1{0};
-    u8 side2{0};
-    u8 corner{0};
+/// One corner of a face, before it is spread over the vertices.
+struct CornerLighting {
+    f32 brightness{1.0F};
+    /// Sum of four levels, 0..60. Kept as the sum rather than rounded to a
+    /// level: the lightmap is sampled between texels, and the quarter steps are
+    /// what make light fall off smoothly across a face.
+    u8 sky_quarters{60};
+    u8 block_quarters{0};
 };
 
-/// Vanilla's per-vertex light: the average of the four, but only over the ones
-/// that can actually carry light there.
-///
-/// A solid neighbour has light 0 and including it would darken the vertex twice
-/// — once through ambient occlusion, once through the average — so it is
-/// skipped. When two sides are solid the corner is invisible and is skipped
-/// too, which is the same special case as ao_level and has to agree with it.
-[[nodiscard]] constexpr u8 smooth_light(const CornerLight&      light,
-                                        const CornerNeighbours& neighbours) noexcept {
-    u32 total = light.self;
-    u32 count = 1;
+/// `hidden_by`: when the blocks one step beyond both sides along the face's
+/// normal block sight, the sample that stands in for the diagonal; null when
+/// the diagonal is seen. Measured on the game's own AmbientOcclusionFace: an L
+/// of two single blocks keeps its diagonal, a room's corner does not, and the
+/// stand-in is the side *opposite* the corner along the face's first axis —
+/// a block put there took the room corner from 0.6 / 10.25 to 0.4 / 10.00
+/// (docs/provenance/rendu-parite.md).
+[[nodiscard]] constexpr CornerLighting smooth_corner(const AoSample& centre, const AoSample& side1,
+                                                     const AoSample& side2, const AoSample& diagonal,
+                                                     const AoSample* hidden_by = nullptr) noexcept {
+    const AoSample& corner = hidden_by != nullptr ? *hidden_by : diagonal;
 
-    if (!neighbours.side1) {
-        total += light.side1;
-        ++count;
-    }
-    if (!neighbours.side2) {
-        total += light.side2;
-        ++count;
-    }
-    if (!neighbours.corner && !(neighbours.side1 && neighbours.side2)) {
-        total += light.corner;
-        ++count;
-    }
-    return static_cast<u8>(total / count);
+    // "No light at all" is the test, on both channels together: a dark cave
+    // cell lends the centre's light exactly as a stone block does.
+    const auto lit = [&centre](const AoSample& sample) {
+        return (sample.sky == 0 && sample.block == 0) ? centre : sample;
+    };
+    const AoSample a = lit(side1);
+    const AoSample b = lit(side2);
+    const AoSample c = lit(corner);
+
+    CornerLighting out;
+    out.brightness     = (side1.shade + side2.shade + corner.shade + centre.shade) * 0.25F;
+    out.sky_quarters   = static_cast<u8>(centre.sky + a.sky + b.sky + c.sky);
+    out.block_quarters = static_cast<u8>(centre.block + a.block + b.block + c.block);
+    return out;
 }
 
-/// Directional shading, the flat multiplier vanilla applies per face before
-/// smooth lighting. Measured from the game's own appearance: the top of a
-/// block is full brightness, the bottom half, north/south a fifth down and
-/// east/west two fifths down.
+/// Directional shading, the flat multiplier vanilla applies per face on top
+/// of smooth lighting. Printed by the game (ClientLevel.getShade) for the
+/// overworld: up 1.0, down 0.5, north and south 0.8, east and west 0.6.
 [[nodiscard]] constexpr f32 face_shade(Direction direction) noexcept {
     switch (direction) {
         case Direction::Down: return 0.5F;

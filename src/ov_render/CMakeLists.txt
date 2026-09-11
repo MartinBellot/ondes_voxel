@@ -46,9 +46,12 @@ ov_add_library(ov_render
         src/model.cpp
         src/png.cpp
         src/precipitation.cpp
+        src/position_random.cpp
         src/terrain_vertex.cpp
         src/text_component.cpp
+        src/texture_animation.cpp
         src/texture_image.cpp
+        src/translucent_sort.cpp
         src/vertex_arena.cpp
     DEPS
         ov_io
@@ -82,8 +85,11 @@ ov_add_test(test_ov_render
         tests/test_model.cpp
         tests/test_png.cpp
         tests/test_precipitation.cpp
+        tests/test_position_random.cpp
         tests/test_terrain_vertex.cpp
         tests/test_text_component.cpp
+        tests/test_texture_animation.cpp
+        tests/test_translucent_sort.cpp
         tests/test_vertex_arena.cpp
     DEPS ov_render
     LABELS unit

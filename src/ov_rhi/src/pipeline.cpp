@@ -178,6 +178,14 @@ std::expected<PipelineHandle, RhiError> Device::create_graphics_pipeline(
         blend.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
         blend.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
         blend.alphaBlendOp        = VK_BLEND_OP_ADD;
+    } else if (desc.blend == BlendMode::Additive) {
+        blend.blendEnable         = VK_TRUE;
+        blend.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        blend.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        blend.colorBlendOp        = VK_BLEND_OP_ADD;
+        blend.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        blend.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        blend.alphaBlendOp        = VK_BLEND_OP_ADD;
     }
 
     VkPipelineColorBlendStateCreateInfo blending{};

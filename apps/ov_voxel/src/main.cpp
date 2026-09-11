@@ -43,6 +43,9 @@
 #include "ov/registry/registries.hpp"
 #include "ov/render/text_component.hpp"
 #include "ov/render/atlas.hpp"
+#include "ov/render/texture_animation.hpp"  // ── render-parity ──
+#include "ov/client/scene_target.hpp"       // ── render-parity ──
+#include "ov/client/sky_renderer.hpp"       // ── render-parity ──
 #include "ov/render/biome_colours.hpp"
 #include "ov/render/block_models.hpp"
 #include "ov/render/camera.hpp"
@@ -73,6 +76,7 @@
 #include <chrono>
 #include <thread>
 #include <cmath>
+#include <numbers>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -246,6 +250,16 @@ struct Options {
     /// whatever age a frame count happens to land on.
     i32 chat_shot_age{0};
     // ── end chat ──
+    // ── render-parity ──
+    /// End the run (and take --screenshot) once the player stands where
+    /// --stand-at put it, the server's clock has arrived, and every chunk sent
+    /// is meshed and has stayed so for three seconds: a scene captured when it
+    /// is complete, not when a frame count happens to run out.
+    bool settle_shot{false};
+    /// ... and not before this many chunks have arrived: a debug server under
+    /// load sends a square of 289 in bursts with pauses longer than three
+    /// seconds, and the first settled captures showed 56 of them.
+    usize settle_chunks{0};
     /// Dump the font's advances and exit, for scripts/measure_font_widths.py.
     std::string font_widths;
 
@@ -439,6 +453,11 @@ struct Options {
             options.frame_ms = static_cast<u32>(std::atoi(value("--frame-ms=").c_str()));
         } else if (argument.starts_with("--chat-shot-age=")) {
             options.chat_shot_age = std::atoi(value("--chat-shot-age=").c_str());  // ── end chat ──
+        } else if (argument == "--settle-shot") {  // ── render-parity ──
+            options.settle_shot = true;
+        } else if (argument.starts_with("--settle-chunks=")) {
+            options.settle_chunks =
+                static_cast<usize>(std::atoll(value("--settle-chunks=").c_str()));
         } else if (argument == "--dump-window") {
             options.dump_window = true;
         } else if (argument.starts_with("--font-widths=")) {
@@ -1103,6 +1122,28 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
+    // ── render-parity ── the .mcmeta animations: water, lava, fire, portal.
+    // One staging buffer per frame in flight, sized for every animation
+    // changing on the same tick; a tick advances every 50 ms of wall time,
+    // which is the client tick the game animates on.
+    render::TextureAnimator            animator(*atlas);
+    std::vector<rhi::BufferHandle>     animation_staging;
+    const auto                         animation_start = std::chrono::steady_clock::now();
+    u64                                animation_tick  = ~u64{0};
+    if (animator.animations() > 0) {
+        for (u32 i = 0; i < rhi::Device::frames_in_flight(); ++i) {
+            auto staging = device.create_buffer(rhi::BufferDesc{
+                animator.max_bytes(), rhi::BufferUsage::Upload, "animation staging", true});
+            if (!staging) {
+                OV_LOG_ERROR("animation staging: {}", rhi::to_string(staging.error()));
+                return 1;
+            }
+            animation_staging.push_back(*staging);
+        }
+    }
+    OV_LOG_INFO("animations: {} sprites, {} KiB staging a frame", animator.animations(),
+                animator.max_bytes() / 1024);
+    // ── end render-parity ──
 
     // Nearest magnification is not a preference: Minecraft's look depends on
     // unfiltered texels, and linear turns a 16x pack into mush. Minification
@@ -1135,7 +1176,7 @@ int main(int argc, char** argv) {
     }
 
     client::TerrainRendererDesc terrain_desc;
-    terrain_desc.colour_format         = device.swapchain_format();
+    terrain_desc.colour_format         = client::SceneTarget::kFormat;  // ── render-parity ──
     terrain_desc.backface_culling      = options.backface;
     terrain_desc.force_per_section_draws = !options.indirect;
     terrain_desc.max_quads_per_section = static_cast<u32>(std::max<usize>(max_quads, 1));
@@ -1172,6 +1213,37 @@ int main(int argc, char** argv) {
                     terrain_stats.arena_largest_free == 0 ? 0 : 1);
     }
 
+    // ── render-parity ── the world's own colour target, in the game's number
+    // space (ov/client/scene_target.hpp), and the sky drawn into it.
+    auto scene = client::SceneTarget::create(device, device.swapchain_format(),
+                                             device.swapchain_width(), device.swapchain_height());
+    if (!scene) {
+        OV_LOG_ERROR("scene target: {}", rhi::to_string(scene.error()));
+        return 1;
+    }
+    auto sky_renderer =
+        [&]() {
+            // The sun and the moon's phases, from the pack like any texture.
+            const auto load = [&](std::string_view name) -> std::optional<render::TextureImage> {
+                const auto location = ResourceLocation::parse(name);
+                if (!location) {
+                    return std::nullopt;
+                }
+                auto image = render::load_texture(source, *location);
+                return image ? std::optional<render::TextureImage>(std::move(*image)) : std::nullopt;
+            };
+            const auto sun  = load("minecraft:environment/sun");
+            const auto moon = load("minecraft:environment/moon_phases");
+            return client::SkyRenderer::create(device, client::SceneTarget::kFormat,
+                                               rhi::Format::Depth32Float, sun ? &*sun : nullptr,
+                                               moon ? &*moon : nullptr);
+        }();
+    if (!sky_renderer) {
+        OV_LOG_ERROR("sky renderer: {}", rhi::to_string(sky_renderer.error()));
+        return 1;
+    }
+    // ── end render-parity ──
+
     rhi::ImageHandle depth_image;
     u32              depth_width  = 0;
     u32              depth_height = 0;
@@ -1193,7 +1265,8 @@ int main(int argc, char** argv) {
         depth_image  = *created;
         depth_width  = width;
         depth_height = height;
-        return true;
+        // ── render-parity ── the scene target follows the swapchain's size.
+        return static_cast<bool>((*scene)->resize(width, height));
     };
     if (!ensure_depth()) {
         return 1;
@@ -1205,7 +1278,7 @@ int main(int argc, char** argv) {
     // checkout that has not run scripts/measure_entity_models.py has no models.
     // That case draws no entities and says so once, which is the difference
     // between "not built yet" and "broken".
-    auto entity_renderer = client::EntityRenderer::create(device, device.swapchain_format(),
+    auto entity_renderer = client::EntityRenderer::create(device, client::SceneTarget::kFormat,
                                                           rhi::Format::Depth32Float);
     if (!entity_renderer) {
         OV_LOG_ERROR("entity renderer: {}", rhi::to_string(entity_renderer.error()));
@@ -1266,8 +1339,10 @@ int main(int argc, char** argv) {
     }
 
     // ── weather ── Rain and snow: the entity vertices, blended, both sides.
+    // ── render-parity ── drawn in the world pass, so into the scene target.
     auto weather_renderer = client::EntityRenderer::create(
-        device, device.swapchain_format(), rhi::Format::Depth32Float, client::EntityPass::Translucent);
+        device, client::SceneTarget::kFormat, rhi::Format::Depth32Float,
+        client::EntityPass::Translucent);
     std::optional<client::EntityTexture> rain_texture;
     std::optional<client::EntityTexture> snow_texture;
     if (!weather_renderer) {
@@ -1293,7 +1368,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    auto overlay = client::Overlay::create(device, device.swapchain_format(),
+    auto overlay = client::Overlay::create(device, client::SceneTarget::kFormat,
                                            rhi::Format::Depth32Float);
     if (!overlay) {
         OV_LOG_ERROR("overlay: {}", rhi::to_string(overlay.error()));
@@ -1678,6 +1753,13 @@ int main(int argc, char** argv) {
         stand_wanted   = true;
     }
     bool stand_done = false;
+    // ── render-parity ── --settle-shot: what has to have happened, and since
+    // when nothing has changed.
+    bool                                  settle_clock_seen = false;
+    usize                                 settle_chunks     = 0;
+    std::chrono::steady_clock::time_point settle_since      = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point settle_first      = settle_since;
+    bool                                  settle_after_close = false;
     std::string window_dump;
 
     bool use_sent   = false;
@@ -2040,7 +2122,31 @@ int main(int argc, char** argv) {
         if (online && !client->connected()) {
             const auto why       = client->disconnect_reason();
             const auto preparing = why.find("menu.preparingSpawn");
-            if (preparing == std::string::npos) {
+            // ── render-parity ── a settled capture whose clock and every chunk
+            // had arrived is taken even if the server has since closed the
+            // connection: the picture is of what was sent, and nothing more
+            // would have been. Anything short of that still ends the run, and
+            // the capture script retries it.
+            const bool capture_what_arrived =
+                preparing == std::string::npos && options.settle_shot && settle_clock_seen &&
+                options.settle_chunks > 0 && session && session->chunk_count() >= options.settle_chunks;
+            if (capture_what_arrived) {
+                if (!settle_after_close) {
+                    OV_LOG_WARN("disconnected ({}) with {} chunks in: capturing what arrived",
+                                why.empty() ? "the server went away" : why, session->chunk_count());
+                    settle_after_close = true;
+                }
+                (void)session->mesh_pending(50.0, Vec3d{static_cast<f64>(camera.position.x),
+                                                        static_cast<f64>(camera.position.y),
+                                                        static_cast<f64>(camera.position.z)});
+                if (session->pending_sections() == 0 &&
+                    std::chrono::steady_clock::now() - settle_first > std::chrono::seconds(3) &&
+                    (options.frames == 0 || options.frames > rendered + 1)) {
+                    options.frames = rendered + 1;
+                    OV_LOG_INFO("settled: {} chunks (after the connection closed)",
+                                session->chunk_count());
+                }
+            } else if (preparing == std::string::npos) {
                 OV_LOG_ERROR("disconnected: {}", why.empty() ? "the server went away" : why);
                 if (menu_mode) {  // ── screens ── back to the title, not out of the game
                     leave_world();
@@ -2050,6 +2156,7 @@ int main(int argc, char** argv) {
                 }
                 continue;
             }
+            if (!capture_what_arrived) {  // ── render-parity ── no knocking again
             std::string percent = "0";
             if (const auto open = why.find("[\"", preparing); open != std::string::npos) {
                 if (const auto close = why.find('"', open + 2); close != std::string::npos) {
@@ -2067,6 +2174,7 @@ int main(int argc, char** argv) {
                     events.clear();
                 }
             }
+            }  // ── end render-parity ──
         }
         if (online && client->connected()) {
 
@@ -2161,7 +2269,10 @@ int main(int argc, char** argv) {
                 // same place for everyone standing in it.
                 options.time         = *events.time_of_day;
                 start_time           = std::chrono::steady_clock::now();
-                options.daylight_cycle = true;
+                // ── render-parity ── a negative time on the wire is
+                // doDaylightCycle false: the sun stands where it was sent.
+                options.daylight_cycle = !events.time_frozen;
+                time_of_day            = options.time;
             }
             // ── sound ── before the entity world forgets what was picked up.
             // Only the audio work is timed: this segment and the listener's
@@ -2572,6 +2683,32 @@ int main(int argc, char** argv) {
                 options.frames = rendered + 1;  // this frame's successor is the last, and captured
             }
             // ── end chat ────────────────────────────────────────────────────
+            // ── render-parity ── --settle-shot. The clock is sent every
+            // second, so three quiet seconds after the last chat line include
+            // the answer to "/time set"; and three seconds without a chunk
+            // arriving or waiting to be meshed is a scene that is complete.
+            if (options.settle_shot && stand_done && chat_sent >= options.chat_send.size()) {
+                const usize chunks = session->chunk_count();
+                // Three minutes is the ceiling on waiting for the count: a
+                // capture short of it is logged, not silently taken.
+                if (!settle_clock_seen) {
+                    settle_first = std::chrono::steady_clock::now();
+                }
+                const bool starved =
+                    chunks < options.settle_chunks &&
+                    std::chrono::steady_clock::now() - settle_first < std::chrono::minutes(3);
+                if (!settle_clock_seen || chunks != settle_chunks || starved ||
+                    session->pending_sections() != 0) {
+                    settle_clock_seen = true;
+                    settle_chunks     = chunks;
+                    settle_since      = std::chrono::steady_clock::now();
+                } else if (std::chrono::steady_clock::now() - settle_since > std::chrono::seconds(3) &&
+                           (options.frames == 0 || options.frames > rendered + 1)) {
+                    options.frames = rendered + 1;
+                    OV_LOG_INFO("settled: {} chunks{}", chunks,
+                                chunks < options.settle_chunks ? " — FEWER than asked for" : "");
+                }
+            }
 
             // Where the player is looking, every frame rather than only on a
             // click: the outline has to follow the aim, and the click then uses
@@ -2682,13 +2819,31 @@ int main(int argc, char** argv) {
                                                      static_cast<i32>(std::floor(camera.position.z)))
                                  : (world ? camera_biome(*world, *blocks, camera.position) : 0U);
         const auto effects = blocks->biome(biome);
-        // ── weather ── the fog dims under rain and thunder, and flashes with a bolt.
-        const u32 weather_fog = render::weather_fog_colour(render::fog_colour(effects.fog_colour, darken),
-                                                           rain_level, client_thunder);
-        const u32 fog_rgb = eye_in_water ? effects.water_fog_colour
-                                         : (flashing ? render::weather_sky_colour(weather_fog, 0.0F, 0.0F, 1.0F)
-                                                     : weather_fog);
-        const u32   sky_rgb   = render::sky_colour(effects.sky_colour, darken);
+        // ── weather ── the sky greys under rain and thunder and flashes with a
+        // bolt; since render-parity it is drawn by the sky renderer rather than
+        // being the fog's clear colour, so it is weathered here.
+        const u32 sky_rgb = render::weather_sky_colour(render::sky_colour(effects.sky_colour, darken),
+                                                       rain_level, client_thunder,
+                                                       flashing ? 1.0F : 0.0F);
+        // ── render-parity ── the fog pulled towards the sky by the render
+        // distance, as the real client's is (docs/provenance/rendu-parite.md).
+        // ── render-parity ── at twilight, the fog towards the sun takes the
+        // band's colour first (render::tint_fog_towards_sunrise).
+        const f64  celestial = render::celestial_angle(time_of_day);
+        const auto sunrise   = render::sunrise_colour(celestial);
+        u32        fog_base  = render::fog_colour(effects.fog_colour, darken);
+        if (sunrise) {
+            fog_base = render::tint_fog_towards_sunrise(fog_base, *sunrise, camera.forward(), celestial);
+        }
+        // ── weather ── then dimmed under rain and thunder, and flashed with a
+        // bolt — after the pull towards the sky, as the game orders them.
+        const u32 weather_fog = render::weather_fog_colour(
+            render::blend_fog_towards_sky(fog_base, sky_rgb, static_cast<f32>(options.radius)),
+            rain_level, client_thunder);
+        const u32 fog_rgb =
+            eye_in_water ? effects.water_fog_colour
+                         : (flashing ? render::weather_sky_colour(weather_fog, 0.0F, 0.0F, 1.0F)
+                                     : weather_fog);
 
         auto frame = device.begin_frame();
         if (!frame) {
@@ -2717,6 +2872,8 @@ int main(int argc, char** argv) {
                                  rhi::ResourceState::ColourAttachment);
         cmd.transition(depth_image, rhi::ResourceState::Undefined,
                        rhi::ResourceState::DepthAttachment);
+        cmd.transition((*scene)->image(), rhi::ResourceState::Undefined,  // ── render-parity ──
+                       rhi::ResourceState::ColourAttachment);
 
         // The clear colour is the fog's, not the sky's. Anything the terrain
         // does not cover is at infinite distance, where the fog is complete —
@@ -2728,7 +2885,7 @@ int main(int argc, char** argv) {
         colour.clear_colour[1] = static_cast<f32>((fog_rgb >> 8) & 0xFFU) / 255.0F;
         colour.clear_colour[2] = static_cast<f32>(fog_rgb & 0xFFU) / 255.0F;
         colour.clear_colour[3] = 1.0F;
-        (void)sky_rgb;
+        colour.image           = (*scene)->image();  // ── render-parity ──
 
         rhi::DepthAttachment depth;
         depth.image       = depth_image;
@@ -2737,10 +2894,58 @@ int main(int argc, char** argv) {
 
         (*terrain)->upload_sky(cmd, lightmap);
 
+        // ── render-parity ── play the animations: the sprites whose frame
+        // changed since the last tick, every mip level, copied into their own
+        // rects of the atlas before anything samples it this frame.
+        if (!animation_staging.empty()) {
+            const auto tick = static_cast<u64>(
+                std::chrono::duration<f64>(std::chrono::steady_clock::now() - animation_start)
+                    .count() *
+                20.0);
+            if (tick != animation_tick && animator.tick(tick) > 0) {
+                const rhi::BufferHandle staging = animation_staging[device.frame_index()];
+                if (device.write_buffer(staging, animator.bytes().data(), animator.bytes().size())) {
+                    cmd.transition(*atlas_image, rhi::ResourceState::ShaderRead,
+                                   rhi::ResourceState::TransferDest);
+                    for (const render::AtlasPatch& patch : animator.patches()) {
+                        cmd.copy_buffer_to_image_region(staging, patch.offset, *atlas_image,
+                                                        patch.mip, patch.x, patch.y, patch.width,
+                                                        patch.height);
+                    }
+                    cmd.transition(*atlas_image, rhi::ResourceState::TransferDest,
+                                   rhi::ResourceState::ShaderRead);
+                }
+            }
+            animation_tick = tick;
+        }
+
         const std::array<rhi::ColourAttachment, 1> attachments{colour};
         cmd.begin_rendering(attachments, &depth, width, height);
         cmd.set_viewport(0.0F, 0.0F, static_cast<f32>(width), static_cast<f32>(height));
         cmd.set_scissor(0, 0, width, height);
+
+        // ── render-parity ── the sky first, rotated with the camera and never
+        // moved by it. Not under water: the game draws no sky from inside a
+        // fluid, only its fog.
+        if (!eye_in_water) {
+            const f32 aspect = static_cast<f32>(width) / static_cast<f32>(height);
+            client::SkyDraw sky_draw;
+            sky_draw.view_projection =
+                render::perspective(camera.vertical_fov_degrees * std::numbers::pi_v<f32> / 180.0F,
+                                    aspect, camera.near_plane, 2.0F * render::kSkyDiscRadius) *
+                render::look_along(Vec3f{0.0F, 0.0F, 0.0F}, camera.forward(),
+                                   Vec3f{0.0F, 1.0F, 0.0F});
+            sky_draw.sky_colour = sky_rgb;
+            sky_draw.fog_colour = fog_rgb;
+            sky_draw.fog_start  = options.fog ? 0.0F : 1.0e9F;
+            sky_draw.fog_end    = options.fog ? render_distance : 1.1e9F;
+            // The oracle: FOG_SKY 0 to the render distance, CYLINDER.
+            sky_draw.spherical_fog = false;
+            sky_draw.celestial     = celestial;
+            sky_draw.sunrise       = sunrise;
+            sky_draw.moon_phase    = render::moon_phase(time_of_day);
+            (*sky_renderer)->draw(cmd, sky_draw);
+        }
 
         const auto view_projection =
             camera.view_projection(static_cast<f32>(width) / static_cast<f32>(height));
@@ -2767,7 +2972,7 @@ int main(int argc, char** argv) {
             sky.fog_end   = std::min(render_distance, 96.0F);
             sky.fog_start = sky.fog_end * 0.25F;
         } else {
-            sky.fog_start = render_distance * 0.92F;
+            sky.fog_start = render::terrain_fog_start(render_distance);  // ── render-parity ──
             sky.fog_end   = render_distance;
         }
 
@@ -2898,7 +3103,7 @@ int main(int argc, char** argv) {
 
         // The two lines the game is played with. After the terrain, so the
         // outline blends over the face it surrounds rather than under it.
-        if (aimed) {
+        if (aimed && !options.settle_shot) {  // ── render-parity ──
             (*overlay)->draw_block_outline(cmd, view_projection,
                                            Vec3d{static_cast<f64>(camera.position.x),
                                                  static_cast<f64>(camera.position.y),
@@ -2907,11 +3112,18 @@ int main(int argc, char** argv) {
         }
         // The line crosshair only when the HUD is off: the HUD draws vanilla's
         // own crosshair sprite, and two crosshairs is one too many.
-        if (online && !options.hud) {
+        // ── render-parity ── a settled capture is the world alone, as vanilla
+        // draws it with F1: no crosshair, no outline, no chat.
+        if (online && !options.hud && !options.settle_shot) {
             (*overlay)->draw_crosshair(cmd, width, height);
         }
 
         cmd.end_rendering();
+
+        // ── render-parity ── the scene into the swapchain, byte for byte,
+        // then the interface on top of it in the same pass.
+        cmd.transition((*scene)->image(), rhi::ResourceState::ColourAttachment,
+                       rhi::ResourceState::ShaderRead);
 
         // The interface, in a pass of its own with no depth attachment at all.
         // It is on top of everything by definition, and sharing the terrain's
@@ -2972,7 +3184,8 @@ int main(int argc, char** argv) {
             cmd.begin_rendering(ui_attachments, nullptr, width, height);
             cmd.set_viewport(0.0F, 0.0F, static_cast<f32>(width), static_cast<f32>(height));
             cmd.set_scissor(0, 0, width, height);
-            if (online) {
+            (*scene)->present(cmd);  // ── render-parity ──
+            if (online && !(options.settle_shot && !options.hud)) {
                 (*interface)->set_loading(loading_line);  // ── loading ──
                 (*interface)->draw(cmd, width, height);
             }

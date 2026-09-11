@@ -20,6 +20,8 @@ ov_add_library(ov_client
         src/options_file.cpp
         src/overlay.cpp
         src/saved_hotbars.cpp
+        src/scene_target.cpp
+        src/sky_renderer.cpp
         src/sound_director.cpp
         src/terrain_renderer.cpp
         src/text_field.cpp
@@ -65,6 +67,14 @@ ov_add_shaders(ov_client_shaders
         shaders/gui.frag
         shaders/overlay.vert
         shaders/overlay.frag
+        shaders/present.vert
+        shaders/present.frag
+        shaders/sky.vert
+        shaders/sky.frag
+        shaders/sky_colour.vert
+        shaders/sky_colour.frag
+        shaders/sky_texture.vert
+        shaders/sky_texture.frag
         shaders/terrain.vert
         shaders/terrain.frag
         shaders/weather.frag

@@ -142,6 +142,15 @@ private:
         u32                 index_count{0};
         render::RenderLayer layer{render::RenderLayer::Solid};
         bool                live{false};
+        // ── render-parity ── the translucent layer's own quad order
+        // (render/translucent_sort.hpp): the quads' centres, the order last
+        // sorted and the eye it was sorted from (both section-local), and its
+        // range in the sorted index buffers, one per frame in flight.
+        std::vector<Vec3f>  centres;
+        std::vector<u32>    order;
+        Vec3f               sorted_from{1.0e30F, 1.0e30F, 1.0e30F};
+        u64                 sort_offset{render::VertexArena::kNoSpace};
+        std::array<bool, 4> stale{};
     };
 
     /// Mirrors VkDrawIndexedIndirectCommand exactly. Written here rather than
@@ -159,8 +168,27 @@ private:
 
     TerrainRenderer() = default;
 
+    /// Give every visible translucent section in `scratch_` its sorted range:
+    /// re-sort the nearest few the camera has moved a block away from, write
+    /// this frame's buffer where it is stale, and point the command at it.
+    /// False when a section has no range, and the layer falls back to mesh
+    /// order this frame.
+    [[nodiscard]] bool prepare_translucent(Vec3f camera);
+
     rhi::Device*        device_{nullptr};
     TerrainRendererDesc desc_;
+
+    // ── render-parity ── sorted translucent indices. A range per translucent
+    // section, the same offsets in each frame-in-flight buffer; a section is
+    // re-sorted when the eye has moved a block from where it last was, at most
+    // kResortsPerFrame a frame, nearest first — the game's own budget is of
+    // the same order (fifteen sections).
+    static constexpr u64 kSortedIndexBytes = 16ULL << 20;
+    static constexpr u32 kResortsPerFrame  = 16;
+    std::unique_ptr<render::VertexArena> sort_arena_;
+    std::vector<rhi::BufferHandle>       sorted_indices_;
+    std::vector<u32>                     sort_scratch_;
+    std::vector<u32>                     resort_;
 
     std::unique_ptr<render::VertexArena> arena_;
     rhi::BufferHandle                    vertices_;

@@ -321,6 +321,25 @@ void CommandList::copy_buffer_to_image(BufferHandle source, u64 source_offset,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 }
 
+void CommandList::copy_buffer_to_image_region(BufferHandle source, u64 source_offset,
+                                              ImageHandle destination, u32 mip_level, u32 x,
+                                              u32 y, u32 width, u32 height) {
+    auto&                 impl   = *static_cast<Device::Impl*>(device_);
+    const BufferResource* buffer = impl.buffers.get(source);
+    const ImageResource*  image  = impl.images.get(destination);
+    if (buffer == nullptr || image == nullptr || width == 0 || height == 0) {
+        return;
+    }
+
+    VkBufferImageCopy region{};
+    region.bufferOffset     = source_offset;
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip_level, 0, 1};
+    region.imageOffset      = {static_cast<i32>(x), static_cast<i32>(y), 0};
+    region.imageExtent      = {width, height, 1};
+    vkCmdCopyBufferToImage(raw_of(raw_), buffer->buffer, image->image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+}
+
 void CommandList::copy_swapchain_to_buffer(BufferHandle destination) {
     auto&                 impl   = *static_cast<Device::Impl*>(device_);
     const BufferResource* buffer = impl.buffers.get(destination);

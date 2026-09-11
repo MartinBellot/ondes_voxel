@@ -80,6 +80,13 @@ public:
 
     void copy_buffer_to_image(BufferHandle source, u64 source_offset, ImageHandle destination,
                               u32 mip_level, u32 width, u32 height);
+    /// The same into a rectangle of the level rather than all of it: the rows
+    /// in the buffer are `width` texels long and land at (x, y). What an
+    /// animated sprite needs — its own rect of the atlas, every tick, without
+    /// touching the other twelve hundred sprites around it.
+    void copy_buffer_to_image_region(BufferHandle source, u64 source_offset,
+                                     ImageHandle destination, u32 mip_level, u32 x, u32 y,
+                                     u32 width, u32 height);
     /// Copy the frame's colour target into a host-visible buffer.
     ///
     /// Recorded inside the open frame, on purpose. A swapchain image may only
