@@ -25,6 +25,7 @@
 #include "ov/gameplay/animal.hpp"
 #include "ov/gameplay/collision.hpp"
 #include "ov/gameplay/pathfinding.hpp"
+#include "ov/gameplay/villager_state.hpp"  // ── villagers ──
 #include "ov/math/random.hpp"
 #include "ov/math/vec.hpp"
 #include "ov/world/level.hpp"
@@ -93,6 +94,11 @@ struct GoalContext {
     MobBrain* (*brain_of)(entity::EntityWorld& world, entity::EntityHandle handle){nullptr};
     // ── end husbandry ──
 
+    // ── villagers ──
+    /// The time of day and the hostile types (villager.hpp). Declared here by
+    /// its elaborated name so this header does not need the villager rules.
+    const struct VillagerWorld* villagers{nullptr};
+
     [[nodiscard]] entity::EntityState*       state() noexcept;
     [[nodiscard]] const entity::EntityState* state() const noexcept;
 };
@@ -139,6 +145,10 @@ struct MobBrain {
     /// Age, love, fleece, saddle, egg: see animal.hpp. The goals read it; the
     /// mob's own tick ages it.
     AnimalState animal{};
+    // ── villagers ──
+    /// Type, profession, level, claims, offers: see villager_state.hpp.
+    /// `active` is false on every mob that is not a villager.
+    VillagerState villager{};
 
     explicit MobBrain(usize path_capacity = 2048) : finder{path_capacity} {
         path.steps.reserve(256);

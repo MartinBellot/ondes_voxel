@@ -87,6 +87,7 @@
 #include "husbandry.hpp"    // ── husbandry ──
 #include "slimes.hpp"       // ── mobs-2 ──
 #include "drowning.hpp"     // ── mobs-2 ──
+#include "merchant_session.hpp"  // ── villagers ──
 
 #include <fmt/format.h>
 
@@ -2084,6 +2085,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     std::vector<gameplay::SlimeChild> slime_scratch;
     std::optional<Drowning>           drowning;  // zombies and husks under water
     std::vector<Drowning::Conversion> drowned_now;
+    // ── villagers ──
+    std::optional<Villagers> villagers;
 
     /// The packets that make one mob appear.
     ///
@@ -2137,6 +2140,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         }
         if (slimes) {  // ── mobs-2 ──
             slimes->spawn_metadata(state, fields);
+        }
+        // ── villagers: type, profession, level, sleep ──
+        if (villagers && mobs) {
+            villagers->spawn_metadata(*mobs, state, fields);
         }
         deliver(net::clientbound::kEntityMetadata,
                 net::encode_entity_metadata(state.network_id, fields.take()));
@@ -2645,6 +2652,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         husbandry.emplace(*registries, *blocks);
         slimes.emplace(*registries);  // ── mobs-2 ──
         drowning.emplace(*registries);
+        // ── villagers ──
+        villagers.emplace(*registries, *blocks);
         tick_broadcasts.reserve(4096);
     } else {
         OV_LOG_WARN("no block registry — fluids and redstone stay inert");
@@ -4952,6 +4961,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         // Player Command.
                         player.sneaking = interact->sneaking;
 
+                        // ── villagers: a right-click on a villager, for the tick ──
+                        if (villagers && interact->kind == net::InteractKind::Interact) {
+                            villagers->queue_interact(player.entity_id, interact->entity_id,
+                                                      interact->hand.value_or(net::Hand::Main),
+                                                      interact->sneaking);
+                        }
                         // ── husbandry: a right-click on an entity, for the tick ──
                         if (husbandry && interact->kind == net::InteractKind::Interact) {
                             husbandry->queue_interact(player.entity_id, interact->entity_id,
@@ -5749,6 +5764,15 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
 
                     // ── enchanting ── the table's three buttons, the
                     // anvil's text box.
+                    // ── villagers ── Select Trade, for the tick
+                    case kSelectTrade: {
+                        if (villagers) {
+                            if (const auto index = parse_select_trade(body)) {
+                                (void)villagers->queue_select(player.entity_id, *index);
+                            }
+                        }
+                        return true;
+                    }
                     case kClickContainerButton: {
                         const auto pressed = parse_click_button(body);
                         if (pressed && player.enchant &&
@@ -5772,6 +5796,13 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     }
 
                     case net::serverbound::kCloseContainer: {
+                        // ── villagers ── a trading screen closes on the tick
+                        if (villagers) {
+                            if (const auto shut = net::parse_close_container(body);
+                                shut && villagers->queue_close(player.entity_id, *shut)) {
+                                return true;
+                            }
+                        }
                         // ── enchanting ── the inputs go back to the player
                         if (player.enchant) {
                             const std::scoped_lock chunk_lock{chunk_mutex};
@@ -5820,6 +5851,13 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     }
 
                     case net::serverbound::kClickContainer: {
+                        // ── villagers ── a click on a trading screen, for the tick
+                        if (villagers) {
+                            if (const auto traded = net::parse_container_click(body);
+                                traded && villagers->queue_click(player.entity_id, *traded)) {
+                                return true;
+                            }
+                        }
                         // ── enchanting ──
                         if (player.enchant) {
                             const auto clicked = net::parse_container_click(body);
@@ -6827,6 +6865,39 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     husbandry_host.drop_item = tnt_host.drop_item;
     husbandry_host.spawn_orb = projectile_host.spawn_orb;
     // ── end husbandry ───────────────────────────────────────────────────────
+
+    // ── villagers ───────────────────────────────────────────────────────────
+    // Runs on the tick thread with players_mutex held, as husbandry's host.
+    VillagerHost villager_host;
+    villager_host.with_player = [&](i32 id,
+                                    const std::function<void(MerchantPlayer&)>& visit) {
+        for (auto& [key, who] : players) {
+            if (who.entity_id != id || !who.connection || who.survival.awaiting_respawn) {
+                continue;
+            }
+            MerchantPlayer lent;
+            lent.entity_id = who.entity_id;
+            lent.eyes      = Vec3d{who.x, who.y + 1.62, who.z};
+            lent.inventory = who.inventory;
+            lent.carried   = &who.carried;
+            lent.send      = [&who](i32 packet, std::span<const u8> payload) {
+                if (const auto framed = net::encode_packet(packet, payload);
+                    framed && who.connection) {
+                    who.connection->send(*framed);
+                }
+            };
+            lent.drop = [&](const net::ItemStack& stack) {
+                if (tnt_host.drop_item) {
+                    tnt_host.drop_item(Vec3d{who.x, who.y + 1.32, who.z}, stack);
+                }
+            };
+            visit(lent);
+            return true;
+        }
+        return false;
+    };
+    villager_host.spawn_orb = projectile_host.spawn_orb;
+    // ── end villagers ───────────────────────────────────────────────────────
 
     // ── weather ─────────────────────────────────────────────────────────────
     // Built once, like the TNT's. Every callback runs in the weather block of
@@ -8398,6 +8469,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     projectiles->before_entity_tick(*mobs, projectile_host);
                     projectiles->tick_skeletons(*mobs, collisions, 2, projectile_deliver);
                 }
+                // ── villagers: clicks, screens and the time of day, before ──
+                if (villagers) {
+                    const i64 day  = commands ? commands->world().day_time : 6000;
+                    const i64 game = commands ? commands->world().game_time
+                                              : static_cast<i64>(clock.tick_count());
+                    (void)villagers->before_entity_tick(*mobs, mob_context, villager_host,
+                                                        husbandry_deliver, day, game);
+                }
                 // ── husbandry: clicks and tempters before, births and eggs after ──
                 if (husbandry) {
                     (void)husbandry->before_entity_tick(*mobs, mob_context, husbandry_host,
@@ -8414,6 +8493,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     }
                 }
                 // ── end husbandry ──
+                // ── villagers: what changed on a villager, told ──
+                if (villagers) {
+                    (void)villagers->after_entity_tick(*mobs, husbandry_deliver);
+                }
                 // ── tnt and gravity: creepers, landings, explosions ──
                 if (tnt_gravity && level && world_ticks) {
                     tnt_gravity->tick_creepers(*mobs, mob_level, tnt_host, tnt_deliver);

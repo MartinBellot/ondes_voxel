@@ -808,13 +808,25 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       faute de système hôte. Voir `docs/provenance/enchantement.md`)* : table, coût XP, lapis, étagères, **39 enchantements**,
       enclume (combinaison, réparation, renommage, coûts, « trop cher »), meule,
       mending, livres enchantés
-- [ ] **Alchimie** : support de brassage, blaze powder, verrue du Nether, tous
+- [~] **Alchimie** : support de brassage, blaze powder, verrue du Nether, tous
       les ingrédients, redstone / glowstone / poudre à canon / œil d'araignée
       fermenté, 3 formes de potion, flèches trempées
+      *(**2026-09-11** : alambic, 17 ingrédients, **2709/2709** recettes et
+      **43/43** potions identiques au vrai serveur, jet et persistance. Restent
+      la fabrication des flèches trempées et les effets sur les mobs. Voir
+      `docs/provenance/alchimie.md`)*
 - [ ] **Forge** : table, netherite upgrade, 16 trims × matériaux
-- [ ] **Villageois** : 13 professions, blocs de travail, niveaux, XP, offres,
+- [~] **Villageois** : 13 professions, blocs de travail, niveaux, XP, offres,
       réapprovisionnement, gossip, popularité, reproduction, panique, golems de
       fer, cloche, zombification et guérison
+      *(**2026-09-11** : métiers par bloc de travail (13/13 mesurés), écran de
+      commerce (menu 18, Merchant Offers octet pour octet au NBT près),
+      **4298/4298** offres échantillonnées sur 2319 villageois vanilla
+      retrouvées dans nos lots, prix avec demande (4/4), seuils de niveau
+      10/70/150/250, orbes, réapprovisionnement deux fois par jour, panique,
+      lit la nuit. Restent ragots et popularité, reproduction, golems, cloche,
+      zombification et guérison (mesurées, non branchées), type selon le
+      biome, persistance. Voir `docs/provenance/villageois.md`)*
 - [ ] **Raids** : mauvais présage, vagues, capitaines pillards, ravageurs,
       récompense héros du village
 - [ ] **Structures interactives** : balise (pyramide, effets), conduit, table de

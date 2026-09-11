@@ -1,7 +1,9 @@
 #include "ov/gameplay/mob_logic.hpp"
 
 #include "ov/gameplay/breeding.hpp"  // ── husbandry ──
+#include "ov/gameplay/villager.hpp"  // ── villagers ──
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 
@@ -36,6 +38,11 @@ void FallingMob::tick(entity::EntityWorld& world, entity::EntityHandle self,
 
 void install_goals(GoalSelector& selector, const MobKind& kind, i32 look_type,
                    i32 quarry_type) {
+    // ── villagers ── a list of their own (villager.cpp)
+    if (villager_mob_kind(kind.type_name) != nullptr) {
+        install_villager_goals(selector, kind, look_type);
+        return;
+    }
     // 0 — staying alive beats everything. A mob that drowns while deciding
     // where to wander is a mob nobody sees again.
     selector.add(0, std::make_unique<FloatGoal>());
@@ -111,11 +118,19 @@ Mob::Mob(const MobKind& kind, f32 width, f32 height, i64 seed, i32 quarry_type)
         animal != nullptr && animal->lays_eggs) {
         brain_.animal.egg_time = egg_interval(random_);
     }
+    // ── villagers ── the state switched on, its generator seeded from the id
+    if (villager_mob_kind(kind.type_name) != nullptr) {
+        init_villager(brain_.villager, seed);
+    }
 }
 
 void Mob::frighten(i32 ticks) noexcept {
     if (panic_ != nullptr) {
         panic_->frighten(ticks);
+    }
+    // ── villagers ── a hurt villager runs (VillagerPanicGoal)
+    if (brain_.villager.active) {
+        brain_.villager.hurt_ticks = std::max(brain_.villager.hurt_ticks, ticks);
     }
 }
 
@@ -133,6 +148,12 @@ void Mob::tick(entity::EntityWorld& world, entity::EntityHandle self,
     // ── husbandry ── Age, love and eggs tick whether or not the brain does:
     // measured, a NoAI calf grows and a NoAI chicken lays.
     tick_husbandry(*state, self, *mob);
+
+    // ── villagers ── claims, a job lost, the level-up timer: before the goals
+    if (brain_.villager.active) {
+        tick_villager(brain_.villager, *state, self, world, mob->level, mob->villagers,
+                      brain_.animal.baby(), context.tick);
+    }
 
     // The brain runs only when there is a world to read. Without a level a mob
     // still falls — which is the floor `FallingMob` established — but it does
@@ -154,6 +175,8 @@ void Mob::tick(entity::EntityWorld& world, entity::EntityHandle self,
         goal_context.tempters      = mob->tempters;
         goal_context.animal_events = mob->animal_events;
         goal_context.brain_of      = &mob_brain_of;
+        // ── villagers ──
+        goal_context.villagers = mob->villagers;
         goals_.tick(goal_context);
 
         // Turn the brain's intent into velocity. The goals never touch

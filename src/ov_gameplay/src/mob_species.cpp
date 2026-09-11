@@ -10,6 +10,7 @@
 // rather than round goal modifiers (the rabbit hops, the fox leaps) and which
 // modifiers are not measured at all (`follow_parent`, `avoid_sun`).
 #include "ov/gameplay/mob_logic.hpp"
+#include "ov/gameplay/villager.hpp"  // ── villagers ──
 
 #include <array>
 
@@ -105,7 +106,8 @@ const MobKind* mob_kind(std::string_view type_name) noexcept {
             return &kind;
         }
     }
-    return nullptr;
+    // ── villagers ── a table of its own, in villager.cpp
+    return villager_mob_kind(type_name);
 }
 
 }  // namespace ov::gameplay

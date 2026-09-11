@@ -50,6 +50,8 @@ ov_add_library(ov_gameplay
         src/smelting.cpp
         src/weather.cpp
         src/sleep.cpp
+        src/villager.cpp
+        src/trading.cpp
     DEPS
         ov_world
         ov_entity
@@ -103,6 +105,8 @@ ov_add_test(test_ov_gameplay
         tests/test_weather.cpp
         tests/test_climate_oracle.cpp
         tests/test_end_portal.cpp
+        tests/test_villager.cpp
+        tests/test_trading.cpp
     DEPS ov_gameplay simdjson::simdjson
     LABELS unit
 )
