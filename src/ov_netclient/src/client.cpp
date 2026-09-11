@@ -1242,6 +1242,14 @@ void Client::poll(ClientEvents& out) {
     // ── screens ──
     out.death_message = std::move(impl_->inbox.death_message);
     out.respawned     = impl_->inbox.respawned;
+    // ── breaking ── handed out like the rest: left out, the others' cracks,
+    // this player's id and its Haste were read off the wire and thrown away —
+    // the timed digs of scripts/measure_breaking.py found it, Haste II
+    // counting 23 ticks where it should take 17.
+    out.destroy_stages.swap(impl_->inbox.destroy_stages);
+    out.own_effects.swap(impl_->inbox.own_effects);
+    out.own_entity_id = impl_->inbox.own_entity_id;
+    impl_->inbox.own_entity_id.reset();
     out.hardcore      = impl_->inbox.hardcore;
     impl_->inbox.death_message.reset();
     impl_->inbox.respawned = false;
