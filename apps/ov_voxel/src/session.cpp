@@ -2,6 +2,8 @@
 
 #include "session.hpp"
 
+#include <cmath>
+
 #include "ov/base/log.hpp"
 
 #include <algorithm>
@@ -141,8 +143,9 @@ void Session::mark_dirty(i32 chunk_x, i32 chunk_z, i32 section) {
         return;
     }
     const SectionKey key{chunk_x, chunk_z, section};
-    if (std::ranges::find(dirty_, key) == dirty_.end()) {
+    if (dirty_set_.insert(key).second) {
         dirty_.push_back(key);
+        dirty_sorted_ = false;
     }
 }
 
@@ -182,6 +185,9 @@ void Session::apply(netclient::ClientEvents& events) {
         }
         chunks_.erase({x, z});
         std::erase_if(dirty_, [x, z](const SectionKey& key) {
+            return key.chunk_x == x && key.chunk_z == z;
+        });
+        std::erase_if(dirty_set_, [x, z](const SectionKey& key) {
             return key.chunk_x == x && key.chunk_z == z;
         });
     }
@@ -284,16 +290,50 @@ void Session::mesh_one(const SectionKey& key) {
     }
 }
 
-usize Session::mesh_pending(f64 budget_ms) {
+usize Session::mesh_pending(f64 budget_ms, const Vec3d& eye) {
     if (dirty_.empty()) {
         return 0;
     }
     const auto start = std::chrono::steady_clock::now();
 
+    // Nearest first. Distance in whole sections — a chunk and a section are
+    // both sixteen blocks — measured from the section the eye is in, and the
+    // list re-sorted only when it changed or the eye crossed into another
+    // section: a few thousand keys, a fraction of a millisecond, not per
+    // section meshed.
+    const auto floor_div16 = [](f64 v) {
+        return static_cast<i32>(std::floor(v / 16.0));
+    };
+    const i32 min_y   = chunks_.empty() ? -64 : chunks_.begin()->second->shape().min_y;
+    const i32 focus_x = floor_div16(eye.x);
+    const i32 focus_z = floor_div16(eye.z);
+    const i32 focus_s = floor_div16(eye.y - static_cast<f64>(min_y));
+    if (!dirty_sorted_ || focus_x != focus_x_ || focus_z != focus_z_ ||
+        focus_s != focus_section_) {
+        focus_x_       = focus_x;
+        focus_z_       = focus_z;
+        focus_section_ = focus_s;
+        const auto distance = [&](const SectionKey& key) {
+            const i64 dx = key.chunk_x - focus_x;
+            const i64 dz = key.chunk_z - focus_z;
+            const i64 dy = key.section - focus_s;
+            return dx * dx + dy * dy + dz * dz;
+        };
+        // Furthest first, ties by key so the order is total: the back is
+        // the nearest, and pop_back takes it.
+        std::ranges::sort(dirty_, [&](const SectionKey& a, const SectionKey& b) {
+            const i64 da = distance(a);
+            const i64 db = distance(b);
+            return da != db ? da > db : b < a;
+        });
+        dirty_sorted_ = true;
+    }
+
     usize done = 0;
     while (!dirty_.empty()) {
         const SectionKey key = dirty_.back();
         dirty_.pop_back();
+        dirty_set_.erase(key);
         mesh_one(key);
         ++done;
 

@@ -31,6 +31,7 @@
 #include "ov/world/chunk.hpp"
 
 #include <map>
+#include <set>
 #include <memory>
 #include <optional>
 #include <unordered_map>
@@ -57,9 +58,15 @@ public:
     /// than one long one.
     void apply(netclient::ClientEvents& events);
 
-    /// Mesh up to `budget_ms` worth of what is waiting. Returns how many
-    /// sections were rebuilt.
-    usize mesh_pending(f64 budget_ms);
+    /// Mesh up to `budget_ms` worth of what is waiting, **nearest to `eye`
+    /// first**, and return how many sections were rebuilt.
+    ///
+    /// Nearest first is what the game does — it compiles the sections closest
+    /// to the camera before the horizon — and what a player expects: the
+    /// ground under them before the far hills. This used to take the most
+    /// recent arrival first, and since the server sends nearest first, that
+    /// drew the horizon before the ground.
+    usize mesh_pending(f64 budget_ms, const Vec3d& eye);
 
     [[nodiscard]] const world::Chunk* chunk_at(i32 chunk_x, i32 chunk_z) const;
 
@@ -126,10 +133,20 @@ private:
 
     std::map<std::pair<i32, i32>, std::unique_ptr<world::Chunk>> chunks_;
     std::map<SectionKey, SectionSlots>                           slots_;
-    /// Sections waiting to be meshed, in arrival order. A set rather than a
-    /// queue, so that a section changed twice before it is drawn is meshed
-    /// once.
+    /// Sections waiting to be meshed. Sorted furthest-first from the focus
+    /// by `mesh_pending`, so the back is the nearest.
     std::vector<SectionKey> dirty_;
+    /// The same sections, for membership: a section changed twice before it
+    /// is drawn is meshed once. A linear search of `dirty_` did this before,
+    /// and with a few thousand sections waiting while 289 chunks arrive —
+    /// each marking its own column and its four neighbours' — it was tens
+    /// of millions of comparisons per join.
+    std::set<SectionKey> dirty_set_;
+    /// Whether `dirty_` is still in order for the focus below.
+    bool dirty_sorted_{false};
+    i32  focus_x_{0};
+    i32  focus_z_{0};
+    i32  focus_section_{0};
 
     /// The two fluid blocks, resolved once. Looking them up by name per cell
     /// would put a string comparison in the physics tick.

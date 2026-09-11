@@ -2245,7 +2245,10 @@ int main(int argc, char** argv) {
             // must cost several frames rather than one long one; the frame
             // percentile is what the milestone is judged on and a spike passes
             // a test of the mean.
-            (void)session->mesh_pending(4.0);
+            // Nearest first, from where the camera is: Session::mesh_pending.
+            (void)session->mesh_pending(4.0, Vec3d{static_cast<f64>(camera.position.x),
+                                                   static_cast<f64>(camera.position.y),
+                                                   static_cast<f64>(camera.position.z)});
             mesh_frame_ms.push_back(std::chrono::duration<f64, std::milli>(  // ── perf ──
                                         std::chrono::steady_clock::now() - perf_mesh)
                                         .count());
