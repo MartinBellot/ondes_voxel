@@ -70,7 +70,9 @@ struct Options {
     fs::path    output = "run/assets";
     fs::path    packs  = "ressourcepacks";
     std::string version{kTargetVersion};
-    bool        with_sounds = false;
+    /// On by default since the client plays them (mixer, 3D sound, subtitles):
+    /// 152 MB that stay in the gitignored output, never in the repository.
+    bool        with_sounds = true;
     /// Music and records are 432 MB of the 584; the effects are 152. A client
     /// with no music still plays every block, mob and interface sound, so the
     /// large half is asked for separately.
@@ -97,8 +99,9 @@ void print_usage() {
         "  --output=<path>          where to write (default: run/assets)\n"
         "  --packs=<path>           resource packs to stack (default: ressourcepacks)\n"
         "  --version=<id>           game version (default: {})\n"
-        "  --sounds                 also import sounds.json and the sound effects (~150 MB)\n"
-        "  --music                  with --sounds, also music and records (~430 MB more)\n"
+        "  --no-sounds              skip sounds.json and the sound effects (~150 MB,\n"
+        "                           imported by default; --sounds is still accepted)\n"
+        "  --music                  also music and records (~430 MB more)\n"
         "  --list                   show what was found and stop\n"
         "  --dry-run                report what would be written, write nothing\n"
         "  --help, -h               this message\n"
@@ -118,6 +121,8 @@ Options parse_args(int argc, char** argv) {
             options.show_help = true;
         } else if (arg == "--sounds") {
             options.with_sounds = true;
+        } else if (arg == "--no-sounds") {
+            options.with_sounds = false;
         } else if (arg == "--music") {
             options.with_music = true;
         } else if (arg == "--list") {
@@ -474,7 +479,7 @@ int main(int argc, char** argv) {
             const auto sound_count = std::ranges::count_if(indexed, [](const IndexedAsset& a) {
                 return a.name.starts_with("minecraft/sounds/");
             });
-            fmt::print("  {:30s} {} skipped (pass --sounds; not needed before M9)\n",
+            fmt::print("  {:30s} {} skipped (--no-sounds: the client will be silent)\n",
                        "asset index (sounds)", sound_count);
         }
     }
