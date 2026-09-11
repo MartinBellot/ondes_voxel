@@ -4,6 +4,9 @@
 
 #include <charconv>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 
 using namespace ov;
@@ -52,6 +55,44 @@ TEST_CASE("a file is written back line for line, unknown keys included", "[optio
     CHECK(*file.get("resourcePacks") == "[\"vanilla\",\"file/Faithful 32x - 1.20.1.zip\"]");
     CHECK(*file.get("lastServer") == "");
     CHECK_FALSE(file.get("nonsense"));
+}
+
+TEST_CASE("an options.txt written by the real 1.20.1 client round-trips byte for byte",
+          "[options]") {
+    // tests/data/options_vanilla_1.20.1.txt is the file the running vanilla
+    // client wrote through its own Options.save() (scripts/measure_screens.py,
+    // options-initial.txt): 137 lines, every key it has.
+    const auto path = std::filesystem::path{OV_SOURCE_DIR} / "src" / "ov_client" / "tests" /
+                      "data" / "options_vanilla_1.20.1.txt";
+    std::ifstream in(path, std::ios::binary);
+    REQUIRE(in);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+
+    OptionsFile file = OptionsFile::parse(text);
+    CHECK(file.size() == 137);
+    CHECK(file.serialize() == text);
+
+    std::vector<std::string> problems;
+    const GameOptions        options = GameOptions::from(file, &problems);
+    CHECK(problems.empty());  // every key name, every number, read
+    CHECK(options.fov == 70);
+    CHECK(options.render_distance == 2);
+    CHECK(options.simulation_distance == 5);
+    CHECK(options.gui_scale == 3);
+    CHECK(options.vsync);
+    CHECK(options.max_fps == 120);
+    CHECK(options.language == "en_us");
+    CHECK(options.volumes[0] == 0.0);  // soundCategory_master:0.0
+    CHECK(options.volumes[1] == 1.0);
+    for (const KeyBinding& key : options.keys) {
+        INFO(std::string(key.name));
+        CHECK(key.code == key.default_code);  // a fresh game: every key at its default
+    }
+
+    // Our own writer, storing the values it just read, changes nothing:
+    // the same keys, in the same places, written the way Java writes them.
+    options.store(file);
+    CHECK(file.serialize() == text);
 }
 
 TEST_CASE("setting a value replaces it in place and appends a new key", "[options]") {

@@ -83,6 +83,32 @@ TEST_CASE("a slider's handle centre follows the pointer, clamped to the track", 
     CHECK(slider_value_at(track, 175.0F) == 0.5);
 }
 
+TEST_CASE("Create World's three pages are where vanilla puts them", "[menus]") {
+    // Read off the running client (facts.txt, `── screen singleplayer…`).
+    const auto game = create_world_layout(854.0F, 480.0F, 0);
+    check_rect(game, "tab0", 242.0F, 0.0F, 124.0F, 24.0F);
+    check_rect(game, "tab1", 366.0F, 0.0F, 124.0F, 24.0F);
+    check_rect(game, "tab2", 490.0F, 0.0F, 124.0F, 24.0F);
+    check_rect(game, "world_name", 323.0F, 89.0F, 208.0F, 20.0F);
+    check_rect(game, "game_mode", 322.0F, 118.0F, 210.0F, 20.0F);
+    check_rect(game, "difficulty", 322.0F, 146.0F, 210.0F, 20.0F);
+    check_rect(game, "cheats", 322.0F, 174.0F, 210.0F, 20.0F);
+    check_rect(game, "create", 272.0F, 452.0F, 150.0F, 20.0F);
+    check_rect(game, "cancel", 432.0F, 452.0F, 150.0F, 20.0F);
+
+    const auto world = create_world_layout(854.0F, 480.0F, 1);
+    check_rect(world, "world_type", 272.0F, 75.0F, 150.0F, 20.0F);
+    check_rect(world, "customize", 432.0F, 75.0F, 150.0F, 20.0F);
+    check_rect(world, "seed", 273.0F, 117.0F, 308.0F, 20.0F);
+    check_rect(world, "structures", 538.0F, 150.0F, 44.0F, 20.0F);
+    check_rect(world, "bonus_chest", 538.0F, 174.0F, 44.0F, 20.0F);
+
+    const auto more = create_world_layout(854.0F, 480.0F, 2);
+    check_rect(more, "game_rules", 322.0F, 82.0F, 210.0F, 20.0F);
+    check_rect(more, "experiments", 322.0F, 110.0F, 210.0F, 20.0F);
+    check_rect(more, "data_packs", 322.0F, 138.0F, 210.0F, 20.0F);
+}
+
 TEST_CASE("the death screen's buttons are where vanilla puts them", "[menus]") {
     const auto widgets = death_layout(854.0F, 480.0F);
     check_rect(widgets, "respawn", 327.0F, 192.0F, 200.0F, 20.0F);

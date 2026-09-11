@@ -87,6 +87,11 @@ struct Widget {
     /// A tab that is the current one, or a key binding waiting for a key.
     bool        selected{false};
     u32         colour{0xFFFFFFFFU};
+    /// A Label drawn from rect.x instead of centred on the rectangle.
+    bool        left_aligned{false};
+    /// An EditBox's grey placeholder while it is empty ("Leave blank for a
+    /// random seed"), already translated.
+    std::string hint;
 };
 
 /// The widget under a point, or null. Inactive widgets are still hit (they

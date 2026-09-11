@@ -168,13 +168,20 @@ void draw_widgets(Gui& gui, const MenuTextures& textures, std::span<const Widget
                 break;
             case WidgetKind::EditBox: {
                 const f32 end = gui.text(rect.x + 4.0F, text_y, widget.text, 0xFFE0E0E0U);
+                if (widget.text.empty() && !widget.hint.empty()) {
+                    gui.text(rect.x + 4.0F, text_y, widget.hint, 0xFF808080U);
+                }
                 if (widget.selected && cursor_visible) {
                     gui.text(end, text_y, "_", 0xFFE0E0E0U);
                 }
                 break;
             }
             case WidgetKind::Label:
-                gui.text_centred(centre, rect.y, widget.text, widget.colour);
+                if (widget.left_aligned) {
+                    gui.text(rect.x, rect.y, widget.text, widget.colour);
+                } else {
+                    gui.text_centred(centre, rect.y, widget.text, widget.colour);
+                }
                 break;
             case WidgetKind::Tab:
                 gui.text_centred(centre, text_y, widget.text,

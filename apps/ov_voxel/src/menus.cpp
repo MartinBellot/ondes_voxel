@@ -569,6 +569,9 @@ void Menus::rebuild() {
         if (widget.kind != client::WidgetKind::EditBox && !widget.text.empty()) {
             widget.text = translate(widget.text);
         }
+        if (!widget.hint.empty()) {
+            widget.hint = translate(widget.hint);
+        }
     }
 
     // What is not implemented is shown and refused: inactive, as vanilla
@@ -1304,24 +1307,32 @@ void Menus::draw(rhi::CommandList& cmd, u32 framebuffer_width, u32 framebuffer_h
             gui_->text_centred(w * 0.5F, h - 56.0F, translate("options.languageWarning"), grey);
             break;
         }
-        case MenuScreen::CreateWorld:
-            if (create_tab_ == 0) {
-                gui_->text(std::floor(w / 2.0F) - 104.0F, 43.0F, translate("selectWorld.enterName"),
-                           grey);
-            } else if (create_tab_ == 1) {
-                gui_->text(std::floor(w / 2.0F) - 154.0F, 83.0F, translate("selectWorld.enterSeed"),
-                           grey);
-                gui_->text(std::floor(w / 2.0F) - 154.0F, 119.0F, translate("selectWorld.seedInfo"),
-                           grey);
+        case MenuScreen::CreateWorld: {
+            // The tabbed screen's frame, read off the vanilla capture: a black
+            // bar behind the tabs with the header separator under it, and the
+            // footer separator 36 pixels above the bottom.
+            gui_->fill(0.0F, 0.0F, w, 24.0F, 0xFF000000U);
+            if (textures_.header_separator != client::GuiTexture::Invalid) {
+                gui_->quad(textures_.header_separator, 0.0F, 22.0F, w, 2.0F, 0.0F, 0.0F,
+                           w / 32.0F, 1.0F);
+            }
+            if (textures_.footer_separator != client::GuiTexture::Invalid) {
+                gui_->quad(textures_.footer_separator, 0.0F, h - 36.0F, w, 2.0F, 0.0F, 0.0F,
+                           w / 32.0F, 1.0F);
             }
             break;
+        }
         case MenuScreen::DirectConnect:
             gui_->text(std::floor(w / 2.0F) - 100.0F, 100.0F, translate("addServer.enterIp"), grey);
             break;
         default: break;
     }
     if (!title_.empty()) {
-        const f32 y = screen_ == MenuScreen::Pause ? 40.0F : (screen_ == MenuScreen::Options ? 15.0F : 20.0F);
+        // The world list's title sits above its search box (y 22).
+        const f32 y = screen_ == MenuScreen::Pause         ? 40.0F
+                      : screen_ == MenuScreen::Options     ? 15.0F
+                      : screen_ == MenuScreen::SelectWorld ? 8.0F
+                                                           : 20.0F;
         gui_->text_centred(w * 0.5F, y, translate(title_), 0xFFFFFFFFU);
     }
     const bool cursor_on = static_cast<i64>(clock_ / 0.3) % 2 == 0;

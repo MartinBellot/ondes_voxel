@@ -1721,6 +1721,8 @@ int main(int argc, char** argv) {
     i32         pending_frames     = 0;
     usize       menu_pressed       = 0;
     u32         next_press_at      = 0;
+    f64         paused_seconds     = 0.0;  // the pause, measured: see game_paused
+    f64         playing_seconds    = 0.0;
     const auto  leave_world = [&]() {
         device.wait_idle();
         client.reset();
@@ -1958,6 +1960,12 @@ int main(int argc, char** argv) {
                                  menus->screen() != demo::MenuScreen::Death &&
                                  menus->screen() != demo::MenuScreen::Message;
         pause_server.store(game_paused, std::memory_order_relaxed);
+        // The measure of the pause: the seconds spent paused and playing,
+        // printed at the end of the run and set against the server's own
+        // tick count (docs/provenance/ecrans.md).
+        if (online && spawned) {
+            (game_paused ? paused_seconds : playing_seconds) += ui_delta;
+        }
         ui_took_input = menus->any_open();
         // ── end screens ──
         if (online && !ui_took_input) {
@@ -2983,6 +2991,10 @@ int main(int argc, char** argv) {
 
     if (options.dump_menu) {  // ── screens ──
         fmt::print("{}\n", menus->describe());
+    }
+    if (paused_seconds > 0.0) {  // ── screens ── the pause, measured
+        fmt::print("pause: {:.1f} s paused, {:.1f} s playing\n", paused_seconds,
+                   playing_seconds);
     }
     if (online) {
         const auto& gui_stats = (*interface)->stats();

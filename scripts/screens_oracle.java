@@ -181,10 +181,45 @@ public final class ScreensOracle {
                 f.completeExceptionally(e);
             }
         });
-        return f.get(60, TimeUnit.SECONDS);
+        // Long: on a loaded machine the game thread can take minutes to run
+        // a task, and the first run of this oracle died on a 60 s limit.
+        return f.get(600, TimeUnit.SECONDS);
+    }
+
+    /// Post a task without waiting for it. For the one click that does not
+    /// return: Create New World loads the world inside the click handler, on
+    /// the game thread, until the spawn area is ready.
+    static void onRenderLater(Callable<Object> c) {
+        ((Executor) mc).execute(() -> {
+            try {
+                c.call();
+            } catch (Throwable e) {
+                e.printStackTrace(out);
+            }
+        });
+    }
+
+    static void clickLater(Object w) throws Exception {
+        int[] box = onRender(() -> new int[]{(Integer) call(w, WIDGET, "getX", NONE),
+                                             (Integer) call(w, WIDGET, "getY", NONE),
+                                             (Integer) call(w, WIDGET, "getWidth", NONE),
+                                             (Integer) call(w, WIDGET, "getHeight", NONE)});
+        move(box[0] + box[2] / 2.0, box[1] + box[3] / 2.0);
+        onRenderLater(() -> {
+            Object mh = get(mc, MC, "mouseHandler");
+            Method press = method("net.minecraft.client.MouseHandler", "onPress",
+                                  "long", "int", "int", "int");
+            press.invoke(mh, win, 0, 1, 0);
+            press.invoke(mh, win, 0, 0, 0);
+            return null;
+        });
     }
 
     static void pause(long ms) throws InterruptedException { Thread.sleep(ms); }
+
+    /// onRender before `mc` is known to be driving: the same, named apart
+    /// only so the start-up wait reads as one.
+    static <T> T onRenderQuick(Callable<T> c) throws Exception { return onRender(c); }
 
     // ── Input, through the game's own handlers ──────────────────────────────
 
@@ -502,6 +537,10 @@ public final class ScreensOracle {
             }
             pause(500);
         }
+        // The resource reload (Faithful 32x) keeps its overlay over the title
+        // screen for a while, and the overlay swallows clicks: the first run's
+        // "Options..." click landed on it and nothing opened. Wait it out.
+        while (onRenderQuick(() -> call(mc, MC, "getOverlay", NONE)) != null) pause(500);
         pause(4000);  // the title screen fades in over its first second
         gameDir = (File) get(mc, MC, "gameDirectory");
         win = onRender(() -> (Long) call(call(mc, MC, "getWindow", NONE), WINDOW, "getWindow", NONE));
@@ -584,13 +623,23 @@ public final class ScreensOracle {
         move(1, 1);
         shot("11-create-more.png");
         clickLabel("Game");
-        clickLabel("Create New World");
-        for (int i = 0; i < 1800; i++) {
-            String name = screenName();
-            if (i % 20 == 0) out.println("loading: " + name);
-            if (i == 20) shot("12-loading.png");
-            if (name.equals("none") && onRender(() -> get(mc, MC, "player")) != null) break;
-            pause(100);
+        {
+            Object create = findWidget(t -> t.equals("Create New World"));
+            if (create == null) throw new IllegalStateException("no Create New World button");
+            clickLater(create);
+            out.println("clicked \"Create New World\" (not waited on: it loads the world)");
+        }
+        // The world loads inside that click. Tasks posted meanwhile run
+        // between loading frames; a slow one is waited for, not fatal.
+        for (int i = 0; i < 3600; i++) {
+            try {
+                String name = screenName();
+                if (i % 20 == 0) out.println("loading: " + name);
+                if (name.equals("none") && onRender(() -> get(mc, MC, "player")) != null) break;
+            } catch (TimeoutException e) {
+                out.println("loading: game thread busy");
+            }
+            pause(250);
         }
         pause(6000);
         out.println("in world");

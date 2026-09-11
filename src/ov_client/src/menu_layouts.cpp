@@ -264,44 +264,60 @@ std::vector<Widget> create_world_layout(f32 width, f32 height, i32 tab) {
     static constexpr std::array<std::string_view, 3> kTabs{"createWorld.tab.game.title",
                                                            "createWorld.tab.world.title",
                                                            "createWorld.tab.more.title"};
-    const f32 tabs_w = 3.0F * 130.0F;
+    // Measured (854×480): tabs 124 wide from x = 242 = w/2 − 185, y 0..24.
     for (usize i = 0; i < kTabs.size(); ++i) {
         Widget t;
         t.id       = "tab" + std::to_string(i);
         t.kind     = WidgetKind::Tab;
-        t.rect     = Rect{half(width - tabs_w) + 130.0F * static_cast<f32>(i), 0.0F, 130.0F, 24.0F};
+        t.rect     = Rect{half(width) - 185.0F + 124.0F * static_cast<f32>(i), 0.0F, 124.0F, 24.0F};
         t.text     = std::string(kTabs[i]);
         t.selected = static_cast<i32>(i) == tab;
         out.push_back(t);
     }
+    const auto label = [&](std::string id, f32 x, f32 y, std::string key) {
+        Widget text;
+        text.id     = std::move(id);
+        text.kind   = WidgetKind::Label;
+        text.rect   = Rect{x, y, 0.0F, 9.0F};
+        text.text   = std::move(key);
+        text.colour       = 0xFFFFFFFFU;
+        text.left_aligned = true;
+        out.push_back(text);
+    };
+    // The Game and More pages: one 210-wide column at w/2 − 105, a step of 28.
     const f32 x = half(width) - 105.0F;
     if (tab == 0) {
+        label("name_label", half(width) - 104.0F, 75.0F, "selectWorld.enterName");
         Widget name;
         name.id   = "world_name";
         name.kind = WidgetKind::EditBox;
-        name.rect = Rect{half(width) - 104.0F, 55.0F, 208.0F, 20.0F};
+        name.rect = Rect{half(width) - 104.0F, 89.0F, 208.0F, 20.0F};
         out.push_back(name);
-        out.push_back(button("game_mode", x, 100.0F, 210.0F, "selectWorld.gameMode"));
-        out.push_back(button("difficulty", x, 124.0F, 210.0F, "options.difficulty"));
-        out.push_back(button("cheats", x, 148.0F, 210.0F, "selectWorld.allowCommands"));
+        out.push_back(button("game_mode", x, 118.0F, 210.0F, "selectWorld.gameMode"));
+        out.push_back(button("difficulty", x, 146.0F, 210.0F, "options.difficulty"));
+        out.push_back(button("cheats", x, 174.0F, 210.0F, "selectWorld.allowCommands"));
     } else if (tab == 1) {
-        out.push_back(button("world_type", half(width) - 155.0F, 50.0F, 150.0F,
+        out.push_back(button("world_type", half(width) - 155.0F, 75.0F, 150.0F,
                              "selectWorld.mapType"));
-        out.push_back(button("customize", half(width) + 5.0F, 50.0F, 150.0F,
+        out.push_back(button("customize", half(width) + 5.0F, 75.0F, 150.0F,
                              "selectWorld.customizeType"));
+        label("seed_label", half(width) - 155.0F, 103.0F, "selectWorld.enterSeed");
         Widget seed;
         seed.id   = "seed";
         seed.kind = WidgetKind::EditBox;
-        seed.rect = Rect{half(width) - 154.0F, 95.0F, 308.0F, 20.0F};
+        seed.rect = Rect{half(width) - 154.0F, 117.0F, 308.0F, 20.0F};
+        seed.hint = "selectWorld.seedInfo";  // the owner translates it
         out.push_back(seed);
-        out.push_back(button("structures", half(width) - 155.0F, 140.0F, 150.0F,
-                             "selectWorld.mapFeatures"));
-        out.push_back(button("bonus_chest", half(width) + 5.0F, 140.0F, 150.0F,
-                             "selectWorld.bonusItems"));
+        // Each toggle is a caption on the left and a 44-wide ON/OFF button
+        // ending at the right edge of the seed field.
+        label("structures_label", half(width) - 154.0F, 156.0F, "selectWorld.mapFeatures");
+        out.push_back(button("structures", half(width) + 111.0F, 150.0F, 44.0F, "options.on"));
+        label("bonus_label", half(width) - 154.0F, 180.0F, "selectWorld.bonusItems");
+        out.push_back(button("bonus_chest", half(width) + 111.0F, 174.0F, 44.0F, "options.off"));
     } else {
-        out.push_back(button("game_rules", x, 50.0F, 210.0F, "selectWorld.gameRules"));
-        out.push_back(button("experiments", x, 74.0F, 210.0F, "selectWorld.experiments"));
-        out.push_back(button("data_packs", x, 98.0F, 210.0F, "selectWorld.dataPacks"));
+        out.push_back(button("game_rules", x, 82.0F, 210.0F, "selectWorld.gameRules"));
+        out.push_back(button("experiments", x, 110.0F, 210.0F, "selectWorld.experiments"));
+        out.push_back(button("data_packs", x, 138.0F, 210.0F, "selectWorld.dataPacks"));
     }
     out.push_back(button("create", half(width) - 155.0F, height - 28.0F, 150.0F,
                          "selectWorld.create"));
