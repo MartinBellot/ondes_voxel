@@ -1190,6 +1190,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     /// and if the number is not near zero the streaming path is not doing its
     /// job.
     u64 synchronous_generations = 0;
+    /// The same, on any other thread — the network thread, reading a neighbour
+    /// block across a border into a chunk that is not resident. ── perf ──
+    /// Touched only under `chunk_mutex`, like the counter above.
+    u64 synchronous_generations_elsewhere = 0;
 
     // Chunks that exist on disk and could not be read. They are served as
     // generated terrain so the player is not left in a hole, and never written
@@ -1351,7 +1355,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // gameplay packet touching a chunk that is not loaded yet. Counted, so
         // that "never happens" is a measurement rather than a belief.
         if (generated) {
-            ++synchronous_generations;
+            // ── perf ── by thread: the tick is not the only one that ends up here
+            if (current_thread_name() == "ov-tick") {
+                ++synchronous_generations;
+            } else {
+                ++synchronous_generations_elsewhere;
+            }
             chunks.publish(ChunkPos{cx, cz}, generated->generate(cx, cz));
         } else {
             chunks.publish(ChunkPos{cx, cz}, superflat.generate(ChunkPos{cx, cz}));
@@ -6216,8 +6225,26 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             std::unique_lock mob_lock{players_mutex, std::try_to_lock};
             if (mob_lock.owns_lock()) {
                 const std::scoped_lock chunk_lock{chunk_mutex};
+                // ── perf ── resident chunks only. `block_at` goes through
+                // `chunk_at`, which *generates* a missing chunk — on this thread,
+                // under `chunk_mutex`. A mob at the edge of the loaded area did
+                // exactly that: 31 chunks generated on the tick thread in a
+                // minute, ticks of 7 s, and every dig on the network thread
+                // waiting behind the lock (docs/provenance/performance-tick.md
+                // § 5.4). A chunk that is not here reads as air and not loaded,
+                // the convention the fluid hooks already follow.
+                const auto resident_block = [&](i32 bx, i32 by,
+                                                i32 bz) -> registry::BlockStateId {
+                    const world::Chunk* chunk = chunk_if_resident(bx >> 4, bz >> 4);
+                    if (chunk == nullptr || !world::WorldShape::overworld().contains_y(by)) {
+                        return registry::kAirState;
+                    }
+                    return chunk->get_block(static_cast<usize>(bx & 15), by,
+                                            static_cast<usize>(bz & 15));
+                };
+                // ── end perf ──
                 WorldView              view;
-                view.read = [&](i32 bx, i32 by, i32 bz) { return block_at({bx, by, bz}); };
+                view.read = [&](i32 bx, i32 by, i32 bz) { return resident_block(bx, by, bz); };
                 const gameplay::CollisionWorld collisions{*blocks, &WorldView::look_up, &view};
 
                 // The behaviour runs here, through the entity world, rather
@@ -6231,12 +6258,17 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 // same lock, so this is an adapter and not a second world.
                 struct MobLevel final : world::LevelView {
                     std::function<registry::BlockStateId(BlockPos)> read;
+                    std::function<bool(BlockPos)>                   loaded;  // ── perf ──
                     const registry::BlockRegistry*                  registry{nullptr};
 
                     [[nodiscard]] registry::BlockStateId block_at(BlockPos pos) const override {
                         return read(pos);
                     }
-                    [[nodiscard]] bool is_loaded(BlockPos) const override { return true; }
+                    // ── perf ── the truth, so a path is never planned into
+                    // terrain that does not exist yet
+                    [[nodiscard]] bool is_loaded(BlockPos pos) const override {
+                        return loaded ? loaded(pos) : true;
+                    }
                     [[nodiscard]] world::WorldShape shape() const override {
                         return world::WorldShape::overworld();
                     }
@@ -6246,8 +6278,11 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     }
                 };
                 MobLevel mob_level;
-                mob_level.read     = [&](BlockPos pos) {
-                    return block_at({pos.x, pos.y, pos.z});
+                mob_level.read = [&](BlockPos pos) {  // ── perf ── resident only
+                    return resident_block(pos.x, pos.y, pos.z);
+                };
+                mob_level.loaded = [&](BlockPos pos) {  // ── perf ──
+                    return chunk_if_resident(pos.x >> 4, pos.z >> 4) != nullptr;
                 };
                 mob_level.registry = &*blocks;
 
@@ -7252,9 +7287,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     if (chunk_source) {
         OV_LOG_INFO(
             "chunk source: {} blocks generated ({} chunks), {} published, {} generated on the "
-            "tick thread",
+            "tick thread, {} on other threads",  // ── perf ── the network thread too
             chunk_source->blocks_done(), chunk_source->chunks_done(), chunks_published,
-            synchronous_generations);
+            synchronous_generations, synchronous_generations_elsewhere);
     }
 
     OV_LOG_INFO("stopped after {} ticks ({} overload events)", clock.tick_count(), behind_events);
