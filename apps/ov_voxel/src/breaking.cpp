@@ -391,8 +391,23 @@ void Breaking::build_cracks(const BlockAt& block_at,
         }
     }
     for (const auto& [pos, stage] : deepest_) {
-        const render::BlockRender& render = models_->resolve(block_at(pos));
-        if (!render.drawable || !net::is_drawn_stage(stage)) {
+        if (!net::is_drawn_stage(stage)) {
+            continue;
+        }
+        const registry::BlockStateId state  = block_at(pos);
+        const render::BlockRender&   render = models_->resolve(state);
+        if (!render.drawable) {
+            // A sign, a chest, a banner, a skull: drawn as block entities,
+            // with no block model for the crack to lie on (the crack follows
+            // the block's own model, docs/provenance/cassage-bloc.md § 4).
+            // Named, not skipped in silence: a scripted --crack that aimed at
+            // the lab's spawn sign looked exactly like a broken crack pass.
+            ++counters_.cracks_unmodelled;
+            if (!last_unmodelled_ || !(*last_unmodelled_ == pos)) {
+                last_unmodelled_ = pos;
+                OV_LOG_INFO("crack at ({}, {}, {}) on {}: the block has no model, nothing drawn",
+                            pos.x, pos.y, pos.z, blocks_->block_name(blocks_->block_of(state)));
+            }
             continue;
         }
         render::build_crack_quads(render.model, pos, out[static_cast<usize>(stage)]);

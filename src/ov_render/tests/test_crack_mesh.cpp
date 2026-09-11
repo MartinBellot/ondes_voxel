@@ -1,7 +1,16 @@
 #include "ov/render/crack_mesh.hpp"
 
+#include "ov/render/asset_source.hpp"
+#include "ov/render/block_models.hpp"
+
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+
+#include <filesystem>
+#include <optional>
+#include <string_view>
+#include <utility>
+#include <vector>
 
 using namespace ov;
 using namespace ov::render;
@@ -87,4 +96,77 @@ TEST_CASE("the projection is upright on every side", "[crack]") {
     CHECK(crack_uv(Direction::East, Vec3f{1.0F, 0.5F, 0.2F})[0] == Approx(0.8F));
     // An element overhanging its block keeps counting, for the repeating sampler.
     CHECK(crack_uv(Direction::Up, Vec3f{1.25F, 1.0F, -0.5F})[0] == Approx(1.25F));
+}
+
+namespace {
+
+/// The registry pack is generated locally and never committed: skip without it.
+[[nodiscard]] std::optional<registry::BlockRegistry> try_load_registry() {
+    for (const auto* candidate :
+         {"data/vanilla/1.20.1/registry.ovpack", "../data/vanilla/1.20.1/registry.ovpack",
+          "../../data/vanilla/1.20.1/registry.ovpack",
+          "../../../data/vanilla/1.20.1/registry.ovpack"}) {
+        if (!std::filesystem::exists(candidate)) {
+            continue;
+        }
+        auto loaded = registry::BlockRegistry::load(candidate);
+        if (loaded) {
+            return std::move(*loaded);
+        }
+    }
+    return std::nullopt;
+}
+
+constexpr std::string_view kCubeModel = R"({
+  "textures": {"all": "minecraft:block/stone", "particle": "minecraft:block/stone"},
+  "elements": [{"from": [0, 0, 0], "to": [16, 16, 16], "faces": {
+    "down": {"texture": "#all"}, "up": {"texture": "#all"},
+    "north": {"texture": "#all"}, "south": {"texture": "#all"},
+    "west": {"texture": "#all"}, "east": {"texture": "#all"}}}]
+})";
+
+}  // namespace
+
+// The crack is built from BlockRender::model. Since render parity a blockstate
+// with weighted alternatives (stone, grass) keeps every one of them, and the
+// cracks went missing after that merge — the suspicion was that `model` had
+// been left empty for such a block. It is not; this pins it. The cause was a
+// scripted capture aimed at the spawn sign (docs/provenance/cassage-bloc.md,
+// § 9): a block with no model, which must resolve undrawable and give no quads.
+TEST_CASE("a block with weighted alternatives still cracks; a sign has nothing to crack",
+          "[crack]") {
+    auto blocks = try_load_registry();
+    if (!blocks) {
+        SKIP("no registry pack");
+    }
+    MemoryAssetSource source;
+    source.add("assets/minecraft/blockstates/stone.json",
+               R"({"variants": {"": [{"model": "minecraft:block/stone"},
+                                     {"model": "minecraft:block/stone_mirrored"}]}})");
+    source.add("assets/minecraft/models/block/stone.json", kCubeModel);
+    source.add("assets/minecraft/models/block/stone_mirrored.json", kCubeModel);
+    source.add("assets/minecraft/blockstates/oak_sign.json",
+               R"({"variants": {"": {"model": "minecraft:block/oak_sign"}}})");
+    source.add("assets/minecraft/models/block/oak_sign.json",
+               R"({"textures": {"particle": "minecraft:block/oak_planks"}})");
+    BlockModelCache models(source, *blocks);
+
+    const auto stone_block = blocks->find_block("minecraft:stone");
+    REQUIRE(stone_block.has_value());
+    const BlockRender& stone = models.resolve(blocks->default_state(*stone_block));
+    REQUIRE(stone.alternatives.size() == 2);
+    CHECK(stone.drawable);
+    REQUIRE(stone.model.quads.size() == 6);
+    std::vector<EntityVertex> out;
+    build_crack_quads(stone.model, BlockPos{3, -60, 2}, out);
+    CHECK(out.size() == 24);
+
+    const auto sign_block = blocks->find_block("minecraft:oak_sign");
+    REQUIRE(sign_block.has_value());
+    const BlockRender& sign = models.resolve(blocks->default_state(*sign_block));
+    CHECK_FALSE(sign.drawable);
+    CHECK(sign.particle_sprite == "minecraft:block/oak_planks");
+    out.clear();
+    build_crack_quads(sign.model, BlockPos{0, -60, 0}, out);
+    CHECK(out.empty());
 }
