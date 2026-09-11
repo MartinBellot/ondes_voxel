@@ -44,8 +44,33 @@ constexpr MobKind animal(std::string_view type, f64 attribute, f64 stroll, f64 p
 
 constexpr MobKind ranged(MobKind kind, f64 hold_at) {
     kind.hold_at = hold_at;
+    kind.melee   = false;  // ── mobs-3 ── it shoots or throws; it does not swing
     return kind;
 }
+
+// ── mobs-3 ──
+/// A mob whose attack is not a swing: it closes to `hold_at` and stops. The
+/// creeper's 3 is the swell's start (primed_tnt.hpp, kCreeperSwellStart):
+/// vanilla's creeper stops walking the moment it begins to swell.
+constexpr MobKind no_swing(MobKind kind, f64 hold_at) {
+    kind.hold_at = hold_at;
+    kind.melee   = false;
+    return kind;
+}
+
+/// The zombie family hunts villagers as well as players, and seeks at its
+/// measured `follow_range` of 35.
+constexpr MobKind villager_hunter(MobKind kind) {
+    kind.hunts_villagers = true;
+    kind.follow_range    = 35.0;
+    return kind;
+}
+
+constexpr MobKind follow(MobKind kind, f64 range) {
+    kind.follow_range = range;
+    return kind;
+}
+// ── end mobs-3 ──
 
 constexpr MobKind neutral(MobKind kind) {
     kind.hostile = false;
@@ -53,12 +78,12 @@ constexpr MobKind neutral(MobKind kind) {
 }
 
 //                         type                    attribute  stroll   doors  sun
-constexpr std::array<MobKind, 20> kAll{{
+constexpr std::array<MobKind, 21> kAll{{
     // The eight of M2. Stroll measured: zombie 0.11417 b/t, skeleton 0.13488,
     // creeper 0.08633 (modifier 0.8), spider 0.12429 (0.8).
-    monster("minecraft:zombie", 0.23, 1.0, true, true),
+    villager_hunter(monster("minecraft:zombie", 0.23, 1.0, true, true)),  // ── mobs-3 ──
     ranged(monster("minecraft:skeleton", 0.25, 1.0, false, true), 15.0),
-    monster("minecraft:creeper", 0.25, 0.8, false, false),
+    no_swing(monster("minecraft:creeper", 0.25, 0.8, false, false), 3.0),  // ── mobs-3 ──
     monster("minecraft:spider", 0.3, 0.8, false, false),
     // Stroll 1.0 for all four (cow 0.08632, pig 0.13482, sheep 0.11415,
     // chicken 0.13485); panic cow 2.0, pig 1.25, sheep 1.25, chicken 1.4.
@@ -70,16 +95,21 @@ constexpr std::array<MobKind, 20> kAll{{
     // New species. Husk and drowned stroll exactly as a zombie (0.11417,
     // 0.11416), stray and witch as a skeleton (0.13485, 0.13484), the cave
     // spider as a spider (0.12426).
-    monster("minecraft:husk", 0.23, 1.0, true, false),
+    villager_hunter(monster("minecraft:husk", 0.23, 1.0, true, false)),  // ── mobs-3 ──
     ranged(monster("minecraft:stray", 0.25, 1.0, false, true), 15.0),
-    monster("minecraft:drowned", 0.23, 1.0, false, true),
+    follow(monster("minecraft:drowned", 0.23, 1.0, false, true), 35.0),  // ── mobs-3 ──
     monster("minecraft:cave_spider", 0.3, 0.8, false, false),
     ranged(monster("minecraft:witch", 0.25, 1.0, false, false), 10.0),
     // Neutral: strolls at 1.0 (0.19412) and attacks only when provoked, which
     // this server does not model yet — named in mobs-2.md.
-    neutral(monster("minecraft:enderman", 0.3, 1.0, false, false)),
+    follow(neutral(monster("minecraft:enderman", 0.3, 1.0, false, false)), 64.0),  // ── mobs-3 ──
     // Hops rather than walks. Not measured; the walker moves it, named.
-    monster("minecraft:slime", 0.3, 1.0, false, false),
+    // ── mobs-3 ── It hurts by contact, which is not a swing: not done.
+    no_swing(monster("minecraft:slime", 0.3, 1.0, false, false), 0.0),
+    // ── mobs-3 ── A zombie in every way this server models: the attribute
+    // (0.23, entities.json), the sun, the doors; it keeps what the villager
+    // was (zombification, mobs-3.md § 4).
+    villager_hunter(monster("minecraft:zombie_villager", 0.23, 1.0, true, true)),
 
     // Rabbit: a hop, not a walk — 0.13175 b/t strolling and 0.380 panicking
     // are fitted through the law (0.824, 1.40), not goal modifiers.

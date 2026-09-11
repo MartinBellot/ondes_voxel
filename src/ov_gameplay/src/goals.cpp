@@ -442,8 +442,51 @@ bool NearestAttackableTargetGoal::can_use(GoalContext& context) {
     if (context.entities == nullptr) {
         return false;
     }
+    // ── mobs-3 ── The villager sentinel is the id the caller supplies, and the
+    // players are searched beside the entity world: a quarry of the goal's
+    // type, in sight when sight is asked for, nearer than any entity found.
+    found_player_  = 0;
+    const i32 type = type_ == kVillagerQuarry ? context.villager_type : type_;
+    if (type_ == kVillagerQuarry && type < 0) {
+        return false;
+    }
     const entity::EntityHandle found =
-        nearest_entity(*context.entities, context.self, type_, radius_);
+        nearest_entity(*context.entities, context.self, type, radius_);
+    if (const entity::EntityState* self = context.state(); self != nullptr && type >= 0) {
+        f64 best = radius_ * radius_;
+        if (const entity::EntityState* other = context.entities->state(found)) {
+            best = distance_sq(self->position, other->position);
+        }
+        for (const Quarry& quarry : context.quarries) {
+            if (quarry.type != type) {
+                continue;
+            }
+            const f64 d = distance_sq(self->position, quarry.feet);
+            if (d >= best) {
+                continue;
+            }
+            if (must_see_) {
+                if (context.collisions == nullptr) {
+                    continue;
+                }
+                entity::EntityState stand_in;
+                stand_in.position   = quarry.feet;
+                stand_in.width      = quarry.width;
+                stand_in.height     = quarry.height;
+                stand_in.eye_height = quarry.eye_height;
+                if (!has_line_of_sight(*context.collisions, *self, stand_in)) {
+                    continue;
+                }
+            }
+            best          = d;
+            found_player_ = quarry.network_id;
+        }
+        if (found_player_ != 0) {
+            found_ = entity::kNoEntity;
+            return true;
+        }
+    }
+    // ── end mobs-3 ──
     if (found == entity::kNoEntity) {
         return false;
     }
@@ -467,6 +510,13 @@ bool NearestAttackableTargetGoal::can_continue_to_use(GoalContext& context) {
     if (context.entities == nullptr || context.brain == nullptr) {
         return false;
     }
+    // ── mobs-3 ── A player quarry: still listed (alive, in survival), and in range.
+    if (context.brain->target_player != 0) {
+        const Quarry*              quarry = find_quarry(context.quarries, context.brain->target_player);
+        const entity::EntityState* me     = context.state();
+        return quarry != nullptr && me != nullptr &&
+               distance_sq(me->position, quarry->feet) <= radius_ * radius_;
+    }
     const entity::EntityState* other = context.entities->state(context.brain->target);
     const entity::EntityState* self  = context.state();
     if (other == nullptr || self == nullptr || other->removed || other->health <= 0.0F) {
@@ -483,16 +533,29 @@ bool NearestAttackableTargetGoal::can_continue_to_use(GoalContext& context) {
 
 void NearestAttackableTargetGoal::start(GoalContext& context) {
     if (context.brain != nullptr) {
-        context.brain->target = found_;
+        context.brain->target        = found_;
+        context.brain->target_player = found_player_;  // ── mobs-3 ──
     }
 }
 
 void NearestAttackableTargetGoal::stop(GoalContext& context) {
     if (context.brain != nullptr) {
         context.brain->target             = entity::kNoEntity;
+        context.brain->target_player      = 0;  // ── mobs-3 ──
         context.brain->target_forgotten_at = context.tick;
     }
-    found_ = entity::kNoEntity;
+    found_        = entity::kNoEntity;
+    found_player_ = 0;
+}
+
+// ── mobs-3 ──
+const Quarry* find_quarry(std::span<const Quarry> quarries, i32 network_id) noexcept {
+    for (const Quarry& quarry : quarries) {
+        if (quarry.network_id == network_id) {
+            return &quarry;
+        }
+    }
+    return nullptr;
 }
 
 // ── MeleeAttackGoal ─────────────────────────────────────────────────────────
@@ -500,6 +563,9 @@ void NearestAttackableTargetGoal::stop(GoalContext& context) {
 bool MeleeAttackGoal::can_use(GoalContext& context) {
     if (context.brain == nullptr || context.entities == nullptr) {
         return false;
+    }
+    if (context.brain->target_player != 0) {  // ── mobs-3 ──
+        return find_quarry(context.quarries, context.brain->target_player) != nullptr;
     }
     const entity::EntityState* target = context.entities->state(context.brain->target);
     return target != nullptr && !target->removed && target->health > 0.0F;
@@ -521,36 +587,73 @@ void MeleeAttackGoal::stop(GoalContext& context) {
 }
 
 void MeleeAttackGoal::tick(GoalContext& context) {
-    entity::EntityState*       self   = context.state();
-    const entity::EntityState* target = context.entities->state(context.brain->target);
-    if (self == nullptr || target == nullptr) {
+    entity::EntityState* self = context.state();
+    if (self == nullptr) {
         return;
     }
+    // ── mobs-3 ── The target is a player quarry or an entity; the goal needs
+    // only where it stands, how wide it is, where its eyes are and its id.
+    Vec3d where{};
+    f32   width     = 0.0F;
+    f32   eye       = 0.0F;
+    i32   target_id = 0;
+    bool  is_player = context.brain->target_player != 0;
+    if (is_player) {
+        const Quarry* quarry = find_quarry(context.quarries, context.brain->target_player);
+        if (quarry == nullptr) {
+            return;
+        }
+        where     = quarry->feet;
+        width     = quarry->width;
+        eye       = quarry->eye_height;
+        target_id = quarry->network_id;
+    } else {
+        const entity::EntityState* target = context.entities->state(context.brain->target);
+        if (target == nullptr) {
+            return;
+        }
+        where     = target->position;
+        width     = target->width;
+        eye       = target->eye_height;
+        target_id = target->network_id;
+    }
     MobBrain& brain = *context.brain;
-    brain.look_at   = Vec3d{target->position.x,
-                          target->position.y + static_cast<f64>(target->eye_height),
-                          target->position.z};
+    brain.look_at   = Vec3d{where.x, where.y + static_cast<f64>(eye), where.z};
     brain.has_look  = true;
 
     if (ticks_until_attack_ > 0) {
         --ticks_until_attack_;
     }
 
-    const f64 reach = std::max(static_cast<f64>(self->width) + static_cast<f64>(target->width) + 1.0,
-                               hold_at_);  // ── mobs-2 ── a ranged attacker holds off
-    const f64 gap   = distance_sq(self->position, target->position);
-    if (gap <= reach * reach) {
+    // ── mobs-3 ── The game's reach, `(2·w)² + w_target` squared, feet to feet;
+    // a mob that does not swing holds off at `hold_at` instead (mobs-2: a
+    // skeleton at 15, a witch at 10; mobs-3: a creeper at its swell's 3).
+    const f64 reach_sq = hold_at_ > 0.0 ? hold_at_ * hold_at_ : melee_reach_sq(self->width, width);
+    const f64 gap      = distance_sq(self->position, where);
+    if (gap <= reach_sq) {
         brain.wants_move = false;
         brain.follower.clear();
         if (ticks_until_attack_ == 0) {
             ticks_until_attack_ = cooldown_;
+            if (strikes_ && context.attacks != nullptr) {  // ── mobs-3 ──
+                context.attacks->push_back(MobAttack{context.self, target_id, is_player});
+            }
         }
         return;
     }
     if (context.tick >= next_repath_) {
         next_repath_ = context.tick + 10;
-        (void)move_to(context, feet_block(*target), speed_, 64.0F);
+        const BlockPos goal{static_cast<i32>(std::floor(where.x)),
+                            static_cast<i32>(std::floor(where.y)),
+                            static_cast<i32>(std::floor(where.z))};
+        (void)move_to(context, goal, speed_, 64.0F);
     }
+    // ── mobs-3 ── Keep walking between two re-paths. The mob clears its intent
+    // at the top of every tick, and this goal used to set it only on the tick
+    // it re-pathed: a chasing zombie was pushed one tick in ten and friction
+    // stopped it after 0.4 block — found by the first test that let a zombie
+    // reach a player (mobs-3.md § 1.5).
+    keep_walking(context, speed_);
 }
 
 // ── PanicGoal ───────────────────────────────────────────────────────────────

@@ -26,6 +26,7 @@
 #include "ov/gameplay/collision.hpp"
 #include "ov/gameplay/pathfinding.hpp"
 #include "ov/gameplay/villager_state.hpp"  // ── villagers ──
+#include "ov/gameplay/mob_attack.hpp"      // ── mobs-3 ──
 #include "ov/math/random.hpp"
 #include "ov/math/vec.hpp"
 #include "ov/world/level.hpp"
@@ -99,6 +100,17 @@ struct GoalContext {
     /// its elaborated name so this header does not need the villager rules.
     const struct VillagerWorld* villagers{nullptr};
 
+    // ── mobs-3 ──
+    /// The players a hostile mob may hunt this tick (mob_attack.hpp). Empty:
+    /// no player is ever a target — Peaceful, or nobody in survival.
+    std::span<const Quarry> quarries{};
+    /// Where a landed swing goes for the caller to finish. Null: the mob
+    /// still swings on its cooldown, and nothing is hurt.
+    std::vector<MobAttack>* attacks{nullptr};
+    /// The protocol id of `minecraft:villager`, for `kVillagerQuarry`. -1:
+    /// no villager is ever a target.
+    i32 villager_type{-1};
+
     [[nodiscard]] entity::EntityState*       state() noexcept;
     [[nodiscard]] const entity::EntityState* state() const noexcept;
 };
@@ -127,6 +139,9 @@ struct MobBrain {
     /// The mob's quarry. `kNoEntity` when it has none.
     entity::EntityHandle target{entity::kNoEntity};
     i64                  target_forgotten_at{0};
+    /// ── mobs-3 ── The quarry when it is a player: its wire id, 0 for none.
+    /// Exclusive with `target` — players are not in the entity world.
+    i32 target_player{0};
 
     /// Movement speed multiplier the running move goal asked for. Applied by
     /// the mob's own tick, not by the goal, so two goals cannot both push.
@@ -341,8 +356,12 @@ class MeleeAttackGoal final : public Goal {
 public:
     /// `hold_at` (── mobs-2 ──): a ranged attacker stops closing in inside
     /// this distance — 15 for a skeleton's bow, 10 for a witch. 0 for melee.
-    explicit MeleeAttackGoal(f64 speed = 1.0, i32 cooldown = 20, f64 hold_at = 0.0) noexcept
-        : speed_{speed}, cooldown_{cooldown}, hold_at_{hold_at} {}
+    /// `strikes` (── mobs-3 ──): a swing in reach becomes a `MobAttack`. False
+    /// for the mobs whose attack is something else — a creeper swells, a
+    /// skeleton shoots, a witch throws.
+    explicit MeleeAttackGoal(f64 speed = 1.0, i32 cooldown = 20, f64 hold_at = 0.0,
+                             bool strikes = true) noexcept
+        : speed_{speed}, cooldown_{cooldown}, hold_at_{hold_at}, strikes_{strikes} {}
 
     [[nodiscard]] bool     can_use(GoalContext& context) override;
     [[nodiscard]] bool     can_continue_to_use(GoalContext& context) override;
@@ -360,7 +379,8 @@ public:
 private:
     f64 speed_{1.0};
     i32 cooldown_{20};
-    f64 hold_at_{0.0};  // ── mobs-2 ──
+    f64  hold_at_{0.0};  // ── mobs-2 ──
+    bool strikes_{true};  // ── mobs-3 ──
     i32 ticks_until_attack_{0};
     i64 next_repath_{0};
 };
@@ -386,7 +406,11 @@ private:
     f64                  radius_{16.0};
     bool                 must_see_{true};
     entity::EntityHandle found_{entity::kNoEntity};
+    i32                  found_player_{0};  // ── mobs-3 ──
 };
+
+/// ── mobs-3 ── The quarry carrying a wire id, or null.
+[[nodiscard]] const Quarry* find_quarry(std::span<const Quarry> quarries, i32 network_id) noexcept;
 
 /// Run away from whatever last hurt this mob.
 class PanicGoal final : public Goal {
