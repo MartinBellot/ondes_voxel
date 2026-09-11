@@ -27,6 +27,10 @@ namespace ov::netclient {
 
 namespace {
 
+/// Boss Bar, clientbound 0x0B in 763 — the id our server's end fight sends
+/// (src/ov_server/src/end_fight.hpp). ── music ──
+constexpr i32 kBossBar = 0x0B;
+
 /// The protocol this project speaks. Not a variable: 763 is 1.20.1, and
 /// pretending to speak another version is how a client gets a chunk packet in
 /// a layout it cannot read.
@@ -210,6 +214,9 @@ void ClientEvents::clear() {
     entity_sounds.clear();
     stop_sounds.clear();
     world_events.clear();
+    dimension.reset();  // ── music ──
+    biome_music.reset();
+    boss_bars.clear();
     destroy_stages.clear();  // ── breaking ──
     own_entity_id.reset();
     own_effects.clear();
@@ -505,8 +512,14 @@ void Client::Impl::handle_play(i32 packet_id, std::span<const u8> body) {
             if (!chat_types) {
                 OV_LOG_WARN("Login (play): the registry codec did not read; chat types unknown");
             }
+            // ── music ── the biomes' music and the dimension, after the codec.
+            auto world = net::read_login_world(body);
             own_entity_id = *entity_id;  // ── breaking ──
             const std::lock_guard lock(mutex);
+            if (world) {  // ── music ──
+                inbox.dimension   = std::move(world->dimension);
+                inbox.biome_music = std::move(world->music);
+            }
             inbox.own_entity_id = *entity_id;  // ── breaking ──
             inbox.game_mode = *mode;
             inbox.hardcore  = *hardcore != 0;  // ── screens ──
@@ -885,6 +898,43 @@ void Client::Impl::handle_play(i32 packet_id, std::span<const u8> body) {
             break;
         }
 
+        case kBossBar: {  // ── music ──
+            // UUID, action; Add carries title, health, colour, division, then
+            // the flags; Update Flags carries the flags alone.
+            const auto most   = reader.read_u64();
+            const auto least  = reader.read_u64();
+            const auto action = net::read_varint(reader);
+            if (!most || !least || !action) {
+                return;
+            }
+            ClientEvents::BossBarChange change;
+            change.most   = *most;
+            change.least  = *least;
+            change.action = *action;
+            if (*action == 0) {
+                const auto title    = net::read_string(reader);
+                const auto health   = reader.read_f32();
+                const auto colour   = net::read_varint(reader);
+                const auto division = net::read_varint(reader);
+                const auto flags    = reader.read_u8();
+                if (!title || !health || !colour || !division || !flags) {
+                    return;
+                }
+                change.flags = *flags;
+            } else if (*action == 5) {
+                const auto flags = reader.read_u8();
+                if (!flags) {
+                    return;
+                }
+                change.flags = *flags;
+            } else if (*action != 1) {
+                return;  // health, title, style: not the music's business
+            }
+            const std::lock_guard lock(mutex);
+            inbox.boss_bars.push_back(change);
+            break;
+        }
+
         // ── breaking ──
         case net::clientbound::kSetBlockDestroyStage: {
             const auto destroy = net::parse_block_destroy_stage(body);
@@ -1093,8 +1143,12 @@ void Client::Impl::handle_play(i32 packet_id, std::span<const u8> body) {
             break;
         }
         case net::clientbound::kRespawn: {
+            auto dimension = net::read_respawn_dimension(body);  // ── music ──
             const std::lock_guard lock(mutex);
             inbox.respawned = true;
+            if (dimension) {  // ── music ──
+                inbox.dimension = std::move(*dimension);
+            }
             break;
         }
         // ── end screens ─────────────────────────────────────────────────
@@ -1271,6 +1325,12 @@ void Client::poll(ClientEvents& out) {
     out.op_level = impl_->inbox.op_level;  // ── allow-commands ──
     impl_->inbox.op_level.reset();
     out.hardcore      = impl_->inbox.hardcore;
+    // ── music ──
+    out.dimension   = std::move(impl_->inbox.dimension);
+    out.biome_music = std::move(impl_->inbox.biome_music);
+    out.boss_bars.swap(impl_->inbox.boss_bars);
+    impl_->inbox.dimension.reset();
+    impl_->inbox.biome_music.reset();
     impl_->inbox.death_message.reset();
     impl_->inbox.respawned = false;
     impl_->inbox.hardcore.reset();

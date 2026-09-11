@@ -6,6 +6,7 @@
 ov_add_library(ov_protocol
     LAYER 7
     SOURCES
+        src/biome_music.cpp
         src/blast.cpp
         src/breaking.cpp
         src/chat.cpp
@@ -37,6 +38,7 @@ ov_add_library(ov_protocol
 
 ov_add_test(test_ov_protocol
     SOURCES
+        tests/test_biome_music.cpp
         tests/test_blast_packets.cpp
         tests/test_breaking_packets.cpp
         tests/test_chat.cpp

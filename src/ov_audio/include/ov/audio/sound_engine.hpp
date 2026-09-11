@@ -77,8 +77,15 @@ struct EngineDesc {
     u32                 sample_rate{48000};
     /// Voice limits. Ours, not vanilla's: the numbers vanilla's own client
     /// uses are not documented, and a guess dressed as parity is worse than a
-    /// bound that says it is ours. A sound that finds no voice is dropped and
-    /// counted, never made to steal one.
+    /// bound that says it is ours.
+    ///
+    /// Priority, when every voice is taken: the newcomer takes the voice of
+    /// the quietest sound playing — by what reaches the ears, distance,
+    /// category and master volume included — if it would itself be louder;
+    /// otherwise it is the one dropped. Both are counted. A buried footstep
+    /// forty blocks off gives way to an explosion next to the player, never
+    /// the other way round. Streams (music, records) have slots of their own
+    /// and are never taken.
     u32 max_voices{64};
     u32 max_streams{4};
     /// Keep a record of every play (`take_log`). Off by default: a record is
@@ -159,8 +166,11 @@ struct EngineStats {
     u32   active_streams{0};
     u64   started{0};
     u64   refused{0};
-    /// Plays that reached the mixer and found every voice taken.
+    /// Plays that reached the mixer, found every voice taken, and were
+    /// quieter than every voice playing.
     u64   dropped_no_voice{0};
+    /// Plays that found every voice taken and took the quietest one's.
+    u64   stolen{0};
     u64   frames_mixed{0};
     usize cached_files{0};
     usize cached_bytes{0};
@@ -180,6 +190,14 @@ public:
     /// 0 .. 1. Master scales every category, itself included.
     void               set_volume(SoundCategory category, f32 volume) noexcept;
     [[nodiscard]] f32  volume(SoundCategory category) const noexcept;
+
+    /// A second factor on a category, 0 .. 1, that the game moves and the
+    /// player does not: the music fading out under a record. Kept apart from
+    /// the volume so that options.txt never sees it.
+    void              set_fade(SoundCategory category, f32 fade) noexcept;
+    [[nodiscard]] f32 fade(SoundCategory category) const noexcept;
+
+    [[nodiscard]] const SoundCatalog& catalog() const noexcept;
 
     /// Start a sound. The variant is picked and its file decoded (or fetched
     /// from the cache) here; the mixer is only handed a finished buffer.
@@ -220,6 +238,17 @@ public:
     /// itself capped at 1 as the gain. See docs/provenance/son.md.
     [[nodiscard]] static f32 attenuation(f64 distance, f32 volume,
                                          i32 attenuation_distance) noexcept;
+
+    /// -1 (left ear) .. 1 (right ear): the source's direction projected on the
+    /// head's right-hand axis. 0 for a source at the ears.
+    [[nodiscard]] static f32 pan(const Listener& listener, Vec3d source) noexcept;
+
+    /// The whole model for one mono source, before category volumes: the
+    /// attenuation, then a constant-power pan. A relative sound is neither
+    /// attenuated nor panned. The mixer calls exactly this; the tests compare
+    /// it against the samples that come out.
+    [[nodiscard]] static StereoGain spatialise(const Listener& listener, Vec3d source, f32 volume,
+                                               i32 attenuation_distance, bool relative) noexcept;
 
 private:
     struct Impl;

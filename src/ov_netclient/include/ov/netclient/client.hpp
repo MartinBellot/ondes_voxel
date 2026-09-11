@@ -25,6 +25,7 @@
 #include "ov/math/vec.hpp"
 #include "ov/protocol/chat.hpp"
 #include "ov/protocol/chat_types.hpp"
+#include "ov/protocol/biome_music.hpp"  // ── music ──
 #include "ov/protocol/blast.hpp"
 #include "ov/protocol/breaking.hpp"  // ── breaking ──
 #include "ov/protocol/client_play.hpp"
@@ -275,6 +276,24 @@ struct ClientEvents {
     /// World Event (0x25). 2001 is a block someone else broke, with its state.
     std::vector<net::WorldEvent> world_events;
 
+    // ── music ──
+    /// Login (play) and Respawn: the dimension the player is now in.
+    std::optional<std::string> dimension;
+    /// Login (play)'s codec: every biome that names its background music.
+    std::optional<std::vector<net::BiomeMusic>> biome_music;
+    /// Boss Bar (0x0B): adds, removes and flag updates — for the one flag the
+    /// music reads, 0x02 "play boss music". Title, health and colour are the
+    /// HUD's business and are not decoded here.
+    struct BossBarChange {
+        u64 most{0};
+        u64 least{0};
+        /// 0 add, 1 remove, 5 update flags; the others are not kept.
+        i32 action{0};
+        u8  flags{0};
+    };
+    std::vector<BossBarChange> boss_bars;
+    // ── end music ──
+
     // ── breaking ──
     /// Set Block Destroy Stage (0x07): another player's cracks, in arrival
     /// order. The server never sends a player its own.
@@ -331,7 +350,8 @@ struct ClientEvents {
                explosions.empty() && pickups.empty() && !rain_level && !thunder_level &&
                !death_message && !respawned && !hardcore &&  // ── screens ──
                !op_level &&                                  // ── allow-commands ──
-               destroy_stages.empty() && !own_entity_id && own_effects.empty();  // ── breaking ──
+               destroy_stages.empty() && !own_entity_id && own_effects.empty() &&  // ── breaking ──
+               !dimension && !biome_music && boss_bars.empty();                  // ── music ──
     }
     void clear();
 };
