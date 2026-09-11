@@ -46,6 +46,7 @@
 #include "player_data.hpp"  // ── player data ──
 #include "player_inventory.hpp"
 #include "world_ticks.hpp"
+#include "tick_profile.hpp"  // ── perf ──
 #include "sounds.hpp"  // ── sound ──
 #include "agriculture.hpp"  // ── agriculture ──
 #include "ov/world/chunk.hpp"
@@ -2297,6 +2298,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     /// the rules must run on the tick thread. So the position is queued and the
     /// next tick picks it up — one tick of latency, and the single-writer
     /// rule intact.
+    // ── perf ── the tick's phase clock (tick_profile.hpp). Built before every
+    // lambda that feeds it; on the heap because it is ~100 KiB of counters and
+    // an integrated server runs this on a thread with a small stack.
+    const auto perf = std::make_unique<TickProfile>();
+    // ── end perf ──
+
     std::vector<net::WirePosition> pending_notifications;
     std::mutex                     notification_mutex;
     const auto                     notify_change = [&](net::WirePosition where) {
@@ -2392,6 +2399,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
 
     const auto set_block_and_broadcast = [&](net::WirePosition      position,
                                              registry::BlockStateId state) {
+        const ScopedLatency perf_edit{perf->block_edit};  // ── perf ──
         const auto shape = world::WorldShape::overworld();
         if (!shape.contains_y(position.y)) {
             return;
@@ -2742,6 +2750,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     /// anywhere else would be a deadlock waiting for a busy server.
     const auto flush_tick_writes = [&] {
         if (!tick_relight.empty()) {
+            const TickPhase perf_was = perf->enter(TickPhase::Relight);  // ── perf ──
             const std::scoped_lock lock{chunk_mutex};
             for (const i64 key : tick_relight) {
                 const auto cx = static_cast<i32>(key >> 32);
@@ -2761,6 +2770,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 }
             }
             tick_relight.clear();
+            perf->enter(perf_was);  // ── perf ──
         }
 
         if (tick_broadcasts.empty()) {
@@ -4221,7 +4231,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             }
 
             case ConnectionState::Play: {
+                // ── perf ── the packet, and the part of it spent waiting for the tick
+                const ScopedLatency perf_packet{perf->network_packet};
+                const auto          perf_wait = std::chrono::steady_clock::now();
                 const std::scoped_lock lock{players_mutex};
+                perf->network_lock_wait.record(std::chrono::duration_cast<std::chrono::microseconds>(
+                                                   std::chrono::steady_clock::now() - perf_wait)
+                                                   .count());
+                // ── end perf ──
                 const auto             it = players.find(connection.get());
                 if (it == players.end()) {
                     return false;
@@ -6053,10 +6070,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     };
 
     while (!should_stop()) {
+        perf->begin_tick();  // ── perf ──
         const auto tick_started = std::chrono::steady_clock::now();
         const i32  ticks        = clock.advance();
         server_tick.store(clock.tick_count(), std::memory_order_relaxed);
 
+        perf->enter(TickPhase::ChunkPublish);  // ── perf ──
         // ── Terrain comes home ──────────────────────────────────────────────
         //
         // The single-writer rule in one place: workers build chunks nothing
@@ -6084,6 +6103,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             }
         }
 
+        perf->enter(TickPhase::SpawnArea);  // ── perf ──
         // ── loading ──
         // How much of the spawn area is resident: the nine chunks around the
         // spawn column, which the Forced ticket keeps once they arrive. Logged
@@ -6119,6 +6139,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         }
         // ── end loading ──
 
+        perf->enter(TickPhase::ChunkRequests);  // ── perf ──
         // ── What the tickets want and the map has not got ───────────────────
         //
         // This is the whole model in six lines: a chunk is generated because
@@ -6142,6 +6163,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             }
         }
 
+        perf->enter(TickPhase::ChunkEviction);  // ── perf ──
         // ── Chunks nothing wants any more ───────────────────────────────────
         //
         // Every five seconds rather than every tick: eviction walks the
@@ -6171,6 +6193,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             }
         }
 
+        perf->enter(TickPhase::WorldClock);  // ── perf ──
         // Finish the digs the client claimed too early to be believed. Vanilla
         // keeps its own clock for those, and so do we: the block comes off on
         // the tick the rule says, not on the tick the client asked for.
@@ -6260,6 +6283,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             }
         }
 
+        perf->enter(TickPhase::Commands);  // ── perf ──
         // ── commands ────────────────────────────────────────────────────────
         // The clock and the weather move every tick. The queue runs at the
         // first tick the player map is free, as every other pass here waits
@@ -6288,6 +6312,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         }
         // ── end commands ────────────────────────────────────────────────────
 
+        perf->enter(TickPhase::ScheduledTicks);  // ── perf ──
         // ── Scheduled ticks ─────────────────────────────────────────
         //
         // Water flows and levers light things here, and nowhere else. Two
@@ -6323,6 +6348,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             }
         }
 
+        perf->enter(TickPhase::RandomTicks);  // ── perf ──
         // ── agriculture: the random tick ────────────────────────────
         //
         // After the scheduled ticks, as in the game. The chunk set is
@@ -6364,6 +6390,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         }
         // ── end agriculture ─────────────────────────────────────────
 
+        perf->enter(TickPhase::Containers);  // ── perf ──
         // ── Containers: hoppers, droppers, dispensers ───────────────
         //
         // After the redstone drain and never before it: a hopper's `enabled`
@@ -6496,6 +6523,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             }
         }
 
+        perf->enter(TickPhase::NaturalSpawning);  // ── perf ──
         // ── Natural spawning ────────────────────────────────────────
         //
         // Once a tick, over the chunks a ticket actually ticks, with the light
@@ -6657,6 +6685,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                        .count());
         }
 
+        perf->enter(TickPhase::Entities);  // ── perf ──
         // Mobs: gravity, collision, and only the movement that actually
         // happened. A delta packet when the move fits in one — six bytes rather
         // than twenty-eight — and a teleport when it does not.
@@ -6813,6 +6842,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // ── tnt and gravity: the craters and landings, sent and relit ──
         flush_tick_writes();
 
+        perf->enter(TickPhase::GroundItems);  // ── perf ──
         // Les piles au sol : elles se ramassent, et au bout de cinq minutes
         // elles s'en vont. Sans cette seconde moitié un monde de test finit
         // par porter des milliers d'entités que personne ne voit passer.
@@ -6866,6 +6896,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             }
         }
 
+        perf->enter(TickPhase::Players);  // ── perf ──
         // ── combat and interaction: the gauge, and the eating ──────────────
         //
         // One block, and it delegates like the survival one does. Two things
@@ -7282,6 +7313,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         }
         // ── end survival ───────────────────────────────────────────────────
 
+        perf->enter(TickPhase::Digs);  // ── perf ──
         {  // ── commands: a delayed dig only ever starts in survival ──
             std::unique_lock dig_lock{players_mutex, std::try_to_lock};
             if (dig_lock.owns_lock()) {
@@ -7331,6 +7363,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             const NoAllocScope no_alloc{"server tick"};
         }
 
+        perf->enter(TickPhase::Autosave);  // ── perf ──
         // Autosave. A clean shutdown saves too, but a server that is killed
         // never gets one — and losing an hour of building to a crash is the
         // failure people remember. Thirty seconds is short enough to matter and
@@ -7342,6 +7375,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             save_world();
         }
 
+        perf->enter(TickPhase::ChunkSend);  // ── perf ──
         // Keep-alive. The client drops a server that goes quiet, and vanilla
         // sends one every fifteen seconds — ten leaves room for a slow link
         // without being chatty. Outside the no-alloc scope on purpose: this
@@ -7438,6 +7472,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     }
                 }
 
+                perf->enter(TickPhase::Screens);  // ── perf ──
                 // ── crafting and smelting ───────────────────────────────────
                 // The screens someone has open. What runs a furnace **nobody**
                 // is watching is the pass below this one; this one exists
@@ -7617,6 +7652,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             }
         }
 
+        perf->end_tick();  // ── perf ──
         tick_micros.push_back(std::chrono::duration_cast<std::chrono::microseconds>(
                                   std::chrono::steady_clock::now() - tick_started)
                                   .count());
@@ -7688,6 +7724,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     };
     report_phase("natural spawning", spawn_micros);
     report_phase("spawn chunk list rebuild", spawn_rebuild_micros);
+    for (const std::string& line : perf->report(clock.tick_count())) {  // ── perf ──
+        OV_LOG_INFO("{}", line);
+    }
 
     if (chunk_source) {
         OV_LOG_INFO(
