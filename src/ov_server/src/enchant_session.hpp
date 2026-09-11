@@ -152,6 +152,13 @@ void refresh_enchant_window(const EnchantContext& context, const EnchantHost& ho
 /// `giveExperienceLevels(-n)`: the level drops, the bar keeps its fraction.
 void take_levels(SurvivalSession& survival, i32 levels);
 
+/// The seed of a player's own generator — the one that draws the next
+/// `XpSeed`. From the UUID, mixed: an earlier `entity_id * 0x5DEECE66D` was
+/// cancelled exactly by `setSeed`'s own XOR for entity 1, left the generator at
+/// state 0, and gave every "new" seed as 0 — the table offered the same seed-0
+/// enchantments after every enchant.
+[[nodiscard]] i64 enchant_random_seed(const net::Uuid& player);
+
 // ── Effects on a player ─────────────────────────────────────────────────────
 
 /// The four worn pieces' enchantments, from the protocol's slots 5..8.

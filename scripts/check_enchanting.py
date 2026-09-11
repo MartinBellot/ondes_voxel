@@ -46,7 +46,13 @@ def output_of(stack) -> str:
 
 
 def binomial_z(k: int, n: int, p: float) -> float:
-    return (k - n * p) / math.sqrt(n * p * (1 - p)) if n else float("nan")
+    if not n:
+        return float("nan")
+    variance = n * p * (1 - p)
+    if variance == 0:
+        # p is 0 or 1: the only possible count is n·p, exactly.
+        return 0.0 if k == round(n * p) else float("inf")
+    return (k - n * p) / math.sqrt(variance)
 
 
 def main() -> int:

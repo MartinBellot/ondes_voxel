@@ -274,6 +274,26 @@ TEST_CASE("EPF, Mending and the damage bonus", "[enchanting]") {
     CHECK(damage_bonus(list_of({{E::Sharpness, 5}}), MobGroup::Default) == 3.0F);
 }
 
+TEST_CASE("the damage path applies the worn EPF after Resistance", "[enchanting]") {
+    // What the server actually calls. A 10-point fall through Feather Falling
+    // IV (EPF 12) must leave 5.2; the parity test above checks the formula,
+    // this checks that apply_damage uses it.
+    DamageMitigation mitigation;
+    mitigation.protection[static_cast<usize>(DamageKind::Fall)] = 12;
+    HealthState        state;
+    const DamageConstants constants{};
+    state.health         = 20.0F;
+    const DamageResult hit = apply_damage(state, DamageKind::Fall, 10.0F, constants, mitigation);
+    CHECK(hit.applied);
+    CHECK(std::fabs(hit.dealt - 5.2F) < 1e-5F);
+    CHECK(std::fabs(state.health - 14.8F) < 1e-5F);
+
+    // A kind the EPF does not name is untouched.
+    HealthState other;
+    other.health = 20.0F;
+    CHECK(apply_damage(other, DamageKind::Generic, 10.0F, constants, mitigation).dealt == 10.0F);
+}
+
 TEST_CASE("enchantments survive an NBT round trip", "[enchanting]") {
     nbt::Tag tag = nbt::Tag::make_compound();
     write_enchantments(tag, list_of({{Enchantment::Sharpness, 5}, {Enchantment::Unbreaking, 3}}),
@@ -416,8 +436,9 @@ TEST_CASE("Protection against the real server's /damage", "[enchanting][parity]"
         WARN("enchanting.json has no protection campaign");
         return;
     }
-    usize total = 0;
-    usize same  = 0;
+    usize       total = 0;
+    usize       same  = 0;
+    std::string differing;
     for (auto [name, value] : cases) {
         const auto kind =
             damage_kind_from_name(std::string{"minecraft:"} + std::string{std::string_view(value["damage_type"])});
@@ -439,10 +460,9 @@ TEST_CASE("Protection against the real server's /damage", "[enchanting][parity]"
         if (std::fabs((before - dealt) - after) < 1e-4F) {
             ++same;
         } else {
-            UNSCOPED_INFO(std::string_view(name) << ": vanilla " << (before - after) << ", ours "
-                                                 << dealt);
+            differing += std::string{std::string_view(name)} + " ";
         }
     }
-    INFO(same << " / " << total << " hits identical");
+    INFO(same << " / " << total << " hits identical; differing: " << differing);
     CHECK(same == total);
 }

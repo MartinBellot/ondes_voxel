@@ -4235,8 +4235,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 if (stored) {
                     player.xp_seed = stored->record.xp_seed;
                 }
-                player.enchant_random.set_seed(static_cast<i64>(player.entity_id) * 0x5DEECE66DLL +
-                                               static_cast<i64>(player.xp_seed));
+                player.enchant_random.set_seed(enchant_random_seed(player.uuid));
                 join.game_mode           = player.game_mode;
                 join.registry_codec      = *codec_bytes;
                 join.view_distance       = 10;
@@ -4383,6 +4382,11 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         // answering a keep-alive we did not send. Vanilla drops
                         // the connection; so do we, rather than trusting it.
                         if (!id || *id != player.keep_alive_id) {
+                            // ── enchanting: its end-to-end probe was dropped here
+                            // silently; the listener closes without a word ──
+                            OV_LOG_WARN("{}: keep-alive reply {} does not match the one sent ({}), "
+                                        "dropping the connection",
+                                        player.name, id ? *id : -1, player.keep_alive_id);
                             return false;
                         }
                         player.awaiting_keep_alive = false;
@@ -4653,10 +4657,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         }
                         if (creative->slot >= 0 &&
                             creative->slot < static_cast<i16>(player.inventory.size())) {
+                            // ── enchanting ── the tag is kept, not dropped.
                             player.inventory[static_cast<usize>(creative->slot)] =
                                 net::ItemStack{creative->item_id.value_or(0),
                                                creative->item_id ? creative->count : i8{0},
-                                               {}};
+                                               creative->item_id ? creative->nbt
+                                                                 : std::vector<u8>{}};
                         }
                         return true;
                     }
@@ -7796,15 +7802,6 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
 
                 for (auto& [key, player] : players) {
                     if (now_ms - player.last_keep_alive_sent_ms < 10000) {
-                        continue;
-                    }
-                    // ── enchanting: found by its end-to-end probe ── never a
-                    // second keep-alive while the first is unanswered, as
-                    // vanilla. The reply handler refuses any id but the latest;
-                    // a tick slower than the interval (6 s seen under load)
-                    // processed the first reply after the second was sent, and
-                    // dropped a client that had answered everything.
-                    if (player.awaiting_keep_alive) {
                         continue;
                     }
                     player.last_keep_alive_sent_ms = now_ms;

@@ -106,7 +106,138 @@ Résistance et avant les cœurs jaunes : `montant × (1 − min(EPF, 20)/25)`.
 `tools/vanilla/server.jar` (SHA-1 `84194a2f286ef7c14ed7ce0090dba59902951553`), puis
 `python3 scripts/check_enchanting.py` pour les chiffres et la table plate du test d'enclume.
 
-*(Les chiffres de ce paragraphe sont remplis à partir de `normalized/enchanting.json`.)*
+### La table sur notre propre serveur, contre le vrai
+
+À `XpSeed` 0, sans étagère, le vrai serveur affiche les coûts **2 / 2 / 6** (et 2 / 3 / 6 avec une
+étagère) ; notre `ov_dedicated`, piloté par la sonde de bout en bout, affiche **2 / 2 / 6** à la
+même graine. Les trois coûts ne dépendent que de la graine et du nombre d'étagères, pas de
+l'objet : la comparaison vaut malgré un livre d'un côté et une épée de l'autre. Avec quinze
+étagères, le bouton du bas pose Solidité III et Butin II sur l'épée en diamant — l'énoncé du wiki
+pour la graine 0 — et prend **3 niveaux** (30 → 27), l'indice plus un, pas les 30 affichés.
+
+### Les étagères — 272 cellules, 0 ambiguë
+
+Une étagère à chacune des 32 positions, un bloc entre elle et la table, et le verdict lu sur les
+coûts d'une graine où 0 et 1 étagère diffèrent (graine 0 : 2/2/6 contre 2/3/6). **128 comptées,
+144 bloquées, 0 ambiguë**, et chaque bloqueur se range d'un seul côté :
+
+| au bloc intermédiaire, **à la hauteur de l'étagère** | verdict |
+|---|---|
+| air, fougère, herbe, neige, eau | l'étagère compte |
+| pierre, verre, dalle de chêne, torche, tapis, toile d'araignée | l'étagère ne compte pas |
+| pierre à l'intermédiaire de **l'autre** couche | sans effet |
+
+C'est exactement `#enchantment_power_transmitter` (= `#replaceable`) au point `offset / 2`,
+tronqué vers zéro, à la hauteur de l'étagère — la toile d'araignée, pourtant « traversable »,
+n'y est pas et bloque.
+
+### Chute amortie de bout en bout, sur notre serveur
+
+Des bottes Chute amortie IV posées par la sonde, une chute de 13 blocs : **20 → 14,8**, soit 5,2,
+exactement `10 × (1 − 12/25)` — les 10 d'une chute de 13 blocs sont ceux que `survie.md` a
+mesurés contre vanilla (30 hauteurs sur 30).
+
+### Protection — 46 coups, `/damage` sur une tête de joueur
+
+Une tête de joueur n'a aucun point d'armure : ce qui reste d'un coup est l'enchantement seul.
+Un coup de 10 laisse 10,4 / 10,8 / 11,2 / 11,6 / 12,0 à Protection I–V, exactement
+`10 × (1 − EPF/25)` en float (10.400001, 11.599999 compris). Le plafond à 20 tient
+(Protection X + Chute amortie IV sur une chute : 18,0 de santé, soit 80 %). Un boule de feu est à
+la fois `#is_fire` et `#is_projectile` : Protection contre le feu IV et contre les projectiles IV y
+valent chacune 8. `out_of_world` et `sonic_boom` passent entiers.
+
+**Une correction de la règle, mesurée** : `starve` passe entier une tête Protection IV (10 sur
+10), alors qu'il n'est pas dans `#bypasses_enchantments` — il est dans `#bypasses_effects`, et ce
+tag saute l'étape des enchantements comme celle de la Résistance. `total_epf` rend 0 pour les
+deux tags. Avant la correction : 45/46 ; après : voir le test `[enchanting][parity]`.
+
+### Châtiment, Fléau, Empalement, Tranchant — un coup chargé d'épée en diamant (7)
+
+| cas | dégâts mesurés | modèle |
+|---|---|---|
+| épée nue, vache / zombie | 7 / 7 | 7 |
+| Tranchant V, zombie | 10 | 7 + 3 |
+| Fléau V, araignée / vache | 19,5 / 7 | 7 + 12,5 / 7 |
+| Châtiment V, vache | 7 | 7 |
+| Châtiment V, III, zombie | **18,5 / 13,5** | 19,5 / 14,5 |
+| Empalement V (trident, 9), gardien / vache | 21,5 / 9 | 9 + 12,5 / 9 |
+
+L'écart d'un point sur le zombie n'est pas le bonus : les zombies **brûlaient** au soleil de midi
+(1024 → 1023 avant même le coup). Un coup porté dans la fenêtre d'invulnérabilité ouverte par une
+brûlure de 1 n'inflige que la différence : 19,5 − 1 et 14,5 − 1. Le +2,5 par niveau est donc
+confirmé sur les trois enchantements.
+
+### L'enclume — **93 / 93 combinaisons identiques**
+
+Chaque combinaison du panneau — renommage, pénalités 3 à 60, réparation par 1 à 5 unités,
+fusion de deux objets abîmés, les quatre exemples du wiki, livres dans les deux ordres, conflits
+(trident, arbalète, protections), sur-niveau, malédictions, bouclier et citrouille, et les 37
+paires « durabilité » — rejouée par `test_ov_server [anvil][parity]` : **même coût, même pile de
+sortie, NBT compris** (`Enchantments` dans l'ordre, `RepairCost`, `display.Name`, `Damage`).
+
+Deux corrections sont venues de la mesure, pas de la documentation :
+
+- **`Damage:0` est toujours écrit.** La sortie porte `Damage` pour tout objet qui s'use, même
+  quand rien n'a été réparé : vanilla ne garde jamais une telle pile sans la clé. Avant : 67/93 ;
+  25 des 26 écarts étaient cette seule clé.
+- **Une pile de gauche à plusieurs objets, avec un enchantement à poser, ne donne rien — coût 0.**
+  Pas le « trop cher » à 40 qu'on lui prêtait. Le renommage d'une pile seul reste permis.
+
+### L'enclume — ce que le panneau révèle d'autre
+
+**La durabilité de 37 objets, lue par l'enclume.** Deux pièces identiques au même `Damage` *D*
+donnent une sortie à `max − (2·(max − D) + ⌊max·12/100⌋)`, strictement décroissante en `max` :
+chaque combinaison désigne **une seule** valeur. Les 37 tombent sur la table de
+`enchant_max_damage` : les 24 pièces d'armure et la carapace de tortue (275), élytres 432,
+bouclier 336, arc 384, **arbalète 465** (le tableau « durée de vie » du wiki Unbreaking écrit 464 —
+c'est une durée de vie, pas le maximum), trident 250, canne à pêche, briquet et pinceau 64,
+carotte sur un bâton 25, champignon biscornu 100, cisailles 238, pioche en fer 250.
+
+**La dégradation** : 21 descentes d'un stade sur 150 usages, **0,140** (z = +0,75 contre 0,12).
+
+**Les niveaux prélevés sont exactement le coût affiché** : renommage 1 (50 → 49), réparation de
+deux unités 2 (→ 48), l'exemple « livre » du wiki 7 (→ 43), pénalités 7 + 3 : 11 (→ 39).
+
+### Solidité — une houe qui laboure, comptée par la statistique `used`
+
+| niveau | points perdus / usages | taux | attendu `1/(n+1)` | z |
+|---|---|---|---|---|
+| 0 | 271 / 271 | 1,000 | 1,000 | — |
+| I | 148 / 279 | 0,530 | 0,500 | +1,02 |
+| II | 94 / 290 | 0,324 | 0,333 | −0,33 |
+| III | 66 / 261 | 0,253 | 0,250 | +0,11 |
+
+**L'armure n'est pas mesurée.** La campagne a lu 0 point perdu sur un casque de cuir, niveau 0
+(50 coups) comme niveau III (200 coups) : même le casque nu ne s'use pas, donc la méthode était
+fausse — probablement la Résistance V qui gardait le bot en vie, ou le chemin de lecture du
+`Damage`. Le chiffre du wiki (`60 % + 40 %/(n+1)`) reste celui de la documentation ; l'armure ne
+s'use de toute façon pas dans ce serveur.
+
+### La meule — douze cas
+
+| cas | sortie | XP mesurée | modèle `ceil(b/2) … b` |
+|---|---|---|---|
+| épée Tranchant V, `Damage` 100 | épée, `Damage` 100, `RepairCost` 0 | 23..45 (n = 25) | b = 45 : 23..45 |
+| livre Solidité I | **livre**, tag vide | 3..5 (n = 25) | b = 5 : 3..5 |
+| pioche Raccommodage | pioche, `Damage` 0 | 15..22 (n = 10) | b = 25 : 13..25 |
+| plastron Protection IV + Solidité III + Lien éternel, `RepairCost` 7 | plastron, **Lien gardé** | 28..54 (n = 10) | b = 55 : 28..55 |
+| deux pioches, `Damage` 200 et 150 | pioche, `Damage` **88** | 0 | 250 − (50 + 100 + 12) = 88 |
+| idem, celle du bas Efficacité II | pioche, `Damage` 88 | 6..9 (n = 5) | b = 11 : 6..11 |
+| épée Disparition seule | épée, malédiction gardée | 0 | b = 0 |
+| épée nue ; paire différente ; deux livres différents | **rien** | — | rien |
+| épée seule en bas, Tranchant V | épée, `Damage` 0 | 27..38 (n = 3) | 23..45 |
+| épée renommée, `RepairCost` 7, Tranchant I | épée, nom gardé, `RepairCost` 0 | 1 | b = 1 : 1 |
+
+Un détail n'est pas expliqué : la sortie garde `Damage:0` dans tous les cas **sauf** l'épée
+renommée, qui sort sans `Damage` du tout. Le code garde la clé du tas copié ; l'exception est
+nommée, pas modélisée.
+
+### Raccommodage — un orbe de valeur *v* sur une pioche à `Damage` 200
+
+1 → 2, 2 → 4, 3 → 6, 5 → 10, 10 → 20, 60 → 120 : **2 × v**, exactement. L'orbe de 200 répare les
+200 points et laisse **99** d'expérience au joueur, là où `v − réparé/2` en donne 100. La lecture
+passe par `xp query … points`, qui rend `(int)(progression × coût du niveau)` en float — une
+troncature qui peut perdre un point ; ce n'est pas établi, c'est nommé.
 
 ---
 
@@ -115,7 +246,7 @@ Résistance et avant les cœurs jaunes : `montant × (1 − min(EPF, 20)/25)`.
 | Enchantement | Où vit l'effet |
 |---|---|
 | Protection, Protection contre le feu / les explosions / les projectiles, Chute amortie | EPF dans le chemin des dégâts du joueur |
-| Respiration | **non branché** : `respiration_saves_air()` existe, `SurvivalSession::tick_air` ne reçoit pas le casque |
+| Respiration | un tick sous l'eau garde son air avec la probabilité `n/(n+1)` : le serveur tire, `SurvivalSession` gèle l'air comme sous Respiration aquatique (non mesuré contre vanilla) |
 | Affinité aquatique | posture de cassage, lue sur le casque (case 5) |
 | Épines | **pas d'hôte** : aucun mob ne frappe un joueur dans ce serveur |
 | Agilité aquatique, Vitesse des âmes, Furtivité | côté client (le mouvement du joueur est le sien) ; l'usure des bottes sur le sable des âmes n'est pas modélisée |
@@ -139,16 +270,39 @@ Résistance et avant les cœurs jaunes : `montant × (1 − min(EPF, 20)/25)`.
 
 ## 5. Les pièges payés ici
 
-**1. Le serveur envoyait un second keep-alive avant d'avoir lu la réponse au premier — et
-coupait le client qui avait tout bien répondu.** Le gestionnaire de réponse refuse tout
-identifiant autre que le dernier (comme vanilla) ; l'émetteur, lui, en envoyait un toutes les
-10 s **même en attente de réponse** (vanilla ne le fait jamais). Sur une machine chargée — un
-tick médian de 1,6 s, un p90 de 6,2 s mesurés dans le journal du serveur —, la réponse au premier
-était traitée après l'envoi du second, le gestionnaire rendait `false`, et `listener.cpp` fermait
-la socket sans rien écrire. La sonde de bout en bout a perdu sa connexion deux fois, au même
-endroit, pendant la pose des quinze étagères. Corrigé dans `server.cpp` : pas de nouveau
-keep-alive tant que le précédent attend. **Ce n'est pas un bogue de l'enchantement** ; tout
-joueur d'un serveur qui rame y était exposé.
+**1. Un tick de plus de 30 s ferme la connexion d'un client qui parle.** `listener.cpp` ferme une
+connexion restée silencieuse **30 s** (`kHandshakeTimeout`). Mais les gestionnaires de paquets
+tournent **sur le fil réseau** et prennent `players_mutex`, que le fil de tick tient pendant tout
+le tick : un tick de 32,5 s (relevé dans le journal du serveur, sur une machine où tournaient neuf
+agents) bloque le fil réseau dans un gestionnaire, plus rien n'est lu — les paquets de la sonde
+attendent dans la socket —, le minuteur expire, et son gestionnaire ferme la socket dès que le fil
+se libère. La sonde a perdu sa connexion **quatre fois au même endroit**, pendant la pose des
+quinze étagères (chaque `setblock` y coûtait deux secondes de tick). Une sonde qui parle une fois
+par seconde, comme un vrai client, supprime seulement le cas du silence ; elle ne peut rien contre
+un tick de 32 s. **Ce n'est pas un défaut de l'enchantement**, et ce n'est pas corrigé ici : c'est
+un serveur qui ne tient pas le tick, sur une machine saturée.
+
+Un premier diagnostic accusait un keep-alive envoyé pendant qu'un autre attendait sa réponse
+(notre serveur en envoie un toutes les 10 s même en attente, vanilla non ; une réponse traitée
+après l'envoi du suivant serait refusée et couperait le client). La correction n'a **rien
+changé** — la connexion tombait au même endroit —, elle a donc été retirée. Le risque reste réel
+en théorie et n'a pas été observé : il est nommé ici, non corrigé.
+
+**0. La graine suivante valait toujours 0 — un bogue de ce mandat, trouvé de bout en bout.** Le
+générateur propre au joueur, celui qui tire le prochain `XpSeed`, était semé par
+`entity_id × 0x5DEECE66D`. Or `setSeed` de Java fait un XOR avec **la même constante** : pour
+l'entité 1 — le premier joueur d'un serveur neuf — l'état tombait à 0, et le premier `nextInt()`
+d'un état 0 vaut exactement 0. La table remontrait donc les offres de la graine 0 après chaque
+enchantement. Le banc unitaire ne pouvait pas le voir (il semait à 7) ; la sonde l'a vu : la
+propriété 3 restait à 0 après le bouton. Le générateur est maintenant semé par l'UUID du joueur,
+mélangé (`enchant_random_seed`), et un test fige la régression.
+
+**1 bis. `Set Creative Slot` jetait le tag de l'objet.** `parse_set_creative_slot` lisait
+l'identifiant et le compte, puis s'arrêtait ; le serveur reconstruisait la pile avec un NBT vide.
+Un livre enchanté ou un outil enchanté pris dans l'inventaire créatif arrivait **nu** — sans que
+rien ne le dise. Découvert quand la sonde a relu sa propre pioche à Raccommodage : `tag: None`, et
+avec elle les bottes à Chute amortie et l'épée enchantée donnée à la meule. Corrigé : la case est
+lue entière par `read_slot`, qui garde le tag tel qu'il est arrivé.
 
 **2. Une sonde qui attend un temps fixe mesure la charge de la machine.** La première version
 attendait 0,8 s après un clic : les dix propriétés valaient 0, le bouton partait sur des coûts
@@ -182,6 +336,15 @@ protocole ; sur le fil, seuls les bits 4 à 15 arrivent, comme pour toute *Conta
   tailles standard. La quantité d'XP est la même.
 - Une liste d'enchantements portant **deux fois** le même identifiant est lue au premier ;
   vanilla applique certains effets deux fois dans ce cas (bonus de dégâts).
+- **Solidité sur l'armure n'est pas mesurée** (la campagne a lu 0 partout, méthode fausse) — et
+  l'armure ne s'use pas dans ce serveur.
+- **La meule** sort une épée renommée sans `Damage` là où tous les autres cas gardent `Damage:0` :
+  mesuré, non expliqué, non modélisé.
+- **Hors enchantement, trouvé en chemin** : notre code de survie n'enregistre pas toujours une
+  seconde chute après un changement de mode de jeu (la sonde l'a vu deux fois) ; notre serveur
+  envoie un keep-alive toutes les 10 s même quand le précédent attend sa réponse, ce qui
+  couperait un client dont la réponse est traitée après l'envoi du suivant — possible, jamais
+  observé (un avertissement le signale désormais dans le journal).
 
 ---
 

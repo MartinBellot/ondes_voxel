@@ -14,6 +14,7 @@
 
 #include "ov/nbt/binary.hpp"
 #include "ov/nbt/tag.hpp"
+#include "ov/protocol/recipe_packets.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -174,6 +175,7 @@ TEST_CASE("the anvil panel the real server answered", "[enchanting][anvil][parit
     std::string           line;
     usize                 total = 0;
     usize                 same  = 0;
+    std::string           differing;
     while (std::getline(rows, line)) {
         // name \t left \t right \t rename(or \x01 for none) \t cost \t output(canonical or -)
         std::vector<std::string> f;
@@ -219,11 +221,12 @@ TEST_CASE("the anvil panel the real server answered", "[enchanting][anvil][parit
         if (cost_ok && output_ok) {
             ++same;
         } else {
-            UNSCOPED_INFO(f[0] << ": vanilla cost " << f[4] << " output " << f[5] << " | ours cost "
-                               << window.anvil.cost << " output " << ours);
+            differing += "\n  " + f[0] + ": vanilla cost " + f[4] + " " + f[5] + "\n" +
+                         std::string(4 + f[0].size(), ' ') + "   ours cost " +
+                         std::to_string(window.anvil.cost) + " " + ours;
         }
     }
-    INFO(same << " / " << total << " anvil cells identical");
+    INFO(same << " / " << total << " anvil cells identical" << differing);
     REQUIRE(total > 0);
     CHECK(same == total);
 }
@@ -251,10 +254,22 @@ TEST_CASE("the table window: offers, the button, the seed", "[enchanting][window
     CHECK(window->offers.costs[2] <= 8);
 
     const i32 cost = window->offers.costs[2];
+    fake.sent.clear();
     enchant_button(context, host, *window, 2, inventory, {});
     CHECK(fake.level == 30 - 3);            // the index plus one, not the cost
     CHECK(window->slots[1].count == 5 - 3);  // and as much lapis
     CHECK(fake.seed != 0);                   // a new seed
+    // …and the client is told: a Container Property 3 carrying the new seed's
+    // bits 4..15. The end-to-end probe saw property 3 stay at 0.
+    std::optional<i16> seed_property;
+    for (const auto& [id, payload] : fake.sent) {
+        if (id == net::clientbound::kContainerProperty && payload.size() == 5 &&
+            payload[1] == 0 && payload[2] == 3) {
+            seed_property = static_cast<i16>((payload[3] << 8) | payload[4]);
+        }
+    }
+    REQUIRE(seed_property.has_value());
+    CHECK(*seed_property == static_cast<i16>(fake.seed & -16));
     CHECK(enchant_stack_of(context, window->slots[0]).enchantments.size() >= 1);
     CHECK(window->offers.costs == std::array<i32, 3>{0, 0, 0});  // enchanted: no more offers
     (void)cost;
@@ -310,6 +325,27 @@ TEST_CASE("the anvil window: take, pay, degrade", "[enchanting][window]") {
     }
     CHECK(fake.block == "minecraft:air");
     CHECK(uses > 3);
+}
+
+TEST_CASE("a player's generator never starts at state 0", "[enchanting][window]") {
+    // The regression, pinned: Java's setSeed XORs with 0x5DEECE66D, so seeding
+    // with entity_id * 0x5DEECE66D for entity 1 left the state at 0 and the
+    // first nextInt — the "new" XpSeed — at exactly 0. Found end to end: the
+    // table kept showing seed 0 after every enchant.
+    math::LegacyRandomSource old_way{1LL * 0x5DEECE66DLL};
+    CHECK(old_way.next_int() == 0);
+
+    const net::Uuid a{0x9b9a47360b7f3b16ULL, 0x966863bce3b9edc8ULL};
+    const net::Uuid b{0x0f7c206042d83a0cULL, 0xa7f8d5e3786f2e22ULL};
+    math::LegacyRandomSource first{enchant_random_seed(a)};
+    math::LegacyRandomSource second{enchant_random_seed(b)};
+    const i32 seed_a = first.next_int();
+    const i32 seed_b = second.next_int();
+    CHECK(seed_a != 0);
+    CHECK(seed_b != 0);
+    CHECK(seed_a != seed_b);
+    // And what the client is shown of it is not zero either.
+    CHECK(static_cast<i16>(seed_a & -16) != 0);
 }
 
 TEST_CASE("Click Container Button and Rename Item decode", "[enchanting][window]") {

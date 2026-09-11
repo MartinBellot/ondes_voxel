@@ -828,7 +828,12 @@ AnvilResult anvil_result(const AnvilRequest& request) {
                 result.enchantments.set(offered.enchantment, level);
                 work += anvil_multiplier(offered.enchantment, is_book) * level;
                 if (left.count > 1) {
-                    work = 40;
+                    // Measured: two enchanted books stacked on the left and a
+                    // Sharpness book on the right show cost 0 and no output —
+                    // not the "too expensive" 40 a stacked left was thought to
+                    // cost. Renaming a stack alone stays allowed (the panel's
+                    // rename cells pass).
+                    return AnvilResult{};
                 }
             }
             if (refused && !applied) {
@@ -992,7 +997,11 @@ i32 protection_epf(Enchantment enchantment, i32 level, DamageKind kind) noexcept
 }
 
 i32 total_epf(std::span<const EnchantmentList> worn, DamageKind kind) noexcept {
-    if (has(damage_type(kind).flags, DamageFlags::BypassesEnchantments)) {
+    // Measured: `starve` (#bypasses_effects, not #bypasses_enchantments) takes
+    // a Protection IV head for the whole 10 — the effects tag skips the
+    // enchantment step as well as Resistance.
+    const DamageFlags flags = damage_type(kind).flags;
+    if (has(flags, DamageFlags::BypassesEnchantments) || has(flags, DamageFlags::BypassesEffects)) {
         return 0;
     }
     i32 sum = 0;

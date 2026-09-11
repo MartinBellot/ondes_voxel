@@ -361,7 +361,10 @@ net::ItemStack anvil_output(const EnchantContext& context, const net::ItemStack&
     net::ItemStack   out  = left;
     nbt::Tag         tag  = tag_of(left);
     const EnchantStack before = enchant_stack_of(context, left);
-    if (result.damage != before.damage) {
+    // Measured on 25 of the 93 panel cells: vanilla's output always carries
+    // `Damage` for an item that wears out — `Damage:0` on a fresh sword — even
+    // when nothing was repaired. Its stacks never lack the key.
+    if (result.damage != before.damage || gameplay::enchant_max_damage(before.item).has_value()) {
         (void)tag.put("Damage", nbt::Tag{std::max(result.damage, 0)});
     }
     const bool book = before.item == "minecraft:enchanted_book";
@@ -416,10 +419,12 @@ net::ItemStack grindstone_output(const EnchantContext& context, const net::ItemS
     } else {
         (void)tag.erase("Enchantments");
         (void)tag.erase("StoredEnchantments");
-        if (result.damage > 0) {
-            (void)tag.put("Damage", nbt::Tag{result.damage});
-        } else {
-            (void)tag.erase("Damage");
+        // Measured: the output keeps the copied stack's `Damage`, at 0 as well
+        // (a fresh sword through the grindstone comes out with `Damage:0`).
+        // One case disagrees — a renamed sword came out with no `Damage` at
+        // all — and is named in docs/provenance/enchantement.md, not modelled.
+        if (result.damage > 0 || tag.find("Damage") != nullptr) {
+            (void)tag.put("Damage", nbt::Tag{std::max(result.damage, 0)});
         }
         gameplay::write_enchantments(tag, result.enchantments,
                                      result.item == "minecraft:enchanted_book");
@@ -867,6 +872,12 @@ std::optional<std::string> parse_rename_item(std::span<const u8> payload) {
         return std::nullopt;
     }
     return std::string{reinterpret_cast<const char*>(payload.data() + i), length};
+}
+
+i64 enchant_random_seed(const net::Uuid& player) {
+    const u64 mixed = math::mix_stafford_13(player.most_significant ^
+                                            (player.least_significant * math::kGoldenRatio64));
+    return static_cast<i64>(mixed);
 }
 
 void take_levels(SurvivalSession& survival, i32 levels) {
