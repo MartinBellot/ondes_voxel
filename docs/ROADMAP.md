@@ -761,7 +761,9 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       d'un cheval et de ses poulains à la règle 1.20 (écarts-types à 12 % près
       sur 120 poulains ; la mule hérite sa vitesse) ; tempérament +5 par chute ;
       un cheval dompté, sellé et conduit par `Move Vehicle` de bout en bout, et
-      revenu de `entities/`. Lapin, renard, tortue, abeille, chèvre, dromadaire
+      revenu de `entities/` — dans trois exécutions sur six : dans deux, le
+      cheval monté ne décide pas (ouvert, journalisé). Lapin, renard, tortue,
+      abeille, chèvre, dromadaire
       et renifleur vivent, se nourrissent, se reproduisent et gardent leur type
       à la sauvegarde. Restent le vol et l'épaule du perroquet, la ruche, la
       mule née d'un croisement, l'inventaire du cheval. Voir

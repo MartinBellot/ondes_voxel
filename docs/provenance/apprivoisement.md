@@ -250,12 +250,21 @@ passe, deux fois de suite à l'identique :**
 | remonter, 40 `Move Vehicle` de 0,25 bloc | le cheval avance de **10,0 blocs** sur le fil ; descendu |
 | `stop`, redémarrage | le cheval revient apprivoisé et sellé (0x06) |
 
-Le journal du serveur date chaque montée et chaque chute : **116, 159, 80, 33, 93, 153 et 43
-ticks** de la montée à la décision, 97 en moyenne sur sept — plus que les 50 d'un tirage de 1 sur
-50, que `test_tame.cpp` retrouve sur 40 chevaux, mais dans l'écart de la mesure vanilla (moyenne 78
-sur 63, lue à 20 ticks près). **Une exécution précédente** avait vu 370 et 600 ticks sans que rien
-ne l'explique ; elle ne s'est pas reproduite, et c'est pour la reconnaître si elle revient que
-chaque montée et chaque descente sont désormais journalisées avec leur raison.
+**Mais pas à tous les coups.** Six exécutions : la première ne met pas la sonde en selle (la
+version d'alors du script), trois passent, et **deux calent** — le cheval garde la sonde 279 puis
+plus de 506 ticks sans décider, et les étapes suivantes échouent faute d'un cheval apprivoisé.
+Le journal du serveur date chaque montée, chaque chute et chaque descente avec sa raison, et, tous
+les 40 ticks, dit pour chaque animal monté depuis combien de ticks son cerveau le porte et quels
+buts tournent. Sur les trois exécutions qui passent, **15 montées : 116, 159, 80, 33, 93, 153, 43,
+83, 28, 96, 36, 36, 181, 30 et 191 ticks** de la montée à la décision, **90,5 en moyenne**.
+
+Ce que le journal écarte : la sonde n'est jamais descendue avant la décision ; le cerveau du
+cheval tourne à chaque tick du serveur (149 ticks portés au tick 400, 160 ticks après la montée,
+sous surcharge) ; le but `tantrum` tourne à chaque relevé ; et aucune décision ne se perd — chaque
+chute ajoute exactement 5 au tempérament, jamais sans chute. **Ce qu'il n'explique pas** : le même
+tirage de 1 sur 50 par tick donne 50 ticks en moyenne sur 40 chevaux dans `test_tame.cpp`, et 90,5
+sur notre serveur (3,1 écarts-types au-dessus) ; vanilla, lu à 20 ticks près, est à 78. Cet écart,
+et les deux exécutions qui calent, sont ouverts (§ 9).
 
 ### 8.2 Le zoo du vrai serveur, relu par le nôtre
 
@@ -338,5 +347,10 @@ les mobs assis, les autres ayant marché (§ 9, `NoAI`).
 
 **Mesuré, et pas tout à fait conforme.**
 
+* **Le délai de décision d'un cheval monté, sur notre serveur** : 90,5 ticks en moyenne sur 15
+  montées de bout en bout, contre 50 pour la même règle dans `test_tame.cpp` et 78 chez vanilla
+  (§ 5.3 et § 8.1) ; deux exécutions sur six calent au-delà de 279 et 506 ticks. Rider perdu, cerveau
+  affamé, but bloqué et décision perdue sont écartés par le journal ; la cause ne l'est pas. La
+  prochaine étape est de journaliser chaque tirage du but.
 * **La santé d'un cheval apparu** : 22,13 sur 480 animaux pour 22,5 attendus (z ≈ −2,3, § 5.1).
 * **La force d'un lama** : ajustée sur la mesure, pas lue dans une règle (§ 5.1).
