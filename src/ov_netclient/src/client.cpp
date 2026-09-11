@@ -209,6 +209,9 @@ void ClientEvents::clear() {
     world_events.clear();
     explosions.clear();
     pickups.clear();
+    death_message.reset();  // ── screens ──
+    respawned = false;
+    hardcore.reset();
 }
 
 struct Client::Impl {
@@ -471,6 +474,7 @@ void Client::Impl::handle_play(i32 packet_id, std::span<const u8> body) {
             }
             const std::lock_guard lock(mutex);
             inbox.game_mode = *mode;
+            inbox.hardcore  = *hardcore != 0;  // ── screens ──
             if (chat_types) {
                 inbox.chat_types = std::move(*chat_types);
             }
@@ -997,6 +1001,27 @@ void Client::Impl::handle_play(i32 packet_id, std::span<const u8> body) {
         }
         // ── end chat ────────────────────────────────────────────────────
 
+        // ── screens ─────────────────────────────────────────────────────
+        // Combat Death: VarInt player id, then the cause as a JSON chat
+        // component (1.20.1 still sends components as JSON strings).
+        case net::clientbound::kCombatDeath: {
+            const auto player  = net::read_varint(reader);
+            auto       message = net::read_string(reader, 262144);
+            if (!player || !message) {
+                OV_LOG_WARN("Combat Death did not read; the death screen has no cause");
+                return;
+            }
+            const std::lock_guard lock(mutex);
+            inbox.death_message = std::move(*message);
+            break;
+        }
+        case net::clientbound::kRespawn: {
+            const std::lock_guard lock(mutex);
+            inbox.respawned = true;
+            break;
+        }
+        // ── end screens ─────────────────────────────────────────────────
+
         default:
             // Everything else — entities, inventory, sound — is not needed to
             // stand in a world and see it. Ignoring by default rather than
@@ -1154,6 +1179,19 @@ void Client::poll(ClientEvents& out) {
     out.commands   = std::move(impl_->inbox.commands);
     impl_->inbox.chat_types.reset();
     impl_->inbox.commands.reset();
+    // ── screens ──
+    out.death_message = std::move(impl_->inbox.death_message);
+    out.respawned     = impl_->inbox.respawned;
+    out.hardcore      = impl_->inbox.hardcore;
+    impl_->inbox.death_message.reset();
+    impl_->inbox.respawned = false;
+    impl_->inbox.hardcore.reset();
+}
+
+void Client::send_respawn() {  // ── screens ──
+    io::ByteWriter writer;
+    net::write_varint(writer, 0);  // perform respawn
+    impl_->send_raw(net::serverbound::kClientCommand, writer.data());
 }
 
 void Client::send_abilities(bool flying) {  // ── flight ──

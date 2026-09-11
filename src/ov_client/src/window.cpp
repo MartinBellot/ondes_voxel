@@ -3,6 +3,7 @@
 #include "ov/client/window.hpp"
 
 #include "ov/base/log.hpp"
+#include "ov/client/options_file.hpp"  // ── screens ── key names and codes
 
 #include <GLFW/glfw3.h>
 
@@ -106,6 +107,11 @@ struct Window::Impl {
     /// Key presses and repeats since the last poll, drained into the input.
     std::vector<KeyEvent> key_events;
     // ── end chat ──
+    // ── screens ──
+    /// The bound GLFW code of each Key, from kBindings until rebound.
+    std::array<int, static_cast<usize>(Key::Count)> codes{};
+    std::vector<i32>                                codes_pressed;
+    // ── end screens ──
 };
 
 // ── chat ──
@@ -116,6 +122,9 @@ void key_callback(GLFWwindow* window, int key, int /*scancode*/, int action, int
     auto* impl = static_cast<Window::Impl*>(glfwGetWindowUserPointer(window));
     if (impl == nullptr || (action != GLFW_PRESS && action != GLFW_REPEAT)) {
         return;
+    }
+    if (action == GLFW_PRESS && key != GLFW_KEY_UNKNOWN) {  // ── screens ──
+        impl->codes_pressed.push_back(key);
     }
     EditKey edit{};
     switch (key) {
@@ -183,7 +192,36 @@ void character_callback(GLFWwindow* window, unsigned int codepoint) {
     }
 }
 
-Window::Window() : impl_(std::make_unique<Impl>()) {}
+Window::Window() : impl_(std::make_unique<Impl>()) {
+    for (const auto& binding : kBindings) {  // ── screens ──
+        impl_->codes[static_cast<usize>(binding.key)] = binding.glfw_code;
+    }
+}
+
+// ── screens ──
+void Window::bind(Key key, i32 glfw_code) {
+    if (glfw_code >= kMouseCodeBase) {
+        OV_LOG_WARN("a mouse button cannot be bound to a key in this client; {} is kept",
+                    key_name(impl_->codes[static_cast<usize>(key)]));
+        return;
+    }
+    impl_->codes[static_cast<usize>(key)] = glfw_code;
+    // The edge detector must not see the new key as newly pressed because the
+    // old one was up.
+    impl_->previous[static_cast<usize>(key)] = true;
+}
+
+i32 Window::binding(Key key) const noexcept {
+    return impl_->codes[static_cast<usize>(key)];
+}
+
+std::string Window::code_label(i32 glfw_code) const {
+    if (glfw_code < 0 || glfw_code >= kMouseCodeBase) {
+        return {};
+    }
+    return label_of(glfw_code, "");
+}
+// ── end screens ──
 
 Window::~Window() {
     if (impl_->window != nullptr) {
@@ -277,7 +315,8 @@ const InputState& Window::poll() {
 
     for (const auto& binding : kBindings) {
         const auto index       = static_cast<usize>(binding.key);
-        const bool down        = glfwGetKey(impl_->window, binding.glfw_code) == GLFW_PRESS;
+        const int  code        = impl_->codes[index];  // ── screens ── rebindable
+        const bool down = code >= 0 && glfwGetKey(impl_->window, code) == GLFW_PRESS;
         input.keys[index]      = down;
         input.pressed[index]   = down && !impl_->previous[index];
         impl_->previous[index] = down;
@@ -318,6 +357,17 @@ const InputState& Window::poll() {
     input.use_held        = use;
     input.attack_pressed  = attack && !impl_->previous_attack;
     input.use_pressed     = use && !impl_->previous_use;
+    // ── screens ──
+    input.attack_released = !attack && impl_->previous_attack;
+    input.codes_pressed.clear();
+    input.codes_pressed.swap(impl_->codes_pressed);
+    if (input.attack_pressed) {
+        input.codes_pressed.push_back(kMouseCodeBase + 0);
+    }
+    if (input.use_pressed) {
+        input.codes_pressed.push_back(kMouseCodeBase + 1);
+    }
+    // ── end screens ──
     impl_->previous_attack = attack;
     impl_->previous_use    = use;
 

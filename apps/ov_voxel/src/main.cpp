@@ -14,8 +14,20 @@
 
 #include "entities.hpp"
 #include "interface.hpp"
+#include "menus.hpp"  // ── screens ──
 #include "session.hpp"
 #include "world_source.hpp"
+
+#include "ov/client/debug_overlay.hpp"  // ── screens ──
+#include "ov/client/options_file.hpp"   // ── screens ──
+#include "ov/io/file.hpp"               // ── screens ──
+#include "ov/world/level_dat.hpp"       // ── screens ──
+
+#include <random>        // ── screens ── a blank seed field's seed, as vanilla
+#include <sys/sysctl.h>  // ── screens ── F3's CPU and memory lines
+#if defined(__APPLE__)
+#include <mach/mach.h>
+#endif
 
 #include "ov/base/log.hpp"
 #include "ov/base/time.hpp"
@@ -269,6 +281,30 @@ struct Options {
     bool sound_log{false};
     /// `master:0.8,music:0` — the options screen that does not exist yet.
     std::string volumes;
+
+    // ── screens ──
+    /// Where the world list lives and where options.txt is, vanilla's layout.
+    std::string saves{"run/saves"};
+    std::string options_file{"run/options.txt"};
+    /// Scripted captures: open this menu (title, options, video, sounds,
+    /// controls, mouse, key_binds, language, select_world, create_world,
+    /// direct_connect, pause, death) at frame `menu_at`, then press these
+    /// widget ids one every 30 frames, type `menu_type` into the focused box.
+    std::string              menu;
+    u32                      menu_at{0};
+    std::vector<std::string> menu_press;
+    std::string              menu_type;
+    bool                     dump_menu{false};
+    /// Start with F3 open.
+    bool debug_overlay{false};
+    /// What the command line set, so options.txt only fills in the rest.
+    bool world_given{false};
+    bool lang_given{false};
+    bool gui_scale_given{false};
+    bool radius_given{false};
+    bool vsync_given{false};
+    bool hold_given{false};
+    // ── end screens ──
 };
 
 [[nodiscard]] Options parse_arguments(std::span<char*> args) {
@@ -423,6 +459,29 @@ struct Options {
             options.sound_log = true;
         } else if (argument.starts_with("--volume=")) {
             options.volumes = value("--volume=");
+        } else if (argument.starts_with("--saves=")) {  // ── screens ──
+            options.saves = value("--saves=");
+        } else if (argument.starts_with("--options=")) {
+            options.options_file = value("--options=");
+        } else if (argument.starts_with("--menu=")) {
+            options.menu = value("--menu=");
+        } else if (argument.starts_with("--menu-at=")) {
+            options.menu_at = static_cast<u32>(std::atoi(value("--menu-at=").c_str()));
+        } else if (argument.starts_with("--menu-press=")) {
+            std::string list = value("--menu-press=");
+            for (usize start = 0; start <= list.size();) {
+                const usize end = std::min(list.find(',', start), list.size());
+                if (end > start) {
+                    options.menu_press.push_back(list.substr(start, end - start));
+                }
+                start = end + 1;
+            }
+        } else if (argument.starts_with("--menu-type=")) {
+            options.menu_type = value("--menu-type=");
+        } else if (argument == "--dump-menu") {
+            options.dump_menu = true;
+        } else if (argument == "--f3") {
+            options.debug_overlay = true;  // ── end screens ──
         } else if (argument == "--singleplayer") {
             options.singleplayer = true;
         } else if (argument.starts_with("--singleplayer-port=")) {
@@ -430,8 +489,77 @@ struct Options {
                 static_cast<u16>(std::atoi(value("--singleplayer-port=").c_str()));
         }
     }
+    // ── screens ── what the command line said, so options.txt fills in the rest
+    for (usize i = 1; i < args.size(); ++i) {
+        const std::string_view argument(args[i]);
+        options.world_given     = options.world_given || argument.starts_with("--world=");
+        options.lang_given      = options.lang_given || argument.starts_with("--lang=");
+        options.gui_scale_given = options.gui_scale_given || argument.starts_with("--gui-scale=");
+        options.radius_given    = options.radius_given || argument.starts_with("--radius=");
+        options.vsync_given     = options.vsync_given || argument == "--no-vsync";
+        options.hold_given      = options.hold_given || argument.starts_with("--hold=");
+    }
     return options;
 }
+
+// ── screens ──
+/// The client's keys that options.txt can rebind, by vanilla's option names.
+constexpr std::array<std::pair<std::string_view, client::Key>, 12> kRebindable{{
+    {"key.forward", client::Key::Forward},
+    {"key.back", client::Key::Back},
+    {"key.left", client::Key::Left},
+    {"key.right", client::Key::Right},
+    {"key.jump", client::Key::Up},
+    {"key.sneak", client::Key::Down},
+    {"key.sprint", client::Key::Sprint},
+    {"key.inventory", client::Key::Inventory},
+    {"key.drop", client::Key::Drop},
+    {"key.chat", client::Key::Chat},
+    {"key.saveToolbarActivator", client::Key::SaveToolbar},
+    {"key.loadToolbarActivator", client::Key::LoadToolbar},
+}};
+
+void apply_key_bindings(const client::GameOptions& game, client::Window& window) {
+    for (const auto& [name, key] : kRebindable) {
+        if (const client::KeyBinding* binding = game.binding(name);
+            binding != nullptr && binding->code >= 0) {
+            window.bind(key, binding->code);
+        }
+    }
+}
+
+/// F3's memory line: this process's resident size and the machine's memory.
+/// Not the JVM heap vanilla shows — there is no heap here — and named so in
+/// docs/provenance/ecrans.md.
+void memory_numbers(u64& used, u64& total) {
+    used  = 0;
+    total = 0;
+#if defined(__APPLE__)
+    mach_task_basic_info_data_t info{};
+    mach_msg_type_number_t      count = MACH_TASK_BASIC_INFO_COUNT;
+    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, reinterpret_cast<task_info_t>(&info),
+                  &count) == KERN_SUCCESS) {
+        used = info.resident_size;
+    }
+    u64    memory = 0;
+    size_t size   = sizeof(memory);
+    if (sysctlbyname("hw.memsize", &memory, &size, nullptr, 0) == 0) {
+        total = memory;
+    }
+#endif
+}
+
+[[nodiscard]] std::string cpu_name() {
+#if defined(__APPLE__)
+    std::array<char, 128> name{};
+    size_t                size = name.size();
+    if (sysctlbyname("machdep.cpu.brand_string", name.data(), &size, nullptr, 0) == 0) {
+        return std::string(name.data());
+    }
+#endif
+    return {};
+}
+// ── end screens ──
 
 /// The lightmap colour at an entity's feet.
 ///
@@ -555,6 +683,32 @@ int main(int argc, char** argv) {
         fmt::print("wrote {} ({} glyphs)\n", options.font_widths, font->glyph_count());
         return 0;
     }
+
+    // ── screens ── options.txt, in vanilla's format, fills in what the
+    // command line did not say; a key it does not carry keeps this client's
+    // own default. With no world asked for, the game starts on its title.
+    client::OptionsFile startup_file;
+    if (auto loaded = client::OptionsFile::load(options.options_file); loaded) {
+        startup_file = std::move(*loaded);
+    }
+    const client::GameOptions startup_options = client::GameOptions::from(startup_file);
+    if (!options.radius_given && startup_file.get("renderDistance")) {
+        options.radius = startup_options.render_distance;
+    }
+    if (!options.lang_given && startup_file.get("lang")) {
+        options.language = startup_options.language;
+    }
+    if (!options.gui_scale_given && startup_file.get("guiScale")) {
+        options.gui_scale = static_cast<u32>(startup_options.gui_scale);
+    }
+    if (!options.vsync_given && startup_file.get("enableVsync")) {
+        options.vsync = startup_options.vsync;
+    }
+    const bool menu_mode = options.connect.empty() && !options.singleplayer && !options.world_given;
+    if (menu_mode && !options.hold_given) {
+        options.hold.clear();  // a scripting aid, not something a played world gets
+    }
+    // ── end screens ──
 
     // ── Registry, world, models, atlas, mesh: all before any Vulkan ─────────
     auto blocks = registry::BlockRegistry::load(options.registry);
@@ -756,10 +910,11 @@ int main(int argc, char** argv) {
     if (options.singleplayer && options.connect.empty()) {
         options.connect = "127.0.0.1:" + std::to_string(options.singleplayer_port);
     }
-    const bool online = !options.connect.empty();
+    bool       online   = !options.connect.empty();  // ── screens ── a world can be joined later
+    const bool streamed = online || menu_mode;         // ── screens ── so set up as for one
 
     std::optional<demo::LoadedWorld> world;
-    if (!online) {
+    if (!streamed) {
         const auto load_start = std::chrono::steady_clock::now();
         world = demo::load_world(options.world, *blocks, options.centre_x, options.centre_z,
                                  options.radius);
@@ -778,7 +933,7 @@ int main(int argc, char** argv) {
     // atlas needs the full set of sprites, and the render layer needs the
     // atlas. Resolve, stitch, classify, mesh.
     render::BlockModelCache models(source, *blocks);
-    if (online) {
+    if (streamed) {
         // Every state in the game, because the atlas has to be complete before
         // the first chunk arrives and there is no way to know what will. This
         // is what vanilla does too: the atlas is stitched at start-up, not
@@ -870,7 +1025,7 @@ int main(int argc, char** argv) {
     // An empty map when online: nothing has arrived yet, and the streaming
     // path meshes under a per-frame budget instead of all at once.
     static const std::map<std::pair<i32, i32>, std::unique_ptr<world::Chunk>> kNoChunks;
-    const auto& offline_chunks = online ? kNoChunks : world->chunks;
+    const auto& offline_chunks = streamed ? kNoChunks : world->chunks;
 
     const auto               mesh_start = std::chrono::steady_clock::now();
     std::vector<SectionMesh> meshes;
@@ -905,7 +1060,7 @@ int main(int argc, char** argv) {
     OV_LOG_INFO("mesh: {} sections with geometry, {} quads, {:.0f} ms{}", meshes.size(),
                 total_quads, mesh_ms, saw_light ? "" : " — no stored light was read");
 
-    if (meshes.empty() && !online) {
+    if (meshes.empty() && !streamed) {
         OV_LOG_ERROR("nothing to draw: every section meshed to zero quads");
         return 1;
     }
@@ -971,7 +1126,7 @@ int main(int argc, char** argv) {
             max_quads = std::max(max_quads, layer.size() / 4);
         }
     }
-    if (online) {
+    if (streamed) {
         // Nothing has been meshed yet, so the bound is stated instead of
         // measured. 32768 covers the worst a section can hold — 4096 blocks of
         // six faces is 24576, and a cutout model can exceed one quad a face.
@@ -985,7 +1140,7 @@ int main(int argc, char** argv) {
     terrain_desc.force_per_section_draws = !options.indirect;
     terrain_desc.max_quads_per_section = static_cast<u32>(std::max<usize>(max_quads, 1));
     terrain_desc.max_sections = static_cast<u32>(std::max<usize>(
-        meshes.size() * static_cast<usize>(render::RenderLayer::Count), online ? 65536 : 1024));
+        meshes.size() * static_cast<usize>(render::RenderLayer::Count), streamed ? 65536 : 1024));
 
     auto terrain = client::TerrainRenderer::create(device, terrain_desc);
     if (!terrain) {
@@ -1181,6 +1336,35 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // ── screens ── the menus, with a GUI of their own, and the options.txt
+    // they edit. The keys are rebound from it before the first frame.
+    demo::MenusConfig menus_config;
+    menus_config.saves              = options.saves;
+    menus_config.options_file       = options.options_file;
+    menus_config.assets_root        = options.assets;
+    menus_config.language           = options.lang_given ? options.language : std::string{};
+    menus_config.gui_scale_override = options.gui_scale_given ? options.gui_scale : 0U;
+    {
+        std::random_device entropy;
+        menus_config.random_seed = static_cast<i64>((static_cast<u64>(entropy()) << 32U) ^
+                                                    static_cast<u64>(entropy()));
+    }
+    auto menus_created =
+        demo::Menus::create(device, device.swapchain_format(), source, menus_config);
+    if (!menus_created) {
+        OV_LOG_ERROR("menus: {}", menus_created.error());
+        return 1;
+    }
+    std::unique_ptr<demo::Menus> menus = std::move(*menus_created);
+    apply_key_bindings(menus->options(), **window);
+    if (options.debug_overlay) {
+        menus->toggle_debug();
+    }
+    if (menu_mode) {
+        menus->open(demo::MenuScreen::Title);
+    }
+    // ── end screens ──
+
     // The block atlas, referenced rather than uploaded again: a dropped stack's
     // sprites were stitched into it with everything else.
     const client::EntityTexture atlas_entity_texture =
@@ -1188,24 +1372,41 @@ int main(int argc, char** argv) {
 
     // ── The server ──────────────────────────────────────────────────────────
     std::atomic<bool> stop_server{false};
+    std::atomic<bool> pause_server{false};  // ── screens ── the pause menu of a hosted world
+    bool              integrated = false;   // ── screens ── the world is hosted here
     std::thread       server_thread;
-    if (options.singleplayer) {
-        const std::string port_argument = "--port=" + std::to_string(options.singleplayer_port);
-        // The host's name, so their record also goes into level.dat's
-        // Data.Player — where vanilla looks for a singleplayer world's player.
-        const std::string host_argument = "--host-player=" + options.username;
-        server_thread = std::thread([&stop_server, port_argument, host_argument]() {
+    // ── screens ── a hosted server, now or later from the world list. `world`
+    // empty is the server's own default (run/world), which --singleplayer
+    // always used.
+    const auto start_integrated = [&](const std::filesystem::path& world_dir) {
+        stop_server  = false;
+        pause_server = false;
+        std::vector<std::string> arguments{"ov_voxel",
+                                           "--port=" + std::to_string(options.singleplayer_port),
+                                           // The host's name, so their record also goes into
+                                           // level.dat's Data.Player — where vanilla looks for
+                                           // a singleplayer world's player.
+                                           "--host-player=" + options.username};
+        if (!world_dir.empty()) {
+            arguments.push_back("--world=" + world_dir.string());
+        }
+        server_thread = std::thread([&stop_server, &pause_server, arguments]() {
             // Argv-shaped because that is the server's own interface, and
             // giving it a second one would leave two ways to configure the
             // same thing.
-            std::array<const char*, 3> arguments{"ov_voxel", port_argument.c_str(),
-                                                 host_argument.c_str()};
-            std::array<char*, 3>       argv_copy{const_cast<char*>(arguments[0]),
-                                           const_cast<char*>(arguments[1]),
-                                           const_cast<char*>(arguments[2])};
-            (void)ov::server::run(3, argv_copy.data(), &stop_server);
+            std::vector<char*> argv_copy;
+            for (const std::string& argument : arguments) {
+                argv_copy.push_back(const_cast<char*>(argument.c_str()));
+            }
+            (void)ov::server::run(static_cast<int>(argv_copy.size()), argv_copy.data(),
+                                  &stop_server, &pause_server);
         });
+        integrated = true;
+    };
+    if (options.singleplayer) {
+        start_integrated({});
     }
+    // ── end screens ──
 
     std::unique_ptr<netclient::Client> client;
     std::unique_ptr<demo::Session>     session;
@@ -1239,8 +1440,9 @@ int main(int argc, char** argv) {
     // ── loading: kept past the first connection, to knock again while the
     // server prepares its spawn area ──
     netclient::ClientDesc login;
-    if (online) {
-        std::string host = options.connect;
+    // ── screens ── a connection, opened at start or later from the menus
+    const auto open_connection = [&](const std::string& address, int attempts) -> bool {
+        std::string host = address;
         u16         port = 25565;
         if (const auto colon = host.rfind(':'); colon != std::string::npos) {
             port = static_cast<u16>(std::atoi(host.substr(colon + 1).c_str()));
@@ -1260,7 +1462,6 @@ int main(int argc, char** argv) {
         // connection costs nothing and creates nobody.
         std::expected<std::unique_ptr<netclient::Client>, netclient::ClientError> connected =
             std::unexpected(netclient::ClientError::CannotConnect);
-        const int attempts = options.singleplayer ? 200 : 1;
         for (int attempt = 0; attempt < attempts; ++attempt) {
             connected = netclient::Client::connect(login);
             if (connected) {
@@ -1270,10 +1471,17 @@ int main(int argc, char** argv) {
         }
         if (!connected) {
             OV_LOG_ERROR("{}:{} — {}", host, port, netclient::to_string(connected.error()));
-            return 1;
+            return false;
         }
         client  = std::move(*connected);
         session = std::make_unique<demo::Session>(*blocks, models, *atlas, tints, **terrain);
+        OV_LOG_INFO("connected to {}:{} as {}", host, port, options.username);
+        return true;
+    };
+    if (online && !open_connection(options.connect, options.singleplayer ? 200 : 1)) {
+        return 1;
+    }
+    {  // ── screens ── the sound starts whether or not a world is joined yet
 
         // ── sound ── sounds.json, the device, and what decides what is heard.
         if (options.sound && registries != nullptr) {
@@ -1338,18 +1546,26 @@ int main(int argc, char** argv) {
             }
         }
         // ── end sound ──
-        OV_LOG_INFO("connected to {}:{} as {}", host, port, options.username);
+    }
+    // ── screens ── options.txt's volumes, where --volume said nothing
+    if (sound_engine && options.volumes.empty()) {
+        for (usize i = 0; i < client::kSoundCategoryNames.size(); ++i) {
+            if (const auto which = audio::category_from_name(client::kSoundCategoryNames[i])) {
+                sound_engine->set_volume(*which, static_cast<f32>(menus->options().volumes[i]));
+            }
+        }
     }
 
     render::Camera camera;
-    camera.position = online ? Vec3f{0.0F, 0.0F, 0.0F} : world->suggested_camera(*blocks);
+    camera.position = world ? world->suggested_camera(*blocks) : Vec3f{0.0F, 0.0F, 0.0F};
     camera.yaw_degrees   = -45.0F;
     camera.pitch_degrees = 20.0F;
     camera.far_plane     = static_cast<f32>(options.radius + 2) * 16.0F * 1.8F;
+    camera.vertical_fov_degrees = static_cast<f32>(menus->options().fov);  // ── screens ──
 
     // The render distance in blocks, which is what the fog is measured against.
     // Vanilla's terrain fog starts at 92 % of it and is complete at 100 %.
-    const f32 render_distance = static_cast<f32>(options.radius) * 16.0F;
+    f32 render_distance = static_cast<f32>(options.radius) * 16.0F;  // ── screens ── not const
 
     // The biome under the camera decides the fog and the sky. One biome for the
     // whole frame, which is what vanilla does too — it samples where you are,
@@ -1390,7 +1606,7 @@ int main(int argc, char** argv) {
     OV_LOG_INFO("camera at ({:.1f}, {:.1f}, {:.1f})", camera.position.x, camera.position.y,
                 camera.position.z);
 
-    (*window)->set_cursor_captured(options.frames == 0);
+    (*window)->set_cursor_captured(options.frames == 0 && !menu_mode);  // ── screens ──
 
     rhi::BufferHandle readback;
     if (!options.screenshot.empty()) {
@@ -1533,6 +1749,120 @@ int main(int argc, char** argv) {
     auto        next_knock = std::chrono::steady_clock::now();
     bool             captured         = false;
 
+    // ── screens ─────────────────────────────────────────────────────────────
+    // Leaving a world and joining one from the menus. A world left is left
+    // entirely: the connection, the level, the terrain arena, the entities,
+    // the interface's mirror of the server — and the hosted server, whose
+    // stop saves the world. What is joined next starts from nothing.
+    bool        hardcore         = false;
+    i32         experience_total = 0;
+    std::string pending_address;       // connect once the message frame is drawn
+    bool        pending_integrated = false;
+    bool        pending_leave      = false;
+    i32         pending_frames     = 0;
+    usize       menu_pressed       = 0;
+    u32         next_press_at      = 0;
+    f64         paused_seconds     = 0.0;  // the pause, measured: see game_paused
+    f64         playing_seconds    = 0.0;
+    const auto  leave_world = [&]() {
+        device.wait_idle();
+        client.reset();
+        session.reset();
+        if (server_thread.joinable()) {
+            stop_server = true;
+            server_thread.join();
+        }
+        stop_server  = false;
+        pause_server = false;
+        integrated   = false;
+        online       = false;
+        terrain      = client::TerrainRenderer::create(device, terrain_desc);
+        if (!terrain) {
+            OV_LOG_ERROR("terrain renderer: {}", rhi::to_string(terrain.error()));
+            running = false;
+            return;
+        }
+        entity_world = demo::EntityWorld{};
+        last_drawn.clear();
+        events.clear();
+        spawned     = false;
+        player      = gameplay::MotionState{};
+        flying      = false;
+        abilities   = netclient::ClientEvents::Abilities{};
+        jump_window = 0;
+        hardcore    = false;
+        interface_options.gui_scale =
+            options.gui_scale_given ? options.gui_scale
+                                    : static_cast<u32>(menus->options().gui_scale);
+        interface_options.language = menus->options().language;
+        interface = demo::Interface::create(device, device.swapchain_format(), source, item_models,
+                                            *atlas_image, atlas->width(), atlas->height(),
+                                            registries, item_tint, interface_options);
+        if (!interface) {
+            OV_LOG_ERROR("interface: {}", interface.error());
+            running = false;
+            return;
+        }
+        menus->set_in_game(false, false);
+        (*window)->set_cursor_captured(false);
+    };
+    const auto handle_menu_action = [&](const demo::MenuAction& action) {
+        switch (action.kind) {
+            case demo::MenuAction::Kind::None: break;
+            case demo::MenuAction::Kind::Resume: (*window)->set_cursor_captured(true); break;
+            case demo::MenuAction::Kind::Quit: running = false; break;
+            case demo::MenuAction::Kind::Respawn:
+                if (client) {
+                    client->send_respawn();
+                    OV_LOG_INFO("death screen: Respawn pressed, Client Command sent");
+                }
+                break;
+            case demo::MenuAction::Kind::Leave:
+                menus->show_message(
+                    menus->translate(integrated ? "menu.savingLevel" : "connect.aborted"));
+                pending_leave  = true;
+                pending_frames = 2;
+                break;
+            case demo::MenuAction::Kind::Connect:
+                menus->show_message(menus->translate("connect.connecting"));
+                pending_address    = action.address;
+                pending_integrated = false;
+                pending_frames     = 2;
+                break;
+            case demo::MenuAction::Kind::Play: {
+                if (action.create) {
+                    // level.dat first: the name, the game mode, and — for a
+                    // seeded world — the generator and the seed, which the
+                    // server reads back and generates from. Reopened later, the
+                    // same file makes it the same world.
+                    world::LevelSettings settings;
+                    settings.name      = action.world_name;
+                    settings.game_type = action.survival ? 0 : 1;
+                    settings.generated = action.seed.has_value();
+                    settings.seed      = action.seed.value_or(0);
+                    std::error_code error;
+                    std::filesystem::create_directories(action.world, error);
+                    if (!io::write_file_atomic(action.world / "level.dat",
+                                               world::encode_level_dat(settings))) {
+                        OV_LOG_ERROR("could not write {}", (action.world / "level.dat").string());
+                        break;
+                    }
+                    OV_LOG_INFO("new world \"{}\" in {}{}", action.world_name,
+                                action.world.string(),
+                                action.seed ? fmt::format(", seed {}", *action.seed)
+                                            : std::string(", superflat"));
+                }
+                start_integrated(action.world);
+                menus->show_message(menus->translate("menu.loadingLevel"));
+                pending_address    = "127.0.0.1:" + std::to_string(options.singleplayer_port);
+                pending_integrated = true;
+                pending_frames     = 2;
+                break;
+            }
+        }
+    };
+    // ── end screens ─────────────────────────────────────────────────────────
+
     while (running) {
         const auto  frame_start = std::chrono::steady_clock::now();
         const auto& input       = (*window)->poll();
@@ -1556,11 +1886,142 @@ int main(int argc, char** argv) {
         last_ui                = now_for_ui;
 
         bool ui_took_input = false;
-        if (online) {
+        // ── screens ── the menus first: while one is up it takes every key and
+        // click. Escape over the game — no screen, no chat — is the pause menu.
+        const bool game_screen_up =
+            online && ((*interface)->screen_open() || (*interface)->chat_open() ||
+                       (*interface)->creative_open());
+        // A scripted capture holds the pointer in the corner, off every
+        // button, as the vanilla oracle does before each of its captures.
+        const bool scripted_menus = !options.menu.empty() || !options.menu_press.empty();
+        client::InputState scripted_input;
+        if (scripted_menus) {
+            scripted_input.mouse_x = 3.0;
+            scripted_input.mouse_y = 3.0;
+        }
+        const demo::MenuAction menu_action =
+            menus->update(scripted_menus ? scripted_input : input, **window, ui_delta);
+        if (online && !menus->any_open() && !game_screen_up &&
+            input.just_pressed(client::Key::Escape) &&
+            menu_action.kind == demo::MenuAction::Kind::None) {
+            menus->open(demo::MenuScreen::Pause);
+        }
+        handle_menu_action(menu_action);
+        if (!options.menu.empty() && rendered == options.menu_at) {  // scripted captures
+            for (u8 index = 0; index <= static_cast<u8>(demo::MenuScreen::Message); ++index) {
+                const auto screen = static_cast<demo::MenuScreen>(index);
+                if (demo::to_string(screen) == options.menu) {
+                    if (screen == demo::MenuScreen::Death) {
+                        menus->show_death(R"({"translate":"death.attack.generic","with":["OndesVoxel"]})",
+                                          0, false);
+                    } else {
+                        menus->open(screen);
+                    }
+                }
+            }
+        }
+        if (!options.menu_type.empty() && rendered == options.menu_at + 15) {
+            menus->type(options.menu_type);
+        }
+        // The press script: `id` presses a widget, `@screen` opens a screen,
+        // `+N` waits N frames, `?screen` waits for that screen (`?game`: in
+        // the world, spawned, nothing open), `type:text` types.
+        if (menu_pressed < options.menu_press.size() && rendered >= options.menu_at &&
+            rendered >= next_press_at) {
+            const std::string& step = options.menu_press[menu_pressed];
+            bool               done = true;
+            if (step.starts_with('+')) {
+                next_press_at = rendered + static_cast<u32>(std::atoi(step.c_str() + 1));
+                done          = false;
+                ++menu_pressed;
+            } else if (step == "?game") {
+                done = online && spawned && !menus->any_open();
+                if (done) {
+                    OV_LOG_INFO("menu script: in the game at frame {}", rendered);
+                }
+            } else if (step.starts_with('?')) {
+                done = demo::to_string(menus->screen()) == std::string_view(step).substr(1);
+            } else if (step.starts_with("type:")) {
+                menus->type(std::string_view(step).substr(5));
+            } else if (step.starts_with("world:")) {
+                menus->select_world(std::atoi(step.c_str() + 6));
+            } else if (step == "end") {
+                options.frames = rendered + 2;  // this frame's successor is captured
+            } else if (step.starts_with('@')) {
+                for (u8 index = 0; index <= static_cast<u8>(demo::MenuScreen::Message); ++index) {
+                    const auto screen = static_cast<demo::MenuScreen>(index);
+                    if (demo::to_string(screen) == std::string_view(step).substr(1)) {
+                        menus->open(screen);
+                    }
+                }
+            } else {
+                handle_menu_action(menus->press(step));
+            }
+            if (done) {
+                ++menu_pressed;
+                next_press_at = std::max(next_press_at, rendered + 30);
+            }
+        }
+        if (pending_frames > 0 && --pending_frames == 0) {
+            if (pending_leave) {
+                pending_leave = false;
+                leave_world();
+                menus->open(demo::MenuScreen::Title);
+            } else if (!pending_address.empty()) {
+                if (open_connection(pending_address, pending_integrated ? 400 : 1)) {
+                    online = true;
+                    menus->set_in_game(true, pending_integrated);
+                    menus->show_message("");
+                    (*window)->set_cursor_captured(options.frames == 0);
+                } else {
+                    leave_world();
+                    menus->open(demo::MenuScreen::Title);
+                }
+                pending_address.clear();
+            }
+        }
+        if (menus->take_options_changed()) {
+            const client::GameOptions& game = menus->options();
+            camera.vertical_fov_degrees     = static_cast<f32>(game.fov);
+            apply_key_bindings(game, **window);
+            if (!options.gui_scale_given) {
+                (*interface)->set_gui_scale(static_cast<u32>(game.gui_scale));
+            }
+            if (sound_engine) {
+                for (usize i = 0; i < client::kSoundCategoryNames.size(); ++i) {
+                    if (const auto which =
+                            audio::category_from_name(client::kSoundCategoryNames[i])) {
+                        sound_engine->set_volume(*which, static_cast<f32>(game.volumes[i]));
+                    }
+                }
+            }
+            // The fog follows at once; the server is told at the next join
+            // (Client Information is sent with the login only).
+            options.radius   = game.render_distance;
+            render_distance  = static_cast<f32>(options.radius) * 16.0F;
+            camera.far_plane = static_cast<f32>(options.radius + 2) * 16.0F * 1.8F;
+        }
+        const bool game_paused = online && integrated && menus->any_open() &&
+                                 menus->screen() != demo::MenuScreen::Death &&
+                                 menus->screen() != demo::MenuScreen::Message;
+        pause_server.store(game_paused, std::memory_order_relaxed);
+        // The measure of the pause: the seconds spent paused and playing,
+        // printed at the end of the run and set against the server's own
+        // tick count (docs/provenance/ecrans.md).
+        if (online && spawned) {
+            (game_paused ? paused_seconds : playing_seconds) += ui_delta;
+        }
+        ui_took_input = menus->any_open();
+        // ── end screens ──
+        if (online && !ui_took_input) {
             ui_took_input = (*interface)->update(input, *client, **window, ui_delta);
         }
 
-        if (!ui_took_input && !(*interface)->screen_open()) {
+        if (!ui_took_input && online && !(*interface)->screen_open()) {
+            camera.turn(static_cast<f32>(input.mouse_delta_x),
+                        static_cast<f32>(input.mouse_delta_y),
+                        client::degrees_per_pixel(menus->options().mouse_sensitivity));
+        } else if (!ui_took_input && !online && !menus->any_open()) {
             camera.turn(static_cast<f32>(input.mouse_delta_x),
                         static_cast<f32>(input.mouse_delta_y));
         }
@@ -1577,7 +2038,12 @@ int main(int argc, char** argv) {
             const auto preparing = why.find("menu.preparingSpawn");
             if (preparing == std::string::npos) {
                 OV_LOG_ERROR("disconnected: {}", why.empty() ? "the server went away" : why);
-                running = false;
+                if (menu_mode) {  // ── screens ── back to the title, not out of the game
+                    leave_world();
+                    menus->open(demo::MenuScreen::Title);
+                } else {
+                    running = false;
+                }
                 continue;
             }
             std::string percent = "0";
@@ -1606,6 +2072,28 @@ int main(int argc, char** argv) {
             // the first frame's decision on a default rather than on what the
             // server said.
             (*interface)->apply(events);
+            // ── screens ── death is Combat Death's arrival; Respawn ends it
+            if (events.hardcore) {
+                hardcore = *events.hardcore;
+            }
+            if (events.experience) {
+                experience_total = events.experience->total;
+            }
+            if (events.death_message) {
+                OV_LOG_INFO("death screen: Combat Death received at frame {} ({})", rendered,
+                            *events.death_message);
+                menus->show_death(*events.death_message, experience_total, hardcore);
+                (*window)->set_cursor_captured(false);
+            }
+            if (events.respawned) {
+                OV_LOG_INFO("death screen: Respawn received at frame {}{}", rendered,
+                            menus->screen() == demo::MenuScreen::Death ? ", screen closed" : "");
+            }
+            if (events.respawned && menus->screen() == demo::MenuScreen::Death) {
+                menus->open(demo::MenuScreen::None);
+                (*window)->set_cursor_captured(options.frames == 0);
+            }
+            // ── end screens ──
             if (events.abilities) {  // ── flight ──
                 // The server grants and withdraws; it also says whether the
                 // player is flying — a spectator always is, and a creative
@@ -1613,7 +2101,7 @@ int main(int argc, char** argv) {
                 abilities = *events.abilities;
                 flying    = abilities.flying && abilities.may_fly;
             }
-            if (events.teleport && !spawned) {
+            if (events.teleport && !spawned && !options.hold.empty()) {  // ── screens ──
                 // The first teleport is the spawn. Ask for something in hand
                 // once, here: the server has just accepted the login and the
                 // inventory it will place from is the one it owns.
@@ -1762,6 +2250,9 @@ int main(int argc, char** argv) {
             // Bounded, so that a long stall does not run a hundred ticks at
             // once and teleport the player through the floor.
             tick_accumulator = std::min(tick_accumulator, 0.25);
+            if (game_paused) {  // ── screens ── this client does not tick behind a pause either
+                tick_accumulator = 0.0;
+            }
 
             // Nothing is simulated until the ground under the player has
             // actually arrived. Without this the player spawns into a world
@@ -2175,7 +2666,7 @@ int main(int argc, char** argv) {
         const u32 biome = online ? session->biome_at(static_cast<i32>(std::floor(camera.position.x)),
                                                      static_cast<i32>(std::floor(camera.position.y)),
                                                      static_cast<i32>(std::floor(camera.position.z)))
-                                 : camera_biome(*world, *blocks, camera.position);
+                                 : (world ? camera_biome(*world, *blocks, camera.position) : 0U);
         const auto effects = blocks->biome(biome);
         // ── weather ── the fog dims under rain and thunder, and flashes with a bolt.
         const u32 weather_fog = render::weather_fog_colour(render::fog_colour(effects.fog_colour, darken),
@@ -2412,15 +2903,66 @@ int main(int argc, char** argv) {
         // It is on top of everything by definition, and sharing the terrain's
         // pass would mean either testing the hotbar against the world or
         // clearing a depth buffer nothing reads.
-        if (online) {
+        // ── screens ── F3's numbers, gathered where they are
+        if (menus->debug() && online && session) {
+            client::DebugInfo info;
+            if (cpu_frame_ms.size() >= 2) {
+                const usize n = std::min<usize>(cpu_frame_ms.size(), 30);
+                f64 sum = 0.0;
+                for (usize i = cpu_frame_ms.size() - n; i < cpu_frame_ms.size(); ++i) {
+                    sum += cpu_frame_ms[i];
+                }
+                info.fps = sum > 0.0 ? static_cast<i32>(std::lround(1000.0 * static_cast<f64>(n) / sum)) : 0;
+            }
+            info.sections_drawn    = drawn_last_frame;
+            info.sections_resident = static_cast<u32>((*terrain)->stats().sections_resident);
+            info.entities_drawn    = (*entity_renderer)->stats().entities;
+            info.entities_known    = static_cast<u32>(entity_world.entities().size());
+            info.x                 = player.position.x;
+            info.y                 = player.position.y;
+            info.z                 = player.position.z;
+            info.yaw               = camera.yaw_degrees;
+            info.pitch             = camera.pitch_degrees;
+            info.biome             = std::string(blocks->biome_name(biome));
+            const i32 fx = static_cast<i32>(std::floor(player.position.x));
+            const i32 fy = static_cast<i32>(std::floor(player.position.y));
+            const i32 fz = static_cast<i32>(std::floor(player.position.z));
+            if (const world::Chunk* chunk = session->chunk_at(fx >> 4, fz >> 4)) {
+                if (const world::ChunkSection* section = chunk->section_for_y(fy)) {
+                    const usize cell = static_cast<usize>(((fy & 15) << 8) | ((fz & 15) << 4) | (fx & 15));
+                    if (!section->sky_light().is_absent() || !section->block_light().is_absent()) {
+                        info.sky_light   = section->sky_light().get(cell);
+                        info.block_light = section->block_light().get(cell);
+                    }
+                }
+            }
+            if (aimed) {
+                const auto state  = session->block_at(aimed->block.x, aimed->block.y, aimed->block.z);
+                info.target_block = std::string(blocks->block_name(blocks->block_of(state)));
+                info.target_x     = aimed->block.x;
+                info.target_y     = aimed->block.y;
+                info.target_z     = aimed->block.z;
+            }
+            info.day_time = time_of_day;
+            memory_numbers(info.memory_used, info.memory_total);
+            info.gpu                = std::string(device.info().name);
+            info.cpu                = cpu_name();
+            info.framebuffer_width  = width;
+            info.framebuffer_height = height;
+            menus->set_debug_info(std::move(info));
+        }
+        {  // ── screens ── always a UI pass: the menus draw over the game or alone
             rhi::ColourAttachment ui_colour;
             ui_colour.clear = false;
             const std::array<rhi::ColourAttachment, 1> ui_attachments{ui_colour};
             cmd.begin_rendering(ui_attachments, nullptr, width, height);
             cmd.set_viewport(0.0F, 0.0F, static_cast<f32>(width), static_cast<f32>(height));
             cmd.set_scissor(0, 0, width, height);
-            (*interface)->set_loading(loading_line);  // ── loading ──
-            (*interface)->draw(cmd, width, height);
+            if (online) {
+                (*interface)->set_loading(loading_line);  // ── loading ──
+                (*interface)->draw(cmd, width, height);
+            }
+            menus->draw(cmd, width, height);
             cmd.end_rendering();
         }
 
@@ -2580,6 +3122,13 @@ int main(int argc, char** argv) {
         }
     }
 
+    if (options.dump_menu) {  // ── screens ──
+        fmt::print("{}\n", menus->describe());
+    }
+    if (paused_seconds > 0.0) {  // ── screens ── the pause, measured
+        fmt::print("pause: {:.1f} s paused, {:.1f} s playing\n", paused_seconds,
+                   playing_seconds);
+    }
     if (online) {
         const auto& gui_stats = (*interface)->stats();
         fmt::print("gui  {} quads in {} draw(s), {} vertices (peak {}), scale {}\n",

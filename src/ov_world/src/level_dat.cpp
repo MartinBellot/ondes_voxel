@@ -120,8 +120,21 @@ nbt::Document make_level_dat(const LevelSettings& settings) {
     put(data, "BorderDamagePerBlock", nbt::Tag{0.2});
 
     nbt::Tag dimensions = nbt::Tag::make_compound();
-    put(dimensions, "minecraft:overworld",
-        dimension("minecraft:overworld", flat_generator(settings)));
+    // ── screens ── a seeded world declares the generator that made it
+    if (settings.generated) {
+        nbt::Tag overworld = nbt::Tag::make_compound();
+        put(overworld, "type", nbt::Tag{std::string{"minecraft:noise"}});
+        put(overworld, "settings", nbt::Tag{std::string{"minecraft:overworld"}});
+        nbt::Tag source = nbt::Tag::make_compound();
+        put(source, "type", nbt::Tag{std::string{"minecraft:multi_noise"}});
+        put(source, "preset", nbt::Tag{std::string{"minecraft:overworld"}});
+        put(overworld, "biome_source", std::move(source));
+        put(dimensions, "minecraft:overworld",
+            dimension("minecraft:overworld", std::move(overworld)));
+    } else {
+        put(dimensions, "minecraft:overworld",
+            dimension("minecraft:overworld", flat_generator(settings)));
+    }
     put(dimensions, "minecraft:the_nether",
         dimension("minecraft:the_nether", noise_generator("minecraft:nether")));
     put(dimensions, "minecraft:the_end",
@@ -197,6 +210,16 @@ void read_level_settings(const nbt::Tag& data, LevelSettings& into) {
     if (const nbt::Tag* worldgen = data.find("WorldGenSettings")) {
         if (const nbt::Tag* seed = worldgen->find("seed")) {
             into.seed = seed->as_i64();
+        }
+        // ── screens ── the overworld's generator says whether it is seeded
+        if (const nbt::Tag* dims = worldgen->find("dimensions")) {
+            if (const nbt::Tag* overworld = dims->find("minecraft:overworld")) {
+                if (const nbt::Tag* generator = overworld->find("generator")) {
+                    if (const nbt::Tag* type = generator->find("type")) {
+                        into.generated = type->as_string() == "minecraft:noise";
+                    }
+                }
+            }
         }
     }
     if (const nbt::Tag* rules = data.find("GameRules");

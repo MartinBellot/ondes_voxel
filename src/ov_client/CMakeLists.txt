@@ -10,10 +10,14 @@ ov_add_library(ov_client
         src/container_screen.cpp
         src/creative_gestures.cpp
         src/creative_screen.cpp
+        src/debug_overlay.cpp
         src/entity_renderer.cpp
         src/gui.cpp
         src/hud.cpp
         src/item_view.cpp
+        src/menu_layouts.cpp
+        src/menu_widgets.cpp
+        src/options_file.cpp
         src/overlay.cpp
         src/saved_hotbars.cpp
         src/sound_director.cpp
@@ -42,6 +46,8 @@ ov_add_test(test_ov_client
         tests/test_creative_gestures.cpp
         tests/test_creative_screen.cpp
         tests/test_interface.cpp
+        tests/test_menu_layouts.cpp
+        tests/test_options_file.cpp
         tests/test_sound_director.cpp
     DEPS ov_client
     LABELS unit

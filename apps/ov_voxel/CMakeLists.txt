@@ -6,6 +6,7 @@ ov_add_executable(ov_voxel
         src/entities.cpp
         src/interface.cpp
         src/main.cpp
+        src/menus.cpp
         src/session.cpp
         src/world_source.cpp
     DEPS

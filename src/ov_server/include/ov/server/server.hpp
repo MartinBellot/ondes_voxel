@@ -24,6 +24,12 @@ namespace ov::server {
 /// the dedicated binary always has; when it is not, it leaves signals alone —
 /// a client's window has its own idea of when to quit, and two handlers
 /// fighting over one process is a bug nobody enjoys finding.
-[[nodiscard]] int run(int argc, char** argv, const std::atomic<bool>* external_stop = nullptr);
+///
+/// `external_pause` (── screens ──) is the integrated server's pause: while it
+/// reads true the tick loop runs no tick, as vanilla's integrated server does
+/// behind the pause menu of a singleplayer game. Null on a dedicated server,
+/// which never pauses.
+[[nodiscard]] int run(int argc, char** argv, const std::atomic<bool>* external_stop = nullptr,
+                      const std::atomic<bool>* external_pause = nullptr);
 
 }  // namespace ov::server

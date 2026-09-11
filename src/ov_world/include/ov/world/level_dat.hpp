@@ -36,6 +36,12 @@ struct LevelSettings {
     i32                    game_type{1};
     std::string            biome{"minecraft:plains"};
     std::vector<FlatLayer> layers;
+    // ── screens ──
+    /// The overworld is generated from the seed (vanilla's "minecraft:noise"
+    /// generator) rather than superflat. Read from and written to
+    /// WorldGenSettings, so a world created with a seed is reopened with it —
+    /// by this server and by vanilla.
+    bool generated{false};
 
     // ── The world's clocks, weather and rules ───────────────────────────────
     //
