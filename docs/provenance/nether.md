@@ -168,6 +168,10 @@ Le solide/vide ne bouge pas, et c'est ce qu'il fallait : la correction ne change
 Le reste de l'écart (0,35 %) est ce que § 1.5 nommait déjà — des features des voisins écrites dans
 ces chunks (verrues, basalte, pierre noire) et la surface de la vallée des âmes.
 
+**L'overworld ne bouge pas** : ses réglages disent `true`, et l'oracle entier des aquifères
+(`ov_parity --aquifer --chunks=4000`, 1 775 chunks, `aquiferes.md` § 10) redonne après la correction
+**1 480 842 / 1 481 524 — 99,954 %**, le chiffre publié, à la cellule près.
+
 **L'End** a lui aussi `aquifers_enabled: false` et suit donc la même règle désormais. Il n'a pas été
 remesuré contre le jeu (aucun monde de référence de l'End sur le disque) ; la règle globale n'y
 remplit rien (niveau de la mer 0, plancher 0), et 64 chunks de l'île principale générés par le
