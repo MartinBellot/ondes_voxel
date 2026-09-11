@@ -309,6 +309,14 @@ Listé aussi par `Brewing::gaps()`, journalisé au démarrage du serveur.
 7. **Le vrai serveur retire le tag d'une potion vide** : un `null` dans la table brute a d'abord
    fait **planter** le test de parité, pas échouer. Le tag absent veut dire `minecraft:empty`, et
    notre alambic n'en écrit plus.
+8. **Un champ inséré au milieu d'une structure initialisée par position change le sens de tous les
+   initialiseurs.** `from` a d'abord été ajouté à `ProjectileEvent` entre `point` et `velocity` ;
+   les événements de `projectile.cpp` s'écrivent `ProjectileEvent{kind, id, cible, joueur, point,
+   v}`, donc `v` est allé dans `from`, **la vitesse de chaque événement est restée à 0, et chaque
+   flèche touchait pour 0**. Ni les tests `[brewing]` ni le passage de bout en bout (qui ne tire pas
+   de flèche) ne pouvaient le voir ; seule la suite complète l'a vu, par `test_projectile`
+   (`0.0 == 0.3`). Le champ est maintenant **le dernier**. À retenir pour quiconque ajoute un champ
+   à une structure d'un autre module : lancer **toute** la suite, pas le tag de son mandat.
 
 ## 12 bis. Le second passage — ce qu'il doit trancher
 
