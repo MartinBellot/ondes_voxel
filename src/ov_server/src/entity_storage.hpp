@@ -22,6 +22,19 @@
 //     into the chunk it came from. A field this server does not understand is
 //     not a field it may throw away.
 //
+// One writer for `entities/`. This storage is the only code that reads or
+// writes those files. A module that runs entities of its own — the rails
+// session and its seven minecarts — does not touch the files: it registers as
+// an `EntityAdopter`. When a chunk is read, each compound of a type an adopter
+// owns is handed to that adopter to bring to life instead of being carried
+// through; when a chunk is written, each live entity an adopter owns is asked
+// for its compound and written beside the mobs and what is carried through.
+// Where an entity is written is where it stands at that moment, so one that
+// crossed into another chunk is not left behind in the chunk it came from.
+// (Before this, the rails session wrote whole chunks of the same files from
+// its own copy of their contents, and the last of the two writers erased what
+// the other had changed.)
+//
 // Threads: everything here runs on the tick thread, which is the only one
 // that touches the entity world.
 #pragma once
@@ -73,9 +86,41 @@ struct EntityStorageHost {
     std::function<void(i32 network_id, i32 ticks)>          set_conversion_time;
 };
 
+/// A module that runs entities of its own, stored in the same chunks as the
+/// mobs. It never opens `entities/`: the storage hands it what it reads and
+/// asks it for what it writes.
+class EntityAdopter {
+public:
+    EntityAdopter()                                = default;
+    EntityAdopter(const EntityAdopter&)            = delete;
+    EntityAdopter& operator=(const EntityAdopter&) = delete;
+    virtual ~EntityAdopter()                       = default;
+
+    /// Is this entity type (its protocol id) one this adopter runs?
+    [[nodiscard]] virtual bool owns(i32 type) const noexcept = 0;
+
+    /// Spawn one entity read from disk and give it its behaviour. Nullopt
+    /// when refused: the storage then carries the compound through untouched.
+    virtual std::optional<entity::EntityHandle> adopt_saved(entity::EntityWorld& world,
+                                                            const nbt::Tag&      compound) = 0;
+
+    /// One live entity's compound, as vanilla writes it. Nullopt: not saved.
+    [[nodiscard]] virtual std::optional<nbt::Tag> save_entity(entity::EntityWorld& world,
+                                                              entity::EntityHandle handle) const = 0;
+
+    /// The entity is about to leave the world with its chunk: forget it.
+    virtual void release(entity::EntityWorld& world, entity::EntityHandle handle) = 0;
+
+protected:
+    EntityAdopter(EntityAdopter&&)            = default;
+    EntityAdopter& operator=(EntityAdopter&&) = default;
+};
+
 struct EntityStorageStats {
     usize chunks{0};
     usize entities{0};
+    /// Of `entities`, those an adopter runs.
+    usize adopted{0};
     /// Carried through untouched: entities this server does not spawn.
     usize carried{0};
     /// Compounds without `id` or `Pos`, or a DataVersion that is not 1.20.1's:
@@ -88,6 +133,13 @@ public:
     /// `directory` is the world's `entities/`, created on first write.
     EntityStorage(const registry::Registries& registries, std::filesystem::path directory);
 
+    /// Let `adopter` run the entities of the types it owns. Not owned; must
+    /// outlive the storage's last read or write.
+    void add_adopter(EntityAdopter& adopter) { adopters_.push_back(&adopter); }
+
+    /// The adopter that runs this entity type, or null.
+    [[nodiscard]] EntityAdopter* adopter_of(i32 type) const noexcept;
+
     /// Read a chunk's entities into the world, once. A chunk with nothing on
     /// disk is marked loaded all the same.
     EntityStorageStats load_chunk(ChunkPos chunk, entity::EntityWorld& world, MobRecords& records,
@@ -95,14 +147,17 @@ public:
 
     [[nodiscard]] bool is_loaded(ChunkPos chunk) const noexcept;
 
-    /// Chunks go away: their mobs are written and taken out of the world.
-    /// Appends the wire ids removed, for the caller's Remove Entities.
+    /// Chunks go away: their mobs and adopted entities are written and taken
+    /// out of the world. Appends the wire ids removed, for the caller's Remove
+    /// Entities.
     EntityStorageStats unload_chunks(std::span<const ChunkPos> chunks, entity::EntityWorld& world,
                                      MobRecords& records, const EntityStorageHost& host,
                                      std::vector<i32>& removed);
 
-    /// Write every loaded chunk's mobs. Nothing leaves the world.
-    EntityStorageStats save_all(entity::EntityWorld& world, const MobRecords& records,
+    /// Write every loaded chunk's mobs and adopted entities. Nothing leaves
+    /// the world. A chunk an entity stands in whose file was not read yet is
+    /// read first (it may spawn what it holds), so the write cannot erase it.
+    EntityStorageStats save_all(entity::EntityWorld& world, MobRecords& records,
                                 const EntityStorageHost& host);
 
     /// One mob's compound, as vanilla stores it. Public for the tests.
@@ -127,8 +182,18 @@ private:
     /// Write these chunks' lists, one region file at a time.
     void write(const std::map<i64, std::vector<nbt::Tag>>& chunks);
     [[nodiscard]] bool saved(const entity::EntityState& state, const EntityStorageHost& host) const;
+    /// A live entity's compound: its adopter's, or a mob's.
+    [[nodiscard]] std::optional<nbt::Tag> compound_of(entity::EntityWorld& world,
+                                                      entity::EntityHandle handle,
+                                                      const MobRecords&     records,
+                                                      const EntityStorageHost& host) const;
+    /// Read the files of the chunks a saved entity stands in that have not
+    /// been read; `only`, when given, limits it to those chunks.
+    void read_before_write(entity::EntityWorld& world, MobRecords& records,
+                           const EntityStorageHost& host, const std::unordered_set<i64>* only);
 
     const registry::Registries*         registries_{nullptr};
+    std::vector<EntityAdopter*>         adopters_;
     std::optional<registry::RegistryId> types_;
     std::optional<registry::RegistryId> items_;
     std::filesystem::path               directory_;
