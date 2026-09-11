@@ -127,6 +127,12 @@ MetadataWriter& MetadataWriter::optional_block_pos_value(u8                     
     return *this;
 }
 
+MetadataWriter& MetadataWriter::particle_value(u8 index, i32 particle) {
+    header(index, MetadataType::Particle);
+    write_varint(writer_, particle);
+    return *this;
+}
+
 MetadataWriter& MetadataWriter::direction_value(u8 index, i32 direction) {
     header(index, MetadataType::Direction);
     write_varint(writer_, direction);

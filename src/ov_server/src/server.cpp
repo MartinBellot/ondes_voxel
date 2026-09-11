@@ -50,6 +50,7 @@
 #include "nether_travel.hpp"  // ── nether ──
 #include "end_fight.hpp"      // ── end ──
 #include "end_travel.hpp"     // ── end ──
+#include "ov/math/raycast.hpp"  // ── dragon ──
 #include "ov/gameplay/end_portal.hpp"  // ── end ──
 #include "player_inventory.hpp"
 #include "world_ticks.hpp"
@@ -1864,14 +1865,106 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         broadcast_in(DimensionId::End, nullptr, id, payload);
     };
     end_fight_host.reserve_entity_ids = [&](i32 count) { return next_entity_id.fetch_add(count); };
-    if (end_rules && end_rules->valid() && registries) {
-        if (const auto types = registries->find("minecraft:entity_type")) {
-            const auto dragon  = registries->protocol_id(*types, "minecraft:ender_dragon");
-            const auto crystal = registries->protocol_id(*types, "minecraft:end_crystal");
-            if (dragon && crystal) {
-                end_fight.emplace(*end_rules, level_settings.seed, static_cast<i32>(*dragon),
-                                  static_cast<i32>(*crystal));
+    // ── dragon ── the End's players, what reaches each, the fight's save and
+    // its line of sight (end_fight.hpp, docs/provenance/dragon.md).
+    const auto end_player = [&](i32 id) -> Player* {
+        for (auto& [end_key, who] : players) {
+            if (who.entity_id == id && who.connection && who.dimension == DimensionId::End) {
+                return &who;
             }
+        }
+        return nullptr;
+    };
+    end_fight_host.players = [&](std::vector<EndFightPlayer>& out) {
+        for (const auto& [end_key, who] : players) {
+            if (who.connection && who.confirmed && who.dimension == DimensionId::End) {
+                out.push_back(EndFightPlayer{who.entity_id, Vec3d{who.x, who.y, who.z},
+                                             who.mortal(),
+                                             !who.survival.awaiting_respawn &&
+                                                 !who.survival.health.dead});
+            }
+        }
+    };
+    end_fight_host.send_to = [&](i32 id, i32 packet, std::span<const u8> payload) {
+        if (Player* who = end_player(id)) {
+            if (const auto framed = net::encode_packet(packet, payload)) {
+                who->connection->send(*framed);
+            }
+        }
+    };
+    end_fight_host.hurt_player = [&](i32 id, f32 amount, gameplay::DamageKind kind) {
+        Player* who = end_player(id);
+        if (who == nullptr || !who->mortal()) {
+            return false;
+        }
+        const SurvivalIo io{
+            .send =
+                [&](i32 packet, std::span<const u8> payload) {
+                    if (const auto framed = net::encode_packet(packet, payload)) {
+                        who->connection->send(*framed);
+                    }
+                },
+            .broadcast = [&](i32 packet, std::span<const u8> payload) {
+                broadcast_in(DimensionId::End, who->connection.get(), packet, payload);
+            }};
+        return static_cast<bool>(who->survival.hurt(kind, amount, io, who->entity_id).applied);
+    };
+    end_fight_host.award_experience = [&](i32 id, i32 value) {
+        if (Player* who = end_player(id)) {
+            who->survival.award_experience(value);
+        }
+    };
+    if (end_rules && end_rules->valid() && registries && blocks) {
+        if (const auto types = registries->find("minecraft:entity_type")) {
+            EndFightTypes fight_types;
+            const auto    type_of = [&](std::string_view name, i32& into) {
+                if (const auto id = registries->protocol_id(*types, name)) {
+                    into = static_cast<i32>(*id);
+                }
+            };
+            type_of("minecraft:ender_dragon", fight_types.dragon);
+            type_of("minecraft:end_crystal", fight_types.crystal);
+            type_of("minecraft:dragon_fireball", fight_types.fireball);
+            type_of("minecraft:area_effect_cloud", fight_types.cloud);
+            type_of("minecraft:experience_orb", fight_types.experience_orb);
+            if (const auto particles = registries->find("minecraft:particle_type")) {
+                if (const auto id = registries->protocol_id(*particles, "minecraft:dragon_breath")) {
+                    fight_types.breath_particle = static_cast<i32>(*id);
+                }
+            }
+            const auto tagged = [&](std::string_view name) {
+                std::vector<registry::BlockId> out;
+                if (const auto block_registry = registries->find("minecraft:block")) {
+                    if (const auto tag = registries->find_tag(*block_registry, name)) {
+                        for (const auto member : registries->tag_members(*tag)) {
+                            if (const auto block = blocks->find_block(
+                                    registries->entry_of(*block_registry, member))) {
+                                out.push_back(*block);
+                            }
+                        }
+                    }
+                }
+                return out;
+            };
+            end_fight.emplace(*end_rules, *blocks, level_settings.seed, fight_types,
+                              tagged("minecraft:dragon_immune"),
+                              tagged("minecraft:dragon_transparent"));
+            if (level_settings.dragon_fight) {
+                end_fight->load(*level_settings.dragon_fight);
+            }
+            level_settings.dragon_fight = end_fight->save();
+            end_fight->set_sight([&](Vec3d from, Vec3d to) {
+                const Vec3d along  = to - from;
+                const f64   length = along.length();
+                if (!end_level || length < 1e-6) {
+                    return true;
+                }
+                return !raycast_voxels(from, along, length, [&](BlockPos cell) {
+                            const registry::BlockStateId state = end_level->block_at(cell);
+                            return state != registry::kAirState &&
+                                   blocks->blocks_motion(blocks->block_of(state));
+                        }).has_value();
+            });
         }
     }
     // ── end end ──
@@ -3724,7 +3817,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         io.hurt_entity = [&](i32 entity_id, f32 damage, bool /*critical*/) {
             // ── end ── the dragon's parts and the crystals are the fight's
             if (end_fight && who.dimension == DimensionId::End &&
-                end_fight->hurt(entity_id, damage, end_fight_host)) {
+                end_fight->hurt(entity_id, damage, end_fight_host, who.entity_id, who.mortal())) {
                 return true;
             }
             return hurt_mob(who, entity_id, damage, held_weapon(who).looting);
@@ -3928,6 +4021,22 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             info.height   = 0.5F;
             out.push_back(std::move(info));
         }
+        // ── dragon ── the fight's entities: the dragon, crystals, fireballs,
+        // clouds, the End's orbs.
+        if (end_fight) {
+            std::vector<EndFightEntity> fight_entities;
+            end_fight->entities(fight_entities);
+            for (const EndFightEntity& entity : fight_entities) {
+                cmd::EntityInfo info;
+                info.id       = entity.id;
+                info.type     = std::string{entity.type};
+                info.uuid     = entity.uuid;
+                info.position = entity.position;
+                info.width    = entity.width;
+                info.height   = entity.height;
+                out.push_back(std::move(info));
+            }
+        }
     };
     command_host.broadcast = [&](i32 id, std::span<const u8> payload) {
         broadcast(nullptr, id, payload);
@@ -3997,6 +4106,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         return false;
     };
     command_host.kill_entity = [&](i32 id) -> bool {
+        // ── dragon ── /kill on the fight's own: no animation, no orbs (measured)
+        if (end_fight && end_fight->kill(id, end_fight_host)) {
+            return true;
+        }
         if (mobs && mob_combat) {
             if (const entity::EntityHandle handle = mobs->find(id); handle != entity::kNoEntity) {
                 entity::EntityState* state = mobs->mutable_state(handle);
@@ -5088,6 +5201,33 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         if (!use) {
                             return false;
                         }
+                        // ── dragon ── a glass bottle in one of the dragon's clouds
+                        // fills with its breath (the cloud loses half a block).
+                        if (end_fight && player.dimension == DimensionId::End && registries &&
+                            item_registry && use->hand == net::Hand::Main) {
+                            const usize     slot = 36 + static_cast<usize>(player.held_slot);
+                            net::ItemStack& held = player.inventory[slot];
+                            if (!held.empty() &&
+                                registries->entry_of(*item_registry, held.item_id) ==
+                                    "minecraft:glass_bottle" &&
+                                end_fight->take_breath(Vec3d{player.x, player.y, player.z})) {
+                                if (player.mortal()) {
+                                    held.count = static_cast<i8>(held.count - 1);
+                                    if (held.count <= 0) {
+                                        held = net::ItemStack{};
+                                    }
+                                    send_slot(player, slot);
+                                }
+                                (void)give_to_player(
+                                    player, net::ItemStack{registries->protocol_id(*item_registry,
+                                                                                   "minecraft:dragon_breath")
+                                                               .value_or(0),
+                                                           1,
+                                                           {}});
+                                acknowledge(connection, use->sequence);
+                                return true;
+                            }
+                        }
                         // ── projectiles: a bow, a crossbow, a trident or a throw ──
                         if (projectiles && use->hand == net::Hand::Main &&
                             projectiles->on_use_item(shooter_of(player),
@@ -5290,6 +5430,45 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                             }
                         }
 
+                        // ── dragon ── An End crystal on obsidian or bedrock with
+                        // two free blocks above: the fight's (four round the
+                        // exit portal respawn the dragon). Outside the End it is
+                        // refused and named: this server's crystals live in the
+                        // dragon fight.
+                        if (end_fight && registries && item_registry && blocks && !eye_hand.empty() &&
+                            registries->entry_of(*item_registry, eye_hand.item_id) ==
+                                "minecraft:end_crystal") {
+                            const BlockPos on{place->position.x, place->position.y,
+                                              place->position.z};
+                            world::LevelWriter& here =
+                                player.dimension == DimensionId::End      ? end_player_level
+                                : player.dimension == DimensionId::Nether ? nether_player_level
+                                                                          : player_level;
+                            const std::string_view base =
+                                blocks->block_name(blocks->block_of(here.block_at(on)));
+                            const bool clear =
+                                here.block_at(BlockPos{on.x, on.y + 1, on.z}) == registry::kAirState &&
+                                here.block_at(BlockPos{on.x, on.y + 2, on.z}) == registry::kAirState;
+                            if ((base == "minecraft:obsidian" || base == "minecraft:bedrock") && clear) {
+                                if (player.dimension != DimensionId::End) {
+                                    OV_LOG_INFO("{} put an End crystal outside the End: refused, "
+                                                "this server's crystals live in the dragon fight",
+                                                player.name);
+                                    return true;
+                                }
+                                end_fight->place_crystal(on, end_fight_host);
+                                if (player.mortal()) {
+                                    const usize slot = 36 + static_cast<usize>(player.held_slot);
+                                    net::ItemStack& held = player.inventory[slot];
+                                    held.count           = static_cast<i8>(held.count - 1);
+                                    if (held.count <= 0) {
+                                        held = net::ItemStack{};
+                                    }
+                                    send_slot(player, slot);
+                                }
+                                return true;
+                            }
+                        }
                         // ── nether ── A right-click in the Nether: the block's
                         // and the item's own rules — doors, buckets, flint and
                         // steel — then a plain placement. Containers, signs,
@@ -8006,6 +8185,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     {
                         const std::scoped_lock fight_lock{chunk_mutex};
                         end_fight->tick(*end_level, end_fight_host);
+                    }
+                    // ── dragon ── level.dat's DragonFight follows the fight.
+                    if (clock.tick_count() % 20 == 0) {
+                        level_settings.dragon_fight = end_fight->save();
                     }
                     if (clock.tick_count() % 20 == 0) {
                         for (auto& [viewer_key, viewer] : players) {

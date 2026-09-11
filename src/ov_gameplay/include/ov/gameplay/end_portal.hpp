@@ -148,4 +148,11 @@ private:
 /// by `new Random(seed)`, taken from the back of the shuffled list.
 [[nodiscard]] std::array<BlockPos, 20> end_gateway_order(i64 seed);
 
+/// The shuffled indices themselves, as level.dat's `DragonFight.Gateways`
+/// stores them before any has opened: the next to open is the last.
+[[nodiscard]] std::array<i32, 20> end_gateway_indices(i64 seed);
+
+/// Where gateway `index` (0..19) stands.
+[[nodiscard]] BlockPos end_gateway_position(i32 index);
+
 }  // namespace ov::gameplay
