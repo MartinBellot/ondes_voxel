@@ -361,9 +361,10 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       de sommeil identiques au tick près au clair, sous la pluie et l'orage,
       nuit sautée, point de réapparition. Client : pluie et neige dessinées,
       ciel et brouillard assombris par les Game Events 7/8, flash d'éclair —
-      0,45/1,35 ms p50/p99 d'enregistrement pour un orage. Restent la campagne
-      vanilla des lits (en file), le feu de la foudre, phantoms et insomnie.
-      Voir `docs/provenance/meteo-sommeil.md`)*
+      0,45/1,35 ms p50/p99 d'enregistrement pour un orage. **Lits : 38/38 cas
+      identiques au vrai serveur.** Le feu de la foudre est branché depuis la
+      fusion du feu (non mesuré). Restent phantoms et insomnie, l'explosion du
+      lit dans le Nether sur le fil. Voir `docs/provenance/meteo-sommeil.md`)*
       *(la **courbe de luminosité** (les 16 valeurs publiées à 1e-7), le
       **lightmap 16×16** reconstruit par frame, le **cycle du jour** (13670 et
       22331 au tick près) et le **brouillard cylindrique** avec sa couleur
@@ -606,8 +607,16 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       Seuil de lumière identique au jeu — 26/35/27 apparitions à lumière 0 et
       **zéro** de 1 à 10 — et cap monstres à 70 contre un plateau vanilla à
       70,88. Le coût est nommé : 5 ticks sur 921 dépassent le budget, et c'est
-      le spawner qui fait son travail. La liste de mobs d'une seule biome est
-      appliquée partout, et le cap créatures n'est ni confirmé ni infirmé)*
+      le spawner qui fait son travail. Le cap créatures n'est ni confirmé ni
+      infirmé)*
+      *(**2026-09-11 — mobs-2** : le type est tiré dans le biome de la position
+      (739 entrées `spawners` sur 62 biomes), règles par type (sol par tag, ciel
+      ouvert pour husk et stray, slimes des marais et des chunks à slime), et la
+      lumière d'un monstre est le **tirage** documenté et non un seuil 0 — qui
+      interdisait tout monstre en surface la nuit. Loi de marche
+      `0,98·s²·(0,6/f)³/(1−0,91·f)` : 19 espèces à 0,2 % près sur notre serveur.
+      Composition par biome non mesurée sur notre serveur. Voir
+      `docs/provenance/mobs-2.md`)*
 - [~] Despawn, persistance, cap de mobs par catégorie
       *(les caps et la persistance sont là ; `decide_despawn` est écrit,
       testé et **appelé par personne** — les mobs s'accumulent jusqu'au cap et
@@ -687,7 +696,13 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [ ] Arc, arbalète, flèches ×3, trident, bouclier, canne à pêche, briquet,
       seaux (eau, lave, lait, poudreuse, 6 poissons, têtard)
 - [ ] ~40 aliments avec valeurs de faim et de saturation
-- [ ] Toutes les potions (normale / jet / persistante) et flèches trempées
+- [~] Toutes les potions (normale / jet / persistante) et flèches trempées
+      *(**2026-09-11 — alchimie** : l'alambic (400 ticks, 20 brassages par
+      poudre, entonnoirs 13/13), **2709/2709** triplets de recettes et **43/43**
+      potions bues identiques au vrai serveur, jetable (`1 − d/4`), persistante,
+      flèches trempées (÷ 8), ragoût suspect. Restent les effets sur les mobs,
+      la fabrication des flèches trempées, la couleur des dégâts instantanés.
+      Voir `docs/provenance/alchimie.md`)*
 - [ ] Livres ×4, cartes, boussoles ×2, horloge, longue-vue, loupe
 - [ ] 20+ disques musicaux · ~70 œufs de spawn
 - [ ] Matériaux : bâton, silex, cuir, fil, os et poudre, blaze, ghast tear,
@@ -841,6 +856,13 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       gel (poudreuse), noyade, gravité, **archéologie** (brosse, sable et
       gravier suspects, tessons, poteries), cornes de chèvre, cartes au trésor,
       boussole de récupération, bordure de monde, difficulté locale
+      *(**2026-09-11 — le feu** : bloc de feu (âge, survie, propagation dans la
+      boîte 3×3×6, pluie, biomes humides, `doFireTick`, feu des âmes), la lave
+      qui allume (deux ticks aléatoires par tirage, mesuré), entités qui
+      brûlent (dégâts toutes les 10 ticks, eau et pluie, Fire Resistance, Fire
+      Aspect, Flame, zombies au soleil), feux de camp (600 ticks), et la
+      foudre qui allume. Tables de combustion du wiki confirmées contre le vrai
+      serveur. Voir `docs/provenance/feu.md`)*
 
 ### Interface et client
 - [~] Interface du client Ondes VOXEL : police, HUD, inventaire, conteneurs

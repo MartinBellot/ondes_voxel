@@ -47,6 +47,9 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`enchantement.md`](provenance/enchantement.md) | La table à 512/512 offres, l'enclume à 93/93, et l'archive du protocole qui se trompait sur la graine |
 | [`ecrans.md`](provenance/ecrans.md) | Le menu principal, les mondes par graine, la pause et `options.txt` relu à l'octet |
 | [`meteo-sommeil.md`](provenance/meteo-sommeil.md) | La pluie qui vient seule, la glace des océans gelés à 11 285/11 285, la foudre et les lits |
+| [`feu.md`](provenance/feu.md) | Le feu qui se propage, la lave qui allume deux fois par tirage, et une fenêtre de dégâts de 10 ticks et non 11 |
+| [`alchimie.md`](provenance/alchimie.md) | L'alambic et les 43 potions : 2709/2709 recettes, et l'éclaboussure qui part d'où était la fiole |
+| [`mobs-2.md`](provenance/mobs-2.md) | La loi de marche, l'apparition par biome, douze espèces, et les monstres qui n'apparaissaient jamais en surface la nuit |
 | [`nether.md`](provenance/nether.md) | Le Nether à 99,9 %, des portails là où le jeu les met, et le bruit de l'Overworld qui lisait ses octaves à l'envers |
 | [`son.md`](provenance/son.md) | Les sons de 1003 blocs et 79 créatures, relevés sur le fil, et le client qui les joue |
 | [`elevage.md`](provenance/elevage.md) | Veaux, agneaux et poussins : reproduction à 59-62 ticks, couleurs héritées, et une vitesse de marche qui n'est pas l'attribut divisé par deux |
