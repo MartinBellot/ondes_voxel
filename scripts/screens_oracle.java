@@ -524,6 +524,13 @@ public final class ScreensOracle {
     // ── The run ─────────────────────────────────────────────────────────────
 
     static void drive() throws Exception {
+        startUp();
+        driveScreens();
+    }
+
+    /// Wait for the title screen, take the input away from the real devices,
+    /// save the initial options.txt.
+    static void startUp() throws Exception {
         while (true) {
             Method getInstance = null;
             try {
@@ -562,7 +569,9 @@ public final class ScreensOracle {
             return null;
         });
         saveOptions("options-initial.txt");
+    }
 
+    static void driveScreens() throws Exception {
         // ── The title screen and the options, from the title ────────────────
         move(1, 1);  // the pointer off every button, so no capture shows a hover
         dump("title");
@@ -758,6 +767,303 @@ public final class ScreensOracle {
         out.println("done");
     }
 
+    // ── allow-commands ── the Allow Cheats walk (docs/provenance/commandes-solo.md)
+    //
+    // What the Create World screen does with Allow Cheats as the game mode
+    // cycles, touched and untouched; what a world created with and without it
+    // gives its host (the permission level the client got from Entity Event
+    // 24..28), what a refused command and F3+N / F3+F4 answer; the Open to LAN
+    // screen; the world list's line; the Edit World screen.
+
+    static final String CREATE = "net.minecraft.client.gui.screens.worldselection.CreateWorldScreen";
+    static final String UI_STATE = "net.minecraft.client.gui.screens.worldselection.WorldCreationUiState";
+    static final String LOCAL_PLAYER = "net.minecraft.client.player.LocalPlayer";
+
+    /// The Game Mode and Allow Cheats buttons, and the screen's own state.
+    static void cheatsState(String label) throws Exception {
+        onRender(() -> {
+            out.println("── cheats " + label);
+            List<Object> all = new ArrayList<>();
+            Object s = screen();
+            if (s == null) return null;
+            collect(s, all, 0);
+            for (Object w : all) {
+                String t = text(call(w, WIDGET, "getMessage", NONE));
+                if (t.startsWith("Game Mode") || t.startsWith("Allow Cheats")) {
+                    out.println("  " + describeWidget(w));
+                }
+            }
+            try {
+                Object state = get(s, CREATE, "uiState");
+                out.println("  uiState gameMode " + call(state, UI_STATE, "getGameMode", NONE)
+                            + " allowCheats " + call(state, UI_STATE, "isAllowCheats", NONE)
+                            + " hardcore " + call(state, UI_STATE, "isHardcore", NONE));
+            } catch (Throwable e) {
+                out.println("  uiState unreadable: " + e);
+            }
+            return null;
+        });
+    }
+
+    static String permission() throws Exception {
+        return onRender(() -> {
+            Object player = get(mc, MC, "player");
+            if (player == null) return "no player";
+            StringBuilder b = new StringBuilder();
+            try {
+                b.append("permissionLevel ").append(get(player, LOCAL_PLAYER, "permissionLevel"));
+            } catch (Throwable e) {
+                b.append("permissionLevel unreadable ").append(e);
+            }
+            // Declared on LocalPlayer (it answers from permissionLevel).
+            try {
+                for (int level = 1; level <= 4; level++) {
+                    b.append(" has").append(level).append(' ')
+                     .append(call(player, LOCAL_PLAYER, "hasPermissions", new String[]{"int"}, level));
+                }
+            } catch (Throwable e) {
+                b.append(" hasPermissions unreadable ").append(e);
+            }
+            return b.toString();
+        });
+    }
+
+    /// The last `n` lines of the chat, as translation keys.
+    static void chatTail(String label, int n) throws Exception {
+        onRender(() -> {
+            Object gui = get(mc, MC, "gui");
+            Object chat = call(gui, "net.minecraft.client.gui.Gui", "getChat", NONE);
+            List<?> all = (List<?>) get(chat, "net.minecraft.client.gui.components.ChatComponent", "allMessages");
+            out.println("── chat " + label + " (" + all.size() + " lines)");
+            // Newest first in that list.
+            for (int i = Math.min(n, all.size()) - 1; i >= 0; i--) {
+                Object message = all.get(i);
+                Object content = method("net.minecraft.client.GuiMessage", "content").invoke(message);
+                out.println("  " + keyOf(content) + "  " + quote(text(content)));
+            }
+            return null;
+        });
+    }
+
+    static void command(String line) throws Exception {
+        onRender(() -> {
+            Object connection = call(mc, MC, "getConnection", NONE);
+            call(connection, "net.minecraft.client.multiplayer.ClientPacketListener", "sendCommand",
+                 new String[]{"java.lang.String"}, line);
+            return null;
+        });
+        out.println("sent /" + line);
+        pause(2500);
+    }
+
+    /// F3 + key, through the handler the game calls when F3 is held: the real
+    /// key state cannot be injected, the handler can.
+    static void debugKey(int glfwKey) throws Exception {
+        Object handled = onRender(() -> call(get(mc, MC, "keyboardHandler"),
+                                             "net.minecraft.client.KeyboardHandler", "handleDebugKeys",
+                                             new String[]{"int"}, glfwKey));
+        out.println("F3+" + glfwKey + " handled " + handled + " -> " + screenName());
+        pause(1500);
+    }
+
+    static void createAndEnter(String label) throws Exception {
+        Object create = findWidget(t -> t.equals("Create New World"));
+        if (create == null) throw new IllegalStateException("no Create New World button");
+        clickLater(create);
+        out.println("clicked \"Create New World\" (" + label + ")");
+        for (int i = 0; i < 3600; i++) {
+            try {
+                String name = screenName();
+                if (i % 20 == 0) out.println("loading: " + name);
+                if (name.equals("none") && onRender(() -> get(mc, MC, "player")) != null) break;
+            } catch (TimeoutException e) {
+                out.println("loading: game thread busy");
+            }
+            pause(250);
+        }
+        pause(5000);
+        out.println("in world " + label + ": " + permission());
+    }
+
+    static void superflat() throws Exception {
+        clickLabel("World");
+        clickPrefix("World Type");
+        dump("create, world tab, superflat");
+        clickLabel("Game");
+    }
+
+    static void saveAndQuit() throws Exception {
+        key(256);
+        pause(500);
+        clickLabel("Save and Quit to Title");
+        waitScreen("TitleScreen", 120);
+        pause(2000);
+    }
+
+    static void worldRows(String label) throws Exception {
+        onRender(() -> {
+            out.println("── world rows " + label);
+            Object s = screen();
+            List<Object> lists = new ArrayList<>();
+            for (Object child : (List<?>) call(s, CONTAINER, "children", NONE)) {
+                if (cls(LIST).isInstance(child)) lists.add(child);
+            }
+            for (Object list : lists) {
+                for (Object row : (List<?>) call(list, CONTAINER, "children", NONE)) {
+                    try {
+                        Object summary = get(row, "net.minecraft.client.gui.screens.worldselection.WorldSelectionList$WorldListEntry", "summary");
+                        String ls = "net.minecraft.world.level.storage.LevelSummary";
+                        Object info = call(summary, ls, "getInfo", NONE);
+                        out.println("  " + quote(String.valueOf(call(summary, ls, "getLevelName", NONE)))
+                                    + " folder " + quote(String.valueOf(call(summary, ls, "getLevelId", NONE)))
+                                    + " hasCheats " + call(summary, ls, "hasCheats", NONE)
+                                    + " info " + keyOf(info) + " " + quote(text(info)));
+                    } catch (Throwable e) {
+                        out.println("  row unreadable: " + e);
+                    }
+                }
+            }
+            return null;
+        });
+    }
+
+    static void clickRow(int index) throws Exception {
+        int[] at = onRender(() -> {
+            for (Object child : (List<?>) call(screen(), CONTAINER, "children", NONE)) {
+                if (cls(LIST).isInstance(child)) {
+                    int top = (Integer) method(LIST, "getRowTop", "int").invoke(child, index);
+                    int left = (Integer) call(child, LIST, "getRowLeft", NONE);
+                    return new int[]{left + 120, top + 12};
+                }
+            }
+            return null;
+        });
+        if (at == null) {
+            out.println("!! no list to click");
+            return;
+        }
+        click(at[0], at[1]);
+        out.println("clicked row " + index);
+    }
+
+    static void driveAllowCommands() throws Exception {
+        // ── Create World: the default, then the game mode cycled untouched ──
+        clickLabel("Singleplayer");
+        pause(1000);
+        move(1, 1);
+        cheatsState("opened (untouched)");
+        shot("ac-01-game-survival.png");
+        clickPrefix("Game Mode");
+        cheatsState("untouched, 1 mode click");
+        move(1, 1);
+        shot("ac-02-game-hardcore.png");
+        clickPrefix("Game Mode");
+        cheatsState("untouched, 2 mode clicks");
+        move(1, 1);
+        shot("ac-03-game-creative.png");
+        clickPrefix("Game Mode");
+        cheatsState("untouched, 3 mode clicks");
+        // ── touched: Allow Cheats pressed in survival, then the modes again ─
+        clickPrefix("Allow Cheats");
+        cheatsState("touched once, survival");
+        for (int i = 1; i <= 3; i++) {
+            clickPrefix("Game Mode");
+            cheatsState("touched once, " + i + " mode clicks");
+        }
+        clickPrefix("Allow Cheats");
+        cheatsState("touched twice, survival");
+        clickPrefix("Game Mode");
+        clickPrefix("Game Mode");
+        cheatsState("touched twice, 2 mode clicks");
+        clickPrefix("Game Mode");
+        cheatsState("touched twice, back to survival");
+        dump("create, before the first world");
+
+        // ── A survival world without cheats ──────────────────────────────────
+        setEdit(0, "AC Off");
+        superflat();
+        cheatsState("world AC Off, as created");
+        createAndEnter("AC Off");
+        command("gamemode creative");
+        command("time set day");
+        chatTail("after two refused commands", 8);
+        debugKey(78);   // F3 + N
+        debugKey(293);  // F3 + F4
+        chatTail("after F3+N, F3+F4", 4);
+        key(256);
+        pause(600);
+        dump("pause, AC Off");
+        move(1, 1);
+        shot("ac-04-pause.png");
+        clickPrefix("Open to LAN");
+        dump("open to LAN");
+        move(1, 1);
+        shot("ac-05-lan.png");
+        setEdit(0, "25641");
+        clickPrefix("Allow Cheats");
+        dump("open to LAN, cheats pressed");
+        clickLabel("Start LAN World");
+        pause(3000);
+        out.println("after Start LAN World: " + screenName() + " " + permission());
+        chatTail("after LAN", 3);
+        command("gamemode creative");
+        chatTail("gamemode after LAN", 3);
+        out.println("after /gamemode, LAN: " + permission());
+        saveAndQuit();
+
+        // ── A creative world, Allow Cheats untouched ────────────────────────
+        clickLabel("Singleplayer");
+        pause(1500);
+        clickLabel("Create New World");
+        pause(1000);
+        setEdit(0, "AC Creative");
+        clickPrefix("Game Mode");
+        clickPrefix("Game Mode");
+        superflat();
+        cheatsState("world AC Creative, as created");
+        createAndEnter("AC Creative");
+        command("time set day");
+        chatTail("creative world, /time set day", 3);
+        // F3+F4 with permission: the switcher closes at once (F3 is not
+        // really held), leaving no screen — so no Escape of its own here.
+        debugKey(293);
+        pause(600);
+        saveAndQuit();
+        worldList();
+    }
+
+    /// The world list with whatever is in saves/ (planted by measure_screens.py
+    /// --plant), and Edit World on "AC Off".
+    static void worldList() throws Exception {
+        clickLabel("Singleplayer");
+        pause(1500);
+        dump("select world");
+        worldRows("select world");
+        move(1, 1);
+        shot("ac-06-select-world.png");
+        int row = onRender(() -> {
+            for (Object child : (List<?>) call(screen(), CONTAINER, "children", NONE)) {
+                if (!cls(LIST).isInstance(child)) continue;
+                List<?> rows = (List<?>) call(child, CONTAINER, "children", NONE);
+                for (int i = 0; i < rows.size(); i++) {
+                    Object summary = get(rows.get(i), "net.minecraft.client.gui.screens.worldselection.WorldSelectionList$WorldListEntry", "summary");
+                    if ("AC Off".equals(call(summary, "net.minecraft.world.level.storage.LevelSummary", "getLevelName", NONE))) return i;
+                }
+            }
+            return 0;
+        });
+        clickRow(row);
+        dump("select world, AC Off selected");
+        clickLabel("Edit");
+        pause(1500);
+        dump("edit world");
+        move(1, 1);
+        shot("ac-07-edit-world.png");
+        key(256);
+        out.println("done");
+    }
+    // ── end allow-commands ──
+
     public static void main(String[] args) throws Exception {
         loadMappings(Paths.get(args[0]));
         outDir = new File(args[1]);
@@ -767,7 +1073,15 @@ public final class ScreensOracle {
         Thread driver = new Thread(() -> {
             int code = 0;
             try {
-                drive();
+                if ("allow-commands".equals(System.getProperty("ov.walk"))) {  // ── allow-commands ──
+                    startUp();
+                    driveAllowCommands();
+                } else if ("allow-commands-list".equals(System.getProperty("ov.walk"))) {
+                    startUp();
+                    worldList();
+                } else {
+                    drive();
+                }
             } catch (Throwable e) {
                 e.printStackTrace(out);
                 code = 1;

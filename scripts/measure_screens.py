@@ -49,10 +49,23 @@ def main():
     parser.add_argument("--pack", choices=("faithful", "vanilla"), default="faithful")
     parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--cache", default=CACHE)
+    # ── allow-commands ── `allow-commands`: the Allow Cheats walk
+    # (docs/provenance/commandes-solo.md). Its worlds' level.dat are kept as
+    # level-<folder>.dat beside facts.txt.
+    parser.add_argument("--walk", choices=("screens", "allow-commands", "allow-commands-list"),
+                        default="screens")
+    # Worlds copied into saves/ before the client starts: every folder of DIR.
+    parser.add_argument("--plant", default=None)
     args = parser.parse_args()
+    # The client runs in its game directory: a relative cache would lose the
+    # oracle's classes.
+    args.cache = os.path.abspath(args.cache)
 
     base = creative()
     mappings = base.fetch_mappings()
+    if args.walk != "screens":
+        # The natives are extracted under the cache given, not the shared one.
+        base.CACHE = os.path.abspath(args.cache)
     cp, natives = base.classpath_and_natives()
 
     classes = os.path.join(args.cache, "classes")
@@ -64,12 +77,17 @@ def main():
     subprocess.run([os.path.join(base.JAVA_HOME, "bin", "javac"), "-nowarn", "-d", classes, source],
                    check=True)
 
-    game_dir = os.path.join(args.cache, "client-" + args.pack)
+    game_dir = os.path.join(args.cache, "client-" + args.pack
+                            + ("" if args.walk == "screens" else "-" + args.walk))
     out_dir = os.path.join(game_dir, "oracle")
     # A fresh game directory each run: no world (Singleplayer must lead to
     # Create World the first time), no screenshots from an earlier run.
     for sub in ("screenshots", "saves", "oracle"):
         shutil.rmtree(os.path.join(game_dir, sub), ignore_errors=True)
+    if args.plant:  # ── allow-commands ──
+        for folder in sorted(os.listdir(args.plant)):
+            shutil.copytree(os.path.join(args.plant, folder),
+                            os.path.join(game_dir, "saves", folder))
     base.write_options(game_dir, args.pack)
     with open(os.path.join(game_dir, "options.txt"), "a") as f:
         # No Realms notification over the title screen's buttons.
@@ -77,6 +95,7 @@ def main():
 
     command = [
         os.path.join(base.JAVA_HOME, "bin", "java"), "-XstartOnFirstThread", "-Xmx1800M",
+        "-Dov.walk=" + args.walk,
         "-Djava.library.path=" + natives, "-Dorg.lwjgl.librarypath=" + natives,
         "-cp", os.pathsep.join([classes] + cp), "ov.ScreensOracle", mappings, out_dir,
         "--username", NAME, "--version", "1.20.1", "--gameDir", game_dir,
@@ -94,6 +113,13 @@ def main():
     except subprocess.TimeoutExpired:
         print("client : délai dépassé (%d s) — voir %s" % (args.timeout, log_path))
 
+    # ── allow-commands ── each world's level.dat, as vanilla wrote it.
+    saves = os.path.join(game_dir, "saves")
+    if os.path.isdir(saves):
+        for folder in sorted(os.listdir(saves)):
+            level = os.path.join(saves, folder, "level.dat")
+            if os.path.exists(level):
+                shutil.copyfile(level, os.path.join(out_dir, "level-%s.dat" % folder))
     # The world the oracle made is not needed once measured: it is ~20 MB of
     # spawn chunks on a disk shared by several agents.
     shutil.rmtree(os.path.join(game_dir, "saves"), ignore_errors=True)

@@ -1492,6 +1492,9 @@ int main(int argc, char** argv) {
         menus->open(demo::MenuScreen::Title);
     }
     // ── end screens ──
+    // ── allow-commands ── options.txt's Operator Items Tab, or --operator-tab.
+    (*interface)->set_operator_items_tab(options.operator_tab ||
+                                         menus->options().operator_items_tab);
 
     // The block atlas, referenced rather than uploaded again: a dropped stack's
     // sprites were stitched into it with everything else.
@@ -1979,6 +1982,8 @@ int main(int argc, char** argv) {
                     settings.game_type = action.survival ? 0 : 1;
                     settings.generated = action.seed.has_value();
                     settings.seed      = action.seed.value_or(0);
+                    // ── allow-commands ── Create World's Allow Cheats
+                    settings.allow_commands = action.allow_commands;
                     std::error_code error;
                     std::filesystem::create_directories(action.world, error);
                     if (!io::write_file_atomic(action.world / "level.dat",
@@ -2126,6 +2131,8 @@ int main(int argc, char** argv) {
             if (!options.gui_scale_given) {
                 (*interface)->set_gui_scale(static_cast<u32>(game.gui_scale));
             }
+            // ── allow-commands ──
+            (*interface)->set_operator_items_tab(options.operator_tab || game.operator_items_tab);
             if (sound_engine) {
                 for (usize i = 0; i < client::kSoundCategoryNames.size(); ++i) {
                     if (const auto which =

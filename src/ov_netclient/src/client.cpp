@@ -214,6 +214,7 @@ void ClientEvents::clear() {
     own_entity_id.reset();
     own_effects.clear();
     explosions.clear();
+    op_level.reset();  // ── allow-commands ──
     pickups.clear();
     death_message.reset();  // ── screens ──
     respawned = false;
@@ -473,6 +474,20 @@ void Client::Impl::handle_play(i32 packet_id, std::span<const u8> body) {
             break;
         }
 
+        case net::clientbound::kEntityEvent: {  // ── allow-commands ──
+            // Entity id (Int), status (Byte). Only the permission statuses of
+            // this player are read here: 24 + level, level 0..4.
+            const auto entity_id = reader.read_i32();
+            const auto status    = reader.read_i8();
+            if (!entity_id || !status) {
+                return;
+            }
+            if (*entity_id == own_entity_id && *status >= 24 && *status <= 28) {
+                const std::lock_guard lock(mutex);
+                inbox.op_level = *status - 24;
+            }
+            break;
+        }
         case net::clientbound::kLoginPlay: {
             // Only the first three fields, and only for the game mode: the
             // registry codec that follows is the client's business and this
@@ -1253,6 +1268,8 @@ void Client::poll(ClientEvents& out) {
     out.own_effects.swap(impl_->inbox.own_effects);
     out.own_entity_id = impl_->inbox.own_entity_id;
     impl_->inbox.own_entity_id.reset();
+    out.op_level = impl_->inbox.op_level;  // ── allow-commands ──
+    impl_->inbox.op_level.reset();
     out.hardcore      = impl_->inbox.hardcore;
     impl_->inbox.death_message.reset();
     impl_->inbox.respawned = false;

@@ -197,6 +197,14 @@ public:
 
     [[nodiscard]] usize tab_count() const noexcept { return visible_.size(); }
 
+    /// ── allow-commands ── Show or hide the operator tab (and the stacks only
+    /// it holds) after construction: vanilla's client decides it from the
+    /// "Operator Items Tab" option *and* the player's permission level, which
+    /// the server can change at any time. The selected tab is kept when it is
+    /// still shown, else Building Blocks.
+    void set_operator_tab(bool shown);
+    [[nodiscard]] bool operator_tab() const noexcept { return options_.operator_tab; }
+
     [[nodiscard]] usize selected_tab() const noexcept { return selected_; }
 
     [[nodiscard]] const render::CreativeTab& tab() const noexcept { return *visible_[selected_]; }

@@ -76,6 +76,27 @@ CreativeScreen::CreativeScreen(const render::CreativeTabs& tabs, const render::L
     }
 }
 
+void CreativeScreen::set_operator_tab(bool shown) {  // ── allow-commands ──
+    if (shown == options_.operator_tab) {
+        return;
+    }
+    const std::string current =
+        visible_.empty() ? std::string{} : std::string{visible_[selected_]->id};
+    options_.operator_tab     = shown;
+    visible_.clear();
+    for (const render::CreativeTab& tab : catalogue_->tabs()) {
+        if (tab.id == kOperatorTab && !options_.operator_tab) {
+            continue;
+        }
+        visible_.push_back(&tab);
+    }
+    build_tab_cells();
+    selected_ = 0;
+    if (!select(current) && !select("minecraft:building_blocks") && !visible_.empty()) {
+        select(usize{0});
+    }
+}
+
 void CreativeScreen::build_tab_cells() {
     // The stacks only the operator tab holds are absent everywhere when the
     // tab is: the running client's search page lacks them.

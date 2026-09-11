@@ -312,12 +312,13 @@ simulé :
   par seconde max, Synchro verticale, Échelle de l'interface et Luminosité ;
 - dans Musique et sons : Appareil, Sous-titres, Audio directionnel ;
 - dans Contrôles : Accroupissement/Course (maintien ou bascule), Saut
-  automatique, Onglet des objets d'opérateur ; dans Souris : tout sauf la
-  Sensibilité ;
+  automatique ; dans Souris : tout sauf la Sensibilité (l'Onglet des objets
+  d'opérateur est fait : `commandes-solo.md`) ;
 - dans Créer un monde : **Hardcore** (le serveur n'a pas de hardcore : le
-  mode de jeu alterne Survie / Créatif), Difficulté, Commandes autorisées
-  (notre serveur intégré donne toujours le niveau 4 à son hôte), Personnaliser,
-  Structures, Coffre bonus, Règles, Expériences, Packs de données ;
+  mode de jeu alterne Survie / Créatif), Difficulté, Personnaliser,
+  Structures, Coffre bonus, Règles, Expériences, Packs de données.
+  **Autoriser les commandes** est fait, mesuré sur le vrai client :
+  `commandes-solo.md` ;
 - dans la liste des mondes : Modifier, Supprimer, Recréer ; pas d'icône de
   monde (un carré sombre à sa place).
 

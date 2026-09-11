@@ -109,6 +109,57 @@ TEST_CASE("Create World's three pages are where vanilla puts them", "[menus]") {
     check_rect(more, "data_packs", 322.0F, 138.0F, 210.0F, 20.0F);
 }
 
+// ── allow-commands ── The sequence the vanilla client showed, button by
+// button (docs/provenance/commandes-solo.md § 1).
+TEST_CASE("Allow Cheats follows the game mode until the player presses it", "[menus]") {
+    using M = CreateGameMode;
+    CHECK(next_game_mode(M::Survival) == M::Hardcore);
+    CHECK(next_game_mode(M::Hardcore) == M::Creative);
+    CHECK(next_game_mode(M::Creative) == M::Survival);
+
+    AllowCheats cheats;
+    M           mode = M::Survival;
+    const auto  step = [&](bool value, bool active) {
+        CHECK(cheats.value(mode) == value);
+        CHECK(AllowCheats::active(mode) == active);
+    };
+    // Untouched: OFF, OFF greyed in Hardcore, ON in Creative, OFF again.
+    step(false, true);
+    mode = next_game_mode(mode);
+    step(false, false);
+    mode = next_game_mode(mode);
+    step(true, true);
+    mode = next_game_mode(mode);
+    step(false, true);
+    // Pressed once in Survival: ON, and it stays ON — except in Hardcore.
+    cheats.press(mode);
+    step(true, true);
+    mode = next_game_mode(mode);
+    step(false, false);
+    mode = next_game_mode(mode);
+    step(true, true);
+    mode = next_game_mode(mode);
+    step(true, true);
+    // Pressed again: OFF, and Creative no longer turns it on.
+    cheats.press(mode);
+    step(false, true);
+    mode = next_game_mode(next_game_mode(mode));
+    REQUIRE(mode == M::Creative);
+    step(false, true);
+    mode = next_game_mode(mode);
+    step(false, true);
+
+    // In Hardcore the button is inactive: a press changes nothing.
+    AllowCheats hardcore;
+    hardcore.press(M::Hardcore);
+    CHECK_FALSE(hardcore.chosen.has_value());
+    // Untouched in Creative, a press turns it OFF and makes it the player's.
+    AllowCheats creative;
+    creative.press(M::Creative);
+    CHECK(creative.chosen == std::optional<bool>{false});
+    CHECK_FALSE(creative.value(M::Creative));
+}
+
 TEST_CASE("the death screen's buttons are where vanilla puts them", "[menus]") {
     const auto widgets = death_layout(854.0F, 480.0F);
     check_rect(widgets, "respawn", 327.0F, 192.0F, 200.0F, 20.0F);

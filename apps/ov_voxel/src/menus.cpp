@@ -102,6 +102,12 @@ std::vector<SavedWorld> list_worlds(const std::filesystem::path& saves) {
         world.game_type = settings.game_type;
         world.generated = settings.generated;
         world.seed      = settings.seed;
+        world.allow_commands = settings.allow_commands;  // ── allow-commands ──
+        if (const nbt::Tag* version = data->find("Version")) {
+            if (const nbt::Tag* name = version->find("Name")) {
+                world.version_name = std::string{name->as_string()};
+            }
+        }
         if (const nbt::Tag* played = data->find("LastPlayed")) {
             world.last_played = played->as_i64();
         }
@@ -243,6 +249,9 @@ void Menus::open(MenuScreen screen) {
         focus_      = "world_name";
         world_name_.set_value(translate("selectWorld.newWorld"));
         seed_field_.set_value("");
+        // ── allow-commands ── a fresh screen: Survival, cheats untouched.
+        create_mode_   = client::CreateGameMode::Survival;
+        create_cheats_ = client::AllowCheats{};
     }
     if (screen == MenuScreen::DirectConnect) {
         focus_ = "address";
@@ -413,6 +422,9 @@ std::string Menus::option_label(std::string_view id) const {
         return render::format_translation(language_.translate("options.percent_value"), arguments);
     };
     const auto on_off = [&](bool on) { return translate(on ? "options.on" : "options.off"); };
+    if (id == "operator_tab") {  // ── allow-commands ──
+        return generic("options.operatorItemsTab", on_off(options_.operator_items_tab));
+    }
     if (id == "fov") {
         if (options_.fov == 70) {
             return generic("options.fov", translate("options.fov.min"));
@@ -582,9 +594,9 @@ void Menus::rebuild() {
         "telemetry", "credits", "graphics", "chunk_updates", "smooth_lighting", "view_bobbing",
         "attack_indicator", "clouds", "fullscreen", "particles", "mipmaps", "biome_blend",
         "entity_distance", "entity_shadows", "device", "subtitles"};
-    static constexpr std::array<std::string_view, 12> kInactiveMore{
-        "directional", "sneak", "sprint", "auto_jump", "operator_tab", "edit", "delete",
-        "recreate", "cheats", "customize", "structures", "bonus_chest"};
+    static constexpr std::array<std::string_view, 10> kInactiveMore{
+        "directional", "sneak", "sprint", "auto_jump", "edit", "delete",
+        "recreate", "customize", "structures", "bonus_chest"};
     for (client::Widget& widget : widgets_) {
         const bool refused =
             std::ranges::find(kInactive, widget.id) != kInactive.end() ||
@@ -611,7 +623,8 @@ void Menus::rebuild() {
             widget.value = slider_value(widget.id);
             widget.text  = option_label(widget.id);
         }
-        if (widget.id == "vsync" || widget.id == "gui_scale") {
+        if (widget.id == "vsync" || widget.id == "gui_scale" ||
+            widget.id == "operator_tab") {  // ── allow-commands ──
             widget.text = option_label(widget.id);
         }
     }
@@ -685,10 +698,23 @@ void Menus::rebuild() {
                 } else if (widget.id == "game_mode") {
                     const std::array<std::string, 2> arguments{
                         translate("selectWorld.gameMode"),
-                        translate(create_survival_ ? "selectWorld.gameMode.survival"
-                                                   : "selectWorld.gameMode.creative")};
+                        translate(create_mode_ == client::CreateGameMode::Creative
+                                      ? "selectWorld.gameMode.creative"
+                                  : create_mode_ == client::CreateGameMode::Hardcore
+                                      ? "selectWorld.gameMode.hardcore"
+                                      : "selectWorld.gameMode.survival")};
                     widget.text = render::format_translation(
                         language_.translate("options.generic_value"), arguments);
+                } else if (widget.id == "cheats") {  // ── allow-commands ──
+                    // options.generic_value(selectWorld.allowCommands, options.on|off),
+                    // the vanilla button's own component.
+                    const std::array<std::string, 2> arguments{
+                        translate("selectWorld.allowCommands"),
+                        translate(create_cheats_.value(create_mode_) ? "options.on"
+                                                                     : "options.off")};
+                    widget.text = render::format_translation(
+                        language_.translate("options.generic_value"), arguments);
+                    widget.active = client::AllowCheats::active(create_mode_);
                 } else if (widget.id == "world_type") {
                     const std::array<std::string, 2> arguments{
                         translate("selectWorld.mapType"),
@@ -848,6 +874,10 @@ MenuAction Menus::activate(const client::Widget& widget) {
                 open(MenuScreen::Mouse);
             } else if (id == "keybinds") {
                 open(MenuScreen::KeyBinds);
+            } else if (id == "operator_tab") {  // ── allow-commands ──
+                options_.operator_items_tab = !options_.operator_items_tab;
+                options_changed_            = true;
+                dirty_                      = true;
             }
             break;
         case MenuScreen::KeyBinds:
@@ -889,7 +919,16 @@ MenuAction Menus::activate(const client::Widget& widget) {
             } else if (id == "world_name" || id == "seed") {
                 focus_ = id;
             } else if (id == "game_mode") {
-                create_survival_ = !create_survival_;
+                // ── allow-commands ── vanilla cycles Survival, Hardcore,
+                // Creative. Hardcore is skipped: this server has no hardcore
+                // (commandes-solo.md § 6), and a world that says hardcore and
+                // is not would be worse than none.
+                create_mode_ = client::next_game_mode(create_mode_);
+                if (create_mode_ == client::CreateGameMode::Hardcore) {
+                    create_mode_ = client::next_game_mode(create_mode_);
+                }
+            } else if (id == "cheats") {  // ── allow-commands ──
+                create_cheats_.press(create_mode_);
             } else if (id == "world_type") {
                 create_flat_ = !create_flat_;
             } else if (id == "create") {
@@ -900,7 +939,8 @@ MenuAction Menus::activate(const client::Widget& widget) {
                 action.create     = true;
                 action.world      = config_.saves / world_folder_for(config_.saves, name);
                 action.world_name = name;
-                action.survival   = create_survival_;
+                action.survival       = create_mode_ != client::CreateGameMode::Creative;
+                action.allow_commands = create_cheats_.value(create_mode_);  // ── allow-commands ──
                 if (!create_flat_) {
                     action.seed = client::seed_from_text(seed_field_.value())
                                       .value_or(config_.random_seed);
@@ -1281,10 +1321,18 @@ void Menus::draw(rhi::CommandList& cmd, u32 framebuffer_width, u32 framebuffer_h
                     date = text.data();
                 }
                 gui_->text(left + 35.0F, top + 12.0F, world.folder + " (" + date + ")", 0xFF808080U);
-                const std::string mode = translate(world.game_type == 1
-                                                       ? "gameMode.creative"
-                                                       : "gameMode.survival");
-                gui_->text(left + 35.0F, top + 21.0F, mode, 0xFF808080U);
+                // ── allow-commands ── the vanilla client's line, measured
+                // (commandes-solo.md § 5): the mode, ", Cheats" when the world
+                // allows commands, ", Version: <Data.Version.Name>".
+                std::string info = translate(world.game_type == 1 ? "gameMode.creative"
+                                                                  : "gameMode.survival");
+                if (world.allow_commands) {
+                    info += ", " + translate("selectWorld.cheats");
+                }
+                if (!world.version_name.empty()) {
+                    info += ", " + translate("selectWorld.version") + " " + world.version_name;
+                }
+                gui_->text(left + 35.0F, top + 21.0F, info, 0xFF808080U);
             }
             if (worlds_.empty()) {
                 gui_->text_centred(w * 0.5F, box.top + 20.0F, translate("selectWorld.noWorlds"), grey);

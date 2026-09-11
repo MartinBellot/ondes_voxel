@@ -294,12 +294,38 @@ void Interface::refresh_hotbar() {
     hud_.armour = client::armour_points(armour);
 }
 
+// ── allow-commands ──
+void Interface::set_operator_items_tab(bool on) {
+    options_.operator_tab = on;
+    refresh_operator_tab();
+}
+
+void Interface::refresh_operator_tab() {
+    if (!creative_screen_) {
+        return;
+    }
+    const bool may = !op_level_ || (*op_level_ >= 2 && hud_.creative);
+    creative_screen_->set_operator_tab(options_.operator_tab && may);
+}
+
 void Interface::apply(const netclient::ClientEvents& events) {
     chat_.apply(events, gui_->font(), language_);  // ── chat ──
     if (events.game_mode) {
         // 1 is creative. Creative hides the hearts, the haunches and the
         // experience bar, and it is the only thing that decides it.
         hud_.creative = *events.game_mode == 1;
+    }
+    // ── allow-commands ── The operator tab, as vanilla's client decides it:
+    // the "Operator Items Tab" option, and a player who may use game-master
+    // blocks — creative and permission level 2 or more. A singleplayer world
+    // without cheats is level 0: no tab, whatever the option says.
+    if (events.op_level) {
+        op_level_ = *events.op_level;
+        OV_LOG_INFO("permission level {} from the server (Entity Event {})", *op_level_,
+                    24 + *op_level_);
+    }
+    if (events.op_level || events.game_mode) {
+        refresh_operator_tab();
     }
     if (events.health) {
         if (events.health->health < previous_health_) {

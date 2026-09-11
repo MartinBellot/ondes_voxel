@@ -23,6 +23,7 @@
 
 #include "ov/io/file.hpp"
 #include "ov/protocol/chat.hpp"
+#include "ov/protocol/entity.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -186,7 +187,7 @@ struct Harness {
     Harness()
         : service{ServiceConfig{packs().blocks ? &*packs().blocks : nullptr,
                                 packs().registries ? &*packs().registries : nullptr,
-                                {}, {}, false, 4, "Ondes VOXEL"}} {
+                                {}, {}, false, 4, "Ondes VOXEL", {}}} {
         host            = server.host();
         service.console = [this](std::string_view line) { server.console.emplace_back(line); };
         service.world().rules.set(*GameRules::index_of("doDaylightCycle"), 0);
@@ -802,6 +803,100 @@ TEST_CASE("selectors choose and refuse as vanilla's do", "[commands][selector]")
     CHECK(refused("@e[type=cow").first == R"({"translate":"argument.entity.options.unterminated"})");
     CHECK(refused("@e[distance=-1]").first ==
           R"({"translate":"argument.entity.options.distance.negative"})");
+}
+
+// ── allow-commands ──────────────────────────────────────────────────────────
+// Create World's "Allow Cheats" is level.dat's allowCommands; in singleplayer
+// it is the host's permission level: 4 with it, 0 without. ops.json belongs to
+// the dedicated server only. Measured on the vanilla client
+// (docs/provenance/commandes-solo.md).
+
+TEST_CASE("the permission a player joins with", "[commands][allow_commands]") {
+    // Dedicated: ops.json, whatever level.dat says.
+    CHECK(join_permission(false, false, false, std::nullopt) == 0);
+    CHECK(join_permission(false, true, true, std::nullopt) == 0);
+    CHECK(join_permission(false, false, false, 3) == 3);
+    CHECK(join_permission(false, true, false, 4) == 4);
+    // Integrated: the host, by Allow Cheats; ops.json never consulted.
+    CHECK(join_permission(true, true, true, std::nullopt) == 4);
+    CHECK(join_permission(true, false, true, std::nullopt) == 0);
+    CHECK(join_permission(true, false, true, 4) == 0);
+    CHECK(join_permission(true, true, false, std::nullopt) == 0);
+}
+
+namespace {
+
+/// The permission statuses (24..28) of the Entity Events sent to the player.
+[[nodiscard]] std::vector<i32> permission_events(const FakeServer& server) {
+    std::vector<i32> out;
+    for (const auto& [id, payload] : server.sent) {
+        // Entity id (Int), then the status byte.
+        if (id == net::clientbound::kEntityEvent && payload.size() == 5 && payload[4] >= 24 &&
+            payload[4] <= 28) {
+            out.push_back(payload[4] - 24);
+        }
+    }
+    return out;
+}
+
+[[nodiscard]] std::vector<u8> commands_sent(const FakeServer& server) {
+    for (const auto& [id, payload] : server.sent) {
+        if (id == net::clientbound::kCommands) {
+            return payload;
+        }
+    }
+    return {};
+}
+
+}  // namespace
+
+TEST_CASE("singleplayer: Allow Cheats is the host's level, sent as vanilla sends it",
+          "[commands][allow_commands]") {
+    if (!have_packs()) {
+        SKIP("no registry pack");
+    }
+    struct Case {
+        bool        allow;
+        std::string host;
+        i32         expected;
+    };
+    for (const Case& c : {Case{true, "ovprobe", 4}, Case{false, "ovprobe", 0},
+                          Case{true, "someone_else", 0}, Case{true, "", 0}}) {
+        ServiceConfig config;
+        config.blocks      = packs().blocks ? &*packs().blocks : nullptr;
+        config.registries  = packs().registries ? &*packs().registries : nullptr;
+        config.integrated  = true;
+        config.host_player = c.host;
+        CommandService service{std::move(config)};
+        world::LevelSettings settings;
+        settings.allow_commands = c.allow;
+        service.load_world(settings);
+
+        FakeServer  server;
+        server.permission = -1;
+        CommandHost host  = server.host();
+        service.run(host);  // greets the player
+        CAPTURE(c.allow, c.host);
+        CHECK(server.permission == c.expected);
+        // Entity Event 24 + level, once, and the command tree of that level.
+        CHECK(permission_events(server) == std::vector<i32>{c.expected});
+        CHECK(commands_sent(server) == service.commands_packet(c.expected));
+
+        // A command above the level is refused as vanilla refuses it: the
+        // command does not exist for this player.
+        server.sent.clear();
+        CommandSource source;
+        source.kind       = CommandSource::Kind::Player;
+        source.entity_id  = 1;
+        source.name       = server.name;
+        source.uuid       = server.uuid;
+        source.permission = server.permission;
+        (void)service.execute(source, "gamemode survival", host);
+        const std::vector<std::string> chat = server.chat();
+        REQUIRE_FALSE(chat.empty());
+        const bool refused = chat.front().find("command.unknown.command") != std::string::npos;
+        CHECK(refused == (c.expected < 2));
+    }
 }
 
 TEST_CASE("the dispatcher survives hostile input", "[commands][hostile]") {
