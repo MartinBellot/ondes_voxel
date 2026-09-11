@@ -19,6 +19,7 @@ ov_add_library(ov_protocol
         src/login.cpp
         src/play.cpp
         src/recipe_packets.cpp
+        src/scoreboard_packets.cpp  # ── scoreboard ──
         src/sound.cpp
         src/status.cpp
         src/survival.cpp
@@ -49,6 +50,7 @@ ov_add_test(test_ov_protocol
         tests/test_framing.cpp
         tests/test_interaction.cpp
         tests/test_login.cpp
+        tests/test_scoreboard_packets.cpp  # ── scoreboard ──
         tests/test_status.cpp
         tests/test_survival.cpp
         tests/test_types.cpp
