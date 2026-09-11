@@ -14,6 +14,8 @@ ov_add_library(ov_server
         src/generated_world.cpp
         src/generation_check.cpp
         src/husbandry.cpp
+        src/inbound_queue.cpp  # ── concurrency ──
+        src/tick_thread_lock.cpp  # ── concurrency ──
         src/merchant_session.cpp
         src/natural_spawning.cpp
         src/nether_travel.cpp
@@ -104,6 +106,8 @@ ov_add_test(test_ov_server
         tests/test_nether_travel.cpp
         tests/test_weather_session.cpp
         tests/test_tick_profile.cpp
+        tests/test_inbound_queue.cpp  # ── concurrency ──
+        tests/test_tick_thread_lock.cpp  # ── concurrency ──
         tests/test_end_fight.cpp
         tests/test_rails_session.cpp
         tests/test_nether_mobs.cpp  # ── nether-2 ──

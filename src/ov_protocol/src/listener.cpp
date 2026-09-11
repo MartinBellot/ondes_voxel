@@ -67,7 +67,10 @@ private:
     FrameDecoder                decoder_;
     std::deque<std::vector<u8>> write_queue_;
     bool                        writing_{false};
-    bool                        closed_{false};
+    /// Atomic: `send` and `close` are called from the server's tick thread,
+    /// `finish` from the event loop. A plain bool here is a data race the
+    /// moment packets are handled off the loop (ThreadSanitizer names it).
+    std::atomic<bool> closed_{false};
     i32                         write_threshold_{kNoCompression};
 };
 
@@ -247,10 +250,9 @@ void AsioConnection::write_next() {
 }
 
 void AsioConnection::close() {
-    if (closed_) {
+    if (closed_.exchange(true)) {
         return;
     }
-    closed_ = true;
     asio::post(socket_.get_executor(), [self = shared_from_this()] {
         std::error_code ec;
         self->timer_.cancel();
@@ -262,10 +264,9 @@ void AsioConnection::close() {
 }
 
 void AsioConnection::finish() {
-    if (closed_) {
+    if (closed_.exchange(true)) {
         return;
     }
-    closed_ = true;
     std::error_code ec;
     timer_.cancel();
     socket_.close(ec);
