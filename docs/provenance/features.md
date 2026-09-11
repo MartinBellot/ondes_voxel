@@ -1080,3 +1080,330 @@ fabrique positionnelle legacy appartient à ce fichier-là, pas à celui-ci.
 * **`Mth.sin`/`Mth.cos` pour le tronc mega jungle, `Math.sin`/`Math.cos` pour le
   fancy.** Le premier est la table de 65536 flottants, le second est du double.
   Ils ne sont pas interchangeables et l'erreur est invisible.
+
+---
+
+# Les features de l'Overworld (mandat `features-2`)
+
+Deux chantiers : les arbres ramifiés que la sonde d'arbre avait laissés nommés
+et faux, puis les types de feature que le serveur refusait au démarrage.
+
+| fichier | contenu |
+|---|---|
+| `tree_feature.cpp` | mega pine, dark oak, jungle (mega), cerisier, mangrove : placers corrigés |
+| `huge_mushroom_feature.cpp` | `huge_brown_mushroom`, `huge_red_mushroom` |
+| `cave_feature.cpp` | `geode` (et l'aiguillage de la famille des grottes) |
+| `dripstone_feature.cpp` | `pointed_dripstone`, `dripstone_cluster`, `large_dripstone` |
+| `lush_feature.cpp` | `vegetation_patch`, `waterlogged_vegetation_patch`, `multiface_growth` (lichen) |
+| `root_system_feature.cpp` | `root_system` (l'azalée enracinée) |
+| `ocean_feature.cpp` | `seagrass`, `kelp`, `sea_pickle`, les trois coraux, `underwater_magma` |
+| `surface_feature.cpp` | `vines`, `forest_rock`, `lake` (lave), `ice_spike` |
+| `terrain_feature.cpp` | les refus nommés, chacun avec sa raison |
+| `biome_info_noise.cpp` | `BIOME_INFO_NOISE`, `noise_threshold_count`, `noise_based_count` |
+| `noise_state_provider.cpp` | `noise_provider`, `noise_threshold_provider`, `dual_noise_provider` |
+| `overworld_feature.{hpp,cpp}` | l'aiguillage, les prédicats `solid`, `replaceable`, `matching_fluids` |
+
+| `bamboo_feature.cpp` | `bamboo` |
+
+## Le chargement : 113 → 150 des 194 features configurées
+
+`ov_features --missing` :
+
+| | avant | après |
+|---|---:|---:|
+| configured features construites | 113 de 194 | **150** de 194 |
+| placed features construites | 134 | **183** |
+| placed features nommées par une biome et non construites | 68 | **20** |
+
+Les vingt qui restent sont exactement les refus nommés plus bas : les huit
+placements des champignons (`brown_mushroom_*`, `red_mushroom_*` — leur survie
+lit la lumière), glace bleue, icebergs, fossiles, puits du désert, donjons,
+couche gelée, sculk, et `seagrass_simple` (qui demande `carving_mask`).
+
+Un des déblocages n'était pas une feature mais un **bug de lecture** :
+`forest_flowers` et `flower_forest_flowers` étaient refusées sans aucun message.
+Leur `count` est un fournisseur `clamped` dont la `source` est rangée *dans*
+`value`, à côté des bornes ; le lecteur la cherchait au niveau supérieur, ne la
+trouvait pas et rendait « malformed ». Une ligne dans `placement.cpp`.
+
+Les fichiers partagés ne portent que des crochets d'une à trois lignes,
+marqués `features-2` : un appel dans `feature.cpp` (types de feature et
+fournisseurs d'état), deux dans `placement.cpp` (prédicats, modificateurs),
+une ligne dans `decoration.cpp` (la graine du monde dans `FeatureContext`).
+
+## La mesure : une sonde « bloc pour bloc »
+
+La sonde d'arbre ne compare que le bois. Une géode, un lac ou un champignon
+géant ne sont pas faits de bûches. `ov_features --probe --control=<monde>`
+généralise la sonde :
+
+* le **monde témoin** a la même graine, le même preset `plains` et **aucune
+  feature** — c'est le terrain avant la feature, bloc pour bloc ;
+* le **monde sonde** est le même terrain après la feature du jeu ;
+* notre feature est rejouée **par notre C++** sur le témoin (neuf chunks), et
+  le chunk central est comparé bloc à bloc là où l'un des deux côtés a changé
+  quelque chose.
+
+`scripts/probe_tree.py pack` accepte deux formes de plus : `=minecraft:nom`
+nomme une **placed** feature de vanilla, pipeline compris, que la biome liste
+sous son propre nom ; `%fichier.json` est une placed feature écrite par nous.
+`STEP=` choisit l'étape. Une liste vide (`none`) donne le témoin.
+
+**Le piège du fluide.** Entre le témoin et la sonde, 3193 blocs d'eau
+différaient à des endroits que la feature n'avait pas touchés : un tick de
+fluide qui a tourné dans un monde et pas dans l'autre. Ils sont désormais
+comptés à part (« fluid settled differently »), et seulement là où nous
+n'avons rien écrit.
+
+**Le témoin absurde (piège 14).** Chaque mesure est refaite avec l'index
+décalé d'un cran — donc une graine de feature fausse. Pour les champignons
+géants : **94,986 %** de blocs identiques avec la bonne graine, **2,010 %**
+avec la fausse. La métrique mesure bien la feature.
+
+## Les arbres ramifiés
+
+Mondes sonde `probe-f2-a` (épicéa géant, chêne noir, acacia) et `probe-f2-b`
+(jungle géante, cerisier, mangrove), graine 1234, trois essences par monde
+pour rester distinguables. Arbre entier identique, 300 chunks :
+
+| feature | avant | après |
+|---|---:|---:|
+| `mega_spruce` | 0 / 142 (0 %) | **54 / 144 (37,5 %)** |
+| `dark_oak` | 0 / 255 (0 %) | **98 / 255 (38,4 %)** |
+| `acacia` | 104 / 217 (47,9 %) | **161 / 216 (74,5 %)** |
+| `mega_jungle_tree` | 0 / 135 (0 %) | **39 / 133 (29,3 %)** |
+| `mangrove` | 0 / 46 (0 %) | **64 / 145 (44,1 %)** |
+| `cherry` | 0 / 215 (0 %) | 0 / 214 (0 %) |
+| bûches identiques, monde B | 15,9 % | **82,5 %** |
+| blocs de bois identiques, monde A | 75,5 % | **85,4 %** |
+
+Ce que chaque correction a été :
+
+* **`mega_pine_foliage_placer` : une crête.** La suite non monotone
+  `0, 0, 1, 0, 2, 1, 2` que la sonde précédente avait lue couche par couche
+  vient d'une règle : un niveau dont la portée lissée égale celle du niveau
+  d'en dessous gagne un bloc quand son `y` est pair.
+* **`dark_oak_foliage_placer` : le masque lu sur la sonde.** Sur la rangée
+  large d'une attache deux-par-deux, le jeu retire les cellules dont `x` et `z`
+  sont tous deux dans {−r, r, r+1} : la colonne lointaine du carré (r+1) *et*
+  celle d'avant comptent comme son bord. La rangée du haut garde
+  `x + z ≤ 2r − 2`, la rangée basse d'une attache simple perd ses coins.
+* **`jungle_foliage_placer`** (seule la jungle géante l'utilise) portait le
+  masque de l'acacia ; c'est un disque coupé à `x + z ≥ 7`.
+* **`cherry_trunk_placer`** a été réécrit : deux départs de branche (le second
+  tiré dans l'intervalle du premier réduit d'un cran en haut, décalé s'ils
+  coïncident), puis le nombre de branches, une direction partagée, la seconde
+  branche à l'opposé, et une marche vers la cible avec un flottant par pas. Le
+  tronc et les branches sont désormais **justes** sur les exemples lus ; ce qui
+  reste faux est le **bord inférieur du feuillage** (trous et feuilles
+  pendantes), superposé dans les exemples lus à la canopée d'un voisin. **Non
+  résolu**, et c'est pourquoi le cerisier reste à 0 % d'arbres entiers.
+* **`upwards_branching_trunk_placer`** (mangrove) tire deux fois
+  `extra_branch_length` et ajoute des attaches à chaque pas et en bout de
+  branche ; **`mangrove_root_placer`** simule quatre racines qui descendent
+  jusqu'au sol et fait échouer tout l'arbre si l'une d'elles reste en l'air à
+  sa quinzième marche.
+
+**Ce qui reste des échecs n'est plus, pour l'essentiel, le placer.** Les
+exemples lus d'épicéa géant et de chêne noir « faux » sont identiques arbre
+pour arbre ; les cellules qui diffèrent appartiennent à l'arbre d'un chunk
+voisin qui déborde dans la boîte, et que le jeu a fait pousser avant ou après
+le nôtre. La sonde compte l'arbre comme faux. Ce n'est pas mesuré en chiffre ;
+c'est lu sur les exemples, et dit comme tel.
+
+### Sur le monde de référence, graine 1234567890
+
+`ov_features --trees --chunks=200 --stride=13`, même échantillon que les
+chiffres précédents :
+
+| | avant (ce fichier) | après |
+|---|---:|---:|
+| troncs au même endroit | 157 / 378 (41,534 %) | **160 / 378 (42,328 %)** |
+| forme identique, sur un vrai tronc | 81 / 155 (52,258 %) | 75 / 158 (47,468 %) |
+| blocs de bois identiques | 10 985 (44,591 %) | 11 140 (45,220 %) |
+
+La forme semblait **baisser** — dans `trees_birch_and_oak` (57 → 52) et
+`trees_jungle` (6 → 5), alors que ni le chêne, ni le bouleau, ni le fancy oak
+n'utilisent un placer modifié ici. La contre-épreuve l'a tranché : le même
+échantillon, mesuré avec **l'ancien `tree_feature.cpp` seul** remis en place
+(`.scratch/tree_regression.sh` — deux binaires, le fichier restauré à l'octet) :
+
+| | ancien `tree_feature.cpp`, ici | le nôtre |
+|---|---:|---:|
+| troncs au même endroit | 157 / 378 (41,534 %) | **160 / 378 (42,328 %)** |
+| forme identique, sur un vrai tronc | 74 / 155 (47,742 %) | **75 / 158 (47,468 %)** |
+
+L'« avant » de 81 formes identiques **ne se reproduit pas dans cet
+environnement** : le code d'origine y donne 74. La baisse apparente vient de là
+(paquet de registre régénéré, code fusionné dans `main` depuis la mesure
+précédente), pas des placers modifiés, qui gagnent trois troncs et un arbre
+juste sur le même échantillon. Le taux de forme bouge d'un cheveu parce que le
+dénominateur passe de 155 à 158.
+
+### Hors échantillon, graine 987654321
+
+Même commande avec `--world=run/reference-987654321/world --seed=987654321`,
+même échantillon (38 chunks, 364 troncs du jeu), rien retouché entre les deux
+graines :
+
+| | avant (ce fichier) | après |
+|---|---:|---:|
+| **troncs au même endroit** | 67 / 364 (18,407 %) | **164 / 364 (45,055 %)** |
+| arbres posés sur un vrai tronc | 58 | 92 |
+| dont la forme est identique | 39 (67,241 %) | 42 (45,652 %) |
+| blocs de bois identiques | 4158 (23,164 %) | **8876 (49,448 %)** |
+| troncs du jeu sans rien de nous, `dark_forest` | 242 | 145 |
+
+C'est l'effet le plus visible de ce travail sur une carte : les forêts noires
+avaient **zéro** arbre, faute des deux champignons géants que leur sélecteur
+nomme. Le nombre de troncs au bon endroit fait plus que doubler, les blocs de
+bois identiques aussi.
+
+Le taux de forme baisse parce que le dénominateur change de nature : 34 des 92
+arbres posés sur un vrai tronc sont maintenant des arbres de forêt noire, et
+`dark_forest_vegetation` n'en fait que **4 sur 34** de la bonne forme. La forêt
+noire est la plus dense du jeu (16 essais par chunk, chêne noir à double tronc) :
+c'est là que l'ordre dans lequel les voisins poussent décide le plus, et c'est
+aussi là que les 145 troncs manquants restent. **Non résolu** ; la sonde, qui
+isole un arbre par chunk, donne 38,4 % d'arbres entiers justes au chêne noir et
+des exemples « faux » identiques à l'arbre près, ce qui désigne l'interaction
+entre voisins plutôt que le placer.
+
+Lu directement sur le monde de référence
+(`--show=3 --only=dark_forest_vegetation --matched`), trois arbres « faux » :
+
+* **deux sont identiques au jeu dans toutes les cellules de notre arbre.** Ce
+  qui les rend « faux » pour l'outil, ce sont des feuilles et des troncs
+  d'arbres **voisins** qui tombent dans la boîte englobante du nôtre. L'un des
+  deux porte en plus trois feuilles de trop sur une rangée basse, que le jeu
+  n'a pas posées ;
+* **le troisième est un autre arbre** : le tronc du jeu est une colonne plus
+  loin, un voisin a pris la place avant.
+
+Le chiffre de forme en forêt noire mesure donc surtout l'ordre de pousse entre
+voisins dans la forêt la plus dense du jeu, pas le placer du chêne noir. C'est
+lu sur trois exemples, pas compté sur l'échantillon, et dit comme tel.
+
+## Les champignons géants
+
+`huge_brown_mushroom` : chapeau plat de rayon 3, coins coupés.
+`huge_red_mushroom` : trois anneaux creux et un carré plein. Hauteur
+`nextInt(3) + 4`, doublée une fois sur douze — deux tirages toujours. Le test de
+dégagement du jeu est appelé avec une hauteur de −1, si bien que pour le rouge
+seule la colonne du pied est vérifiée.
+
+Monde `probe-f2-mush`, graine 1234, 200 chunks :
+
+| bloc | jeu | nous | identiques |
+|---|---:|---:|---:|
+| `red_mushroom_block` | 4302 | 4302 | 95,6 % |
+| `brown_mushroom_block` | 4171 | 4183 | 94,7 % |
+| `mushroom_stem` | 1021 | 1021 | 93,5 % |
+| **tout** | 9494 | 9506 | **94,986 %** |
+
+80,833 % des chunks touchés sont identiques bloc pour bloc. Les écarts lus sont
+des chapeaux voisins qui se recouvrent (l'ordre de décoration des chunks) et
+un champignon rouge que nous faisons pousser là où le jeu ne l'a pas fait.
+
+C'est ce qui débloque `dark_forest_vegetation` — donc les arbres de toutes les
+forêts noires, 242 troncs manquants à la graine 987654321 — et
+`mushroom_island_vegetation`.
+
+## Les grottes : géode et spéléothèmes
+
+Monde `probe-f2-cave`, graine 1234, les quatre placed features de vanilla
+(`amethyst_geode`, `dripstone_cluster`, `large_dripstone`, `pointed_dripstone`)
+aux index 0 à 3 de l'étape 9, contre le témoin `probe-f2-control`, 200 chunks :
+
+| bloc | jeu | nous | identiques | témoin absurde |
+|---|---:|---:|---:|---:|
+| `smooth_basalt` | 3685 | 3685 | **100,0 %** | 0,0 % |
+| `calcite` | 2836 | 2836 | **100,0 %** | 0,0 % |
+| `amethyst_block` | 2166 | 2166 | **100,0 %** | 0,0 % |
+| `budding_amethyst` | 215 | 215 | **100,0 %** | 0,0 % |
+| les quatre bourgeons | 40 | 40 | **100,0 %** | 0,0 % |
+| `air` (creusé) | 3536 | 3536 | 99,8 % | 0,0 % |
+| `dripstone_block` | 73 058 | 70 327 | 56,3 % | 24,8 % |
+| `pointed_dripstone` | 13 146 | 14 723 | 40,7 % | 10,1 % |
+| **tout** | 98 875 | 97 851 | **59,763 %** | 19,761 % |
+
+**La géode est exacte**, bloc pour bloc, couche par couche, bourgeons compris,
+et le témoin décalé d'un index tombe à zéro sur chacun de ses blocs. C'est aussi
+la preuve que le `NormalNoise` sur générateur *legacy* (graine du monde,
+fabrique positionnelle tirée d'un `nextLong`, octave semée par le hachage Java
+de `octave_-4`) est juste au bit : une erreur de bruit déplacerait la frontière
+entre calcite et basalte, qui est à 100 %.
+
+**Les spéléothèmes ne le sont pas.** 56,3 % des blocs de dripstone et 40,7 % des
+pointes sont à leur place, contre 24,8 % et 10,1 % pour le témoin : c'est au
+dessus du hasard et loin d'être juste. Le témoin est haut parce que les amas
+couvrent une grande part de chaque chunk et se recouvrent par coïncidence ;
+c'est le plancher contre lequel lire le chiffre, pas zéro. Les trois features
+partagent le même monde sonde, donc cette mesure **ne dit pas laquelle** est
+fausse ; un monde par feature la départagerait. **Non résolu.**
+
+## Les prédicats et fournisseurs débloqués
+
+* **`replaceable`** se lit dans le tag `#minecraft:replaceable`, que 1.20.1
+  exporte et qui liste exactement les blocs portant la propriété.
+* **`solid`** est `BlockState.isSolid()` : une forme de collision dont la boîte
+  englobante fait en moyenne au moins 0,7291666 de bloc, ou un bloc de haut.
+  Les surcharges par bloc (`forceSolidOn` / `forceSolidOff`) ne sont dans
+  aucun rapport et **ne sont pas modélisées** — nommé.
+* **`matching_fluids`** interroge l'état de *fluide*, pas le bloc : `water` est
+  la source (niveau 0 ou bloc waterlogged), `flowing_water` tout autre niveau,
+  `empty` l'absence de fluide. L'ancienne lecture « fluide = bloc » refusait
+  `flowing_water` (la canne à sucre) et `empty` (le melon), et prenait l'eau
+  courante pour une source.
+* **Règle de survie ajoutée** : `small_dripleaf` (tag
+  `#small_dripleaf_placeable`, ou source d'eau ici et terre dessous). Elle ne lit
+  que des blocs, comme le reste de la table.
+* **Les deux champignons restent refusés.** Leur règle lit le niveau de
+  lumière, que la génération ne calcule pas. Une règle « supposée sombre » a
+  été écrite, puis **retirée** : aucun monde sonde n'a pu la mesurer (la file
+  du verrou JVM partagé est restée bloquée plus de deux heures), et le test
+  existant qui épingle ce refus est une décision du projet, pas un détail à
+  assouplir. `patch_brown_mushroom` et `patch_red_mushroom` restent donc
+  nommés et non construits.
+* **`BIOME_INFO_NOISE`** : un `PerlinSimplexNoise` sur un générateur *legacy*
+  de graine 2345, octave unique 0 — donc un bruit simplex 2D. Il décide combien
+  d'herbes et de fleurs par chunk dans les plaines (`noise_threshold_count`) et
+  combien de varech et de coraux dans les océans chauds (`noise_based_count`).
+* **Les fournisseurs à bruit** lisent un `NormalNoise` construit sur un
+  générateur *legacy* semé par leur propre champ `seed` : chaque pile de Perlin
+  prend une fabrique positionnelle d'un `nextLong`, chaque octave est semée par
+  le hachage Java de `octave_<n>`. C'est ce qui choisit les tulipes des
+  plaines et les bandes de la forêt de fleurs.
+
+## Refusés, nommés, et pourquoi
+
+| type | raison |
+|---|---|
+| `monster_room` | le générateur d'araignées et les coffres sont des *entités de bloc* ; `FeatureLevel` n'écrit que des états |
+| `desert_well` | laissé au mandat des structures à gabarits |
+| `bonus_chest` | placé par la logique d'apparition selon une option du monde, contient une table de butin |
+| `freeze_top_layer` | lit la température de biome avec son ajustement en altitude et le modificateur « frozen » — deux `PerlinSimplexNoise` non construits |
+| `multiface_growth` de `sculk_vein` | demande le propagateur de sculk, une autre machine que celui du lichen |
+| `sculk_patch`, `iceberg`, `blue_ice`, `fossil` | non écrits dans ce mandat |
+| `seagrass_simple` | sa placement demande `carving_mask`, les masques des carvers |
+| le Nether et l'End | laissés au mandat Nether |
+
+## Pièges pour les autres agents
+
+* **Le paquet de registre partagé peut changer sous vos pieds.**
+  `data/vanilla/1.20.1/registry.ovpack` est un lien vers le fichier du dépôt
+  principal ; un autre agent l'a régénéré avec un format que ce worktree ne
+  lit pas (780 312 octets contre 729 688), et chaque outil a échoué d'un coup
+  avec « run tools/ov_datagen first ». Remède : supprimer **le lien** (pas la
+  cible) et lancer `python3 tools/ov_datagen/ovpack.py` — il n'écrit qu'un
+  fichier, sous la racine du worktree.
+* **Un arbre voisin rend « faux » un arbre juste.** Sur une sonde à un arbre
+  par chunk, les grands arbres débordent ; le score par arbre compte les
+  feuilles du voisin. Lire les exemples avant de chercher une règle.
+* **Un fluide qui s'est posé autrement n'est pas une différence de feature.**
+  Voir « Le piège du fluide » plus haut.
+* **Un tag est un ensemble pour `BlockTags`, une liste pour le jeu.** Les
+  coraux tirent un indice dans le *contenu* d'un tag : l'ordre du fichier fait
+  partie de la graine. `ocean_feature.cpp` relit ces trois tags dans l'ordre.
+* **Un `HashSet<BlockPos>` parcouru avec un tirage par élément** — les patches
+  de végétation comme les décorateurs d'arbre — impose `java_hash_order`.

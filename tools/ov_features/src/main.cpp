@@ -119,6 +119,14 @@ struct Options {
     std::string feature;
     /// Its index at the step, as the probe datapack wrote it.
     i32 index{0};
+    /// A *control* world: the same seed, the same preset, no feature at all.
+    ///
+    /// With it, `--probe` compares every block rather than only wood: the
+    /// control is the terrain before the feature, the probe world is the
+    /// terrain after the game's feature, and our feature is replayed over the
+    /// control. That is what measures a geode, a lake or a huge mushroom,
+    /// none of which is made of logs and leaves.
+    std::filesystem::path control;
 };
 
 [[nodiscard]] Options parse(int argc, char** argv) {
@@ -167,6 +175,8 @@ struct Options {
             options.step  = 9;
         } else if (argument.starts_with("--feature=")) {
             options.feature = value("--feature=");
+        } else if (argument.starts_with("--control=")) {
+            options.control = value("--control=");
         } else if (argument.starts_with("--index=")) {
             options.index = std::atoi(value("--index=").c_str());
         } else if (argument.starts_with("--min-logs=")) {
@@ -656,28 +666,38 @@ int main(int argc, char** argv) {
 
     // Read the whole reference world's chunk index first, so that a chunk's
     // eight neighbours can be found wherever they live.
-    std::map<std::pair<i32, i32>, std::filesystem::path> regions;
-    for (const auto& entry : std::filesystem::directory_iterator(options.world / "region")) {
-        if (entry.path().extension() != ".mca") {
-            continue;
+    using RegionIndex = std::map<std::pair<i32, i32>, std::filesystem::path>;
+    const auto index_regions = [](const std::filesystem::path& world) {
+        RegionIndex found;
+        if (!std::filesystem::is_directory(world / "region")) {
+            return found;
         }
-        const std::string stem = entry.path().stem().string();
-        // r.<x>.<z>
-        const auto first  = stem.find('.');
-        const auto second = stem.find('.', first + 1);
-        if (first == std::string::npos || second == std::string::npos) {
-            continue;
+        for (const auto& entry : std::filesystem::directory_iterator(world / "region")) {
+            if (entry.path().extension() != ".mca") {
+                continue;
+            }
+            const std::string stem = entry.path().stem().string();
+            // r.<x>.<z>
+            const auto first  = stem.find('.');
+            const auto second = stem.find('.', first + 1);
+            if (first == std::string::npos || second == std::string::npos) {
+                continue;
+            }
+            found.emplace(
+                std::pair<i32, i32>{std::atoi(stem.substr(first + 1, second - first - 1).c_str()),
+                                    std::atoi(stem.substr(second + 1).c_str())},
+                entry.path());
         }
-        regions.emplace(std::pair<i32, i32>{std::atoi(stem.substr(first + 1, second - first - 1).c_str()),
-                                            std::atoi(stem.substr(second + 1).c_str())},
-                        entry.path());
-    }
+        return found;
+    };
+    const RegionIndex regions         = index_regions(options.world);
+    const RegionIndex control_regions = index_regions(options.control);
 
-    std::unordered_map<std::string, nbt::RegionFile> open_regions;
-    const auto load_chunk = [&](i32 chunk_x, i32 chunk_z) -> std::optional<StoredChunk> {
+    const auto load_chunk_from = [&](const RegionIndex& from, i32 chunk_x,
+                                     i32 chunk_z) -> std::optional<StoredChunk> {
         const auto found =
-            regions.find({floor_div(chunk_x, 32), floor_div(chunk_z, 32)});
-        if (found == regions.end()) {
+            from.find({floor_div(chunk_x, 32), floor_div(chunk_z, 32)});
+        if (found == from.end()) {
             return std::nullopt;
         }
         auto region = nbt::RegionFile::open(found->second);
@@ -719,6 +739,9 @@ int main(int argc, char** argv) {
                                  chunk.biomes[static_cast<usize>(index)]);
         }
         return chunk;
+    };
+    const auto load_chunk = [&](i32 chunk_x, i32 chunk_z) {
+        return load_chunk_from(regions, chunk_x, chunk_z);
     };
 
     // Only the chunks whose eight neighbours are also finished, so that no
@@ -827,6 +850,244 @@ int main(int argc, char** argv) {
         if (build_level(chunk_x, chunk_z) != nullptr) {
             usable.emplace_back(chunk_x, chunk_z);
         }
+    }
+
+    if (options.probe && !options.control.empty()) {
+        // Every block, not only wood.
+        //
+        // The control world is the terrain before the feature; the probe world
+        // is the same terrain after the game's feature. Our feature is replayed
+        // over the control, and the centre chunk is compared block for block,
+        // only where one side or the other changed something. A feature named
+        // plainly is a configured feature under the probe's own pipeline
+        // (`count(1) → in_square → heightmap`); `=name` is a vanilla *placed*
+        // feature, run through its own pipeline from the chunk's corner.
+        struct Entry {
+            std::string                    name;
+            const worldgen::Feature*       feature{nullptr};
+            const worldgen::PlacedFeature* placed{nullptr};
+        };
+        std::vector<Entry> entries;
+        for (usize start = 0; start <= options.feature.size();) {
+            const auto  stop = options.feature.find(',', start);
+            std::string name = options.feature.substr(
+                start, stop == std::string::npos ? std::string::npos : stop - start);
+            Entry entry;
+            if (!name.empty() && name.front() == '=') {
+                entry.name   = name.substr(1);
+                entry.placed = features->placed(entry.name);
+            } else {
+                entry.name    = name;
+                entry.feature = features->configured(name);
+            }
+            if (entry.feature == nullptr && entry.placed == nullptr) {
+                fmt::print("{} was not built; --missing says why\n", entry.name);
+                return 1;
+            }
+            entries.push_back(std::move(entry));
+            if (stop == std::string::npos) {
+                break;
+            }
+            start = stop + 1;
+        }
+
+        // The probe biome lists the feature, whatever the vanilla biome files say.
+        class AlwaysListed final : public worldgen::BiomeFeatures {
+        public:
+            [[nodiscard]] bool lists(std::string_view, std::string_view) const override {
+                return true;
+            }
+        };
+        const AlwaysListed listed;
+
+        const auto build_control = [&](i32 chunk_x, i32 chunk_z) -> std::shared_ptr<ReferenceLevel> {
+            auto level = std::make_shared<ReferenceLevel>(*pack, chunk_x, chunk_z);
+            for (i32 dz = -1; dz <= 1; ++dz) {
+                for (i32 dx = -1; dx <= 1; ++dx) {
+                    auto chunk = load_chunk_from(control_regions, chunk_x + dx, chunk_z + dz);
+                    if (!chunk) {
+                        return nullptr;
+                    }
+                    level->install(std::move(*chunk));
+                }
+            }
+            return level->complete() ? level : nullptr;
+        };
+
+        struct Count {
+            i64 theirs{0};
+            i64 ours{0};
+            i64 same{0};
+        };
+        std::map<std::string, Count> by_block;
+        i64   theirs_all     = 0;
+        i64   ours_all       = 0;
+        i64   same_block     = 0;
+        i64   same_state     = 0;
+        i64   touched_chunks = 0;
+        i64   exact_chunks   = 0;
+        i64   fluid_noise    = 0;
+        i32   shown          = 0;
+        usize done           = 0;
+        const auto kind      = worldgen::configured_feature_random();
+        const auto water     = pack->find_block("minecraft:water");
+        const auto lava      = pack->find_block("minecraft:lava");
+        const auto is_fluid  = [&](registry::BlockId block) {
+            return (water && block == *water) || (lava && block == *lava);
+        };
+        for (const auto& [chunk_x, chunk_z] : usable) {
+            if (done >= static_cast<usize>(options.chunks)) {
+                break;
+            }
+            auto probe_level = build_level(chunk_x, chunk_z);
+            auto control     = build_control(chunk_x, chunk_z);
+            if (probe_level == nullptr || control == nullptr) {
+                continue;
+            }
+            ++done;
+            const i32 base_x = chunk_x * 16;
+            const i32 base_z = chunk_z * 16;
+            std::vector<registry::BlockStateId> before;
+            before.reserve(static_cast<usize>(control->world_height()) * 256);
+            for (i32 y = control->min_y(); y <= control->max_y(); ++y) {
+                for (i32 z = 0; z < 16; ++z) {
+                    for (i32 x = 0; x < 16; ++x) {
+                        before.push_back(control->block_at(base_x + x, y, base_z + z));
+                    }
+                }
+            }
+
+            for (i32 dz = -1; dz <= 1; ++dz) {
+                for (i32 dx = -1; dx <= 1; ++dx) {
+                    const i32 origin_x = (chunk_x + dx) * 16;
+                    const i32 origin_z = (chunk_z + dz) * 16;
+                    const i64 seed =
+                        worldgen::decoration_seed(options.seed, origin_x, origin_z, kind);
+                    for (usize slot = 0; slot < entries.size(); ++slot) {
+                        const Entry&           entry = entries[slot];
+                        worldgen::FeatureRandom random{
+                            kind, worldgen::feature_seed(
+                                      seed, options.index + static_cast<i32>(slot), options.step)};
+                        worldgen::FeatureContext context;
+                        context.blocks       = &*pack;
+                        context.feature_name = entry.name;
+                        context.biomes       = &listed;
+                        context.level_seed   = options.seed;
+                        if (entry.placed != nullptr) {
+                            worldgen::expand(entry.placed->placement, context, *control, random,
+                                             {origin_x, control->min_y(), origin_z},
+                                             [&](BlockPos where) {
+                                                 (void)entry.placed->feature->place(
+                                                     context, *control, random, where);
+                                             });
+                        } else {
+                            const i32 at_x = origin_x + random.next_int(16);
+                            const i32 at_z = origin_z + random.next_int(16);
+                            const i32 at_y =
+                                control->height(world::HeightmapType::OceanFloorWG, at_x, at_z);
+                            (void)entry.feature->place(context, *control, random,
+                                                       {at_x, at_y, at_z});
+                        }
+                    }
+                }
+            }
+
+            usize                    cell    = 0;
+            bool                     touched = false;
+            bool                     exact   = true;
+            std::vector<std::string> diffs;
+            for (i32 y = control->min_y(); y <= control->max_y(); ++y) {
+                for (i32 z = 0; z < 16; ++z) {
+                    for (i32 x = 0; x < 16; ++x) {
+                        const auto was    = before[cell++];
+                        const auto theirs = probe_level->block_at(base_x + x, y, base_z + z);
+                        const auto ours   = control->block_at(base_x + x, y, base_z + z);
+                        const bool game   = theirs != was;
+                        const bool mine   = ours != was;
+                        if (!game && !mine) {
+                            continue;
+                        }
+                        // Water and lava that settled differently in the two
+                        // worlds — a fluid tick that ran in one and not the
+                        // other — are the terrain's, not the feature's. Counted
+                        // apart, and only when we left the cell alone.
+                        if (game && !mine &&
+                            (is_fluid(pack->block_of(theirs)) || is_fluid(pack->block_of(was)))) {
+                            ++fluid_noise;
+                            continue;
+                        }
+                        touched                 = true;
+                        const auto their_block  = pack->block_of(theirs);
+                        const auto our_block    = pack->block_of(ours);
+                        const std::string their_name(pack->block_name(their_block));
+                        const std::string our_name(pack->block_name(our_block));
+                        if (game) {
+                            ++theirs_all;
+                            ++by_block[their_name].theirs;
+                            if (our_block == their_block) {
+                                ++same_block;
+                                ++by_block[their_name].same;
+                            }
+                            if (ours == theirs) {
+                                ++same_state;
+                            }
+                        }
+                        if (mine) {
+                            ++ours_all;
+                            ++by_block[our_name].ours;
+                        }
+                        if (our_block != their_block) {
+                            exact = false;
+                            if (diffs.size() < 32) {
+                                diffs.push_back(fmt::format("    {:>6} {:>4} {:>6}  ours {:<32} theirs {}",
+                                                            base_x + x, y, base_z + z, our_name,
+                                                            their_name));
+                            }
+                        }
+                    }
+                }
+            }
+            if (!touched) {
+                continue;
+            }
+            ++touched_chunks;
+            if (exact) {
+                ++exact_chunks;
+            } else if (shown < options.show) {
+                ++shown;
+                fmt::print("\nchunk {},{} differs:\n", chunk_x, chunk_z);
+                for (const auto& line : diffs) {
+                    fmt::print("{}\n", line);
+                }
+            }
+        }
+
+        const auto percent = [](i64 part, i64 whole) {
+            return whole == 0 ? 0.0 : 100.0 * static_cast<f64>(part) / static_cast<f64>(whole);
+        };
+        fmt::print("\nblock probe {} against control {}, seed {}, step {} index {}\n",
+                   options.world.string(), options.control.string(), options.seed, options.step,
+                   options.index);
+        fmt::print("{} chunks compared, {} where either side changed something\n", done,
+                   touched_chunks);
+        fmt::print("  chunks identical, block for block   {:>6}  ({:.3f} %)\n", exact_chunks,
+                   percent(exact_chunks, touched_chunks));
+        fmt::print("  blocks the game changed {}, we changed {}\n", theirs_all, ours_all);
+        fmt::print("  (fluid settled differently between the two worlds, left out: {})\n",
+                   fluid_noise);
+        fmt::print("  same block  {:>8}  ({:.3f} %)\n", same_block, percent(same_block, theirs_all));
+        fmt::print("  same state  {:>8}  ({:.3f} %)\n", same_state, percent(same_state, theirs_all));
+        fmt::print("\nby block (theirs / ours / same):\n");
+        std::vector<std::pair<std::string, Count>> sorted(by_block.begin(), by_block.end());
+        std::ranges::sort(sorted, [](const auto& a, const auto& b) {
+            return a.second.theirs + a.second.ours > b.second.theirs + b.second.ours;
+        });
+        for (usize i = 0; i < sorted.size() && i < 20; ++i) {
+            const auto& [name, count] = sorted[i];
+            fmt::print("  {:<40} {:>8} {:>8} {:>8}  {:.1f} %\n", name, count.theirs, count.ours,
+                       count.same, percent(count.same, count.theirs));
+        }
+        return 0;
     }
 
     if (options.probe) {
@@ -976,6 +1237,7 @@ int main(int argc, char** argv) {
                         context.blocks       = &*pack;
                         context.feature_name = names[slot];
                         context.biomes       = &decorator->biome_features();
+                        context.level_seed   = options.seed;
                         level.set_group((dz * 3 + dx + 4) * 16 + static_cast<i32>(slot));
                         (void)probes[slot]->place(context, level, random, {at_x, at_y, at_z});
                     }
@@ -1069,7 +1331,8 @@ int main(int argc, char** argv) {
                 ++by_feature[names[slot]].first;
             }
             if (trunk) ++logs_right;
-            if (!shape && shown < options.show) {
+            if (!shape && shown < options.show &&
+                (options.only.empty() || names[slot].find(options.only) != std::string::npos)) {
                 ++shown;
                 fmt::print("\n{} at chunk {},{} — ours then theirs, layer by layer\n",
                            names[slot], chunk_x, chunk_z);

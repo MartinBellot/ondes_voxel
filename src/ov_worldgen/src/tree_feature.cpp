@@ -779,10 +779,12 @@ public:
                 const f32 roll = random.next_float();
                 if (roll < place_branch_per_log_probability_) {
                     const auto direction = random_horizontal(random);
-                    const i32  length    = extra_branch_length_->sample(random);
-                    const i32  jitter    = random.next_int(std::max(length, 1));
-                    const i32  start     = std::max(0, length - jitter - 1);
-                    const i32  steps     = extra_branch_steps_->sample(random);
+                    // The branch length is drawn twice — once for the length,
+                    // once for the cut — not once plus a bounded jitter.
+                    const i32 length = extra_branch_length_->sample(random);
+                    const i32 cut    = extra_branch_length_->sample(random);
+                    const i32 start  = std::max(0, length - cut - 1);
+                    const i32 steps  = extra_branch_steps_->sample(random);
                     place_branch(world, writer, random, height, config, out, at, y, direction,
                                  start, steps);
                 }
@@ -825,7 +827,14 @@ private:
             if (place_log_through(world, writer, random, {x, branch_y, z}, config)) {
                 tip = branch_y + 1;
             }
+            // Foliage hangs on the log itself at every step…
+            out.push_back({{x, branch_y, z}, 0, false});
+        }
+        // …and, on a branch that climbed, twice more: at its tip and two
+        // below it.
+        if (tip - y > 1) {
             out.push_back({{x, tip, z}, 0, false});
+            out.push_back({{x, tip - 2, z}, 0, false});
         }
     }
 
@@ -968,15 +977,24 @@ private:
     }
 };
 
+/// The cherry: a trunk that stops where its branches leave it, and one or two
+/// branches that walk out and up to a target, one block at a time.
+///
+/// The draws, in order: the first branch's start, the second's start (from a
+/// range one narrower at the top, and pushed past the first when they
+/// collide), the branch count, then one direction shared by both branches —
+/// the second goes the opposite way. Each branch then draws its end height,
+/// its length, and one float per step of its walk.
 class CherryTrunkPlacer final : public TrunkPlacer {
 public:
     CherryTrunkPlacer(i32 base, i32 a, i32 b, IntProviderRef branch_count,
-                      IntProviderRef branch_horizontal_length, IntProviderRef start_offset,
+                      IntProviderRef branch_horizontal_length, i32 start_min, i32 start_max,
                       IntProviderRef end_offset)
         : TrunkPlacer(base, a, b),
           branch_count_(std::move(branch_count)),
           branch_horizontal_length_(std::move(branch_horizontal_length)),
-          branch_start_offset_from_top_(std::move(start_offset)),
+          start_min_(start_min),
+          start_max_(start_max),
           branch_end_offset_from_top_(std::move(end_offset)) {}
 
     [[nodiscard]] std::string_view type_name() const override { return "cherry_trunk_placer"; }
@@ -986,58 +1004,86 @@ public:
                      std::vector<FoliageAttachment>& out) const override {
         set_dirt_at(world, writer, random, at.below(), config);
 
-        const i32 branches = branch_count_->sample(random);
-        const i32 top      = height - 1;
-        i32       taken_x  = 0;
-        i32       taken_z  = 0;
-        i32       taken    = 0;
-
-        for (i32 branch = 0; branch < branches; ++branch) {
-            const i32 start_offset = branch_start_offset_from_top_->sample(random);
-            const i32 start_y      = top + start_offset;
-            const i32 length       = branch_horizontal_length_->sample(random);
-            const auto direction   = random_horizontal(random);
-            const i32  end_offset  = branch_end_offset_from_top_->sample(random);
-            const i32  end_y       = top + end_offset;
-            // Only three branches exist and the first two must not share a
-            // direction with a previous one; the third may.
-            if (taken > 0 && direction[0] == taken_x && direction[1] == taken_z) {
-                continue;
-            }
-            taken_x = direction[0];
-            taken_z = direction[1];
-            ++taken;
-            place_branch(world, writer, random, config, at, start_y, end_y, length, direction,
-                         out);
+        const i32 first_draw = uniform(random, start_min_, start_max_);
+        const i32 first      = std::max(0, height - 1 + first_draw);
+        // The second start's range is the first's with its top lowered by one,
+        // and a collision is resolved by stepping past: the two never share a
+        // height, and the draw count does not change.
+        const i32 second_draw = uniform(random, start_min_, start_max_ - 1);
+        i32       second      = std::max(0, height - 1 + second_draw);
+        if (second >= first) {
+            ++second;
+        }
+        const i32  count        = branch_count_->sample(random);
+        const bool three        = count == 3;
+        const bool two_or_more  = count >= 2;
+        const i32  trunk_height = three         ? height
+                                  : two_or_more ? std::max(first, second) + 1
+                                                : first + 1;
+        for (i32 i = 0; i < trunk_height; ++i) {
+            (void)place_log(world, writer, random, at.above(i), config);
+        }
+        if (three) {
+            out.push_back({at.above(trunk_height), 0, false});
         }
 
-        for (i32 i = 0; i < height; ++i) {
-            (void)place_log(world, writer, random, at.above(i), config, "y");
+        const auto direction = random_horizontal(random);
+        // Both branches carry the first direction's axis; the vertical steps
+        // of the walk keep the provider's own.
+        const std::string_view axis = direction[0] != 0 ? "x" : "z";
+        out.push_back(branch(world, writer, random, config, height, at, direction, axis, first,
+                             first < trunk_height - 1));
+        if (two_or_more) {
+            const std::array<i32, 2> opposite{-direction[0], -direction[1]};
+            out.push_back(branch(world, writer, random, config, height, at, opposite, axis,
+                                 second, second < trunk_height - 1));
         }
-        out.push_back({at.above(height), 0, false});
     }
 
 private:
-    void place_branch(const TreeWorld& world, TreeWriter& writer, FeatureRandom& random,
-                      const TreeConfig& config, BlockPos at, i32 start_y, i32 end_y, i32 length,
-                      std::array<i32, 2> direction, std::vector<FoliageAttachment>& out) const {
-        const i32 rise  = end_y - start_y;
-        i32       x     = at.x;
-        i32       z     = at.z;
-        i32       y     = at.y + start_y;
-        const std::string_view axis = direction[0] != 0 ? "x" : "z";
-        for (i32 step = 0; step < length; ++step) {
-            x += direction[0];
-            z += direction[1];
-            const i32 lift = rise == 0 ? 0 : (step * rise) / std::max(length - 1, 1);
-            (void)place_log(world, writer, random, {x, y + lift, z}, config, axis);
+    /// `Mth.randomBetweenInclusive`: one `nextInt` over the width.
+    [[nodiscard]] static i32 uniform(FeatureRandom& random, i32 low, i32 high) {
+        return random.next_int(high - low + 1) + low;
+    }
+
+    FoliageAttachment branch(const TreeWorld& world, TreeWriter& writer, FeatureRandom& random,
+                             const TreeConfig& config, i32 height, BlockPos at,
+                             std::array<i32, 2> direction, std::string_view axis, i32 start,
+                             bool trunk_continues) const {
+        BlockPos  cursor   = at.above(start);
+        const i32 end_draw = branch_end_offset_from_top_->sample(random);
+        const i32 end_y    = height - 1 + end_draw;
+        // A branch that leaves a trunk which goes on, or that ends below where
+        // it started, takes one extra step out before it turns.
+        const bool extended   = trunk_continues || end_y < start;
+        const i32  length     = branch_horizontal_length_->sample(random) + (extended ? 1 : 0);
+        const BlockPos target = at.offset(direction[0] * length, end_y, direction[1] * length);
+
+        const i32 straight = extended ? 2 : 1;
+        for (i32 step = 0; step < straight; ++step) {
+            cursor = cursor.offset(direction[0], 0, direction[1]);
+            (void)place_log(world, writer, random, cursor, config, axis);
         }
-        out.push_back({{x, y + (rise == 0 ? 0 : rise) + 1, z}, 0, false});
+        const i32 vertical = target.y > cursor.y ? 1 : -1;
+        for (;;) {
+            const i32 distance = std::abs(target.x - cursor.x) + std::abs(target.y - cursor.y) +
+                                 std::abs(target.z - cursor.z);
+            if (distance == 0) {
+                return {target.above(), 0, false};
+            }
+            const f32  chance = static_cast<f32>(std::abs(target.y - cursor.y)) /
+                               static_cast<f32>(distance);
+            const f32  roll   = random.next_float();
+            const bool up     = roll < chance;
+            cursor = up ? cursor.above(vertical) : cursor.offset(direction[0], 0, direction[1]);
+            (void)place_log(world, writer, random, cursor, config, up ? std::string_view{} : axis);
+        }
     }
 
     IntProviderRef branch_count_;
     IntProviderRef branch_horizontal_length_;
-    IntProviderRef branch_start_offset_from_top_;
+    i32            start_min_;
+    i32            start_max_;
     IntProviderRef branch_end_offset_from_top_;
 };
 
@@ -1310,16 +1356,15 @@ protected:
         }
     }
 
-    [[nodiscard]] bool should_skip(FeatureRandom&, i32 x, i32 y, i32 z, i32 range,
-                                   bool large) const override {
-        if (range <= 0) {
-            return x != 0 && z != 0;
+    /// A disc, cut at `x + z >= 7` — the mega pine's mask, not the acacia's.
+    /// The mega jungle tree is the only vanilla user of this placer, and the
+    /// acacia-style mask it had here cut every one of its canopies wrong.
+    [[nodiscard]] bool should_skip(FeatureRandom&, i32 x, i32, i32 z, i32 range,
+                                   bool) const override {
+        if (x + z >= 7) {
+            return true;
         }
-        if (y == 0) {
-            return (x > 1 || z > 1) && x != 0 && z != 0;
-        }
-        (void)large;
-        return x == range && z == range;
+        return x * x + z * z > range * range;
     }
 
 private:
@@ -1338,16 +1383,26 @@ public:
     }
 
 protected:
+    /// Bottom up. The smooth taper `floor(down / height × 3.5)` alone gives a
+    /// monotone cone, and the game's crown is not monotone: read layer by
+    /// layer off a probe world its ranges go `0, 0, 1, 0, 2, 1, 2` from the
+    /// top. The difference is a ridge — a level whose smooth range equals the
+    /// level below it grows by one when its `y` is even — which is what turns
+    /// the cone into the stepped silhouette of a giant spruce.
     void grow(const TreeWorld& world, TreeWriter& writer, FeatureRandom& random,
               const TreeConfig& config, i32, const FoliageAttachment& attachment, i32 height,
               i32 radius, i32 offset) const override {
-        const BlockPos pos = attachment.pos;
+        const BlockPos pos      = attachment.pos;
+        i32            previous = 0;
         for (i32 y = pos.y - height + offset; y <= pos.y + offset; ++y) {
-            const i32 down  = pos.y - y;
-            const i32 range = radius + attachment.radius_offset +
-                              mth_floor(static_cast<f32>(down) / static_cast<f32>(height) * 3.5F);
+            const i32 down   = pos.y - y;
+            const i32 smooth = radius + attachment.radius_offset +
+                               mth_floor(static_cast<f32>(down) / static_cast<f32>(height) * 3.5F);
+            const bool ridge = down > 0 && smooth == previous && (y & 1) == 0;
+            const i32  range = ridge ? smooth + 1 : smooth;
             place_leaves_row(world, writer, random, config, {pos.x, y, pos.z}, range, 0,
                              attachment.double_trunk);
+            previous = smooth;
         }
     }
 
@@ -1392,16 +1447,36 @@ protected:
         }
     }
 
-    [[nodiscard]] bool should_skip(FeatureRandom& random, i32 x, i32 y, i32 z, i32 range,
-                                   bool large) const override {
-        if (y != 0) {
-            return x == range && z == range && range > 0;
+    /// The wide middle row of a two-by-two attachment loses its four corners
+    /// outright — tested on the *signed* coordinates, before the fold, so the
+    /// corner is the true corner of the (2r+2)-wide square. Everything else
+    /// goes to the folded test below. Nothing here draws.
+    [[nodiscard]] bool should_skip_signed(FeatureRandom& random, i32 local_x, i32 local_y,
+                                          i32 local_z, i32 range, bool large) const override {
+        // Read off the probe: on the range-3 row the game cuts the cells whose
+        // x and z are both in {-3, 3, 4} — the far column of the square
+        // (range + 1) and the one before it both count as its edge.
+        const bool x_edge = local_x == -range || local_x >= range;
+        const bool z_edge = local_z == -range || local_z >= range;
+        if (local_y == 0 && large && x_edge && z_edge) {
+            return true;
         }
-        if (!large) {
+        return FoliagePlacer::should_skip_signed(random, local_x, local_y, local_z, range, large);
+    }
+
+    /// The lower row of a single attachment is a square with its corners cut;
+    /// the top row is a diamond-cut square, `x + z ≤ 2r - 2` on the folded
+    /// coordinates — which is the "x' + z' ≤ 2" the probe read off the range-2
+    /// row. The middle row keeps everything the signed test let through.
+    [[nodiscard]] bool should_skip(FeatureRandom&, i32 x, i32 y, i32 z, i32 range,
+                                   bool large) const override {
+        if (y == -1 && !large) {
             return x == range && z == range;
         }
-        // The wide middle row keeps its corners only sometimes.
-        return (x == range && z == range) && random.next_int(2) == 0;
+        if (y == 1) {
+            return x + z > range * 2 - 2;
+        }
+        return false;
     }
 };
 
@@ -1480,45 +1555,93 @@ protected:
         for (i32 y = height - 5; y >= 0; --y) {
             place_leaves_row(world, writer, random, config, pos, wide, y, large);
         }
-        place_leaves_row(world, writer, random, config, pos, wide, -1, large);
-        place_leaves_row(world, writer, random, config, pos, wide - 1, -2, large);
-
-        // The tendrils that hang under the bottom row, one draw per leaf that
-        // is actually there and a second for each that reaches one block
-        // further.
-        for (i32 dx = -wide; dx <= wide; ++dx) {
-            for (i32 dz = -wide; dz <= wide; ++dz) {
-                const BlockPos bottom = pos.offset(dx, -2, dz);
-                if (!writer.foliage_set(bottom)) {
-                    continue;
-                }
-                const f32 roll = random.next_float();
-                if (roll >= hanging_leaves_chance_) {
-                    continue;
-                }
-                try_place_leaf(world, writer, random, config, bottom.below());
-                const f32 extend = random.next_float();
-                if (extend < hanging_leaves_extension_chance_) {
-                    try_place_leaf(world, writer, random, config, bottom.below(2));
-                }
-            }
-        }
+        place_row_with_hanging_leaves(world, writer, random, config, pos, wide, -1, large);
+        place_row_with_hanging_leaves(world, writer, random, config, pos, wide - 1, -2, large);
     }
 
+    /// Only the rims draw. The bottom row's rim cells draw once for a hole;
+    /// a corner draws once for a hole; a wide row (range above two) also
+    /// draws for the diamond-cut cells next to its corners. Every other cell
+    /// is kept without a draw.
     [[nodiscard]] bool should_skip(FeatureRandom& random, i32 x, i32 y, i32 z, i32 range,
                                    bool) const override {
-        if (y == 0) {
-            const bool corner = x > 1 && z > 1;
+        if (y == -1 && (x == range || z == range)) {
+            const f32 roll = random.next_float();
+            if (roll < wide_bottom_layer_hole_chance_) {
+                return true;
+            }
+        }
+        const bool corner = x == range && z == range;
+        if (range > 2) {
             if (corner) {
-                return random.next_float() < wide_bottom_layer_hole_chance_;
+                return true;
+            }
+            if (x + z > range * 2 - 2) {
+                return random.next_float() < corner_hole_chance_;
             }
             return false;
         }
-        if (x == range && z == range) {
-            return random.next_float() < corner_hole_chance_;
+        if (!corner) {
+            return false;
         }
-        return x * x + z * z > range * range;
+        return random.next_float() < corner_hole_chance_;
     }
+
+private:
+    /// The row, then a walk around its rim: under every leaf the row put on
+    /// the rim, a leaf may hang, and under that one a second.
+    ///
+    /// The walk goes edge by edge, one per horizontal direction in the order
+    /// north, east, south, west, each edge along its direction and starting
+    /// from the corner the clockwise neighbour of that direction points at.
+    /// That order is the order of the draws.
+    void place_row_with_hanging_leaves(const TreeWorld& world, TreeWriter& writer,
+                                       FeatureRandom& random, const TreeConfig& config,
+                                       BlockPos pos, i32 range, i32 local_y, bool large) const {
+        place_leaves_row(world, writer, random, config, pos, range, local_y, large);
+        const i32 extra = large ? 1 : 0;
+        for (usize index = 0; index < kHorizontal.size(); ++index) {
+            const auto direction = kHorizontal[index];
+            const auto clockwise = kHorizontal[(index + 1) % kHorizontal.size()];
+            const bool positive  = clockwise[0] > 0 || clockwise[1] > 0;
+            const i32  reach     = positive ? range + extra : range;
+            BlockPos   cursor    = pos.offset(clockwise[0] * reach - direction[0] * range,
+                                              local_y - 1,
+                                              clockwise[1] * reach - direction[1] * range);
+            for (i32 k = -range; k < range + extra; ++k) {
+                if (writer.foliage_set(cursor.above()) &&
+                    try_extension(world, writer, random, config, hanging_leaves_chance_, pos,
+                                  cursor)) {
+                    (void)try_extension(world, writer, random, config,
+                                        hanging_leaves_extension_chance_, pos, cursor.below());
+                }
+                cursor = cursor.offset(direction[0], 0, direction[1]);
+            }
+        }
+    }
+
+    /// Too far from the centre is refused before anything is drawn; otherwise
+    /// one float decides.
+    static bool try_extension(const TreeWorld& world, TreeWriter& writer, FeatureRandom& random,
+                              const TreeConfig& config, f32 chance, BlockPos centre,
+                              BlockPos at) {
+        const i32 distance =
+            std::abs(at.x - centre.x) + std::abs(at.y - centre.y) + std::abs(at.z - centre.z);
+        if (distance >= 7) {
+            return false;
+        }
+        const f32 roll = random.next_float();
+        if (roll > chance) {
+            return false;
+        }
+        if (!world.valid_tree_pos(at)) {
+            return false;
+        }
+        try_place_leaf(world, writer, random, config, at);
+        return true;
+    }
+
+public:
 
 private:
     IntProviderRef height_;
@@ -1554,26 +1677,32 @@ public:
         return at.above(trunk_offset_y_->sample(random));
     }
 
+    /// The column under the trunk must be clear, then four roots are
+    /// *simulated* — one per horizontal side, walked down until they meet
+    /// something they cannot grow through — and only if all four end in
+    /// ground within the length limit is anything written. A root that is
+    /// still in the air at its fifteenth step fails the whole tree.
     [[nodiscard]] bool place_roots(const TreeWorld& world, TreeWriter& writer,
                                    FeatureRandom& random, BlockPos at, BlockPos trunk,
                                    const TreeConfig&) const override {
-        std::vector<BlockPos> roots;
-        BlockPos              cursor = at;
+        BlockPos cursor = at;
         while (cursor.y < trunk.y) {
             if (!can_place(world, cursor)) {
                 return false;
             }
-            roots.push_back(cursor);
             cursor = cursor.above();
         }
 
+        std::vector<BlockPos> roots;
+        roots.push_back(trunk.below());
         for (const auto& side : kHorizontal) {
-            const BlockPos start = trunk.offset(side[0], 0, side[1]);
+            const BlockPos        start = trunk.offset(side[0], 0, side[1]);
             std::vector<BlockPos> branch;
-            if (!simulate_roots(world, random, start, side, 0, branch)) {
+            if (!simulate_roots(world, random, start, side, trunk, branch, 0)) {
                 return false;
             }
             roots.insert(roots.end(), branch.begin(), branch.end());
+            roots.push_back(start);
         }
 
         for (const BlockPos& root : roots) {
@@ -1584,46 +1713,98 @@ public:
 
 private:
     [[nodiscard]] bool can_place(const TreeWorld& world, BlockPos at) const {
-        return world.valid_tree_pos(at) ||
-               TreeTags::holds(can_grow_through_, world.block_at(at)) ||
-               TreeTags::holds(muddy_roots_in_, world.block_at(at));
+        return world.valid_tree_pos(at) || TreeTags::holds(can_grow_through_, world.block_at(at));
     }
 
-    [[nodiscard]] bool simulate_roots(const TreeWorld& world, FeatureRandom& random,
-                                      BlockPos at, std::array<i32, 2> side, i32 length,
-                                      std::vector<BlockPos>& out) const {
-        if (length == max_root_length_) {
-            return true;
-        }
-        if (!can_place(world, at)) {
+    [[nodiscard]] bool simulate_roots(const TreeWorld& world, FeatureRandom& random, BlockPos at,
+                                      std::array<i32, 2> side, BlockPos trunk,
+                                      std::vector<BlockPos>& out, i32 length) const {
+        if (length == max_root_length_ || static_cast<i32>(out.size()) > max_root_length_) {
             return false;
         }
-        out.push_back(at);
-        BlockPos   next  = at.below();
-        const f32  skew  = random.next_float();
-        if (skew < random_skew_chance_) {
-            next = at.offset(side[0], -1, side[1]);
+        std::array<BlockPos, 2> next{};
+        const usize             count = potential_roots(random, at, side, trunk, next);
+        for (usize index = 0; index < count; ++index) {
+            const BlockPos candidate = next[index];
+            if (!can_place(world, candidate)) {
+                continue;
+            }
+            out.push_back(candidate);
+            if (!simulate_roots(world, random, candidate, side, trunk, out, length + 1)) {
+                return false;
+            }
         }
-        if (static_cast<i32>(out.size()) > max_root_width_ * max_root_length_) {
-            return false;
-        }
-        return simulate_roots(world, random, next, side, length + 1, out);
+        return true;
     }
 
+    /// Where a root may go from here: straight down, or one step out along
+    /// its side. Near the rim of the allowed width it may fork down both
+    /// ways; past it, it only falls. The draws depend on the distance.
+    [[nodiscard]] usize potential_roots(FeatureRandom& random, BlockPos at,
+                                        std::array<i32, 2> side, BlockPos trunk,
+                                        std::array<BlockPos, 2>& out) const {
+        const BlockPos below    = at.below();
+        const BlockPos outward  = at.offset(side[0], 0, side[1]);
+        const i32      distance = std::abs(at.x - trunk.x) + std::abs(at.y - trunk.y) +
+                             std::abs(at.z - trunk.z);
+        if (distance > max_root_width_ - 3 && distance <= max_root_width_) {
+            const f32 roll = random.next_float();
+            out[0]         = below;
+            if (roll < random_skew_chance_) {
+                out[1] = outward.below();
+                return 2;
+            }
+            return 1;
+        }
+        if (distance > max_root_width_) {
+            out[0] = below;
+            return 1;
+        }
+        const f32 roll = random.next_float();
+        if (roll < random_skew_chance_) {
+            out[0] = below;
+            return 1;
+        }
+        out[0] = random.next_boolean() ? outward : below;
+        return 1;
+    }
+
+    /// Mud turns into muddy roots; anything else a root can take gets a
+    /// root, and maybe a carpet of moss on top.
     void place_root(const TreeWorld& world, TreeWriter& writer, FeatureRandom& random,
                     BlockPos at) const {
         if (TreeTags::holds(muddy_roots_in_, world.block_at(at))) {
-            writer.set_root(at, muddy_roots_provider_->state(*world.level, random, at));
+            writer.set_root(at, waterlogged(world, at,
+                                            muddy_roots_provider_->state(*world.level, random, at)));
             return;
         }
-        writer.set_root(at, root_provider_->state(*world.level, random, at));
-        const f32 roll = random.next_float();
-        if (roll < above_root_chance_) {
-            const BlockPos above = at.above();
-            if (world.is_air(above)) {
-                writer.set_root(above, above_root_provider_->state(*world.level, random, above));
+        if (!can_place(world, at)) {
+            return;
+        }
+        writer.set_root(at, waterlogged(world, at, root_provider_->state(*world.level, random, at)));
+        const f32      roll  = random.next_float();
+        const BlockPos above = at.above();
+        if (roll < above_root_chance_ && world.is_air(above)) {
+            writer.set_root(above, waterlogged(world, above, above_root_provider_->state(
+                                                                 *world.level, random, above)));
+        }
+    }
+
+    /// `waterlogged` follows the water that was there, source or flowing.
+    [[nodiscard]] static registry::BlockStateId waterlogged(const TreeWorld& world, BlockPos at,
+                                                            registry::BlockStateId state) {
+        if (!has_property(*world.blocks, state, "waterlogged")) {
+            return state;
+        }
+        const auto here  = world.level->block_at(at.x, at.y, at.z);
+        const auto block = world.blocks->block_of(here);
+        bool       water = block == world.tags->water;
+        if (!water) {
+            if (const auto property = world.blocks->find_property(block, "waterlogged")) {
+                water = world.blocks->property_value(here, *property) == "true";
             }
         }
+        return try_set_property(*world.blocks, state, "waterlogged", water ? "true" : "false");
     }
 
     IntProviderRef   trunk_offset_y_;
@@ -2381,13 +2562,22 @@ private:
         if (!count) return std::unexpected(count.error());
         auto horizontal = parse_int_field(node, "branch_horizontal_length");
         if (!horizontal) return std::unexpected(horizontal.error());
-        auto start = parse_int_field(node, "branch_start_offset_from_top");
-        if (!start) return std::unexpected(start.error());
         auto end = parse_int_field(node, "branch_end_offset_from_top");
         if (!end) return std::unexpected(end.error());
-        return std::static_pointer_cast<const TrunkPlacer>(
-            std::make_shared<const CherryTrunkPlacer>(base_i, a_i, b_i, *count, *horizontal,
-                                                      *start, *end));
+        // The start is a bare uniform range, and its bounds are needed as
+        // numbers: the second branch draws from the same range with the top
+        // lowered by one.
+        auto start = node.at_key("branch_start_offset_from_top");
+        i64  low   = 0;
+        i64  high  = 0;
+        if (start.error() != simdjson::SUCCESS ||
+            start.at_key("min_inclusive").get(low) != simdjson::SUCCESS ||
+            start.at_key("max_inclusive").get(high) != simdjson::SUCCESS || high <= low) {
+            return std::unexpected(FeatureError::Malformed);
+        }
+        return std::static_pointer_cast<const TrunkPlacer>(std::make_shared<const CherryTrunkPlacer>(
+            base_i, a_i, b_i, *count, *horizontal, static_cast<i32>(low), static_cast<i32>(high),
+            *end));
     }
 
     OV_LOG_ERROR("worldgen: trunk placer '{}' is not implemented", kind);

@@ -3,6 +3,7 @@
 #include "ov/worldgen/feature.hpp"
 
 #include "feature_json.hpp"
+#include "overworld_feature.hpp"
 
 #include "ov/base/log.hpp"
 #include "ov/worldgen/ore_feature.hpp"
@@ -332,6 +333,9 @@ std::expected<StateProviderRef, FeatureError> parse_state_provider(
         //
         // `rotated_block_provider` belongs to the huge fungi, which are not
         // built here either.
+        if (auto noise = parse_noise_state_provider(kind, node, blocks)) {  // features-2
+            return std::move(*noise);
+        }
         OV_LOG_ERROR("worldgen: block state provider '{}' is not implemented", kind);
         return std::unexpected(FeatureError::Unsupported);
     }
@@ -659,6 +663,11 @@ std::expected<FeatureRef, FeatureError> parse_feature(
         // minecraft:fire" would be a second, false reason.
         return parse_vegetation_feature(kind, config.value(), blocks, tags, resolve);
     }
+    // ── overworld features (features-2): one call, the families live elsewhere ──
+    if (auto claimed = parse_overworld_feature(kind, config.value(), blocks, tags, resolve)) {
+        return std::move(*claimed);
+    }
+    // ── end overworld features ──
 
     // Everything else. Lakes, geodes, the nether's vegetation, the end's
     // islands: each with its own algorithm and its own draws. Refused by name,

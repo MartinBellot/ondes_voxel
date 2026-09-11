@@ -3,6 +3,7 @@
 #include "ov/worldgen/placement.hpp"
 
 #include "feature_json.hpp"
+#include "overworld_feature.hpp"
 
 #include "ov/base/log.hpp"
 
@@ -573,10 +574,10 @@ std::expected<BlockPredicateRef, FeatureError> parse_block_predicate(
         return std::static_pointer_cast<const BlockPredicate>(std::move(pointer));
     };
 
-    if (kind == "matching_blocks" || kind == "matching_fluids") {
-        // Fluids and blocks are the same lookup here: `minecraft:water` is a
-        // block whose default state is the source, which is what the datapack
-        // names in both cases.
+    // `matching_fluids` is answered in overworld_feature.cpp (features-2): a
+    // fluid is not a block — `flowing_water` and `empty` have no block, and a
+    // waterlogged block holds water.
+    if (kind == "matching_blocks") {
         std::vector<u16> ids;
         for (const std::string& name : read_names(node.at_key(
                  kind == "matching_blocks" ? "blocks" : "fluids"))) {
@@ -666,6 +667,9 @@ std::expected<BlockPredicateRef, FeatureError> parse_block_predicate(
     // ── the tree and vegetation work hooks in here, and only here ──────────
     if (kind == "would_survive") {
         return parse_survival_predicate(node, blocks, tags);
+    }
+    if (auto shaped = parse_shape_predicate(kind, node, blocks, tags)) {  // features-2
+        return std::move(*shaped);
     }
     // ── end of that hook ───────────────────────────────────────────────────
 
@@ -1041,7 +1045,10 @@ std::expected<IntProviderRef, FeatureError> parse_int_provider(Json node) {
             integer("max_inclusive", 0)));
     }
     if (kind == "clamped") {
-        auto source = node.at_key("source");
+        // `source` sits next to the bounds, inside "value" — not at the top.
+        // Looking for it at the top failed silently and cost `forest_flowers`
+        // and `flower_forest_flowers` (features-2).
+        auto source = holder.at_key("source");
         if (source.error() != simdjson::SUCCESS) {
             return std::unexpected(FeatureError::Malformed);
         }
@@ -1297,6 +1304,9 @@ std::expected<PlacementModifierRef, FeatureError> parse_placement_modifier(
     // a plausible number nobody had measured. `carving_mask` needs the carvers,
     // which are not built yet. All three are refused by name so that the
     // placed features using them are visibly absent rather than quietly wrong.
+    if (auto noise = parse_noise_placement(kind, node)) {  // features-2: BIOME_INFO_NOISE
+        return std::move(*noise);
+    }
     OV_LOG_ERROR("worldgen: placement modifier '{}' is not implemented", kind);
     return std::unexpected(FeatureError::Unsupported);
 }

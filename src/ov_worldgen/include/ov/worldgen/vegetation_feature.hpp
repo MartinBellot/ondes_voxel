@@ -61,6 +61,9 @@ enum class PlantSurvivalRule : u8 {
     NotAirBelow,
     /// A sturdy face above and no water here. The spore blossom.
     HangingFromAbove,
+    /// `#small_dripleaf_placeable` below, or a water source here and
+    /// `#dirt`/farmland below. The small dripleaf.
+    SmallDripleaf,
 };
 
 /// The rule for one block, or nothing when this layer does not know it.

@@ -3,6 +3,7 @@
 #include "ov/worldgen/vegetation_feature.hpp"
 
 #include "feature_json.hpp"
+#include "overworld_feature.hpp"
 
 #include "ov/base/log.hpp"
 
@@ -65,6 +66,7 @@ constexpr std::array kSurvival{
     SurvivalEntry{"minecraft:red_tulip", PlantSurvivalRule::DirtOrFarmland},
     SurvivalEntry{"minecraft:rose_bush", PlantSurvivalRule::DirtOrFarmland},
     SurvivalEntry{"minecraft:seagrass", PlantSurvivalRule::Seagrass},
+    SurvivalEntry{"minecraft:small_dripleaf", PlantSurvivalRule::SmallDripleaf},
     SurvivalEntry{"minecraft:spore_blossom", PlantSurvivalRule::HangingFromAbove},
     SurvivalEntry{"minecraft:spruce_sapling", PlantSurvivalRule::DirtOrFarmland},
     SurvivalEntry{"minecraft:sugar_cane", PlantSurvivalRule::SugarCane},
@@ -109,6 +111,7 @@ struct GroundTags {
     std::vector<u16> dead_bush_may_place_on;
     std::vector<u16> nylium;
     std::vector<u16> sand;
+    std::vector<u16> small_dripleaf_placeable;
 
     registry::BlockId farmland{0};
     registry::BlockId clay{0};
@@ -152,6 +155,10 @@ using GroundTagsRef = std::shared_ptr<const GroundTags>;
     if (auto ok = collect("minecraft:nylium", result->nylium); !ok)
         return std::unexpected(ok.error());
     if (auto ok = collect("minecraft:sand", result->sand); !ok) return std::unexpected(ok.error());
+    if (auto ok = collect("minecraft:small_dripleaf_placeable", result->small_dripleaf_placeable);
+        !ok) {
+        return std::unexpected(ok.error());
+    }
 
     const auto named = [&](std::string_view name,
                            registry::BlockId& into) -> std::expected<void, FeatureError> {
@@ -271,6 +278,22 @@ using GroundTagsRef = std::shared_ptr<const GroundTags>;
                 return false;
             }
             return !is_water_at(blocks, ground, level, at);
+        }
+        case PlantSurvivalRule::SmallDripleaf: {
+            if (in_set(ground.small_dripleaf_placeable, below)) {
+                return true;
+            }
+            // A water *source* here: still water at level 0, or waterlogged.
+            const auto here_state = level.block_at(at.x, at.y, at.z);
+            const auto here       = blocks.block_of(here_state);
+            bool       source     = false;
+            if (here == ground.water) {
+                const auto level_property = blocks.find_property(here, "level");
+                source = !level_property || blocks.property_value(here_state, *level_property) == "0";
+            } else if (const auto waterlogged = blocks.find_property(here, "waterlogged")) {
+                source = blocks.property_value(here_state, *waterlogged) == "true";
+            }
+            return source && (in_set(ground.dirt, below) || below == ground.farmland);
         }
     }
     return false;

@@ -308,6 +308,9 @@ struct FeatureContext {
     /// modifier needs it.
     std::string_view     feature_name;
     const BiomeFeatures* biomes{nullptr};
+    /// The world seed, `WorldGenLevel.getSeed()`. The geode seeds its shell
+    /// noise from it directly rather than from the feature's generator.
+    i64 level_seed{0};
 };
 
 /// One stage of the pipeline.
