@@ -64,6 +64,11 @@ struct SurvivalPlayer {
     i32 jump_boost{-1};
     /// Slow falling: a landing costs nothing.
     bool slow_falling{false};
+
+    /// ── enchanting ── Respiration's draw came up for this tick: the air that
+    /// would go down does not (gameplay::respiration_saves_air, taken by the
+    /// caller, which owns the player's generator and the helmet).
+    bool respiration_saves{false};
 };
 
 /// What one tick of survival asked the server to do.

@@ -346,6 +346,10 @@ struct CreativeSlot {
     i16                slot{0};
     std::optional<i32> item_id;
     i8                 count{0};
+    /// ── enchanting ── the item's tag, as the bytes the wire carried. It was
+    /// read past and dropped: an enchanted book or tool taken from the creative
+    /// inventory arrived plain.
+    std::vector<u8> nbt{};
 };
 
 [[nodiscard]] std::optional<CreativeSlot> parse_set_creative_slot(std::span<const u8> payload);

@@ -219,6 +219,10 @@ DamageResult apply_damage(HealthState& state, DamageKind kind, f32 amount,
     // absorption both are identities, so the measured survival tables run
     // through this path unchanged.
     dealt               = after_resistance(kind, dealt, mitigation.resistance);
+    // ── enchanting ── the worn enchantments' protection, after Resistance.
+    if (const auto epf = mitigation.protection[static_cast<usize>(kind)]; epf > 0 && dealt > 0.0F) {
+        dealt *= 1.0F - std::min(static_cast<f32>(epf), 20.0F) / 25.0F;
+    }
     const f32 through   = std::max(dealt - state.absorption, 0.0F);
     state.absorption    = std::max(state.absorption - (dealt - through), 0.0F);
     dealt               = through;

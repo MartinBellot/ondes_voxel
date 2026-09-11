@@ -962,20 +962,20 @@ std::optional<UseItemOn> parse_use_item_on(std::span<const u8> payload) {
 
 std::optional<CreativeSlot> parse_set_creative_slot(std::span<const u8> payload) {
     io::ByteReader reader{payload};
-    const auto     slot    = reader.read_i16();
-    const auto     present = reader.read_u8();
-    if (!slot || !present) {
+    const auto     slot = reader.read_i16();
+    if (!slot) {
         return std::nullopt;
     }
-    if (*present == 0) {
-        return CreativeSlot{*slot, std::nullopt, 0};
-    }
-    const auto item_id = read_varint(reader);
-    const auto count   = reader.read_i8();
-    if (!item_id || !count) {
+    // ── enchanting ── the slot is read whole, tag included: read_slot keeps
+    // the NBT as its original bytes, the form the rest of the server stores.
+    auto stack = read_slot(reader);
+    if (!stack) {
         return std::nullopt;
     }
-    return CreativeSlot{*slot, *item_id, *count};
+    if (stack->empty() && stack->item_id == 0) {
+        return CreativeSlot{*slot, std::nullopt, 0, {}};
+    }
+    return CreativeSlot{*slot, stack->item_id, stack->count, std::move(stack->nbt)};
 }
 
 std::optional<i16> parse_set_held_item(std::span<const u8> payload) {

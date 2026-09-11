@@ -414,6 +414,7 @@ std::expected<LoadedPlayer, PlayerDataError> read_player(const nbt::Tag& root,
 
     record.xp_level  = static_cast<i32>(get_i64(root, "XpLevel", 0));
     record.xp_total  = static_cast<i32>(get_i64(root, "XpTotal", 0));
+    record.xp_seed   = static_cast<i32>(get_i64(root, "XpSeed", 0));  // ── enchanting ──
     record.xp_points = points_of(get_f64(root, "XpP", 0.0), record.xp_level);
 
     record.selected_slot = std::clamp(static_cast<i32>(get_i64(root, "SelectedItemSlot", 0)), 0, 8);
@@ -540,6 +541,7 @@ nbt::Tag write_player(const PlayerRecord& record, const nbt::Tag* original, cons
     put(root, "FallDistance", nbt::Tag{record.fall_distance});
     put(root, "DeathTime", nbt::Tag{record.death_time});
     put(root, "XpTotal", nbt::Tag{record.xp_total});
+    put(root, "XpSeed", nbt::Tag{record.xp_seed});  // ── enchanting ──
     put(root, "UUID", uuid_tag(uuid));
     put(root, "playerGameType", nbt::Tag{record.game_type});
     if (previous != -1) {

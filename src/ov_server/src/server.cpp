@@ -38,6 +38,9 @@
 #include "ov/registry/registries.hpp"
 // ── crafting and smelting ───────────────────────────────────────────────────
 #include "workbench.hpp"
+#include "enchant_session.hpp"  // ── enchanting ──
+#include "commands/text.hpp"   // ── enchanting: hover names ──
+#include "commands/names.hpp"  // ── enchanting: hover names ──
 // ── containers, and the machines that move items between them ──────────────
 #include "block_container.hpp"
 #include "item_transport.hpp"
@@ -1037,6 +1040,21 @@ struct Player {
     /// different rules and sharing one flag would make a click land in both.
     std::optional<Workbench> bench;
 
+    // ── enchanting ──────────────────────────────────────────────────────────
+    /// The table, anvil or grindstone this player has open.
+    std::optional<EnchantWindow> enchant;
+    /// `XpSeed`: what the table offers this player until they next enchant.
+    i32 xp_seed{0};
+    /// The player's own generator: the next seed, the anvil's 12 %, the
+    /// grindstone's refund, which item Mending picks.
+    math::LegacyRandomSource enchant_random{0x454E4348};
+    /// The worn pieces' tags when their EPF was last computed.
+    std::array<std::vector<u8>, 4> worn_seen{};
+    /// Respiration on the helmet, cached with the EPF so a submerged tick
+    /// parses no NBT.
+    i32 respiration_level{0};
+    // ── end enchanting ──────────────────────────────────────────────────────
+
     /// The container this player has open, if any.
     u8             window_id{0};
     bool           window_open{false};
@@ -1405,6 +1423,17 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         }
         if (const auto menus = registries->find("minecraft:menu")) {
             workbench_context.menu_registry = *menus;
+        }
+    }
+
+    // ── enchanting ──
+    EnchantContext enchant_context;
+    if (registries) {
+        enchant_context.registries    = &*registries;
+        enchant_context.item_registry = workbench_context.item_registry;
+        enchant_context.menu_registry = workbench_context.menu_registry;
+        if (const auto block_ids = registries->find("minecraft:block")) {
+            enchant_context.block_registry = *block_ids;
         }
     }
 
@@ -2217,7 +2246,11 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             holding.efficiency = enchantment_level(held, "minecraft:efficiency");
         }
         // ── effects: haste, conduit power and mining fatigue ──
-        return break_rules->destroy_progress(state, holding, who.effects.dig_stance(who.on_ground));
+        // ── enchanting ── Aqua Affinity is read off the helmet, slot 5.
+        auto stance          = who.effects.dig_stance(who.on_ground);
+        stance.aqua_affinity = stack_enchantment(who.inventory[5],
+                                                 gameplay::Enchantment::AquaAffinity) > 0;
+        return break_rules->destroy_progress(state, holding, stance);
     };
 
     /// Tirer le butin d'un bloc et le poser au sol.
@@ -3202,6 +3235,86 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         return host;
     };
 
+    // ── enchanting ──────────────────────────────────────────────────────────
+    // The table, the anvil and the grindstone reach outside themselves through
+    // this, as the workbench does above — and borrow its first three sinks.
+    // Caller holds players_mutex and chunk_mutex.
+    const auto enchant_host = [&](Player& who, const auto& send) {
+        EnchantHost         host;
+        const WorkbenchHost bench = workbench_host(who, send);
+        host.send                 = bench.send;
+        host.drop                 = bench.drop;
+        host.block_name           = bench.block_name;
+        host.replace_block = [&](i32 x, i32 y, i32 z, std::string_view next) {
+            if (!blocks) {
+                return;
+            }
+            const registry::BlockStateId was = block_at({x, y, z});
+            const auto target =
+                blocks->find_block(next.empty() ? std::string_view{"minecraft:air"} : next);
+            if (!target) {
+                return;
+            }
+            registry::BlockStateId now = blocks->default_state(*target);
+            // The next stage keeps the way the anvil faces.
+            const auto from = blocks->find_property(blocks->block_of(was), "facing");
+            const auto to   = blocks->find_property(*target, "facing");
+            if (from && to) {
+                const std::string_view facing = blocks->property_value(was, *from);
+                for (u16 index = 0; index < to->values.size(); ++index) {
+                    if (to->values[index] == facing) {
+                        now = blocks->with_property(now, *to, index);
+                    }
+                }
+            }
+            chunk_at(x >> 4, z >> 4)
+                .set_block(static_cast<usize>(x & 15), y, static_cast<usize>(z & 15), now);
+            dirty_chunks.insert(chunk_key(x >> 4, z >> 4));
+            broadcast(nullptr, net::clientbound::kBlockUpdate,
+                      net::encode_block_update({x, y, z}, static_cast<i32>(now.value())));
+        };
+        host.hover_name = [&](const net::ItemStack& stack) -> std::string {
+            if (!commands || !registries || !item_registry) {
+                return {};
+            }
+            std::optional<nbt::Tag> tag;
+            if (!stack.nbt.empty()) {
+                if (auto document = nbt::read(stack.nbt)) {
+                    tag = std::move(document->root);
+                }
+            }
+            const std::string_view id = registries->entry_of(*item_registry, stack.item_id);
+            return cmd::plain(cmd::item_name(id, tag ? &*tag : nullptr, commands->env(),
+                                             commands->lang()),
+                              commands->lang());
+        };
+        host.level       = [&who] { return who.survival.experience_level; };
+        host.take_levels = [&who](i32 n) { ov::server::take_levels(who.survival, n); };
+        host.creative    = [&who] { return who.game_mode == 1; };
+        host.xp_seed     = [&who] { return who.xp_seed; };
+        host.set_xp_seed = [&who](i32 seed) { who.xp_seed = seed; };
+        host.spawn_experience = [&](i32 value, f64 x, f64 y, f64 z) {
+            GroundOrb orb;
+            orb.entity_id = next_entity_id.fetch_add(1);
+            orb.x         = x;
+            orb.y         = y;
+            orb.z         = z;
+            orb.value     = value;
+            orb.born      = server_tick.load(std::memory_order_relaxed);
+            broadcast(nullptr, net::clientbound::kSpawnExperienceOrb,
+                      net::encode_spawn_experience_orb(orb.entity_id, orb.x, orb.y, orb.z,
+                                                       static_cast<i16>(orb.value)));
+            ground_orbs.push_back(orb);
+        };
+        host.level_event = [&](i32 event, i32 x, i32 y, i32 z) {
+            broadcast(nullptr, net::clientbound::kWorldEvent,
+                      net::encode_world_event(event, {x, y, z}, 0, false));
+        };
+        host.random = &who.enchant_random;
+        return host;
+    };
+    // ── end enchanting ──────────────────────────────────────────────────────
+
     // ── combat and interaction ──────────────────────────────────────────────
     //
     // Six short pieces, and between them they turn `combat_session.hpp` and
@@ -3449,6 +3562,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             who.game_mode, who.inventory, who.carried, who.held_slot, who.survival,
             who.effects, &overflow);
         record.dimension = std::string{dimension_info(who.dimension).name};  // ── nether ──
+        record.xp_seed = who.xp_seed;  // ── enchanting ──
         if (overflow > 0) {
             OV_LOG_WARN("{}: {} stacks from the crafting grid or the cursor found no free slot "
                         "and are not in the save",
@@ -3638,6 +3752,21 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         };
         io.hurt_entity = [&](i32 entity_id, f32 damage, bool /*critical*/) {
             return hurt_mob(who, entity_id, damage, held_weapon(who).looting);
+        };
+        // ── enchanting ── Smite, Bane and Impaling need to know what is hit.
+        io.target_bonus = [&](i32 entity_id) -> f32 {
+            if (!mobs || !registries) {
+                return 0.0F;
+            }
+            const entity::EntityHandle handle = mobs->find(entity_id);
+            const entity::EntityState* state =
+                handle == entity::kNoEntity ? nullptr : mobs->state(handle);
+            const auto types = registries->find("minecraft:entity_type");
+            if (state == nullptr || !types) {
+                return 0.0F;
+            }
+            return target_enchantment_bonus(who.inventory[36 + static_cast<usize>(who.held_slot)],
+                                            registries->entry_of(*types, state->type));
         };
         io.entity_position = [&](i32 entity_id) -> std::optional<Vec3d> {
             if (!mobs) {
@@ -4151,6 +4280,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             if (const auto it = players.find(connection.get()); it != players.end()) {
                 const i32       entity_id = it->second.entity_id;
                 const net::Uuid uuid      = it->second.uuid;
+                // ── enchanting ── an open window's inputs go back to the
+                // inventory before it is saved, as vanilla closes the menu.
+                if (it->second.enchant) {
+                    const auto quiet = [](i32, const std::vector<u8>&) {};
+                    close_enchant_screen(enchant_context, enchant_host(it->second, quiet),
+                                         *it->second.enchant, it->second.inventory);
+                    it->second.enchant.reset();
+                }
                 leaving.emplace(uuid, it->second.name, player_record_of(it->second));  // ── player data ──
                 players.erase(it);
                 // ── projectiles: a draw does not outlive its archer ──
@@ -4496,6 +4633,11 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 }
                 join.dimension_type = dimension_info(player.dimension).type;
                 join.dimension_name = dimension_info(player.dimension).name;
+                // ── enchanting ── the table's seed, and the player's own generator.
+                if (stored) {
+                    player.xp_seed = stored->record.xp_seed;
+                }
+                player.enchant_random.set_seed(enchant_random_seed(player.uuid));
                 join.game_mode           = player.game_mode;
                 join.registry_codec      = *codec_bytes;
                 join.view_distance       = 10;
@@ -4655,6 +4797,11 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         // answering a keep-alive we did not send. Vanilla drops
                         // the connection; so do we, rather than trusting it.
                         if (!id || *id != player.keep_alive_id) {
+                            // ── enchanting: its end-to-end probe was dropped here
+                            // silently; the listener closes without a word ──
+                            OV_LOG_WARN("{}: keep-alive reply {} does not match the one sent ({}), "
+                                        "dropping the connection",
+                                        player.name, id ? *id : -1, player.keep_alive_id);
                             return false;
                         }
                         player.awaiting_keep_alive = false;
@@ -4931,10 +5078,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         }
                         if (creative->slot >= 0 &&
                             creative->slot < static_cast<i16>(player.inventory.size())) {
+                            // ── enchanting ── the tag is kept, not dropped.
                             player.inventory[static_cast<usize>(creative->slot)] =
                                 net::ItemStack{creative->item_id.value_or(0),
                                                creative->item_id ? creative->count : i8{0},
-                                               {}};
+                                               creative->item_id ? creative->nbt
+                                                                 : std::vector<u8>{}};
                         }
                         return true;
                     }
@@ -5139,6 +5288,20 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                 weather->request_bed(player.entity_id,
                                                      BlockPos{place->position.x, place->position.y,
                                                               place->position.z});
+                                return true;
+                            }
+                        }
+                        // ── enchanting ── the table, the anvil and the
+                        // grindstone open the same way, under the same rule.
+                        if (!player.sneaking ||
+                            player.inventory[36 + static_cast<usize>(player.held_slot)].empty()) {
+                            const std::scoped_lock chunk_lock{chunk_mutex};
+                            if (open_enchant_screen(enchant_context,
+                                                    enchant_host(player, send_packet),
+                                                    place->position.x, place->position.y,
+                                                    place->position.z, 3, player.inventory,
+                                                    player.enchant)) {
+                                player.window_open = false;
                                 return true;
                             }
                         }
@@ -5572,7 +5735,42 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         return true;
                     }
 
+                    // ── enchanting ── the table's three buttons, the
+                    // anvil's text box.
+                    case kClickContainerButton: {
+                        const auto pressed = parse_click_button(body);
+                        if (pressed && player.enchant &&
+                            pressed->first == player.enchant->window_id) {
+                            const std::scoped_lock chunk_lock{chunk_mutex};
+                            enchant_button(enchant_context, enchant_host(player, send_packet),
+                                           *player.enchant, pressed->second, player.inventory,
+                                           player.carried);
+                        }
+                        return true;
+                    }
+                    case kRenameItem: {
+                        const auto typed = parse_rename_item(body);
+                        if (typed && player.enchant) {
+                            const std::scoped_lock chunk_lock{chunk_mutex};
+                            enchant_rename(enchant_context, enchant_host(player, send_packet),
+                                           *player.enchant, *typed, player.inventory,
+                                           player.carried);
+                        }
+                        return true;
+                    }
+
                     case net::serverbound::kCloseContainer: {
+                        // ── enchanting ── the inputs go back to the player
+                        if (player.enchant) {
+                            const std::scoped_lock chunk_lock{chunk_mutex};
+                            close_enchant_screen(enchant_context,
+                                                 enchant_host(player, send_packet),
+                                                 *player.enchant, player.inventory);
+                            player.enchant.reset();
+                            send_packet(net::clientbound::kContainerContent,
+                                        net::encode_container_content(0, 0, player.inventory,
+                                                                      player.carried));
+                        }
                         // ── crafting and smelting ───────────────────────────
                         if (player.bench) {
                             const std::scoped_lock chunk_lock{chunk_mutex};
@@ -5609,6 +5807,17 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     }
 
                     case net::serverbound::kClickContainer: {
+                        // ── enchanting ──
+                        if (player.enchant) {
+                            const auto clicked = net::parse_container_click(body);
+                            if (clicked && clicked->window_id == player.enchant->window_id) {
+                                const std::scoped_lock chunk_lock{chunk_mutex};
+                                enchant_click(enchant_context, enchant_host(player, send_packet),
+                                              *player.enchant, *clicked, player.inventory,
+                                              player.carried, player.enchant);
+                                return true;
+                            }
+                        }
                         // ── crafting and smelting ───────────────────────────
                         if (player.bench) {
                             const auto crafted = net::parse_container_click(body);
@@ -8049,7 +8258,34 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                               .breathes_underwater =
                                                   who.effects.breathes_underwater(),
                                               .jump_boost   = who.effects.jump_boost(),
-                                              .slow_falling = who.effects.slow_falling()};
+                                              .slow_falling = who.effects.slow_falling(),
+                                              // ── enchanting ──
+                                              .respiration_saves =
+                                                  submerged && who.respiration_level > 0 &&
+                                                  gameplay::respiration_saves_air(
+                                                      who.respiration_level, who.enchant_random)};
+                    // ── enchanting ── the worn pieces' EPF, recomputed only
+                    // when one of them changed: no NBT is parsed on a quiet tick.
+                    {
+                        bool changed = false;
+                        for (usize piece = 0; piece < 4; ++piece) {
+                            changed = changed || who.worn_seen[piece] != who.inventory[5 + piece].nbt;
+                        }
+                        if (changed) {
+                            for (usize piece = 0; piece < 4; ++piece) {
+                                who.worn_seen[piece] = who.inventory[5 + piece].nbt;
+                            }
+                            const auto worn = worn_enchantments(who.inventory);
+                            who.respiration_level =
+                                worn[0].level(gameplay::Enchantment::Respiration);
+                            for (usize kind = 0; kind < gameplay::kDamageKindCount; ++kind) {
+                                who.survival.mitigation.protection[kind] =
+                                    static_cast<u8>(std::min(
+                                        255, gameplay::total_epf(
+                                                 worn, static_cast<gameplay::DamageKind>(kind))));
+                            }
+                        }
+                    }
                     SurvivalOutcome outcome = who.survival.tick(
                         view, io,
                         // ── commands: /difficulty and naturalRegeneration ──
@@ -8166,6 +8402,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         if (keep_inventory || stack.item_id == 0 || stack.count <= 0) {
                             continue;
                         }
+                        if (vanishes_on_death(stack)) {  // ── enchanting ──
+                            stack = net::ItemStack{};
+                            continue;
+                        }
                         ItemEntity item;
                         item.entity_id = next_entity_id.fetch_add(1);
                         item.uuid = net::Uuid{0x4f564954454d0000ULL | static_cast<u64>(item.entity_id),
@@ -8267,7 +8507,19 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         const f64 dz = taker->z - orb.z;
                         if (nearest <= orb_rules.pickup_range * orb_rules.pickup_range) {
                             const i32 level_before = taker->survival.experience_level;  // ── sound ──
-                            taker->survival.award_experience(orb.value);
+                            // ── enchanting ── Mending takes its share first.
+                            const i32 for_player = apply_mending(
+                                taker->inventory, taker->held_slot, orb.value,
+                                taker->enchant_random, [&](usize slot) {
+                                    if (const auto framed = net::encode_packet(
+                                            net::clientbound::kContainerSlot,
+                                            net::encode_container_slot(
+                                                0, 0, static_cast<i16>(slot), taker->inventory[slot]));
+                                        framed && taker->connection) {
+                                        taker->connection->send(*framed);
+                                    }
+                                });
+                            taker->survival.award_experience(for_player);
                             if (sounds && taker->survival.experience_level > level_before) {
                                 sounds->level_up(sound_host, Vec3d{taker->x, taker->y, taker->z},
                                                  taker->survival.experience_level);

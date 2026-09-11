@@ -139,7 +139,7 @@ AttackOutcome resolve_attack(const Weapon& weapon, const AttackerState& attacker
     out.item_damage = action_damage(weapon.item, ToolAction::Attack);
 
     f32 base  = stats.attack_damage + effect_bonus(attacker.strength, attacker.weakness);
-    f32 bonus = sharpness_bonus(weapon.sharpness);
+    f32 bonus = sharpness_bonus(weapon.sharpness) + weapon.target_bonus;  // ── enchanting ──
 
     // The charge scales both, but not the same way: the weapon's damage keeps a
     // fifth of itself at zero charge, the enchantment keeps nothing. A Sharpness

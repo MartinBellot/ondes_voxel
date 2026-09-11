@@ -13,6 +13,7 @@ ov_add_library(ov_gameplay
         src/collision.cpp
         src/damage.cpp
         src/durability.cpp
+        src/enchanting.cpp
         src/entity_physics.cpp
         src/experience.cpp
         src/explosion.cpp
@@ -61,6 +62,7 @@ ov_add_test(test_ov_gameplay
         tests/test_collision.cpp
         tests/test_damage.cpp
         tests/test_durability.cpp
+        tests/test_enchanting.cpp
         tests/test_entity_physics.cpp
         tests/test_experience.cpp
         tests/test_nether_portal.cpp
