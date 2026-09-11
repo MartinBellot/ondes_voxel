@@ -30,10 +30,10 @@ Statut : le plus fort atteint — `vanilla` > `aller-retour` > `testé` > `codé
 | Statut | Paquets |
 |---|---:|
 | vanilla | 15 |
-| aller-retour | 33 |
+| aller-retour | 36 |
 | testé | 27 |
-| codé | 39 |
-| id seul | 11 |
+| codé | 38 |
+| id seul | 9 |
 | absent | 51 |
 
 | État · sens | Total | Présents | Enc. | Déc. | A/R | Vanilla |
@@ -43,7 +43,7 @@ Statut : le plus fort atteint — `vanilla` > `aller-retour` > `testé` > `codé
 | Status · client → serveur | 2 | 2 | 0 | 0 | 0 | 0 |
 | Login · serveur → client | 5 | 3 | 3 | 0 | 0 | 0 |
 | Login · client → serveur | 3 | 1 | 0 | 1 | 0 | 0 |
-| Play · serveur → client | 111 | 85 | 82 | 35 | 35 | 15 |
+| Play · serveur → client | 111 | 85 | 84 | 39 | 39 | 15 |
 | Play · client → serveur | 51 | 31 | 8 | 25 | 7 | 0 |
 
 ## Handshaking — client → serveur
@@ -100,7 +100,7 @@ Statut : le plus fort atteint — `vanilla` > `aller-retour` > `testé` > `codé
 | `0x08` | Block Entity Data | codé | ✓ | ✓ | · | · | · | · | ✓ | · |
 | `0x09` | Block Action | vanilla | ✓ | ✓ | · | ✓ | · | ✓ | · | · |
 | `0x0A` | Block Update | codé | ✓ | ✓ | · | · | · | · | ✓ | ✓ |
-| `0x0B` | Boss Bar | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | ✓ | · |
+| `0x0B` | Boss Bar | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | ✓ | ✓ |
 | `0x0C` | Change Difficulty | testé | ✓ | ✓ | · | ✓ | · | · | ✓ | · |
 | `0x0D` | Chunk Biomes | absent | · | · | · | · | · | · | · | · |
 | `0x0E` | Clear Titles | testé | ✓ | ✓ | · | ✓ | · | · | ✓ | ✓ |
@@ -113,16 +113,16 @@ Statut : le plus fort atteint — `vanilla` > `aller-retour` > `testé` > `codé
 | `0x15` | Set Cooldown | testé | ✓ | ✓ | · | ✓ | · | · | ✓ | · |
 | `0x16` | Chat Suggestions | absent | · | · | · | · | · | · | · | · |
 | `0x17` | Plugin Message | absent | · | · | · | · | · | · | · | · |
-| `0x18` | Damage Event | vanilla | ✓ | ✓ | · | ✓ | · | ✓ | ✓ | · |
+| `0x18` | Damage Event | vanilla | ✓ | ✓ | · | ✓ | · | ✓ | ✓ | ✓ |
 | `0x19` | Delete Message | absent | · | · | · | · | · | · | · | · |
 | `0x1A` | Disconnect (play) | codé | ✓ | ✓ | · | · | · | · | ✓ | ✓ |
 | `0x1B` | Disguised Chat Message | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | ✓ | ✓ |
-| `0x1C` | Entity Event | vanilla | ✓ | ✓ | · | ✓ | · | ✓ | ✓ | ✓ |
+| `0x1C` | Entity Event | vanilla | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `0x1D` | Explosion | vanilla | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `0x1E` | Unload Chunk | codé | ✓ | ✓ | · | · | · | · | ✓ | ✓ |
 | `0x1F` | Game Event | testé | ✓ | ✓ | · | ✓ | · | · | ✓ | ✓ |
 | `0x20` | Open Horse Screen | absent | · | · | · | · | · | · | · | · |
-| `0x21` | Hurt Animation | codé | ✓ | ✓ | · | · | · | · | · | · |
+| `0x21` | Hurt Animation | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | · | ✓ |
 | `0x22` | Initialize World Border | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | · | · |
 | `0x23` | Keep Alive | codé | ✓ | ✓ | · | · | · | · | ✓ | ✓ |
 | `0x24` | Chunk Data and Update Light | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | ✓ | ✓ |
@@ -174,11 +174,11 @@ Statut : le plus fort atteint — `vanilla` > `aller-retour` > `testé` > `codé
 | `0x52` | Set Entity Metadata | vanilla | ✓ | ✓ | · | ✓ | · | ✓ | ✓ | ✓ |
 | `0x53` | Link Entities | absent | · | · | · | · | · | · | · | · |
 | `0x54` | Set Entity Velocity | vanilla | ✓ | ✓ | · | ✓ | · | ✓ | ✓ | · |
-| `0x55` | Set Equipment | id seul | ✓ | · | · | · | · | · | ✓ | · |
+| `0x55` | Set Equipment | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | ✓ | ✓ |
 | `0x56` | Set Experience | vanilla | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `0x57` | Set Health | vanilla | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `0x58` | Update Objectives | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | · | · |
-| `0x59` | Set Passengers | id seul | ✓ | · | · | · | · | · | ✓ | · |
+| `0x59` | Set Passengers | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | ✓ | ✓ |
 | `0x5A` | Update Teams | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | · | · |
 | `0x5B` | Update Score | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | · | · |
 | `0x5C` | Set Simulation Distance | absent | · | · | · | · | · | · | · | · |

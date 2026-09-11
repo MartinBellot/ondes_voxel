@@ -25,7 +25,7 @@
     "M1": {
       "name": "Protocole 763",
       "status": "in_progress",
-      "done": 13,
+      "done": 15,
       "total": 18,
       "exit_criterion": "Le serveur apparaît dans la liste des serveurs du client vanilla, MOTD et icône corrects ; round-trip octet à octet de tous les paquets ; fuzz du décodeur sans crash.",
       "blocked": [],
