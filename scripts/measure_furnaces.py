@@ -199,7 +199,9 @@ def campaign_xp(server: CraftServer, trials: int = 40) -> dict:
         if any("Oven0" in line for line in server.batch(["list"])):
             break
     pos = (4, Y, 8)
-    stand = (4.5, -59.0, 10.5)
+    # Les pieds au sol (le monde plat culmine à −61) : à −59, le serveur
+    # expulse la sonde au bout de quatre secondes, « floating too long ».
+    stand = (4.5, -60.0, 10.5)
     server.batch(["gamemode survival Oven0", f"tp Oven0 {stand[0]} {stand[1]} {stand[2]}",
                   f"setblock {pos[0]} {pos[1] - 1} {pos[2]} minecraft:stone"])
     probe.settle(1.0)
@@ -213,13 +215,18 @@ def campaign_xp(server: CraftServer, trials: int = 40) -> dict:
         probe.open_block(pos, stand)
         probe.settle(0.2)
         probe.click(2, 0, 1)            # shift-clic sur la sortie
-        probe.settle(1.5)               # laisser les orbes arriver jusqu'au joueur
+        probe.settle(3.0)               # laisser les orbes arriver jusqu'au joueur
         probe.close()
         probe.settle(0.5)
-        got = points(server, "Oven0")
-        for _ in range(3):
+        # Un joueur ne ramasse qu'une orbe tous les deux ticks, et une orbe
+        # met un moment à le rejoindre : on relit jusqu'à ce que le compte
+        # tienne deux lectures de suite.
+        got, previous = points(server, "Oven0"), -1
+        for _ in range(8):
+            if got == previous and got > 0:
+                break
             probe.settle(0.5)
-            got = max(got, points(server, "Oven0"))
+            previous, got = got, max(got, points(server, "Oven0"))
         server.batch(["kill @e[type=minecraft:experience_orb]",
                       f"setblock {pos[0]} {pos[1]} {pos[2]} minecraft:air",
                       "clear Oven0"])
