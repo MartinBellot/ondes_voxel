@@ -1,8 +1,7 @@
 #version 450
 
-// The game's `rendertype_entity_cutout`, step for step: the texture, cut at
-// 0.1; times the vertex colour (tint and directional shade); pulled towards the
-// overlay by `1 − overlay.a`; times the lightmap; then the fog.
+// The game's `rendertype_entity_translucent`: the cutout shader's arithmetic,
+// with the alpha kept and blended. A slime's outer jelly, a horse's markings.
 
 layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec4 v_colour;
@@ -22,8 +21,6 @@ push;
 
 layout(location = 0) out vec4 out_colour;
 
-// Back to the stored numbers the game multiplies, as in terrain.frag: the
-// texture is sRGB and decodes on sampling, the scene target is UNORM.
 vec3 linear_to_srgb(vec3 c) {
     vec3 low  = c * 12.92;
     vec3 high = 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055;
@@ -33,8 +30,6 @@ vec3 linear_to_srgb(vec3 c) {
 void main() {
     vec4 texel = texture(u_texture, v_uv);
     texel.rgb  = linear_to_srgb(texel.rgb);
-
-    // On the texture's own alpha, before the tint: the game's cut.
     if (texel.a < 0.1) {
         discard;
     }
@@ -51,5 +46,5 @@ void main() {
         colour.rgb = mix(colour.rgb, push.fog_colour.rgb, amount);
     }
 
-    out_colour = vec4(colour.rgb, 1.0);
+    out_colour = colour;
 }

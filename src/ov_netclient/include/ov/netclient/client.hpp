@@ -28,6 +28,7 @@
 #include "ov/protocol/blast.hpp"
 #include "ov/protocol/breaking.hpp"  // ── breaking ──
 #include "ov/protocol/client_play.hpp"
+#include "ov/protocol/entity_metadata.hpp"
 #include "ov/protocol/sound.hpp"
 #include "ov/registry/block_states.hpp"
 #include "ov/world/chunk.hpp"
@@ -138,6 +139,10 @@ struct ClientEvents {
     /// haunches and the experience bar; a HUD that guesses shows a health bar
     /// nothing is maintaining.
     std::optional<u8> game_mode;
+    /// ── entity-models ── Login (play)'s entity id: which of the entities the
+    /// server announces is this client's own player — the one a Set Passengers
+    /// must name for the camera to ride a minecart.
+    std::optional<i32> player_entity_id;
 
     // ── flight ──
     /// Player Abilities (0x34): what the server lets the player do. The flag
@@ -190,6 +195,15 @@ struct ClientEvents {
         /// client understands. An index it does not know is skipped by name in
         /// the log, never by silently mis-parsing the rest of the packet.
         Metadata,
+        // ── entity-models ──
+        /// Set Equipment (0x55): what the entity holds and wears.
+        Equipment,
+        /// Entity Event (0x1C): one status byte; 3 is a death.
+        Event,
+        /// Hurt Animation (0x21) or Damage Event (0x18): the red flash.
+        Hurt,
+        /// Set Passengers (0x59): who rides `id`, the whole list every time.
+        Passengers,
     };
 
     struct EntityChange {
@@ -210,6 +224,17 @@ struct ClientEvents {
         /// The stack a dropped item carries, from metadata index 8. Empty when
         /// the change said nothing about it.
         std::optional<net::ItemStack> stack;
+        // ── entity-models ──
+        /// Every field of a Metadata change, decoded to its wire width but not
+        /// interpreted: what index 17 means depends on the entity's type, and
+        /// that is the renderer's table, not the network's.
+        std::vector<net::MetadataValue> metadata;
+        /// An Equipment change's slots.
+        std::vector<net::EquipmentEntry> equipment;
+        /// A Passengers change's riders.
+        std::vector<i32> riders;
+        /// An Event change's status byte.
+        i8 status{0};
     };
 
     std::vector<EntityChange> entities;

@@ -63,6 +63,9 @@ std::expected<std::unique_ptr<EntityRenderer>, rhi::RhiError> EntityRenderer::cr
     binding.attributes.push_back(rhi::VertexAttribute{0, rhi::Format::Rgb32Float, 0});
     binding.attributes.push_back(rhi::VertexAttribute{1, rhi::Format::Rg32Float, 12});
     binding.attributes.push_back(rhi::VertexAttribute{2, rhi::Format::Rgba8Unorm, 20});
+    // ── entity-models ── the overlay texel and the lightmap sample.
+    binding.attributes.push_back(rhi::VertexAttribute{3, rhi::Format::Rgba8Unorm, 24});
+    binding.attributes.push_back(rhi::VertexAttribute{4, rhi::Format::Rgba8Unorm, 28});
 
     rhi::GraphicsPipelineDesc pipeline;
     pipeline.vertex_shader              = "entity.vert.spv";
@@ -74,9 +77,15 @@ std::expected<std::unique_ptr<EntityRenderer>, rhi::RhiError> EntityRenderer::cr
     pipeline.depth_format               = depth_format;
     pipeline.depth_test                 = true;
     pipeline.depth_write                = true;
-    // Back-face culling, and the winding it needs is the reason entity_mesh.cpp
-    // reverses every quad: the model-to-world map is a reflection.
-    pipeline.cull_mode = rhi::CullMode::Back;
+    // ── entity-models ── Less-or-equal, as the game's entity render types: a
+    // layer drawn over the same triangles (clothes over skin, eyes over a
+    // face) sits at exactly the same depth.
+    pipeline.depth_compare = rhi::CompareOp::LessOrEqual;
+    // No culling: the game draws its mobs with `entity_cutout_no_cull`, and the
+    // inside of a hat seen through its transparent texels is part of the
+    // picture. The winding is still right (entity_mesh.cpp), it just is not
+    // relied upon.
+    pipeline.cull_mode = rhi::CullMode::None;
     // No blending. The overlay layers of a skin and the text on a sign are
     // cutouts, and the fragment shader discards below the same threshold the
     // terrain's cutout layer uses. Blending them instead would need a sort by
@@ -88,8 +97,21 @@ std::expected<std::unique_ptr<EntityRenderer>, rhi::RhiError> EntityRenderer::cr
         pipeline.fragment_shader = "weather.frag.spv";
         pipeline.blend           = rhi::BlendMode::Alpha;
         pipeline.depth_write     = false;
+        pipeline.depth_compare   = rhi::CompareOp::Less;
         pipeline.cull_mode       = rhi::CullMode::None;
         pipeline.debug_name      = "weather";
+    }
+    // ── entity-models ──
+    if (pass == EntityPass::EntityTranslucent) {
+        pipeline.fragment_shader = "entity_translucent.frag.spv";
+        pipeline.blend           = rhi::BlendMode::Alpha;
+        pipeline.debug_name      = "entities translucent";
+    }
+    if (pass == EntityPass::Eyes || pass == EntityPass::Energy) {
+        pipeline.fragment_shader = "entity_additive.frag.spv";
+        pipeline.blend           = rhi::BlendMode::Additive;
+        pipeline.depth_write     = false;
+        pipeline.debug_name      = pass == EntityPass::Eyes ? "entity eyes" : "entity energy";
     }
     if (pass == EntityPass::Crumbling) {  // ── breaking ──
         pipeline.fragment_shader     = "crumbling.frag.spv";
@@ -98,7 +120,11 @@ std::expected<std::unique_ptr<EntityRenderer>, rhi::RhiError> EntityRenderer::cr
         pipeline.depth_compare       = rhi::CompareOp::LessOrEqual;
         pipeline.depth_bias_constant = -10.0F;
         pipeline.depth_bias_slope    = -1.0F;
-        pipeline.debug_name          = "crumbling";
+        // The cracks keep the back-face culling they were measured with: the
+        // entity passes above dropped culling for the game's no-cull mobs, and
+        // a block's cracks are not one of them.
+        pipeline.cull_mode  = rhi::CullMode::Back;
+        pipeline.debug_name = "crumbling";
     }
 
     auto created = device.create_graphics_pipeline(pipeline);
@@ -113,7 +139,9 @@ std::expected<std::unique_ptr<EntityRenderer>, rhi::RhiError> EntityRenderer::cr
     auto sampler = device.create_sampler(rhi::SamplerDesc{rhi::Filter::Nearest,
                                                           rhi::Filter::Nearest,
                                                           rhi::MipFilter::Nearest,
-                                                          pass != EntityPass::Cutout
+                                                          pass == EntityPass::Translucent ||
+                                                                  pass == EntityPass::Energy ||
+                                                                  pass == EntityPass::Crumbling
                                                               ? rhi::AddressMode::Repeat
                                                               : rhi::AddressMode::ClampToEdge,
                                                           1.0F,
@@ -182,6 +210,11 @@ std::expected<EntityTexture, rhi::RhiError> EntityRenderer::add_texture(
 EntityTexture EntityRenderer::borrow_texture(rhi::ImageHandle image, u32 width, u32 height) {
     textures_.push_back(Texture{image, width, height, false, {}});
     return static_cast<EntityTexture>(textures_.size() - 1);
+}
+
+rhi::ImageHandle EntityRenderer::image(EntityTexture texture) const noexcept {  // ── entity-models ──
+    const auto index = static_cast<usize>(texture);
+    return index < textures_.size() ? textures_[index].image : rhi::ImageHandle{};
 }
 
 void EntityRenderer::begin() {
