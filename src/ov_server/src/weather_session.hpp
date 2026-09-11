@@ -95,6 +95,10 @@ struct WeatherHost {
     std::function<void(Vec3d centre, f32 power, bool fire)> explode;
     /// Put a stack on the ground — the loot of a mob a bolt killed.
     std::function<void(Vec3d, const net::ItemStack&)> drop_item;
+    /// ── fire ── Light a fire here if one may stand (fire_session.hpp).
+    /// Called with the chunk lock held; the weather tick settles the writes.
+    /// Absent: bolts set nothing alight, and that is said once.
+    std::function<bool(BlockPos)> ignite;
 };
 
 /// What one tick did.

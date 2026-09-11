@@ -353,12 +353,25 @@ void WeatherSession::tick_bolts(ServerLevel& level, entity::EntityWorld* mobs,
     for (usize i = 0; i < bolts_.size();) {
         Bolt&                  bolt = bolts_[i];
         const gameplay::BoltStep step = gameplay::tick_bolt(bolt.clock, bolt_random_);
-        if (step.strike || step.refire) {
+        if ((step.strike || step.refire) && world.difficulty >= 2 &&
+            world.rules.flag("doFireTick")) {
             // Fire at the strike and at every later flash — on Normal and
-            // Hard with doFireTick. This server has no fire that burns, so a
-            // fire block would never go out: refused and named.
-            if (!fire_named_ && world.difficulty >= 2 && world.rules.flag("doFireTick")) {
-                OV_LOG_INFO("lightning: fire is not modelled; bolts set nothing alight");
+            // Hard with doFireTick: the struck block, and on the first flash
+            // up to four more, each at a random offset of -1..1 on every axis.
+            // Where a fire may not stand, nothing is written (`ignite`).
+            const BlockPos at{static_cast<i32>(std::floor(bolt.at.x)),
+                              static_cast<i32>(std::floor(bolt.at.y)),
+                              static_cast<i32>(std::floor(bolt.at.z))};
+            if (host.ignite) {
+                (void)host.ignite(at);
+                for (i32 extra = 0; step.strike && extra < 4; ++extra) {
+                    const i32 dx = bolt_random_.next_int(3) - 1;
+                    const i32 dy = bolt_random_.next_int(3) - 1;
+                    const i32 dz = bolt_random_.next_int(3) - 1;
+                    (void)host.ignite(BlockPos{at.x + dx, at.y + dy, at.z + dz});
+                }
+            } else if (!fire_named_) {
+                OV_LOG_INFO("lightning: no fire on this server; bolts set nothing alight");
                 fire_named_ = true;
             }
         }

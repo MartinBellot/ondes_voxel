@@ -321,8 +321,12 @@ pas concluante et c'est dit.
 
 ### 6.3 Nommé et non fait
 
-* **Le feu** : ce serveur n'a pas de feu qui brûle et s'éteint ; un bloc de feu posé ne s'éteindrait
-  jamais. Refusé, dit une fois au journal.
+* **Le feu** — *fait depuis la fusion du feu* (`docs/provenance/feu.md`) : en Normal et Difficile avec
+  `doFireTick`, l'éclair allume le bloc frappé à chaque flash, et au premier flash jusqu'à quatre
+  blocs de plus, chacun à un décalage aléatoire de −1..1 sur chaque axe (page *Lightning* du wiki).
+  Le feu n'est posé que là où il peut tenir (`FireSession::ignite`). ⚠️ Non mesuré contre le vrai
+  serveur, et le tirage des décalages vient du générateur de l'éclair, pas de celui du niveau : la
+  position des feux secondaires n'est pas bit-exacte.
 * **L'impulsion redstone du paratonnerre** (8 ticks) : le moteur ne connaît pas le paratonnerre
   comme source. Dit une fois.
 * **Le piège du cheval squelette** (chance = difficulté locale × 1 %) : ni difficulté locale ni

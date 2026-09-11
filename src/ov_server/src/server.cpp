@@ -6675,6 +6675,11 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         return commands && commands->set_personal_spawn(uuid, cmd::PersonalSpawn{head.x, head.y, head.z, angle});
     };
     weather_host.drop_item = tnt_host.drop_item;
+    // ── fire ── a bolt lights the block it struck (the weather tick holds the
+    // chunk lock and settles the writes after).
+    weather_host.ignite = [&](BlockPos at) {
+        return fire_session && level && fire_session->ignite(*level, at);
+    };
     // ── end weather ─────────────────────────────────────────────────────────
 
     const auto should_stop = [&]() {
