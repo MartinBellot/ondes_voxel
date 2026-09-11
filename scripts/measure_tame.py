@@ -764,8 +764,12 @@ def main(argv: list[str]) -> int:
         time.sleep(2.0)
         rig = Oracle(server, hand)
         server.batch([f"tp {PROBE} -0.5 {Y} 0.5 -90 0", f"gamemode survival {PROBE}",
-                      f"effect give {PROBE} minecraft:resistance infinite 5 true",
-                      "kill @e[type=!minecraft:player]"])
+                      f"effect give {PROBE} minecraft:resistance infinite 5 true"])
+        if names != ["zoo_back"]:
+            # A fresh world starts empty. Not the one ov_dedicated rewrote: the
+            # forceload above has already brought its zoo in, and the first
+            # zoo_back run killed it here and read back nothing (zoo_count 0).
+            server.batch(["kill @e[type=!minecraft:player]"])
         time.sleep(1.0)
         for name in names:
             print(f"── {name}", flush=True)
