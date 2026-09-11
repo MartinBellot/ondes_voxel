@@ -761,7 +761,12 @@ int main(int argc, char** argv) {
         // Four times as many candidates as chunks wanted: a chunk on the edge
         // of the generated area has neighbours that were never finished and is
         // skipped.
-        if (!options.trees && candidates.size() >= static_cast<usize>(options.chunks) * 4) {
+        // Not in a block probe either: a probe world far from spawn has whole
+        // regions of unfinished edge chunks ahead of its patch in region
+        // order, and cutting the list here left the ocean probe comparing
+        // nothing but those edges.
+        if (!options.trees && options.control.empty() &&
+            candidates.size() >= static_cast<usize>(options.chunks) * 4) {
             break;
         }
     }

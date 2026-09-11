@@ -1342,6 +1342,67 @@ c'est le plancher contre lequel lire le chiffre, pas zéro. Les trois features
 partagent le même monde sonde, donc cette mesure **ne dit pas laquelle** est
 fausse ; un monde par feature la départagerait. **Non résolu.**
 
+## Les plaines : `BIOME_INFO_NOISE` et les fleurs
+
+Monde `probe-f2-plains`, graine 1234, les placed features de vanilla
+`patch_grass_plain` et `flower_plains` aux index 0 et 1 de l'étape 9, contre le
+témoin `probe-f2-control`, 200 chunks. Le nombre de touffes d'herbe par chunk
+(5 ou 10) sort de `noise_threshold_count`, donc de `BIOME_INFO_NOISE` ; l'espèce
+de chaque fleur sort de `noise_threshold_provider`.
+
+| bloc | jeu | nous | identiques | témoin absurde |
+|---|---:|---:|---:|---:|
+| `grass` | 5598 | 5554 | **92,4 %** | 20,6 % |
+| `dandelion` | 102 | 103 | 69,6 % | 0,0 % |
+| `cornflower` | 14 | 15 | **100,0 %** | 0,0 % |
+| `poppy` | 13 | 16 | 84,6 % | 0,0 % |
+| `oxeye_daisy` | 8 | 11 | 62,5 % | 0,0 % |
+| `azure_bluet` | 12 | 4 | 33,3 % | 0,0 % |
+| **tout** | 5747 | 5703 | **91,822 %** | 20,045 % |
+
+**Le bruit est juste.** Les totaux concordent à 1 % près (5747 contre 5703) : un
+`BIOME_INFO_NOISE` faux ferait basculer des chunks entiers entre 5 et 10 essais
+et le total s'écarterait d'autant. Les fleurs, dont l'espèce dépend d'un second
+bruit, sont à 0 % pour le témoin sur chaque espèce et bien au-dessus avec la
+bonne graine — le bleuet à 100 %.
+
+Ce qui reste — 8 % de l'herbe, un tiers des fleurs — n'est pas départagé : deux
+patches voisins se disputent les mêmes cellules et l'ordre de décoration des
+chunks décide qui gagne ; c'est l'hypothèse la plus probable et elle **n'est
+pas mesurée**. Le témoin de l'herbe est haut pour la même raison que celui du
+dripstone : des touffes denses se recouvrent par hasard.
+
+## L'océan : la mesure n'a pas eu lieu
+
+La famille marine (`seagrass`, `kelp`, `sea_pickle`, les trois coraux,
+`underwater_magma`) est écrite et **n'est pas mesurée**. La tentative a raté,
+et la raison vaut d'être écrite.
+
+Une sonde marine demande une zone de mer : le preset `plains` ne change pas le
+terrain, donc une plaine reste une plaine et un océan reste un océan. La zone a
+été choisie dans le monde de référence (région `r.-205.13`, biomes
+`lukewarm_ocean`), mais **à partir du premier chunk océanique rencontré**, en
+z = 437, avec une zone qui commençait en z = 420 : elle frôlait l'océan par un
+coin et couvrait surtout de la terre et des grottes. Résultat, sur 200 chunks
+finis : le jeu n'a posé **aucune** herbe marine, aucun cornichon, aucun varech,
+aucun corail, et nous non plus — trois blocs de magma de part et d'autre, à
+l'identique. Un score de 100 % sur trois blocs ne dit rien, et il n'est pas
+retenu.
+
+Deux leçons, payées là :
+
+* **Un recensement « chunk avec de l'eau sous le niveau de la mer » ne
+  distingue pas la mer d'un aquifère.** Il comptait 105 chunks « mouillés » dans
+  une zone sans mer. Il faut lire le biome de la référence, *et* son étendue —
+  la bande océanique de `r.-205.13` va de x −6565 à −6553 et de z 435 à 447.
+* **La sonde bloc à bloc tronquait sa liste de chunks candidats** à quatre fois
+  le nombre demandé, dans l'ordre des régions. Loin du point d'apparition, des
+  régions entières de chunks de bord inachevés passent avant la zone sondée.
+  Corrigé dans `ov_features` : en mode `--control`, la liste n'est plus
+  tronquée. Les mesures des grottes, des champignons et des plaines n'en
+  dépendaient pas — leurs mondes sont décorés partout et les chunks comparés
+  étaient des chunks finis près de l'apparition.
+
 ## Les prédicats et fournisseurs débloqués
 
 * **`replaceable`** se lit dans le tag `#minecraft:replaceable`, que 1.20.1
