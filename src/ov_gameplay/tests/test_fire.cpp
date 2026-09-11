@@ -420,6 +420,9 @@ TEST_CASE("fire: lava's random tick, geometry by geometry", "[fire]") {
 }
 
 TEST_CASE("fire: an entity's counter", "[fire]") {
+    // Measured (`rain` campaign, four roofed cows with Fire:200): one point
+    // at Fire = 200, 180, ..., 20 — the first on the first tick, ten in all.
+    // Four cows in the open rain: the point at 200, then Fire = -1.
     SECTION("burning in the open: one point on every twentieth") {
         EntityFire fire{.remaining = 200};
         std::vector<int> hits;
@@ -654,6 +657,42 @@ TEST_CASE("fire parity: a fire on stone, against 64 vanilla fires", "[fire][pari
                            << control);
     CHECK(p > 0.005);
     CHECK(control > d);
+}
+
+TEST_CASE("fire parity: a fire on stone in the rain, against 64 vanilla fires", "[fire][parity]") {
+    // scripts/measure_fire.py `rain`: the same 64 fires on stone, rain falling
+    // on all of them. Several went out on their very first tick, at age 0:
+    // the 0.2 + 0.03 * age roll, not the age limit.
+    const std::vector<i64> vanilla = censored(
+        {30,  31,  32,  34,  36,  36,  38,  38,  63,  65,  69,  71,  72,  73,  73,  74,
+         78,  78,  96,  97,  98,  98,  100, 102, 103, 110, 116, 130, 131, 131, 135, 140,
+         143, 151, 152, 165, 166, 168, 168, 169, 174, 174, 176, 177, 180, 181, 184, 203,
+         216, 243, 253, 271, 273, 276, 280, 282, 283, 322, 344, 360, 378, 397, 403, 419});
+    TestEnv wet;
+    wet.rain = true;
+    TestEnv          dry;
+    std::vector<i64> ours;
+    std::vector<i64> control;
+    for (i64 seed = 1; seed <= 2000; ++seed) {
+        for (const bool raining : {true, false}) {
+            FireRandom random{seed};
+            TickLevel  level;
+            light_on(level, "minecraft:stone", random);
+            i64 t = 0;
+            while (level.block_at(kFire) != registry::kAirState && t < kBenchTicks) {
+                ++t;
+                level.advance(t, raining ? wet : dry, random);
+            }
+            (raining ? ours : control).push_back(t);
+        }
+    }
+    const f64 d = ks_distance(vanilla, ours);
+    const f64 p = ks_p(d, vanilla.size(), ours.size());
+    const f64 c = ks_distance(vanilla, control);
+    WARN("stone life in rain: KS " << d << " p " << p << " (vanilla mean 161, n 64); control (dry) KS "
+                                   << c);
+    CHECK(p > 0.01);
+    CHECK(c > d);
 }
 
 TEST_CASE("fire parity: the burn odds, block by block", "[fire][parity]") {

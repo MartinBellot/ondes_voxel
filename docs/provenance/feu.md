@@ -155,6 +155,30 @@ la table à p = 0,99. C'est le même confondement rangée/bloc que ci-dessus, et
 
 ---
 
+## 4. La pluie — mesurée
+
+Campagne `rain` : `weather rain`, cinq secondes pour que le niveau de pluie passe 0,2, puis les
+mêmes 64 feux sur pierre qu'au § 2, 16 feux sur netherrack, et huit vaches `Fire:200` (max 200
+PV), quatre à ciel ouvert et quatre sous un toit de pierre.
+
+* **Feux sur pierre sous la pluie : 64 / 64 éteints, moyenne 161 ticks** (409 au sec). Huit se
+  sont éteints **au premier tick de feu** (30 à 38), âge 0 : c'est le jet `0,2 + 0,03 × âge` par
+  tick, pas la limite d'âge. `test_fire.cpp` rejoue 2000 feux sous la pluie par `FireRules` :
+  KS **p = 0,18** contre les 64 de vanilla (distance 0,14) ; le témoin « au sec » est à
+  **0,73** — la mesure discrimine.
+* **Netherrack sous la pluie : 0 / 16 éteints** : `#infiniburn` saute aussi le jet de pluie.
+* **Les vaches à ciel ouvert** : un point au premier tick (à `Fire` = 200), et au tick suivant
+  `Fire` = **−1**. La pluie éteint un mob sur-le-champ, et le compteur tombe à moins sa grâce
+  d'un tick — ce que fait `tick_entity_fire`.
+* **Les vaches sous le toit** brûlent : un point à `Fire` = 200, 180, …, 20 — **un tous les 20
+  ticks, le premier au premier tick**, dix en tout. C'est la cadence de `on_fire`, mesurée.
+
+« Il pleut sur ce bloc » est, dans ce serveur, `FireSession::is_raining_at` : il pleut, la
+colonne n'a rien qui arrête le mouvement au-dessus (heightmap MOTION_BLOCKING), et le biome a des
+précipitations à une température ≥ 0,15. Le toit de pierre des vaches témoins est ce test-là.
+
+---
+
 ## 8. De bout en bout, contre notre serveur
 
 `scripts/check_fire_e2e.py` fait tourner `ov_dedicated` (Debug) sur un monde plat neuf, construit
