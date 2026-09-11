@@ -24,6 +24,8 @@ struct RawModel {
     /// vanilla's own item models rely on it: `item/handheld` overrides two of
     /// `item/generated`'s positions and inherits the rest.
     std::optional<DisplayTransform> gui_display;
+    /// `display.thirdperson_righthand` as written, merged the same way.
+    std::optional<DisplayTransform> hand_display;
     /// `gui_light`, when the file states it.
     std::optional<bool> gui_light_front;
 };
@@ -157,22 +159,27 @@ struct RawModel {
         model.gui_light_front = light.as_string() == "front";
     }
 
-    if (const auto gui = root["display"]["gui"]; gui.is_object()) {
+    const auto read_display = [](const json::Value entry) -> std::optional<DisplayTransform> {
+        if (!entry.is_object()) {
+            return std::nullopt;
+        }
         DisplayTransform transform;
-        if (const auto rotation = read_vec3(gui["rotation"])) {
+        if (const auto rotation = read_vec3(entry["rotation"])) {
             transform.rotation = *rotation;
         }
-        if (const auto translation = read_vec3(gui["translation"])) {
+        if (const auto translation = read_vec3(entry["translation"])) {
             // The file writes translation in sixteenths of a block, the same
             // unit an element's from/to uses; everything downstream works in
             // blocks.
             transform.translation = *translation * (1.0F / 16.0F);
         }
-        if (const auto scale = read_vec3(gui["scale"])) {
+        if (const auto scale = read_vec3(entry["scale"])) {
             transform.scale = *scale;
         }
-        model.gui_display = transform;
-    }
+        return transform;
+    };
+    model.gui_display  = read_display(root["display"]["gui"]);
+    model.hand_display = read_display(root["display"]["thirdperson_righthand"]);
 
     if (const auto elements = root["elements"]; elements.is_array()) {
         std::vector<Element> parsed;
@@ -379,6 +386,9 @@ std::expected<const Model*, ModelError> ModelLoader::load(const ResourceLocation
     for (const auto* raw : chain) {
         if (raw->gui_display && !model->gui_display) {
             model->gui_display = raw->gui_display;
+        }
+        if (raw->hand_display && !model->hand_display) {
+            model->hand_display = raw->hand_display;
         }
         if (raw->gui_light_front && !model->gui_light_front) {
             model->gui_light_front = *raw->gui_light_front;
