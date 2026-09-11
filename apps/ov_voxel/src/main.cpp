@@ -1731,6 +1731,10 @@ int main(int argc, char** argv) {
     std::vector<f64> cpu_frame_ms;
     std::vector<f64> record_ms;
     std::vector<f64> gpu_frame_ms;
+    // ── perf ── the two frame costs that grow with what the server sends: the
+    // network's chunks and entities folded into the world, and the meshing.
+    std::vector<f64> apply_frame_ms;
+    std::vector<f64> mesh_frame_ms;
 
     // The entity pass, measured separately from the rest of the recording, so
     // that "what do the mobs cost" has an answer that is not a subtraction of
@@ -2223,8 +2227,12 @@ int main(int argc, char** argv) {
             if (events.thunder_level) {
                 thunder_level = *events.thunder_level;
             }
+            const auto perf_apply = std::chrono::steady_clock::now();  // ── perf ──
             session->apply(events);
             entity_world.apply(events, registries);
+            const auto perf_mesh = std::chrono::steady_clock::now();  // ── perf ──
+            apply_frame_ms.push_back(
+                std::chrono::duration<f64, std::milli>(perf_mesh - perf_apply).count());
             // ── weather ── A bolt the client has not seen yet lights the sky
             // for two ticks. The bolt itself is not drawn — named.
             for (const auto& [id, entity] : entity_world.entities()) {
@@ -2238,6 +2246,9 @@ int main(int argc, char** argv) {
             // percentile is what the milestone is judged on and a spike passes
             // a test of the mean.
             (void)session->mesh_pending(4.0);
+            mesh_frame_ms.push_back(std::chrono::duration<f64, std::milli>(  // ── perf ──
+                                        std::chrono::steady_clock::now() - perf_mesh)
+                                        .count());
 
             // Physics at the game's own twenty ticks a second, accumulated
             // against real time. Anything else makes gravity depend on the
@@ -3068,6 +3079,20 @@ int main(int argc, char** argv) {
                percentile(record, 0.99), percentile(record, 1.0));
     fmt::print("gpu  p50 {:.2f} ms   p99 {:.2f} ms   max {:.2f} ms\n", percentile(gpu, 0.50),
                percentile(gpu, 0.99), percentile(gpu, 1.0));
+    {  // ── perf ── what a frame spends on the world arriving, apart from drawing it
+        const auto apply = drop(apply_frame_ms);
+        const auto mesh  = drop(mesh_frame_ms);
+        if (!apply.empty()) {
+            fmt::print("apply p50 {:.2f} ms   p99 {:.2f} ms   max {:.2f} ms   (chunks, blocks and "
+                       "entities from the network)\n",
+                       percentile(apply, 0.50), percentile(apply, 0.99), percentile(apply, 1.0));
+        }
+        if (!mesh.empty()) {
+            fmt::print("mesh p50 {:.2f} ms   p99 {:.2f} ms   max {:.2f} ms   (4 ms budget, one "
+                       "section at least)\n",
+                       percentile(mesh, 0.50), percentile(mesh, 0.99), percentile(mesh, 1.0));
+        }
+    }
 
     if (!weather_record_ms.empty()) {  // ── weather ──
         const auto weather_ms = drop(weather_record_ms);

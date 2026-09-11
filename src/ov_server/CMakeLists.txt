@@ -24,8 +24,10 @@ ov_add_library(ov_server
         src/player_level.cpp
         src/player_data.cpp
         src/projectiles.cpp
+        src/relight.cpp
         src/sounds.cpp
         src/survival_session.cpp
+        src/tick_profile.cpp
         src/tnt_gravity.cpp
         src/weather_session.cpp
         src/workbench.cpp
@@ -78,9 +80,11 @@ ov_add_test(test_ov_server
         tests/test_player_inventory.cpp
         tests/test_player_level.cpp
         tests/test_player_data.cpp
+        tests/test_relight.cpp
         tests/test_sounds.cpp
         tests/test_nether_travel.cpp
         tests/test_weather_session.cpp
+        tests/test_tick_profile.cpp
     DEPS ov_server
     LABELS unit
 )
