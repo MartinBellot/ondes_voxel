@@ -28,6 +28,9 @@ struct LoadedSprite {
     u32                            width{0};
     u32                            height{0};
     std::optional<SpriteAnimation> animation;
+    /// The whole strip, for an animated sprite only: every cell of it goes into
+    /// the atlas's animations, not just the frame the atlas starts on.
+    png::Image source;
     /// The texture did not load. Such a sprite is never packed: it borrows the
     /// checkerboard's rect.
     bool missing{false};
@@ -205,6 +208,7 @@ LoadedSprite load_sprite(const AssetSource& source, const std::string& name) {
         sprite.frame = crop(*image, (index % columns) * animation->frame_width,
                             (index / columns) * animation->frame_height, animation->frame_width,
                             animation->frame_height);
+        sprite.source = std::move(*image);
     } else {
         sprite.frame = std::move(*image);
     }
@@ -340,6 +344,10 @@ std::string_view to_string(AtlasError error) noexcept {
         case AtlasError::TooLarge: return "atlas larger than the limit";
     }
     return "unknown atlas error";
+}
+
+AtlasMip halve(const AtlasMip& source) {
+    return downsample(source);
 }
 
 const AtlasMip& TextureAtlas::mip(u32 level) const noexcept {
@@ -551,6 +559,36 @@ std::expected<TextureAtlas, AtlasError> AtlasBuilder::build() const {
         sprite.uv        = SpriteUv{static_cast<f32>(x) * inverse, static_cast<f32>(y) * inverse,
                                     static_cast<f32>(x + source.width) * inverse,
                                     static_cast<f32>(y + source.height) * inverse};
+        // Every cell of an animated strip, scaled like the sprite, so that
+        // playing it later is a copy and never a decode.
+        if (source.animation && !source.source.empty()) {
+            const SpriteAnimation& sequence = *source.animation;
+            const u32              scale    = source.width / source.frame.width;
+            const u32              columns  = source.source.width / sequence.frame_width;
+            const u32              rows     = source.source.height / sequence.frame_height;
+
+            AtlasAnimation animated;
+            animated.name      = source.name;
+            animated.x         = x;
+            animated.y         = y;
+            animated.width     = source.width;
+            animated.height    = source.height;
+            animated.animation = sequence;
+            animated.cells.reserve(static_cast<usize>(columns) * rows);
+            for (u32 cell = 0; cell < columns * rows; ++cell) {
+                const png::Image piece =
+                    crop(source.source, (cell % columns) * sequence.frame_width,
+                         (cell / columns) * sequence.frame_height, sequence.frame_width,
+                         sequence.frame_height);
+                AtlasMip scaled;
+                scaled.width  = source.width;
+                scaled.height = source.height;
+                scaled.rgba.assign(static_cast<usize>(source.width) * source.height * 4, 0);
+                blit(scaled, piece, 0, 0, scale);
+                animated.cells.push_back(std::move(scaled.rgba));
+            }
+            atlas.animations_.push_back(std::move(animated));
+        }
         sprite.animation = std::move(source.animation);
 
         if (source.name == kMissingSprite) {
@@ -586,6 +624,8 @@ std::expected<TextureAtlas, AtlasError> AtlasBuilder::build() const {
     for (u32 i = 0; i < static_cast<u32>(atlas.sprites_.size()); ++i) {
         atlas.by_name_.emplace(atlas.sprites_[i].name, i);
     }
+    std::sort(atlas.animations_.begin(), atlas.animations_.end(),
+              [](const AtlasAnimation& a, const AtlasAnimation& b) { return a.name < b.name; });
 
     atlas.mips_.push_back(std::move(level0));
     for (u32 level = 0; level < mip_level; ++level) {

@@ -7,60 +7,74 @@ using namespace ov;
 using namespace ov::render;
 using Catch::Approx;
 
-TEST_CASE("an open corner is not occluded at all", "[ao]") {
-    STATIC_REQUIRE(ao_level(CornerNeighbours{}) == 3);
+namespace {
+
+constexpr AoSample kAir{1.0F, true, 15, 0};
+constexpr AoSample kStone{kOccluderShade, false, 0, 0};
+
+}  // namespace
+
+TEST_CASE("an open corner is at full brightness and full light", "[ao]") {
+    const auto corner = smooth_corner(kAir, kAir, kAir, kAir);
+    CHECK(corner.brightness == Approx(1.0F));
+    CHECK(corner.sky_quarters == 60);
+    CHECK(corner.block_quarters == 0);
 }
 
-TEST_CASE("occluders are counted", "[ao]") {
-    STATIC_REQUIRE(ao_level(CornerNeighbours{.side1 = true}) == 2);
-    STATIC_REQUIRE(ao_level(CornerNeighbours{.corner = true}) == 2);
-    STATIC_REQUIRE(ao_level(CornerNeighbours{.side1 = true, .corner = true}) == 1);
+TEST_CASE("each occluder takes a fifth of the corner's brightness", "[ao]") {
+    // The mean of four shade brightnesses, 0.2 for a full cube: one occluder
+    // is 0.8, a side and the diagonal 0.6. The game's own AmbientOcclusionFace
+    // prints exactly these on the test platform of the render parity scenes.
+    CHECK(smooth_corner(kAir, kStone, kAir, kAir).brightness == Approx(0.8F));
+    CHECK(smooth_corner(kAir, kAir, kAir, kStone).brightness == Approx(0.8F));
+    CHECK(smooth_corner(kAir, kStone, kAir, kStone).brightness == Approx(0.6F));
 }
 
-TEST_CASE("two solid sides darken the corner fully, whatever the diagonal does", "[ao]") {
-    // The one rule that is not simple counting, and the one that decides
-    // whether an inside corner has a crease or looks inflated: past two solid
-    // sides the diagonal block cannot be seen at all, so it changes nothing.
-    STATIC_REQUIRE(ao_level(CornerNeighbours{.side1 = true, .side2 = true}) == 0);
-    STATIC_REQUIRE(ao_level(CornerNeighbours{.side1 = true, .side2 = true, .corner = true}) == 0);
+TEST_CASE("two opaque sides hide the diagonal: an inside corner is 0.4 either way", "[ao]") {
+    // Past two opaque sides the diagonal cannot be seen, so it is replaced by
+    // a side — and 0.4 whether it is air or stone, the crease of an inside
+    // corner. The old four-step table put this at 0.2, half the game's.
+    CHECK(smooth_corner(kAir, kStone, kStone, kAir).brightness == Approx(0.4F));
+    CHECK(smooth_corner(kAir, kStone, kStone, kStone).brightness == Approx(0.4F));
 }
 
-TEST_CASE("the brightness steps end at full", "[ao]") {
-    CHECK(ao_brightness(3) == Approx(1.0F));
-    CHECK(ao_brightness(0) == Approx(0.2F));
-    CHECK(ao_brightness(1) < ao_brightness(2));
-    CHECK(ao_brightness(2) < ao_brightness(3));
+TEST_CASE("a see-through full cube darkens but does not hide", "[ao]") {
+    // Glass fills its cube, so its shade brightness is 0.2 like stone's; but
+    // sight passes it, so two panes side by side still show the diagonal.
+    constexpr AoSample kGlass{kOccluderShade, true, 15, 0};
+    CHECK(smooth_corner(kAir, kGlass, kGlass, kAir).brightness == Approx(0.6F));
 }
 
-TEST_CASE("smooth light averages the neighbours that can carry light", "[ao]") {
-    const CornerLight light{.self = 12, .side1 = 12, .side2 = 12, .corner = 12};
-    CHECK(smooth_light(light, CornerNeighbours{}) == 12);
+TEST_CASE("light is the sum of four levels, in quarter levels", "[ao]") {
+    const AoSample centre{1.0F, true, 12, 3};
+    const AoSample side{1.0F, true, 11, 2};
+    const AoSample diagonal{1.0F, true, 10, 1};
+    const auto     corner = smooth_corner(centre, side, side, diagonal);
+    CHECK(corner.sky_quarters == 12 + 11 + 11 + 10);
+    CHECK(corner.block_quarters == 3 + 2 + 2 + 1);
 }
 
-TEST_CASE("a solid neighbour is skipped rather than averaged in as darkness", "[ao]") {
-    // A solid block has light 0. Counting it would darken the vertex twice —
-    // once through ambient occlusion and once through the average — and the
-    // result is the black seam under every overhang.
-    const CornerLight light{.self = 12, .side1 = 0, .side2 = 12, .corner = 12};
+TEST_CASE("a block with no light lends the centre's, so an occluder darkens once", "[ao]") {
+    // A solid block stores no light. Averaged in as zero it would darken the
+    // corner a second time, on top of its shade; the game counts the centre's
+    // light in its place — both channels, and only when both are zero.
+    const AoSample centre{1.0F, true, 12, 4};
+    const auto     corner = smooth_corner(centre, kStone, kAir, kAir);
+    CHECK(corner.sky_quarters == 12 + 12 + 15 + 15);
+    CHECK(corner.block_quarters == 4 + 4 + 0 + 0);
 
-    CHECK(smooth_light(light, CornerNeighbours{}) == 9);
-    CHECK(smooth_light(light, CornerNeighbours{.side1 = true}) == 12);
-}
-
-TEST_CASE("the corner is skipped when both sides are solid, as in ao_level", "[ao]") {
-    // The two functions have to agree about what is visible, or a vertex is
-    // fully occluded and brightly lit at the same time.
-    const CornerLight      light{.self = 12, .side1 = 0, .side2 = 0, .corner = 15};
-    const CornerNeighbours closed{.side1 = true, .side2 = true};
-
-    CHECK(ao_level(closed) == 0);
-    CHECK(smooth_light(light, closed) == 12);
+    // Sky 0 with some block light is not "no light": it counts as it is.
+    const AoSample torchlit{1.0F, true, 0, 9};
+    const auto     lit = smooth_corner(centre, torchlit, kAir, kAir);
+    CHECK(lit.sky_quarters == 12 + 0 + 15 + 15);
+    CHECK(lit.block_quarters == 4 + 9 + 0 + 0);
 }
 
 TEST_CASE("directional shading matches the game's own faces", "[ao]") {
     CHECK(face_shade(Direction::Up) == Approx(1.0F));
     CHECK(face_shade(Direction::Down) == Approx(0.5F));
-    CHECK(face_shade(Direction::North) == Approx(face_shade(Direction::South)));
-    CHECK(face_shade(Direction::West) == Approx(face_shade(Direction::East)));
-    CHECK(face_shade(Direction::North) > face_shade(Direction::East));
+    CHECK(face_shade(Direction::North) == Approx(0.8F));
+    CHECK(face_shade(Direction::South) == Approx(0.8F));
+    CHECK(face_shade(Direction::West) == Approx(0.6F));
+    CHECK(face_shade(Direction::East) == Approx(0.6F));
 }

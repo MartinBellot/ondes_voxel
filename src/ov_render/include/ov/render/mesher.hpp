@@ -60,6 +60,14 @@ public:
     /// neighbours? A full cube does; a torch does not.
     [[nodiscard]] virtual bool casts_ambient_occlusion(Vec3i position) const = 0;
 
+    /// Smooth lighting's two questions about a block (ambient_occlusion.hpp):
+    /// its shade brightness — 0.2 for a full-cube collision shape, 1.0
+    /// otherwise — and whether it blocks sight, which only an opaque full block
+    /// does. Both default to casts_ambient_occlusion, which is what a view
+    /// that only knows "solid or not" can say.
+    [[nodiscard]] virtual f32  ao_shade(Vec3i position) const;
+    [[nodiscard]] virtual bool blocks_view(Vec3i position) const;
+
     [[nodiscard]] virtual u8 sky_light(Vec3i position) const   = 0;
     [[nodiscard]] virtual u8 block_light(Vec3i position) const = 0;
 

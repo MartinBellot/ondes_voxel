@@ -82,6 +82,30 @@ u32 sky_colour(u32 biome_sky, f32 darken) noexcept {
            to_byte(static_cast<f32>(channel(biome_sky, 0)) / 255.0F * a);
 }
 
+std::vector<f32> sky_disc(f32 height) {
+    // Rim vertices at -180, -135, ... 180 degrees: nine, the last closing the
+    // fan on the first. Wound by the sign of the height, so that both discs
+    // face the eye.
+    std::vector<f32> out;
+    out.reserve(8 * 9);
+    const f32 radius = height >= 0.0F ? kSkyDiscRadius : -kSkyDiscRadius;
+    for (i32 step = 0; step < 8; ++step) {
+        const f64 a0 = static_cast<f64>(-180 + step * 45) * std::numbers::pi / 180.0;
+        const f64 a1 = static_cast<f64>(-180 + (step + 1) * 45) * std::numbers::pi / 180.0;
+        const f32 p[9] = {0.0F,
+                          height,
+                          0.0F,
+                          radius * static_cast<f32>(std::cos(a0)),
+                          height,
+                          kSkyDiscRadius * static_cast<f32>(std::sin(a0)),
+                          radius * static_cast<f32>(std::cos(a1)),
+                          height,
+                          kSkyDiscRadius * static_cast<f32>(std::sin(a1))};
+        out.insert(out.end(), p, p + 9);
+    }
+    return out;
+}
+
 void Lightmap::update(f32 darken, f32 ambient_light, f32 gamma, f32 flicker) noexcept {
     for (u32 sky = 0; sky < kSize; ++sky) {
         for (u32 block = 0; block < kSize; ++block) {

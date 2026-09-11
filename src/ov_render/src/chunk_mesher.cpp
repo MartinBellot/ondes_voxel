@@ -1,5 +1,7 @@
 #include "ov/render/chunk_mesher.hpp"
 
+#include "ov/render/ambient_occlusion.hpp"
+
 #include "ov/world/chunk_section.hpp"
 
 namespace ov::render {
@@ -104,6 +106,39 @@ bool ChunkSectionView::casts_ambient_occlusion(Vec3i position) const {
     // rather than "has any collision" is what keeps a fence from casting the
     // shadow of a wall.
     return blocks_->blocks_sky_light(blocks_->block_of(state));
+}
+
+namespace {
+
+/// Every face sturdy: the collision shape is the full cube. What the game's
+/// shade brightness asks, from the same measured mask occlusion uses.
+[[nodiscard]] bool full_cube(const registry::BlockRegistry& blocks, registry::BlockStateId state) {
+    for (u8 face = 0; face < kDirectionCount; ++face) {
+        if (!blocks.face_is_sturdy(state, static_cast<registry::BlockRegistry::Face>(face))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
+f32 ChunkSectionView::ao_shade(Vec3i position) const {
+    const auto state = state_at(position);
+    if (state == registry::kAirState || blocks_->is_air(blocks_->block_of(state))) {
+        return 1.0F;
+    }
+    // The collision shape and nothing else: glass and leaves fill their cube
+    // and darken a corner as stone does, which a test of opacity would miss.
+    return full_cube(*blocks_, state) ? kOccluderShade : 1.0F;
+}
+
+bool ChunkSectionView::blocks_view(Vec3i position) const {
+    const auto state = state_at(position);
+    if (state == registry::kAirState || blocks_->is_air(blocks_->block_of(state))) {
+        return false;
+    }
+    return blocks_->blocks_sky_light(blocks_->block_of(state)) && full_cube(*blocks_, state);
 }
 
 u8 ChunkSectionView::sky_light(Vec3i position) const {

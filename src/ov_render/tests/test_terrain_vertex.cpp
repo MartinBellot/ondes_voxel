@@ -16,9 +16,9 @@ TEST_CASE("the vertex is sixteen bytes and every field has its own bits", "[vert
     attributes.position    = {1.0F, 2.0F, 3.0F};
     attributes.u           = 0.25F;
     attributes.v           = 0.75F;
-    attributes.sky_light   = 11;
-    attributes.block_light = 7;
-    attributes.ao          = 2;
+    attributes.sky_quarters   = 43;
+    attributes.block_quarters = 29;
+    attributes.occlusion      = 0.6F;
     attributes.facing      = Direction::North;
     attributes.tint_colour = 0x91BD59;
 
@@ -29,9 +29,11 @@ TEST_CASE("the vertex is sixteen bytes and every field has its own bits", "[vert
     CHECK(unpacked.position.z == Approx(3.0F));
     CHECK(unpacked.u == Approx(0.25F).margin(1e-4));
     CHECK(unpacked.v == Approx(0.75F).margin(1e-4));
-    CHECK(unpacked.sky_light == 11);
-    CHECK(unpacked.block_light == 7);
-    CHECK(unpacked.ao == 2);
+    CHECK(unpacked.sky_quarters == 43);
+    CHECK(unpacked.block_quarters == 29);
+    // Eight bits: the four corner values 1.0, 0.8, 0.6, 0.4 are within half a
+    // step of 1/255.
+    CHECK(unpacked.occlusion == Approx(0.6F).margin(0.5 / 255.0));
     CHECK(unpacked.facing == Direction::North);
     CHECK(unpacked.shade);
     // Eight bits a channel, so a real biome colour round-trips exactly.
@@ -85,18 +87,18 @@ TEST_CASE("out-of-range values clamp instead of wrapping", "[vertex]") {
     // as a stray triangle across the world and is very hard to trace back.
     TerrainVertexAttributes attributes;
     attributes.position    = {-1000.0F, 1000.0F, 0.0F};
-    attributes.u           = 9.0F;
-    attributes.sky_light   = 200;
-    attributes.block_light = 200;
-    attributes.ao          = 200;
+    attributes.u              = 9.0F;
+    attributes.sky_quarters   = 200;
+    attributes.block_quarters = 200;
+    attributes.occlusion      = 7.0F;
 
     const auto unpacked = unpack_vertex(pack_vertex(attributes));
     CHECK(unpacked.position.x == Approx(kPositionMin));
     CHECK(unpacked.position.y == Approx(kPositionMax));
     CHECK(unpacked.u == Approx(1.0F));
-    CHECK(unpacked.sky_light == 15);
-    CHECK(unpacked.block_light == 15);
-    CHECK(unpacked.ao == 3);
+    CHECK(unpacked.sky_quarters == kMaxLightQuarters);
+    CHECK(unpacked.block_quarters == kMaxLightQuarters);
+    CHECK(unpacked.occlusion == Approx(1.0F));
 }
 
 TEST_CASE("an unshaded face gives up its direction rather than a bit", "[vertex]") {
@@ -114,10 +116,10 @@ TEST_CASE("an unshaded face gives up its direction rather than a bit", "[vertex]
 TEST_CASE("distinct attributes give distinct words", "[vertex]") {
     const TerrainVertexAttributes base;
 
-    auto with_light      = base;
-    with_light.sky_light = 3;
-    auto with_ao         = base;
-    with_ao.ao           = 0;
+    auto with_light         = base;
+    with_light.sky_quarters = 3;
+    auto with_ao            = base;
+    with_ao.occlusion       = 0.4F;
     auto with_tint       = base;
     with_tint.tint_colour = 0x3F76E4;
 

@@ -7,6 +7,42 @@ using namespace ov;
 using namespace ov::render;
 using Catch::Approx;
 
+TEST_CASE("the sky disc is a fan of eight triangles from the zenith", "[render][environment]") {
+    const auto disc = sky_disc(kSkyDiscHeight);
+    REQUIRE(disc.size() == 8 * 9);
+
+    for (usize triangle = 0; triangle < 8; ++triangle) {
+        CAPTURE(triangle);
+        const f32* p = disc.data() + triangle * 9;
+        // The first vertex of every triangle is the centre, straight above.
+        CHECK(p[0] == 0.0F);
+        CHECK(p[1] == kSkyDiscHeight);
+        CHECK(p[2] == 0.0F);
+        // The other two lie on the rim, 512 out, at the disc's height.
+        for (usize v = 1; v < 3; ++v) {
+            const f32 x = p[v * 3];
+            const f32 z = p[v * 3 + 2];
+            CHECK(p[v * 3 + 1] == kSkyDiscHeight);
+            CHECK(std::sqrt(x * x + z * z) == Approx(kSkyDiscRadius).margin(1e-3));
+        }
+    }
+    // The rim starts on -X, 45 degrees a step, and closes on itself.
+    CHECK(disc[3] == Approx(-kSkyDiscRadius).margin(1e-3));
+    CHECK(disc[5] == Approx(0.0F).margin(1e-3));
+    CHECK(disc[7 * 9 + 6] == Approx(disc[3]).margin(1e-3));
+    CHECK(disc[7 * 9 + 8] == Approx(disc[5]).margin(1e-3));
+}
+
+TEST_CASE("the dark disc under the horizon is wound the other way", "[render][environment]") {
+    const auto up   = sky_disc(kSkyDiscHeight);
+    const auto down = sky_disc(-kSkyDiscHeight);
+    REQUIRE(down.size() == up.size());
+    // x mirrors, z does not: seen from the eye, both discs turn the same way.
+    CHECK(down[1] == -kSkyDiscHeight);
+    CHECK(down[3] == Approx(-up[3]).margin(1e-3));
+    CHECK(down[5] == Approx(up[5]).margin(1e-3));
+}
+
 TEST_CASE("the brightness curve matches the published table", "[render][environment]") {
     // The sixteen rendered brightnesses of the overworld, published
     // independently of any code. A straight level/15 would give 0.4667 at

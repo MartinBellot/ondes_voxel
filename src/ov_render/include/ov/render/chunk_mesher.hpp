@@ -61,6 +61,8 @@ public:
 
     [[nodiscard]] bool occludes(Vec3i position, Direction towards) const override;
     [[nodiscard]] bool casts_ambient_occlusion(Vec3i position) const override;
+    [[nodiscard]] f32  ao_shade(Vec3i position) const override;
+    [[nodiscard]] bool blocks_view(Vec3i position) const override;
     [[nodiscard]] u8   sky_light(Vec3i position) const override;
     [[nodiscard]] u8   block_light(Vec3i position) const override;
     [[nodiscard]] u16  fluid_at(Vec3i position) const override;

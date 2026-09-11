@@ -3,6 +3,7 @@
 #include "ov/render/ambient_occlusion.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 namespace ov::render {
@@ -10,7 +11,8 @@ namespace ov::render {
 namespace {
 
 /// The two axes that span a face, for stepping to the neighbours that share a
-/// corner with it.
+/// corner with it. Both point along a positive world axis, so a vertex's
+/// projection on them is its 0..1 place across the face.
 struct FacePlane {
     Vec3i tangent;
     Vec3i bitangent;
@@ -37,14 +39,51 @@ struct FacePlane {
     return {a.x + b.x, a.y + b.y, a.z + b.z};
 }
 
+[[nodiscard]] Vec3i scale(Vec3i a, i32 by) {
+    return {a.x * by, a.y * by, a.z * by};
+}
+
 /// Map a quad's 0..16 sprite coordinate into the atlas.
 [[nodiscard]] f32 lerp(f32 a, f32 b, f32 t) {
     return a + (b - a) * t;
 }
 
+/// Does the quad lie in the plane of its block's own face — a full stone face,
+/// the top of a bottom slab does not? Smooth lighting samples the layer in
+/// front of the face when it does, and the block's own layer when it does not.
+[[nodiscard]] bool on_block_face(const BakedQuad& quad) {
+    const Vec3i normal = direction_offset(quad.facing);
+    const f32   target = (normal.x + normal.y + normal.z) > 0 ? 1.0F : 0.0F;
+    for (const auto& vertex : quad.vertices) {
+        const f32 along = project(vertex.position, Vec3i{std::abs(normal.x), std::abs(normal.y),
+                                                         std::abs(normal.z)});
+        if (std::abs(along - target) > 1.0e-4F) {
+            return false;
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] AoSample sample_at(const NeighbourhoodView& view, Vec3i at) {
+    return AoSample{view.ao_shade(at), !view.blocks_view(at), view.sky_light(at),
+                    view.block_light(at)};
+}
+
+[[nodiscard]] u8 quarters(f32 value) {
+    return static_cast<u8>(std::clamp(std::lround(value), 0L, static_cast<long>(kMaxLightQuarters)));
+}
+
 }  // namespace
 
 NeighbourhoodView::~NeighbourhoodView() = default;
+
+f32 NeighbourhoodView::ao_shade(Vec3i position) const {
+    return casts_ambient_occlusion(position) ? kOccluderShade : 1.0F;
+}
+
+bool NeighbourhoodView::blocks_view(Vec3i position) const {
+    return casts_ambient_occlusion(position);
+}
 
 u16 NeighbourhoodView::fluid_at(Vec3i) const {
     return 0;
@@ -121,8 +160,37 @@ void emit_block(const BakedModel& model, Vec3i block_position, const BlockRender
 
         const SpriteUv  sprite = atlas.uv(quad.sprite);
         const FacePlane plane  = plane_of(quad.facing);
-        // The block whose light this face is lit by: the one it faces into.
-        const Vec3i lit = add(block_position, direction_offset(quad.facing));
+        // The layer this face is lit from: the one it faces into when it lies
+        // on the block's face, the block's own when it is set back from it.
+        const Vec3i centre_at = on_block_face(quad)
+                                    ? add(block_position, direction_offset(quad.facing))
+                                    : block_position;
+
+        // The four corners of the face, (-t,-b), (+t,-b), (+t,+b), (-t,+b),
+        // from the 3x3 of blocks around the centre in the face's plane. Nine
+        // lookups a face instead of three a vertex.
+        std::array<CornerLighting, 4> corners{};
+        const bool smooth = model.ambient_occlusion;
+        if (smooth) {
+            std::array<AoSample, 9> grid{};
+            for (i32 dt = -1; dt <= 1; ++dt) {
+                for (i32 db = -1; db <= 1; ++db) {
+                    const Vec3i at = add(centre_at, add(scale(plane.tangent, dt),
+                                                        scale(plane.bitangent, db)));
+                    grid[static_cast<usize>((dt + 1) * 3 + (db + 1))] = sample_at(view, at);
+                }
+            }
+            constexpr std::array<std::array<i32, 2>, 4> kSigns{{{-1, -1}, {1, -1}, {1, 1}, {-1, 1}}};
+            for (usize k = 0; k < 4; ++k) {
+                const i32 st = kSigns[k][0];
+                const i32 sb = kSigns[k][1];
+                corners[k] = smooth_corner(grid[4], grid[static_cast<usize>((st + 1) * 3 + 1)],
+                                           grid[static_cast<usize>(3 + (sb + 1))],
+                                           grid[static_cast<usize>((st + 1) * 3 + (sb + 1))]);
+            }
+        }
+        const u8 flat_sky   = static_cast<u8>(view.sky_light(centre_at) * 4);
+        const u8 flat_block = static_cast<u8>(view.block_light(centre_at) * 4);
 
         for (const auto& vertex : quad.vertices) {
             TerrainVertexAttributes attributes;
@@ -140,43 +208,31 @@ void emit_block(const BakedModel& model, Vec3i block_position, const BlockRender
             attributes.shade  = quad.shade;
             attributes.tint_colour = quad.tint_index >= 0 ? info.tint_colour : 0xFFFFFFu;
 
-            if (model.ambient_occlusion && quad.shade) {
-                // The three blocks sharing this corner: the two along the
-                // face's own axes, and the diagonal between them.
-                const Vec3f local{vertex.position.x, vertex.position.y, vertex.position.z};
-                const Vec3f centred{local.x - 0.5F, local.y - 0.5F, local.z - 0.5F};
-
-                const auto signed_axis = [&centred](Vec3i axis) {
-                    const f32 amount = project(centred, axis);
-                    const i32 sign   = amount >= 0.0F ? 1 : -1;
-                    return Vec3i{axis.x * sign, axis.y * sign, axis.z * sign};
-                };
-                const Vec3i t = signed_axis(plane.tangent);
-                const Vec3i b = signed_axis(plane.bitangent);
-
-                const Vec3i side1_at  = add(lit, t);
-                const Vec3i side2_at  = add(lit, b);
-                const Vec3i corner_at = add(lit, add(t, b));
-
-                const CornerNeighbours neighbours{view.casts_ambient_occlusion(side1_at),
-                                                  view.casts_ambient_occlusion(side2_at),
-                                                  view.casts_ambient_occlusion(corner_at)};
-
-                attributes.ao = ao_level(neighbours);
-                attributes.sky_light =
-                    smooth_light(CornerLight{view.sky_light(lit), view.sky_light(side1_at),
-                                             view.sky_light(side2_at), view.sky_light(corner_at)},
-                                 neighbours);
-                attributes.block_light = smooth_light(
-                    CornerLight{view.block_light(lit), view.block_light(side1_at),
-                                view.block_light(side2_at), view.block_light(corner_at)},
-                    neighbours);
+            if (smooth) {
+                // A vertex at a corner of the block's face takes that corner;
+                // one inside it (a slab's edge, a fence post) takes the
+                // bilinear blend of the four, by where it sits.
+                const f32 s = std::clamp(project(vertex.position, plane.tangent), 0.0F, 1.0F);
+                const f32 t = std::clamp(project(vertex.position, plane.bitangent), 0.0F, 1.0F);
+                const std::array<f32, 4> weight{(1.0F - s) * (1.0F - t), s * (1.0F - t), s * t,
+                                                (1.0F - s) * t};
+                f32 brightness = 0.0F;
+                f32 sky        = 0.0F;
+                f32 block      = 0.0F;
+                for (usize k = 0; k < 4; ++k) {
+                    brightness += weight[k] * corners[k].brightness;
+                    sky += weight[k] * static_cast<f32>(corners[k].sky_quarters);
+                    block += weight[k] * static_cast<f32>(corners[k].block_quarters);
+                }
+                attributes.occlusion      = brightness;
+                attributes.sky_quarters   = quarters(sky);
+                attributes.block_quarters = quarters(block);
             } else {
                 // Flat lighting: one sample for the whole face. What vanilla
                 // does when a model turns ambient occlusion off.
-                attributes.ao          = 3;
-                attributes.sky_light   = view.sky_light(lit);
-                attributes.block_light = view.block_light(lit);
+                attributes.occlusion      = 1.0F;
+                attributes.sky_quarters   = flat_sky;
+                attributes.block_quarters = flat_block;
             }
 
             vertices.push_back(pack_vertex(attributes));

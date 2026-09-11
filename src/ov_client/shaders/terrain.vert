@@ -56,12 +56,9 @@ const float kU16Max        = 65535.0;
 
 const uint kFacingUnshaded = 6u;
 
-// Vanilla's four ambient occlusion levels, evenly spaced up to full.
-const float kAmbient[4] = float[](0.2, 0.4666667, 0.7333333, 1.0);
-
-// Directional shading, per face. Measured from the game: the top of a block is
-// full, the bottom half, north/south a fifth down, east/west two fifths.
-// Indexed by the protocol's own face numbering, so down is 0.
+// Directional shading, per face, as the game prints it (ClientLevel.getShade):
+// up 1.0, down 0.5, north/south 0.8, east/west 0.6. Indexed by the protocol's
+// own face numbering, so down is 0.
 const float kFaceShade[7] = float[](0.5, 1.0, 0.8, 0.8, 0.6, 0.6, 1.0);
 
 void main() {
@@ -74,10 +71,11 @@ void main() {
     v_uv = vec2(float(bitfieldExtract(in_packed.y, 16, 16)) / kU16Max,
                 float(bitfieldExtract(in_packed.z, 0, 16)) / kU16Max);
 
-    uint sky    = bitfieldExtract(in_packed.z, 16, 4);
-    uint block  = bitfieldExtract(in_packed.z, 20, 4);
-    uint ao     = bitfieldExtract(in_packed.z, 24, 2);
-    uint facing = bitfieldExtract(in_packed.z, 26, 3);
+    // Quarter levels: the sum of the four blocks around a corner.
+    uint sky_quarters   = bitfieldExtract(in_packed.z, 16, 6);
+    uint block_quarters = bitfieldExtract(in_packed.z, 22, 6);
+    uint facing         = bitfieldExtract(in_packed.z, 28, 3);
+    float occlusion     = float(bitfieldExtract(in_word3, 24, 8)) / 255.0;
 
     // The biome tint, baked per block by the mesher: the average of the
     // twenty-five biome cells around it, sampled out of the pack's colormap.
@@ -86,16 +84,20 @@ void main() {
                   float(bitfieldExtract(in_word3, 8, 8)),
                   float(bitfieldExtract(in_word3, 16, 8))) / 255.0;
 
-    // The lightmap is a real 16x16 texture now, so this stage only says WHERE
-    // to sample it. The half-texel offset lands on a texel centre, so that a
-    // light level of 7 reads the value for 7 and not a blend of 6 and 7.
-    v_light = (vec2(float(block), float(sky)) + 0.5) / 16.0;
+    // Where to sample the 16x16 lightmap: level / 16, clamped to the centres
+    // of the first and last texels. No half-texel offset — level 15 lands
+    // between texels 14 and 15, and the linear sampler blends them. This is
+    // the game's sampling as its core shaders state it (uv / 256 over light
+    // packed as level * 16); which of the two the captures agree with is in
+    // docs/provenance/rendu-parite.md.
+    v_light = clamp(vec2(float(block_quarters), float(sky_quarters)) / 64.0, vec2(0.5 / 16.0),
+                    vec2(15.5 / 16.0));
 
     // What is left here is the part of brightness that belongs to the geometry
     // rather than to the light: the directional shading of the face, and the
-    // ambient occlusion of the corner.
+    // smooth-lighting brightness of the corner.
     float shade  = kFaceShade[min(facing, kFacingUnshaded)];
-    v_brightness = shade * kAmbient[ao];
+    v_brightness = shade * occlusion;
 
     vec3 origin = sections.origins[gl_InstanceIndex].xyz;
     vec3 world  = vec3(x, y, z) + origin;

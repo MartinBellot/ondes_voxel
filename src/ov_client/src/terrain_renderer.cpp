@@ -3,6 +3,7 @@
 #include "ov/client/terrain_renderer.hpp"
 
 #include "ov/base/log.hpp"
+#include "ov/render/translucent_sort.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -51,6 +52,9 @@ TerrainRenderer::~TerrainRenderer() {
         }
     }
     for (auto buffer : commands_) {
+        device_->destroy(buffer);
+    }
+    for (auto buffer : sorted_indices_) {
         device_->destroy(buffer);
     }
     for (auto buffer : lightmap_staging_) {
@@ -135,6 +139,22 @@ std::expected<std::unique_ptr<TerrainRenderer>, rhi::RhiError> TerrainRenderer::
             return std::unexpected(commands.error());
         }
         self->commands_.push_back(*commands);
+    }
+
+    // ── render-parity ── the translucent layer's sorted indices.
+    self->sort_arena_ = std::make_unique<render::VertexArena>(kSortedIndexBytes);
+    for (u32 i = 0; i < ring && ring <= 4; ++i) {
+        auto sorted = device.create_buffer(rhi::BufferDesc{
+            kSortedIndexBytes, rhi::BufferUsage::Index, "sorted translucent indices", true});
+        if (!sorted) {
+            return std::unexpected(sorted.error());
+        }
+        if (device.map(*sorted) == nullptr) {
+            OV_LOG_WARN("sorted index buffer not host visible: translucent quads stay in mesh order");
+            device.destroy(*sorted);
+            break;
+        }
+        self->sorted_indices_.push_back(*sorted);
     }
 
     // ── The lightmap ────────────────────────────────────────────────────────
@@ -278,6 +298,20 @@ std::optional<u32> TerrainRenderer::add_section(Vec3f origin, render::RenderLaye
     section.index_count   = static_cast<u32>(vertices.size() / 4 * 6);
     section.layer         = layer;
     section.live          = true;
+    // ── render-parity ── a translucent section keeps its quad centres and a
+    // range of the sorted buffers; the first frame writes it in mesh order.
+    section.centres.clear();
+    section.order.clear();
+    section.sorted_from = Vec3f{1.0e30F, 1.0e30F, 1.0e30F};
+    section.sort_offset = render::VertexArena::kNoSpace;
+    section.stale.fill(true);
+    if (layer == render::RenderLayer::Translucent && !sorted_indices_.empty()) {
+        render::quad_centres(vertices, section.centres);
+        section.sort_offset = sort_arena_->allocate(static_cast<u64>(section.index_count) * 4);
+        if (section.sort_offset == render::VertexArena::kNoSpace) {
+            OV_LOG_WARN("sorted index buffer full: a translucent section stays in mesh order");
+        }
+    }
 
     auto* origins = static_cast<f32*>(device_->map(origins_));
     origins[slot * 4 + 0] = origin.x;
@@ -299,6 +333,10 @@ void TerrainRenderer::remove_section(u32 slot) {
     Section& section = sections_[slot];
     arena_->release(section.arena_offset, section.arena_bytes);
     section.live = false;
+    if (section.sort_offset != render::VertexArena::kNoSpace) {  // ── render-parity ──
+        sort_arena_->release(section.sort_offset, static_cast<u64>(section.index_count) * 4);
+        section.sort_offset = render::VertexArena::kNoSpace;
+    }
     auto& live   = by_layer_[layer_index(section.layer)];
     // Order within a layer carries no meaning — the depth test settles solid
     // geometry and the translucent pass sorts for itself — so the cheap
@@ -382,6 +420,9 @@ void TerrainRenderer::draw(rhi::CommandList& cmd, const render::Mat4& view_proje
         if (scratch_.empty()) {
             continue;
         }
+        // ── render-parity ── the quads of each translucent section back to
+        // front, from its own index range.
+        const bool sorted_quads = translucent && prepare_translucent(camera);
         // Back to front, because the translucent layer blends and does not
         // write depth: drawn the other way round, a far surface painted after a
         // near one blends over water it is behind.
@@ -410,6 +451,14 @@ void TerrainRenderer::draw(rhi::CommandList& cmd, const render::Mat4& view_proje
         cmd.bind_pipeline(pipelines_[layer]);
         cmd.bind_resources(pipelines_[layer], images, samplers, storage);
         cmd.push_constants(pipelines_[layer], &push, sizeof(push));
+        if (sorted_quads) {
+            cmd.bind_index_buffer(sorted_indices_[device_->frame_index() % sorted_indices_.size()]);
+        } else if (translucent) {
+            // Mesh order: the commands still point at the shared pattern.
+            for (IndirectCommand& command : scratch_) {
+                command.first_index = 0;
+            }
+        }
 
         if (indirect_ && mapped != nullptr) {
             std::memcpy(mapped + written, scratch_.data(),
@@ -425,12 +474,81 @@ void TerrainRenderer::draw(rhi::CommandList& cmd, const render::Mat4& view_proje
             // loses the single call. firstInstance works in a direct draw
             // without the feature an indirect one needs.
             for (const IndirectCommand& command : scratch_) {
-                cmd.draw_indexed(command.index_count, 1, 0, command.vertex_offset,
-                                 command.first_instance);
+                cmd.draw_indexed(command.index_count, 1, command.first_index,
+                                 command.vertex_offset, command.first_instance);
                 ++stats_.draw_calls;
             }
         }
     }
+}
+
+bool TerrainRenderer::prepare_translucent(Vec3f camera) {
+    if (sorted_indices_.empty()) {
+        return false;
+    }
+    const usize ring   = device_->frame_index() % sorted_indices_.size();
+    auto*       mapped = static_cast<u8*>(device_->map(sorted_indices_[ring]));
+    if (mapped == nullptr) {
+        return false;
+    }
+
+    // Which sections want a new order: the eye has moved a block from where
+    // they were last sorted. Nearest first, and only so many a frame.
+    resort_.clear();
+    for (const IndirectCommand& command : scratch_) {
+        const Section& section = sections_[command.first_instance];
+        if (section.sort_offset == render::VertexArena::kNoSpace) {
+            return false;
+        }
+        const Vec3f eye{camera.x - section.origin.x, camera.y - section.origin.y,
+                        camera.z - section.origin.z};
+        const Vec3f moved{eye.x - section.sorted_from.x, eye.y - section.sorted_from.y,
+                          eye.z - section.sorted_from.z};
+        if (moved.x * moved.x + moved.y * moved.y + moved.z * moved.z >= 1.0F) {
+            resort_.push_back(command.first_instance);
+        }
+    }
+    const auto distance_to = [&](u32 slot) {
+        const Section& s = sections_[slot];
+        const f32 dx = s.origin.x + 8.0F - camera.x;
+        const f32 dy = s.origin.y + 8.0F - camera.y;
+        const f32 dz = s.origin.z + 8.0F - camera.z;
+        return dx * dx + dy * dy + dz * dz;
+    };
+    if (resort_.size() > kResortsPerFrame) {
+        std::ranges::partial_sort(resort_, resort_.begin() + kResortsPerFrame,
+                                  [&](u32 a, u32 b) { return distance_to(a) < distance_to(b); });
+        resort_.resize(kResortsPerFrame);
+    }
+    for (const u32 slot : resort_) {
+        Section&    section = sections_[slot];
+        const Vec3f eye{camera.x - section.origin.x, camera.y - section.origin.y,
+                        camera.z - section.origin.z};
+        render::sort_back_to_front(section.centres, eye, section.order);
+        section.sorted_from = eye;
+        section.stale.fill(true);
+    }
+
+    // This frame's buffer, wherever its copy of a range is out of date. The
+    // other frame's copy is written when its turn comes, never while the GPU
+    // may still be reading it.
+    for (IndirectCommand& command : scratch_) {
+        Section& section = sections_[command.first_instance];
+        if (section.stale[ring]) {
+            if (section.order.empty()) {
+                section.order.resize(section.centres.size());
+                for (u32 i = 0; i < section.order.size(); ++i) {
+                    section.order[i] = i;
+                }
+            }
+            render::write_quad_indices(section.order, sort_scratch_);
+            std::memcpy(mapped + section.sort_offset, sort_scratch_.data(),
+                        sort_scratch_.size() * sizeof(u32));
+            section.stale[ring] = false;
+        }
+        command.first_index = static_cast<u32>(section.sort_offset / sizeof(u32));
+    }
+    return true;
 }
 
 }  // namespace ov::client

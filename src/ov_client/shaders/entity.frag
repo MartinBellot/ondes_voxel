@@ -16,8 +16,17 @@ push;
 
 layout(location = 0) out vec4 out_colour;
 
+// Back to the stored numbers the game multiplies, as in terrain.frag: the
+// texture is sRGB and decodes on sampling, the scene target is UNORM.
+vec3 linear_to_srgb(vec3 c) {
+    vec3 low  = c * 12.92;
+    vec3 high = 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055;
+    return mix(low, high, step(vec3(0.0031308), c));
+}
+
 void main() {
     vec4 texel = texture(u_texture, v_uv);
+    texel.rgb  = linear_to_srgb(texel.rgb);
 
     // Every entity surface is a cutout, not a blend. A skin's second layer, the
     // text on a sign and a dropped item's sprite are all either drawn or not

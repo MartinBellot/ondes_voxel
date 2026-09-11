@@ -83,11 +83,16 @@ struct TerrainVertexAttributes {
     /// through the sprite's rect by the mesher.
     f32 u{};
     f32 v{};
-    /// 0..15, as stored in a chunk's light arrays.
-    u8 sky_light{15};
-    u8 block_light{0};
-    /// 0 (fully occluded corner) to 3 (open).
-    u8 ao{3};
+    /// Light in quarter levels, 0..60: smooth lighting sums four levels, and
+    /// the sum is kept rather than rounded to a level so that light falls off
+    /// across a face in quarter steps, as the game's does. Flat lighting is
+    /// four times the stored level.
+    u8 sky_quarters{60};
+    u8 block_quarters{0};
+    /// Smooth-lighting brightness of this corner, 0..1: the mean of four shade
+    /// brightnesses (1.0, 0.8, 0.6, 0.4 at a full face's corners), interpolated
+    /// for a vertex inside the face. Eight bits.
+    f32 occlusion{1.0F};
     /// The face this vertex belongs to, for directional shading.
     Direction facing{Direction::Up};
     /// The biome colour that multiplies this vertex, 0xRRGGBB. White for the
@@ -111,6 +116,9 @@ inline constexpr f32 kPositionMax   = kPositionMin + 65535.0F / kPositionScale;
 /// spare values of a three-bit direction field rather than costing a bit.
 inline constexpr u8 kFacingUnshaded = 6;
 
+/// The largest light a vertex can carry: four samples at level 15.
+inline constexpr u8 kMaxLightQuarters = 60;
+
 /// Bit layout, low bit first. Word-aligned on purpose: no field straddles a
 /// 32-bit word, so the vertex shader unpacks it with six bitfieldExtract calls
 /// and no reassembly.
@@ -120,15 +128,21 @@ inline constexpr u8 kFacingUnshaded = 6;
 ///     word 1    0-15   z        16 bits
 ///              16-31   u        16 bits   normalised atlas coordinate
 ///     word 2    0-15   v        16 bits
-///              16-19   sky       4 bits
-///              20-23   block     4 bits
-///              24-25   ao        2 bits
-///              26-28   facing    3 bits   0-5 a Direction, 6 unshaded
-///              29-31   spare     3 bits
+///              16-21   sky       6 bits   quarter levels, 0..60
+///              22-27   block     6 bits   quarter levels, 0..60
+///              28-30   facing    3 bits   0-5 a Direction, 6 unshaded
+///              31      spare     1 bit
 ///     word 3    0-7    red       8 bits   the baked biome tint
 ///               8-15   green     8 bits
 ///              16-23   blue      8 bits
-///              24-31   spare     8 bits
+///              24-31   occlusion 8 bits   smooth-lighting brightness, 0..1
+///
+/// Two bits of light and six of occlusion more than the first layout, from
+/// the spare byte and two spare bits: the first layout rounded the four-level
+/// sum to a whole level and the brightness to one of four fixed steps, where
+/// the game keeps quarter levels and averages shade brightnesses — and the
+/// fixed steps were not even the game's four values
+/// (docs/provenance/rendu-parite.md).
 struct TerrainVertex {
     std::array<u32, 4> words{};
 

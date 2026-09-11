@@ -21,6 +21,7 @@
 
 #include <array>
 #include <span>
+#include <vector>
 
 namespace ov::render {
 
@@ -67,6 +68,19 @@ inline constexpr f32 kNetherAmbientLight    = 0.1F;
 
 /// The sky colour: the biome's, scaled. Black at night, exactly.
 [[nodiscard]] u32 sky_colour(u32 biome_sky, f32 darken) noexcept;
+
+/// The sky disc: a flat fan of eight triangles `height` blocks above the eye,
+/// 512 blocks across the radius, its rim vertices every 45 degrees starting
+/// from -X. Nine floats a triangle, positions relative to the eye. A negative
+/// height gives the dark disc under the horizon, wound the other way.
+///
+/// Eight triangles and not a smooth dome because the fog is interpolated
+/// linearly across each one, so the fan shows in the gradient — and a smooth
+/// dome would put the fog's colour at a different height in every direction
+/// but eight.
+inline constexpr f32 kSkyDiscHeight = 16.0F;
+inline constexpr f32 kSkyDiscRadius = 512.0F;
+[[nodiscard]] std::vector<f32> sky_disc(f32 height);
 
 /// Vanilla's 16x16 lightmap, rebuilt every frame.
 ///
