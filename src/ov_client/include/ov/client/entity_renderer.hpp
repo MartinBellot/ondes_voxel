@@ -75,12 +75,20 @@ struct EntitySky {
 /// out, drawn both sides, never writing depth, with a repeating sampler so a
 /// sheet's texture can scroll.
 ///
+/// ── entity-models ── EntityTranslucent, Eyes and Energy are the game's other
+/// entity render types: `entity_translucent` (a slime's jelly, a horse's
+/// markings: blended, depth written), `eyes` (added, unlit, depth not written)
+/// and `energy_swirl` (the same, on a repeating texture that scrolls). Every
+/// entity pass compares depth less-or-equal, as the game does: a villager's
+/// clothes are the same triangles as its skin, drawn again on top, and a strict
+/// test would drop every one of them.
+///
 /// ── breaking ── Crumbling is the cracks over a block being broken: the same
 /// vertices, multiplied onto what is drawn (BlendMode::Multiply), never writing
 /// depth, pulled towards the eye by vanilla's polygon offset (-1, -10) so they
 /// do not fight the face they lie on, and sampled with a repeating sampler —
 /// their texture coordinates come from the world position, not from a sprite.
-enum class EntityPass : u8 { Cutout, Translucent, Crumbling };
+enum class EntityPass : u8 { Cutout, Translucent, EntityTranslucent, Eyes, Energy, Crumbling };
 
 class EntityRenderer {
 public:
@@ -112,6 +120,12 @@ public:
     /// the sprites the terrain already uploaded, and uploading them twice would
     /// double a hundred megabytes to save one indirection.
     [[nodiscard]] EntityTexture borrow_texture(rhi::ImageHandle image, u32 width, u32 height);
+
+    /// ── entity-models ── The image behind a texture, so another pass can
+    /// borrow it: the entity atlas is uploaded once and read by the cutout,
+    /// translucent and eyes passes alike. An invalid handle for a texture this
+    /// renderer does not have.
+    [[nodiscard]] rhi::ImageHandle image(EntityTexture texture) const noexcept;
 
     /// Start a frame. Clears the batches; allocates nothing once warm.
     void begin();

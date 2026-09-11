@@ -6,6 +6,7 @@
 ov_add_library(ov_protocol
     LAYER 7
     SOURCES
+        src/biome_music.cpp
         src/blast.cpp
         src/breaking.cpp
         src/chat.cpp
@@ -13,6 +14,7 @@ ov_add_library(ov_protocol
         src/client_play.cpp
         src/effect_packets.cpp
         src/entity.cpp
+        src/entity_metadata.cpp
         src/framing.cpp
         src/hud.cpp
         src/interaction.cpp
@@ -38,6 +40,7 @@ ov_add_library(ov_protocol
 
 ov_add_test(test_ov_protocol
     SOURCES
+        tests/test_biome_music.cpp
         tests/test_blast_packets.cpp
         tests/test_breaking_packets.cpp
         tests/test_chat.cpp
@@ -46,6 +49,7 @@ ov_add_test(test_ov_protocol
         tests/test_sound_packets.cpp
         tests/test_effect_packets.cpp
         tests/test_entities.cpp
+        tests/test_entity_metadata.cpp
         tests/test_entity_packets.cpp
         tests/test_framing.cpp
         tests/test_hud_packets.cpp
