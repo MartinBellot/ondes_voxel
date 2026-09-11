@@ -4,6 +4,8 @@
 #include "selector.hpp"
 #include "text.hpp"
 
+#include "../admin/java_compat.hpp"  // ── dedicated server administration ──
+
 #include "ov/io/file.hpp"
 
 #include <algorithm>
@@ -25,6 +27,7 @@ bool OpList::add(OpEntry entry) {
         return false;
     }
     entries_.push_back(std::move(entry));
+    high_water_ = std::max(high_water_, entries_.size());
     return true;
 }
 
@@ -40,18 +43,27 @@ std::string OpList::to_json() const {
     }
     // Gson's pretty printer: two spaces, ": " after a name, a newline per
     // member. No trailing newline, as vanilla writes none.
+    // ── dedicated server administration ── in the order vanilla's HashMap,
+    // keyed by the uuid's text, walks them; and Gson's HTML-safe escaping.
+    std::vector<std::string> keys;
+    keys.reserve(entries_.size());
+    for (const OpEntry& e : entries_) {
+        keys.push_back(e.uuid.to_string());
+    }
+    const std::vector<usize> order =
+        admin::hash_map_order(keys, std::max(high_water_, entries_.size()));
     std::string out = "[\n";
-    for (usize i = 0; i < entries_.size(); ++i) {
-        const OpEntry& e = entries_[i];
+    for (usize n = 0; n < order.size(); ++n) {
+        const OpEntry& e = entries_[order[n]];
         out += "  {\n    \"uuid\": ";
-        append_json_string(out, e.uuid.to_string());
+        admin::append_gson_string(out, keys[order[n]]);
         out += ",\n    \"name\": ";
-        append_json_string(out, e.name);
+        admin::append_gson_string(out, e.name);
         out += ",\n    \"level\": " + std::to_string(e.level);
         out += ",\n    \"bypassesPlayerLimit\": ";
         out += e.bypasses_player_limit ? "true" : "false";
         out += "\n  }";
-        out += i + 1 < entries_.size() ? ",\n" : "\n";
+        out += n + 1 < order.size() ? ",\n" : "\n";
     }
     out += "]";
     return out;
@@ -88,6 +100,7 @@ bool OpList::from_json(std::string_view text) {
         }
         entries_.push_back(std::move(entry));
     }
+    high_water_ = std::max(high_water_, entries_.size());  // ── dedicated server administration ──
     return true;
 }
 

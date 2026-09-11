@@ -713,6 +713,9 @@ TEST_CASE("help prints vanilla's smart usage", "[commands][vanilla]") {
     // Every usage vanilla's `/help` printed for a command this server has.
     const std::vector<std::string> expected{
         "/clear [<targets>]",
+        // ── dedicated server administration ── vanilla prints
+        // "(start|stop|function)"; `debug function` waits for functions.
+        "/debug (start|stop)",
         "/defaultgamemode <gamemode>",
         "/difficulty [peaceful|easy|normal|hard]",
         "/effect (clear|give)",
@@ -751,7 +754,7 @@ TEST_CASE("help prints vanilla's smart usage", "[commands][vanilla]") {
         gamerule += (i == 0 ? "" : "|") + std::string{kGameRules[i].name};
     }
     std::vector<std::string> with_rules = expected;
-    with_rules.insert(with_rules.begin() + 9, gamerule + ")");
+    with_rules.insert(with_rules.begin() + 10, gamerule + ")");  // before /give
     std::vector<std::string> printed;
     for (const std::string& line : h.run("help")) {
         printed.push_back(line.substr(9, line.size() - 11));  // {"text":"…"}

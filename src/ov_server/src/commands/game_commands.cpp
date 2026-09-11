@@ -264,6 +264,8 @@ void CommandService::register_commands() {
         d.argument(item, "maxCount", ArgumentType::integer_at_least(0), run);
     }
 
+    register_debug(top);  // ── dedicated server administration ──
+
     // ── defaultgamemode ─────────────────────────────────────────────────────
     {
         const u32 node = top("defaultgamemode", kPermissionGameMaster);
@@ -1615,6 +1617,8 @@ void CommandService::register_commands() {
         }
     }
 
+    register_bans(top);  // ── dedicated server administration ──
+
     // ── deop / op ───────────────────────────────────────────────────────────
     {
         // The profiles a `targets` argument names: a selector's players, or a
@@ -1663,7 +1667,8 @@ void CommandService::register_commands() {
                 }
                 i32 changed = 0;
                 for (const auto& [name, uuid] : *found) {
-                    const bool done = grant ? ops_.add(OpEntry{uuid, name, kPermissionOwner, false})
+                    // ── dedicated server administration ── op-permission-level
+                    const bool done = grant ? ops_.add(OpEntry{uuid, name, config_.op_permission_level, false})
                                             : ops_.remove(uuid);
                     if (!done) {
                         continue;
@@ -1671,7 +1676,7 @@ void CommandService::register_commands() {
                     ++changed;
                     for (PlayerRef& p : players_) {
                         if (p.uuid == uuid && !config_.integrated) {
-                            set_permission(p, grant ? kPermissionOwner : 0);
+                            set_permission(p, grant ? config_.op_permission_level : 0);
                         }
                     }
                     success(ctx.source(),
@@ -1683,6 +1688,7 @@ void CommandService::register_commands() {
                     return std::unexpected{error(grant ? "commands.op.failed" : "commands.deop.failed")};
                 }
                 (void)ops_.save();
+                sync_admin_ops();  // ── dedicated server administration ──
                 return changed;
             };
         };
@@ -1698,6 +1704,8 @@ void CommandService::register_commands() {
                    "minecraft:ask_server");
     }
 
+    register_pardons(top);  // ── dedicated server administration ──
+
     // ── save-all / stop ─────────────────────────────────────────────────────
     {
         const Executor save = [this](const CommandContext& ctx) -> Parsed<i32> {
@@ -1708,12 +1716,15 @@ void CommandService::register_commands() {
         };
         const u32 node = top("save-all", kPermissionOwner, save);
         d.literal(node, "flush", save);
+        register_save_switches(top);  // ── dedicated server administration ──
         top("stop", kPermissionOwner, [this](const CommandContext& ctx) -> Parsed<i32> {
             success(ctx.source(), Text::translatable("commands.stop.stopping"), true);
             host_->stop();
             return 1;
         });
     }
+    register_whitelist(top);  // ── dedicated server administration ──
+    register_publish(top);    // ── dedicated server administration ──
 }
 
 }  // namespace ov::server::cmd
