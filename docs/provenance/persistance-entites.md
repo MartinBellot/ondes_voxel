@@ -146,7 +146,7 @@ les objets au sol et le monde d'entités sont à ce verrou, et la sauvegarde les
   les cristaux ; `RootVehicle` dans le fichier et dans la session.
 - **Suite complète** : voir § 5.3.
 - **De bout en bout** : voir § 5.1.
-- **Relus par le vrai serveur** : voir § 5.2.
+- **Le monde de vanilla chez nous** : § 5.2 ; **notre monde relu par le vrai serveur** : § 5.4.
 
 ### 5.1 De bout en bout, contre notre serveur
 
@@ -196,6 +196,28 @@ Au premier passage, rien n'était apparu : c'est ce passage qui a trouvé le pi�
 
 `ctest --preset macos-debug` sur le code final : **16/16** (428 s) ; compilation `-Werror` sans
 avertissement ; `check_layers.py` et `check_assets.py` passent.
+
+### 5.4 Notre monde relu par le vrai serveur
+
+`lockf /tmp/ov-vanilla.lock python3 scripts/measure_persistence.py readback` (port 25670) ouvre dans
+le vrai serveur 1.20.1 la copie de `entities/` que notre serveur a écrite à l'arrêt du § 5.1 (avant
+la phase du wagonnet : elle n'en contient pas), et lit tout avec `data get entity` une seconde après
+que la sonde s'est connectée :
+
+- **46** entités `item` — nos 89 objets de terre, que vanilla a **fusionnés** entre voisins dès les
+  premiers ticks (des `Count` de 2b et 3b, que nous n'écrivons jamais) ; chacun relu avec
+  `Health: 5s`, `Fire: -1s`, `PickupDelay: 0s`, `Item: {id: "minecraft:dirt", Count: …b}` ;
+- **1** orbe (`Value: 7s`, `Count: 1`) ;
+- **1** flèche, `inGround: 1b`, `pickup: 2b` ;
+- **la TNT** qui brûlait : **0** TNT à la lecture, mais des objets `dirt` par **32b** et un
+  `redstone_block` autour de (−10, −63, −12) — le cratère de la seconde TNT, posée en (−12, −60, −12).
+  Vanilla l'a lue, a repris sa mèche de 59 ticks (3 s, moins que les 6 s d'attente de la sonde) et
+  l'a fait sauter **là où nous l'avions sauvée** ;
+- **le sable** : 0 bloc qui tombe, atterri avant la lecture ; la perle : partie de même.
+
+Ni refus ni erreur dans le journal du vrai serveur. Les mobs du Nether, le dragon et les cristaux ne
+sont pas dans ce monde (le bout en bout ne va pas dans le Nether ni dans l'End) : pour eux, la preuve
+est le test unitaire sur les composés typés tels que vanilla les écrit (§ 2), pas une relecture.
 
 ---
 
