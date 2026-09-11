@@ -366,3 +366,66 @@ quelques dixièmes près.
   dépôt principal** dans un worktree : un script qui y écrit écrit hors du
   worktree. `capture_destroy_stage.py` et `measure_breaking.py` prennent un
   chemin de sortie ; lancés depuis un worktree, donne-leur `.scratch/`.
+
+## 9. « Régression » après la parité de rendu (2026-09-11)
+
+Après la fusion 5553bef (cassage sur la parité de rendu : scène en RGBA8 UNORM,
+`crumbling.frag` qui ré-encode le texel en sRGB au lieu du facteur 2^1,2),
+les fissures ont paru disparaître : sur `run/lab`, avec
+`--chat="/tp @s ~ ~ ~ 0 70" --chat-at=60 --crack=6`, le contour noir se voyait,
+aucune fissure. **Le rendu n'avait pas régressé.** Instrumenté (sommets par
+étape, statistiques de la passe, état visé) :
+
+- la fissure forcée existe (`cracks 1`) mais `build_cracks` ne produit
+  **0 sommet** : le bloc visé est l'état 4319, `minecraft:oak_sign`, en
+  (0, −60, 0) — **le panneau planté dans la case d'apparition du joueur**.
+  Le rayon part de l'œil et le touche avant le sol. Un panneau n'a pas de
+  modèle de bloc (entité de bloc) : rien sur quoi poser la fissure, et le
+  contour retombe sur le cube par défaut quand la forme est vide
+  (`draw_block_outline`), d'où l'illusion « contour, pas de fissure » ;
+- le tangage ne changeait pas : notre serveur refuse `/tp @s ~ ~ ~ 0 70`
+  (« Unknown or incomplete command », la forme avec rotation n'est pas
+  comprise — non corrigé ici, hors périmètre) ;
+- dès que le joueur vise l'herbe (`--stand-at`), la passe reçoit 40 sommets,
+  10 quads, 1 appel, et la fissure se voit.
+
+**Correctif** : le cas n'est plus silencieux. `Breaking::build_cracks` compte
+les images où une fissure tient sur un bloc sans modèle (`crack frames on a
+block with no model` dans la ligne `breaking:` de fin de journal) et le nomme
+une fois par bloc (« crack at (0, −60, 0) on minecraft:oak_sign: the block has
+no model, nothing drawn »). Test : `test_crack_mesh.cpp` — un état à
+alternatives pondérées (la forme de la pierre et de l'herbe depuis la parité)
+garde `model` rempli (6 quads, 24 sommets de fissure), un panneau se résout
+sans géométrie et ne donne aucun quad.
+
+**Mesure après la fusion** (`measure_breaking.py ours` puis `compare`, même pose
+et même rectangle qu'au § 7.3, 2560 × 1440, Faithful 32x) :
+
+| | assombri / éclairci | rapport sombre · clair |
+|---|---|---|
+| pierre, étape 0 | 0,556 % / 0,438 % | 0,478 · 1,215 |
+| pierre, étape 4 | 5,437 % / 4,302 % | 0,478 · 1,217 |
+| pierre, étape 9 | 18,158 % / 13,730 % | 0,479 · 1,216 |
+| planches, étape 9 | 18,158 % / 13,730 % | 0,478 · 1,215 |
+| dalle, étape 9 | 15,691 % / 11,917 % | 0,479 · 1,215 |
+
+La couverture est celle d'avant la fusion, au pixel près, donc celle du vrai
+client. Le **rapport d'assombrissement passe de 0,46 à 0,478**, la valeur du
+vrai client : sur une cible UNORM, le mélange DST_COLOR, SRC_COLOR opère sur
+les valeurs stockées comme chez vanilla, et l'écart dû à l'approximation de la
+courbe sRGB (§ 4, § 7.3) disparaît. Le nouveau `crumbling.frag` est donc une
+amélioration, pas la cause. Sur l'herbe du banc (étapes 0/4/9, tangage 70,
+rectangle central, sans référence vanilla) : 0,320 / 3,060 / 10,164 %
+assombris, rapports 0,477 · 1,216.
+
+Les **particules** passent aussi après la fusion : un vrai creusage sur le banc
+(`--mine=200,3`, créatif) casse le bloc au 79e tick et la capture, 25 images
+plus tard, montre l'éclatement (14 particules vivantes au compteur, visibles
+sur l'herbe et deux tout près de l'objectif). Le bloc cassé était celui de la
+case du joueur (8, −60, 8), non identifié : même piège que le panneau, le rayon
+à tangage 70 touche d'abord ce qui est à ses pieds.
+
+**Pour reproduire** une fissure sur le banc : `--stand-at=X,Y,Z,lacet,tangage`
+hors de la case du panneau (par exemple `4.5,-60,4.5,0,70`), jamais `/tp` avec
+rotation. Et ne touche pas la fenêtre pendant une capture : un vrai clic sur
+elle a lancé un creusage (deux blocs cassés en créatif, `2 starts` au compteur).

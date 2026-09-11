@@ -118,6 +118,9 @@ public:
         u64 others_broken{0};
         /// Particles not made because the sprite is not in the atlas.
         u64 no_sprite{0};
+        /// Frames a crack was held on a block with no model of its own (a
+        /// sign, a chest: block entities), so nothing could be drawn.
+        u64 cracks_unmodelled{0};
     };
     [[nodiscard]] const Counters& counters() const noexcept { return counters_; }
 
@@ -165,6 +168,8 @@ private:
     std::vector<AABB>                     boxes_;
     std::vector<std::array<Vec3d, 2>>     edges_;
     std::vector<std::pair<BlockPos, i32>> deepest_;
+    /// The last block a crack could not be drawn on, so it is named once.
+    std::optional<BlockPos>               last_unmodelled_;
     Counters                              counters_;
 };
 

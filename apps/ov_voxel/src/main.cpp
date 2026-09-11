@@ -3536,9 +3536,10 @@ int main(int argc, char** argv) {
             const auto& c = breaking.counters();
             fmt::print("breaking: {} starts, {} aborts, {} finishes, {} broken, {} swings, {} hits, "
                        "{} stages from others, {} broken by others, {} particles live, "
-                       "{} without a sprite\n",
+                       "{} without a sprite, {} crack frames on a block with no model\n",
                        c.starts, c.aborts, c.finishes, c.broken, c.swings, c.hits, c.others_stages,
-                       c.others_broken, breaking.particles().count(), c.no_sprite);
+                       c.others_broken, breaking.particles().count(), c.no_sprite,
+                       c.cracks_unmodelled);
         }
         if (dig_sent) {
             const auto after = session->block_at(dig_target.x, dig_target.y, dig_target.z);
