@@ -224,6 +224,12 @@ private:
 
     /// Each skeleton's bow: ticks until the next arrow while it sees a player.
     std::unordered_map<i32, i32>  skeletons_;
+    /// ── mobs-3 ── The difficulty the last skeleton pass ran at: a mob's
+    /// arrow on a player scales with it (`when_caused_by_living_non_player`).
+    i32 difficulty_{2};
+    /// ── mobs-3 ── A stray's arrow: a tipped arrow carrying Slowness 600 as a
+    /// custom effect, which lands whole (brewing's `arrow_effects`).
+    net::ItemStack stray_arrow_{};
     std::vector<ProjectilePlayer> players_;
     std::vector<i32>              doomed_;
 };

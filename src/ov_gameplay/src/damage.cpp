@@ -172,6 +172,16 @@ DamageResult apply_damage(HealthState& state, DamageKind kind, f32 amount,
     return apply_damage(state, kind, amount, constants, DamageMitigation{});
 }
 
+f32 after_armour(DamageKind kind, f32 amount, f32 armour, f32 toughness) noexcept {
+    const DamageTypeInfo& info = damage_type(kind);
+    if (armour <= 0.0F || has(info.flags, DamageFlags::BypassesArmor)) {
+        return amount;
+    }
+    const f32 divisor  = 2.0F + toughness / 4.0F;
+    const f32 absorbed = std::clamp(armour - amount / divisor, armour * 0.2F, 20.0F);
+    return amount * (1.0F - absorbed / 25.0F);
+}
+
 f32 after_resistance(DamageKind kind, f32 amount, i32 resistance) noexcept {
     const DamageTypeInfo& info = damage_type(kind);
     if (resistance < 0 || has(info.flags, DamageFlags::BypassesEffects) ||
@@ -215,6 +225,9 @@ DamageResult apply_damage(HealthState& state, DamageKind kind, f32 amount,
         }
     }
 
+    // ── mobs-3 ── armour first: the game absorbs by armour, then by
+    // Resistance and enchantments. No armour worn is an identity.
+    dealt = after_armour(kind, dealt, mitigation.armour, mitigation.toughness);
     // Resistance, then the yellow hearts. With no resistance and no
     // absorption both are identities, so the measured survival tables run
     // through this path unchanged.

@@ -51,6 +51,12 @@ struct MobContext {
     /// The time of day and the hostile types. Null: villagers neither work,
     /// sleep nor run from anything.
     const VillagerWorld* villagers{nullptr};
+
+    // ── mobs-3 ── the players hostile mobs hunt, where their swings go, and
+    // the villager's type id (goals.hpp, GoalContext).
+    std::span<const Quarry> quarries{};
+    std::vector<MobAttack>* attacks{nullptr};
+    i32                     villager_type{-1};
 };
 
 /// Recover the context, or null if the caller did not provide one.
@@ -119,6 +125,17 @@ struct MobKind {
     bool panics{false};
     /// Can be bred, and follows a parent while young.
     bool breeds{false};
+    // ── mobs-3 ──
+    /// A swing in reach hurts. False for a creeper (it swells), a skeleton, a
+    /// stray and a witch (they shoot or throw), a slime (it hurts by contact,
+    /// not done — named in mobs-3.md).
+    bool melee{true};
+    /// Hunts villagers too, without line of sight: the zombie family.
+    bool hunts_villagers{false};
+    /// How far a target is sought and kept: the measured `follow_range`
+    /// attribute (entities.json) — 35 for the zombie family, 64 for the
+    /// enderman, 16 for every other hostile here.
+    f64 follow_range{16.0};
 };
 
 /// The species this milestone ships. Eight, and the value is in the systems.

@@ -669,10 +669,22 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       la bedrock, y tiré jusqu'au toit. Les `spawn_costs` (vallée des âmes,
       forêt biscornue) et les `spawn_overrides` des forteresses ne sont pas
       lus. Voir `docs/provenance/nether-2.md`)*
-- [~] Despawn, persistance, cap de mobs par catégorie
+- [x] Despawn, persistance, cap de mobs par catégorie
       *(les caps et la persistance sont là ; `decide_despawn` est écrit,
       testé et **appelé par personne** — les mobs s'accumulent jusqu'au cap et
       y restent)*
+      *(**2026-09-11 — mobs-3** : despawn **branché**, chaque mob chaque tick
+      contre le joueur le plus proche. Vanilla mesuré : immédiat au-delà de
+      128, rien sous 32, et entre les deux 600 ticks d'inactivité puis une
+      décroissance — ajustée à 600 et 1/850 sur 32 zombies, contre 600 et 1/800
+      appliqués ; **les vaches et les villageois ne partent jamais** et un
+      `CustomName` seul **n'épingle pas**. Les mobs sont **sauvés** dans
+      `entities/r.x.z.mca` au format 1.20.1 (lus au chargement d'un chunk,
+      écrits au déchargement et à chaque sauvegarde), champs non modélisés et
+      entités étrangères rendus intacts ; un zoo de 24 mobs écrit par le vrai
+      serveur relu par le nôtre (24/24 sur le fil), réécrit, et relu par le
+      vrai serveur (24/24). `NoAI` est rendu mais ignoré. Voir
+      `docs/provenance/mobs-3.md`)*
 - [ ] **Passifs (32)** : allay, axolotl, bat, camel, cat, chicken, cod, cow,
       donkey, fox, frog, glow_squid, horse, mooshroom, mule, ocelot, parrot,
       pig, pufferfish, rabbit, salmon, sheep, skeleton_horse, sniffer,
@@ -886,6 +898,13 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       lit la nuit. Restent ragots et popularité, reproduction, golems, cloche,
       zombification et guérison (mesurées, non branchées), type selon le
       biome, persistance. Voir `docs/provenance/villageois.md`)*
+      *(**2026-09-11 — mobs-3** : **zombification branchée** (jamais en
+      facile, une fois sur deux en normal, toujours en difficile) — le
+      villageois zombie garde type, métier, niveau, XP et offres (indice 20) ;
+      **guérison** par pomme d'or sous Faiblesse (potion jetable), 3600 +
+      0..2400 ticks, accélérée par barreaux et lits, le même villageois au bout.
+      La remise de prix n'est pas faite : pas de réputation. Villageois
+      **sauvés** avec leurs offres. Voir `docs/provenance/mobs-3.md`)*
 - [ ] **Raids** : mauvais présage, vagues, capitaines pillards, ravageurs,
       récompense héros du village
 - [ ] **Structures interactives** : balise (pyramide, effets), conduit, table de
@@ -902,6 +921,13 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       il n'y a **pas** de Hurt Animation. Restent les sources de dégâts au
       corps à corps, projectile et feu, la réapparition au lit, l'armure, et
       l'XP de minage dont la sonde est intermittente)*
+      *(**2026-09-11 — mobs-3** : **les mobs hostiles frappent** — ils ne
+      visaient même pas le joueur, absent du monde des entités. Dégâts selon la
+      difficulté et **l'armure** (points et robustesse, avant Résistance et
+      Protection) : 22/22 cellules identiques au vrai serveur, puis 15/15 de
+      bout en bout sur le nôtre ; Faim du husk 140/280, Poison de l'araignée
+      venimeuse 140/300, flèche de stray Lenteur 600 ; la flèche de mob et
+      l'explosion suivent la difficulté. Voir `docs/provenance/mobs-3.md`)*
 - [~] **Combat et utilisation** : frapper, utiliser, manger, user un outil
       *(**jauge d'attaque 13 marches sur 13** et 5/5 pour une arme au
       refroidissement différent, `0,2 + 0,8·f²` ; dégâts et refroidissement de

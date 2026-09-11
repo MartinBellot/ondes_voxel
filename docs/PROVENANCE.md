@@ -56,6 +56,7 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`villageois.md`](provenance/villageois.md) | Métiers, commerce et niveaux : 4298/4298 offres vanilla retrouvées, et l'ordre d'un `HashSet` Java qui se voit à l'écran |
 | [`dragon.md`](provenance/dragon.md) | Le combat contre l'Ender Dragon : phases, cristaux qui explosent (puissance 6), souffle, 12 000 points en 66 orbes, `DragonFight` aux clés du jeu, réinvocation en 604 ticks — mesurés contre le vrai serveur |
 | [`mobs-2.md`](provenance/mobs-2.md) | La loi de marche, l'apparition par biome, douze espèces, et les monstres qui n'apparaissaient jamais en surface la nuit |
+| [`mobs-3.md`](provenance/mobs-3.md) | Le coup des mobs hostiles (22/22 cellules difficulté × armure), le despawn mesuré, les mobs dans `entities/`, et le villageois zombie — et des zombies qui ne voyaient pas les joueurs |
 | [`nether.md`](provenance/nether.md) | Le Nether à 99,9 %, des portails là où le jeu les met, et le bruit de l'Overworld qui lisait ses octaves à l'envers |
 | [`nether-2.md`](provenance/nether-2.md) | Les features du Nether, ses fossiles à 185 départs sur 185, et ses mobs dans un monde à eux : troc, salves, boules de feu |
 | [`son.md`](provenance/son.md) | Les sons de 1003 blocs et 79 créatures, relevés sur le fil, et le client qui les joue |

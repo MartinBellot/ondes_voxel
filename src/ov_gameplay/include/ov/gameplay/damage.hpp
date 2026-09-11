@@ -287,7 +287,18 @@ struct DamageMitigation {
     /// (see gameplay::total_epf). Applied after Resistance and before the
     /// yellow hearts, as `amount * (1 - min(epf, 20) / 25)` — measured.
     std::array<u8, kDamageKindCount> protection{};
+
+    /// ── mobs-3 ── the worn armour's points and toughness (the attributes
+    /// `generic.armor` and `generic.armor_toughness`). Applied first, before
+    /// Resistance, for every kind not in #bypasses_armor.
+    f32 armour{0.0F};
+    f32 toughness{0.0F};
 };
+
+/// ── mobs-3 ── A hit after armour, the wiki's formula in float:
+/// `a · (1 − clamp(armour − a / (2 + toughness / 4), armour / 5, 20) / 25)`.
+/// Unchanged for a kind in #bypasses_armor or with no armour worn.
+[[nodiscard]] f32 after_armour(DamageKind kind, f32 amount, f32 armour, f32 toughness) noexcept;
 
 /// A hit after Resistance.
 ///

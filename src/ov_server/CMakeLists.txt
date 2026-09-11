@@ -31,6 +31,10 @@ ov_add_library(ov_server
         src/fire_session.cpp
         src/campfire.cpp
         src/mob_combat.cpp
+        src/mob_attacks.cpp  # ── mobs-3 ──
+        src/mob_despawn.cpp  # ── mobs-3 ──
+        src/entity_storage.cpp  # ── mobs-3 ──
+        src/zombie_villagers.cpp  # ── mobs-3 ──
         src/player_level.cpp
         src/player_data.cpp
         src/projectiles.cpp
@@ -102,6 +106,7 @@ ov_add_test(test_ov_server
         tests/test_end_fight.cpp
         tests/test_rails_session.cpp
         tests/test_nether_mobs.cpp  # ── nether-2 ──
+        tests/test_mobs3_server.cpp  # ── mobs-3 ──
     DEPS ov_server
     LABELS unit
 )
