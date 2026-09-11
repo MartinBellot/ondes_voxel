@@ -82,6 +82,26 @@ u32 sky_colour(u32 biome_sky, f32 darken) noexcept {
            to_byte(static_cast<f32>(channel(biome_sky, 0)) / 255.0F * a);
 }
 
+f32 fog_sky_blend(f32 render_distance_chunks) noexcept {
+    const f32 base = 0.25F + 0.75F * render_distance_chunks / 32.0F;
+    return 1.0F - std::pow(base, 0.25F);
+}
+
+u32 blend_fog_towards_sky(u32 fog, u32 sky, f32 render_distance_chunks) noexcept {
+    const f32 amount = fog_sky_blend(render_distance_chunks);
+    const auto mix   = [amount](u32 a, u32 b) {
+        const f32 fa = static_cast<f32>(a) / 255.0F;
+        const f32 fb = static_cast<f32>(b) / 255.0F;
+        return to_byte(fa + (fb - fa) * amount);
+    };
+    return (mix(channel(fog, 16), channel(sky, 16)) << 16) |
+           (mix(channel(fog, 8), channel(sky, 8)) << 8) | mix(channel(fog, 0), channel(sky, 0));
+}
+
+f32 terrain_fog_start(f32 render_distance_blocks) noexcept {
+    return render_distance_blocks - std::clamp(render_distance_blocks / 10.0F, 4.0F, 64.0F);
+}
+
 std::vector<f32> sky_disc(f32 height) {
     // Rim vertices at -180, -135, ... 180 degrees: nine, the last closing the
     // fan on the first. Wound by the sign of the height, so that both discs
@@ -107,57 +127,61 @@ std::vector<f32> sky_disc(f32 height) {
 }
 
 void Lightmap::update(f32 darken, f32 ambient_light, f32 gamma, f32 flicker) noexcept {
+    // Fitted against the real client's own lightmap texels, dumped by
+    // scripts/render_parity_oracle.java (docs/provenance/rendu-parite.md):
+    // every texel of the noon frames reproduces exactly with this structure.
+    //
+    // ⚠️ Two constants only act away from full daylight — the floor of the
+    // sky's brightness and the lift of its colour towards white — and are
+    // held here as named hypotheses until the oracle's night sweep confirms
+    // or replaces them.
+    constexpr f32 kSkyFloor    = 0.05F;
+    constexpr f32 kSkyBlueLift = 0.35F;
+    constexpr f32 kBaseLight   = 0.04F;
+    constexpr f32 kBaseTarget  = 0.75F;
+
+    const f32 d         = std::clamp(darken, 0.0F, 1.0F);
+    const f32 sky_scale = d * (1.0F - kSkyFloor) + kSkyFloor;
+    // Sky light is blue at night: its colour runs from (d, d, 1) lifted
+    // towards white, so a moonlit field is blue-grey and not grey.
+    const f32 sky_red  = d + (1.0F - d) * kSkyBlueLift;
+    const f32 sky_blue = 1.0F;
+    const f32 amount   = std::clamp(gamma, 0.0F, 1.0F);
+
+    const auto base = [](f32 x) { return x + (kBaseTarget - x) * kBaseLight; };
+
     for (u32 sky = 0; sky < kSize; ++sky) {
         for (u32 block = 0; block < kSize; ++block) {
-            const f32 sky_term = light_brightness(sky, ambient_light) * darken;
+            const f32 sky_term = light_brightness(sky, ambient_light) * sky_scale;
 
-            // Block light is brighter than its level alone: a torch at 14 has
-            // to hold its own against a sky at 15, and the flicker rides on
-            // top of it.
-            const f32 block_level = light_brightness(block, ambient_light);
-            const f32 block_term  = block_level * (flicker * 0.1F + 1.5F);
+            // Block light, warm: red at full, green and blue falling away
+            // below full on two polynomials — orange in the middle of the
+            // range, white at the top. The flicker rides on the 1.5.
+            const f32 b     = light_brightness(block, ambient_light) * (flicker + 1.5F);
+            const f32 red   = b;
+            const f32 green = b * ((b * 0.6F + 0.4F) * 0.6F + 0.4F);
+            const f32 blue  = b * (b * b * 0.6F + 0.4F);
 
-            // Sky light is white; block light is warm, and warms as it
-            // strengthens: nearly grey at the bottom of the range, orange in
-            // the middle, white at the top. The shape of that ramp is
-            // documented; the exact polynomial 1.20.1 uses is NOT, so this
-            // reproduces the description rather than the code, and stays here
-            // until it is measured against the real client.
-            const f32 warmth = std::clamp(block_level, 0.0F, 1.0F);
-            const f32 tilt   = warmth * (1.0F - warmth) * 4.0F;
-            const f32 red    = block_term;
-            const f32 green  = block_term * (1.0F - tilt * (1.0F - 216.0F / 255.0F));
-            const f32 blue   = block_term * (1.0F - tilt * (1.0F - 140.0F / 255.0F));
+            // Added: a torch reads against daylight.
+            f32 c[3] = {red + sky_red * sky_term, green + sky_red * sky_term,
+                        blue + sky_blue * sky_term};
+            for (f32& x : c) {
+                // Never quite black, clamped, eased by the brightness slider
+                // (0 Moody, 1 Bright, 1.20.1's default 0.5), clamped, and
+                // pulled towards 0.75 a second time — why a sunlit texel is
+                // 252 and not 255.
+                x = std::clamp(base(x), 0.0F, 1.0F);
+                x = x + (ease_out_quart(x) - x) * amount;
+                x = std::clamp(base(x), 0.0F, 1.0F);
+            }
 
-            // Added rather than maximised. The sources disagree — a 2011
-            // write-up says the game takes the brighter of the two, the modern
-            // dimension documentation says they add — and adding is what makes
-            // a torch read against daylight, which is the case a max cannot
-            // produce. Undecided by documentation; a candidate for measurement.
-            f32 r = sky_term + red;
-            f32 g = sky_term + green;
-            f32 b = sky_term + blue;
-
-            // Never quite black. The strength is documented as 0.04; the grey
-            // it moves towards is not, and 0.75 is the value everyone repeats.
-            constexpr f32 kBaseLight  = 0.04F;
-            constexpr f32 kBaseTarget = 0.75F;
-            r += (kBaseTarget - r) * kBaseLight;
-            g += (kBaseTarget - g) * kBaseLight;
-            b += (kBaseTarget - b) * kBaseLight;
-
-            // The brightness slider: lerp towards an eased-up version of the
-            // colour. 0 is Moody, 1 is Bright, and 1.20.1 defaults to 0.5.
-            const f32 amount = std::clamp(gamma, 0.0F, 1.0F);
-            r = r + (ease_out_quart(std::clamp(r, 0.0F, 1.0F)) - r) * amount;
-            g = g + (ease_out_quart(std::clamp(g, 0.0F, 1.0F)) - g) * amount;
-            b = b + (ease_out_quart(std::clamp(b, 0.0F, 1.0F)) - b) * amount;
-
-            const usize index    = (static_cast<usize>(sky) * kSize + block) * 4;
-            pixels_[index]       = static_cast<u8>(to_byte(r));
-            pixels_[index + 1]   = static_cast<u8>(to_byte(g));
-            pixels_[index + 2]   = static_cast<u8>(to_byte(b));
-            pixels_[index + 3]   = 255;
+            // Truncated, not rounded: rounding puts two texels in three a unit
+            // above the game's.
+            const usize index  = (static_cast<usize>(sky) * kSize + block) * 4;
+            pixels_[index]     = static_cast<u8>(c[0] * 255.0F);
+            pixels_[index + 1] = static_cast<u8>(c[1] * 255.0F);
+            pixels_[index + 2] = static_cast<u8>(c[2] * 255.0F);
+            pixels_[index + 3] = 255;
         }
     }
 }

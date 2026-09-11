@@ -2212,9 +2212,13 @@ int main(int argc, char** argv) {
                                                      static_cast<i32>(std::floor(camera.position.z)))
                                  : camera_biome(*world, *blocks, camera.position);
         const auto effects = blocks->biome(biome);
-        const u32 fog_rgb = eye_in_water ? effects.water_fog_colour
-                                        : render::fog_colour(effects.fog_colour, darken);
         const u32   sky_rgb   = render::sky_colour(effects.sky_colour, darken);
+        // ── render-parity ── the fog pulled towards the sky by the render
+        // distance, as the real client's is (docs/provenance/rendu-parite.md).
+        const u32 fog_rgb =
+            eye_in_water ? effects.water_fog_colour
+                         : render::blend_fog_towards_sky(render::fog_colour(effects.fog_colour, darken),
+                                                         sky_rgb, static_cast<f32>(options.radius));
 
         auto frame = device.begin_frame();
         if (!frame) {
@@ -2310,6 +2314,8 @@ int main(int argc, char** argv) {
             sky_draw.fog_colour = fog_rgb;
             sky_draw.fog_start  = options.fog ? 0.0F : 1.0e9F;
             sky_draw.fog_end    = options.fog ? render_distance : 1.1e9F;
+            // The oracle: FOG_SKY 0 to the render distance, CYLINDER.
+            sky_draw.spherical_fog = false;
             (*sky_renderer)->draw(cmd, sky_draw);
         }
 
@@ -2338,7 +2344,7 @@ int main(int argc, char** argv) {
             sky.fog_end   = std::min(render_distance, 96.0F);
             sky.fog_start = sky.fog_end * 0.25F;
         } else {
-            sky.fog_start = render_distance * 0.92F;
+            sky.fog_start = render::terrain_fog_start(render_distance);  // ── render-parity ──
             sky.fog_end   = render_distance;
         }
 

@@ -69,6 +69,21 @@ inline constexpr f32 kNetherAmbientLight    = 0.1F;
 /// The sky colour: the biome's, scaled. Black at night, exactly.
 [[nodiscard]] u32 sky_colour(u32 biome_sky, f32 darken) noexcept;
 
+/// How far the fog colour is pulled towards the sky's, for a render distance
+/// in chunks: 1 - (0.25 + 0.75 * chunks / 32)^0.25. At 8 chunks 0.1867, which
+/// the real client's fog colour at noon over plains reproduces on all three
+/// channels (0.7002 0.8112 1.0 from 0xC0D8FF towards 0x78A7FF).
+[[nodiscard]] f32 fog_sky_blend(f32 render_distance_chunks) noexcept;
+
+/// The fog colour a frame clears to and fades into: fog_colour(), then pulled
+/// towards the sky by fog_sky_blend().
+[[nodiscard]] u32 blend_fog_towards_sky(u32 fog, u32 sky, f32 render_distance_chunks) noexcept;
+
+/// Where the terrain fog begins, for a render distance in blocks: the distance
+/// less a tenth of it, the tenth held between 4 and 64. The real client at 128
+/// blocks prints 115.2 to 128, cylindrical — not the 92 % this used to take.
+[[nodiscard]] f32 terrain_fog_start(f32 render_distance_blocks) noexcept;
+
 /// The sky disc: a flat fan of eight triangles `height` blocks above the eye,
 /// 512 blocks across the radius, its rim vertices every 45 degrees starting
 /// from -X. Nine floats a triangle, positions relative to the eye. A negative

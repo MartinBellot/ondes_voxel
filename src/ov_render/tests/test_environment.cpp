@@ -7,6 +7,45 @@ using namespace ov;
 using namespace ov::render;
 using Catch::Approx;
 
+TEST_CASE("the noon lightmap is the real client's, texel for texel", "[render][environment]") {
+    // Dumped from the running 1.20.1 client (aolab frame: noon, brightness
+    // 0.5, blockLightRedFlicker 0.009150363): rows 15 and 14, block light
+    // across. Every one of the 256 texels of both noon frames reproduces.
+    Lightmap lightmap;
+    lightmap.update(1.0F, kOverworldAmbientLight, 0.5F, 0.009150363F);
+    const auto at = [&](u32 block, u32 sky) {
+        const auto  pixels = lightmap.pixels();
+        const usize index  = (static_cast<usize>(sky) * Lightmap::kSize + block) * 4;
+        return std::array<u32, 3>{pixels[index], pixels[index + 1], pixels[index + 2]};
+    };
+    CHECK(at(0, 15) == std::array<u32, 3>{251, 251, 251});
+    CHECK(at(1, 15) == std::array<u32, 3>{252, 252, 252});
+    CHECK(at(15, 15) == std::array<u32, 3>{252, 252, 252});
+    CHECK(at(0, 14) == std::array<u32, 3>{224, 224, 224});
+    CHECK(at(1, 14) == std::array<u32, 3>{228, 226, 226});
+    CHECK(at(4, 14) == std::array<u32, 3>{239, 235, 231});
+    CHECK(at(7, 14) == std::array<u32, 3>{252, 248, 239});
+    CHECK(at(9, 14) == std::array<u32, 3>{252, 252, 249});
+}
+
+TEST_CASE("the fog is pulled towards the sky as the real client's is", "[render][environment]") {
+    // The oracle's first frame (plains, noon, 8 chunks): fogColour 0.7002226
+    // 0.8111809 1.0 — plains fog 0xC0D8FF a fraction 0.1867 of the way to its
+    // sky 0x78A7FF. The clear colour it becomes is that, rounded to bytes.
+    CHECK(fog_sky_blend(8.0F) == Approx(0.18669F).margin(1e-4));
+    CHECK(blend_fog_towards_sky(0xC0D8FF, 0x78A7FF, 8.0F) == 0xB3CFFF);
+    // At 32 chunks the pull is nothing: the formula's base reaches 1.
+    CHECK(fog_sky_blend(32.0F) == Approx(0.0F).margin(1e-6));
+}
+
+TEST_CASE("the terrain fog starts a tenth short of the render distance", "[render][environment]") {
+    // The oracle: FOG_TERRAIN 115.2 128.0 at 8 chunks.
+    CHECK(terrain_fog_start(128.0F) == Approx(115.2F));
+    // The tenth is held between 4 and 64 blocks.
+    CHECK(terrain_fog_start(32.0F) == Approx(28.0F));
+    CHECK(terrain_fog_start(1024.0F) == Approx(960.0F));
+}
+
 TEST_CASE("the sky disc is a fan of eight triangles from the zenith", "[render][environment]") {
     const auto disc = sky_disc(kSkyDiscHeight);
     REQUIRE(disc.size() == 8 * 9);

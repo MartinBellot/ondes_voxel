@@ -134,7 +134,11 @@ public final class RenderParityOracle {
                     if (!m.getName().equals(obf) || m.getParameterCount() != argTypes.length) continue;
                     boolean ok = true;
                     for (int i = 0; i < argTypes.length && ok; i++) {
-                        ok = m.getParameterTypes()[i].getName().equals(obfOf(argTypes[i]));
+                        // getTypeName, not getName: an array's name is "[F",
+                        // its type name "float[]" as the mappings write it.
+                        // The first run lost AmbientOcclusionFace.calculate
+                        // (a float[] parameter) to exactly that.
+                        ok = m.getParameterTypes()[i].getTypeName().equals(obfOf(argTypes[i]));
                     }
                     if (ok) {
                         m.setAccessible(true);
@@ -508,13 +512,22 @@ public final class RenderParityOracle {
             line = line.trim();
             if (line.isEmpty() || line.startsWith("#")) continue;
             String[] p = line.split("\\s+");
-            switch (p[0]) {
-                case "cmd" -> send(line.substring(4).trim());
-                case "wait" -> pause(Long.parseLong(p[1]));
-                case "scene" -> scene(p);
-                case "sweep" -> sweep();
-                case "ao" -> ao(p);
-                default -> out.println("unknown directive: " + line);
+            // One directive failing is logged and skipped, never fatal: the
+            // first run died on its first `ao` line and lost eleven scenes and
+            // the sweep with it, and its place in the lock queue.
+            try {
+                switch (p[0]) {
+                    case "cmd" -> send(line.substring(4).trim());
+                    case "wait" -> pause(Long.parseLong(p[1]));
+                    case "scene" -> scene(p);
+                    case "sweep" -> sweep();
+                    case "ao" -> ao(p);
+                    default -> out.println("unknown directive: " + line);
+                }
+            } catch (Throwable e) {
+                out.println("failed: " + line + " -> " + e);
+                Throwable cause = e.getCause();
+                if (cause != null) out.println("   cause: " + cause);
             }
         }
         out.println("done");
