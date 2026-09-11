@@ -274,7 +274,8 @@ def run_perf(binaries, rounds, radius):
     table = {b: [] for b in binaries}
     for r in range(rounds):
         for binary in binaries:
-            command = [binary, "--world=" + world, "--at=48046,26", "--radius=%d" % radius,
+            # --at is in chunks: 48046, 26 is chunk (3002, 1).
+            command = [binary, "--world=" + world, "--at=3002,1", "--radius=%d" % radius,
                        "--camera=48046.5,69.62,26.5,-90,15", "--time=6000", "--no-daylight-cycle",
                        "--no-vsync", "--no-sound", "--frames=900", "--width=%d" % WIDTH,
                        "--height=%d" % HEIGHT]

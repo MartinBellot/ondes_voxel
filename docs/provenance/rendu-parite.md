@@ -170,7 +170,29 @@ couche retombe sur l'ordre du maillage pour l'image, sans rien perdre.
 
 ## 3. Chiffres
 
-*(à compléter par la mesure — voir la section 6 pour le protocole)*
+### 3.1 Le coût : p99 de l'image à 12 chunks, sans vsync
+
+Critère M5 (p99 < 20 ms). Visualiseur hors ligne sur la copie du monde, caméra
+fixe au-dessus de la plaine, midi, 900 images (les premières jetées comme
+échauffement), binaires debug, **A B A B** pour que la dérive d'une machine
+partagée avec d'autres agents touche les deux pareil
+(`measure_render_parity.py perf`). 2164 sections, 1 840 567 quads.
+
+| binaire | CPU p50 | CPU p99 | CPU max | GPU p50 | GPU p99 |
+|---|---:|---:|---:|---:|---:|
+| avant, tour 1 | 2,26 | 15,82 | 22,17 | 2,22 | 5,76 |
+| après, tour 1 | 2,40 | 16,02 | 17,27 | 2,34 | 6,67 |
+| avant, tour 2 | 2,28 | 16,02 | 41,76 | 2,22 | 5,11 |
+| après, tour 2 | 2,43 | 9,14 | 15,70 | 2,38 | 4,07 |
+
+(ms). Le p99 reste sous 20 ms ; le coût propre est d'environ **+0,15 ms de
+GPU médian** (la passe de présentation plein écran et le disque de ciel) et
++0,15 ms de CPU médian. Les p99 d'un tour à l'autre varient plus que l'écart
+entre binaires : c'est la charge des autres agents, pas le rendu.
+
+### 3.2 Parité par scène
+
+*(à compléter par la capture vanilla — voir la section 6 pour le protocole)*
 
 ---
 
@@ -214,7 +236,22 @@ couche retombe sur l'ordre du maillage pour l'image, sans rien perdre.
 
 ## 5. Ce qui reste, nommé
 
-*(à compléter)*
+Chaque ligne est un écart connu, pas encore corrigé ; son chiffre est en
+section 3 quand la mesure le donne.
+
+| écart | où il se voit | pourquoi il reste |
+|---|---|---|
+| Soleil, lune (phases), étoiles | `sky_noon`, `sky_midnight`, `plains_night` | le mécanisme de dessin (mélange additif) est prêt dans `ov_rhi` ; la taille et la position se prennent sur les captures vanilla |
+| Bande de l'aube et du crépuscule | `sunrise`, `dusk_west`, `plains_sunset` | la couleur est donnée par l'oracle (`getSunriseColor`) ; la forme de l'éventail reste à mesurer |
+| Nuages | toute scène de jour | hauteur donnée par l'oracle (`cloudHeight`), forme « fancy » à mesurer |
+| Couleur du brouillard | horizon de toute scène extérieure | le jeu tire le brouillard vers le ciel selon la distance de rendu et vers le soleil levant selon la direction de vue ; notre formule n'a que le facteur du jour |
+| Deux constantes du lightmap | tout ce qui n'est pas en plein jour | le balayage de l'oracle (12 heures × 3 luminosités, 9216 texels) est ce qui les fixe — `.scratch/fit_lightmap.py` |
+| Brouillard sous l'eau | `underwater` | les distances dépendent du temps passé sous l'eau ; seule la couleur est mesurée |
+| Main et objet tenus, particules, block entities (coffres, panneaux, lits) | — | non commencés ; hors du temps de cette branche |
+| Marais en plaques | non mesurable ici (aucun marais dans les régions) | le bruit du modificateur `swamp` n'est documenté nulle part que ce projet puisse lire |
+| Filtrage entre niveaux de mip | terrain lointain | fait en linéaire (atlas sRGB) et non sur les octets |
+| Phase des animations | eau, lave | l'horloge part au chargement des ressources, des deux côtés |
+| Salle fermée par `/fill` | `cave` | notre serveur ne rallume pas ; écart du serveur, pas du rendu (`cave_deep` l'évite) |
 
 ---
 
