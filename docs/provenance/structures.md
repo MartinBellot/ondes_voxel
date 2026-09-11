@@ -323,10 +323,9 @@ Ils sont cités comme **absence de dégât collatéral**, pas comme preuve. La p
 
 ## 10. Ce qui n'est pas fait, nommé
 
-* **Aucune géométrie.** Pas un bloc de structure n'est posé. Une structure complète, bloc pour
-  bloc, était prévue dans le même passage ; elle n'est pas là. Le socle mesuré a été préféré à une
-  géométrie plausible, parce qu'une géométrie reconstruite de mémoire au lieu d'être spécifiée
-  n'aurait pas d'oracle et n'aurait donc pas de chiffre.
+* ~~**Aucune géométrie.**~~ *Levé en partie par les §§ 12 à 17 : les structures à gabarit fixe
+  (igloo, épaves, ruines océaniques, portails en ruine, trésor enfoui) sont posées bloc par bloc et
+  mesurées. Le reste de cette liste est inchangé.*
 * **Le système jigsaw** — pools de gabarits, ancrages, profondeur, résolution des connexions —
   n'est pas commencé. C'est aussi ce qui bloque le § 5.
 * **Les gabarits `.nbt`** (1 010 fichiers dans `data/minecraft/structures/` du jar serveur) ne sont
@@ -358,3 +357,377 @@ Ils sont cités comme **absence de dégât collatéral**, pas comme preuve. La p
 Aucune source de code tiers. Les tables de placement viennent des JSON du pack ; la sémantique des
 réducteurs et l'ancre du filtre de biome ont été **fixées par la mesure** contre les mondes de
 référence, ce qui est écrit ci-dessus étape par étape.
+
+---
+
+# Deuxième partie — les structures à gabarit, posées bloc par bloc
+
+Le placement dit *où*. Cette partie dit *de quoi c'est fait*, pour les structures dont la géométrie
+est un gabarit fixe ou une poignée de pièces : **igloo, épaves (en mer et échouées), ruines
+océaniques (froides et chaudes), portails en ruine (les sept variantes), trésor enfoui.** Le jigsaw
+(villages, avant-postes, bastions, cités antiques, ruines de sentier) est un autre chantier et n'est
+pas touché ; le donjon est une *feature* et appartient à l'agent des features.
+
+Résultat court :
+
+> **Les pièces que le jeu a choisies, posées par notre code, redonnent les blocs du jeu à 100,000 %
+> pour les épaves (1 236/1 236 et 383/383) et l'igloo (456/456), 99,45 % pour le second igloo, et
+> les graines de butin des coffres au bit près : sur 28 coffres où le jeu a la même table que nous,
+> 27 ont la même graine de 64 bits.** Les pièces que nous tirons de
+> la graine seule sont celles du jeu dans **100 départs sur 100** (gabarit, rotation, miroir,
+> origine, intégrité, réglages du portail). Un témoin — la même pièce tournée d'un quart de tour —
+> tombe à 2,8 % sur les épaves. Dans un monde **entièrement généré par nous**, l'igloo du monde de
+> référence sort au bloc près (546/546) ; ce qui manque ailleurs dans notre monde est la
+> **hauteur** de pose (ruines océaniques, portails), pas la géométrie.
+
+## 12. Le lecteur de gabarits, et ce que la pose fait d'un bloc
+
+### 12.1 Lus à l'exécution, jamais commités
+
+Les 1 010 gabarits de 1.20.1 vivent dans `data/minecraft/structures/` **du jar serveur intérieur** :
+`tools/vanilla/server.jar` est le *bundler*, qui porte le vrai serveur sous
+`META-INF/versions/1.20.1/server-1.20.1.jar`. `TemplateLibrary::open` ouvre l'un dans l'autre en
+mémoire (le lecteur ZIP d'`ov_io` accepte un tampon), lit les familles demandées (84 gabarits :
+`igloo/`, `shipwreck/`, `underwater_ruin/`, `ruined_portal/`), les décompresse (gzip) et les parse
+(NBT). Rien n'est écrit sur le disque, rien n'entre dans le dépôt ; `check_assets.py` passe. Le
+chargement est **eager** et la bibliothèque immuable ensuite : un cache paresseux derrière une
+interface `const` est une course de données au premier second thread (piège 17).
+
+Le format, tel que le fichier le porte : `size`, `palette` **ou** `palettes` (une liste de palettes
+de même longueur — les huit essences de bois des épaves), `blocks` (`state` indexe la palette,
+`pos`, `nbt` facultatif), `entities`. Un bloc de palette est résolu **propriété par propriété à
+partir de l'état par défaut** (piège 8) ; un nom inconnu refuse le gabarit en le nommant.
+
+### 12.2 La transformation — et le pivot, qui est celui de la pièce
+
+Une position locale est **mirrorée d'abord** (`LEFT_RIGHT` nie z, `FRONT_BACK` nie x), **tournée
+ensuite autour du pivot**, puis décalée par l'origine du gabarit (`TPX/TPY/TPZ` du NBT du jeu). Le
+pivot n'est pas une propriété du gabarit mais de la pièce, et il a été **lu dans les boîtes que le
+jeu a stockées** : pour chaque pièce, la boîte `BB` et l'origine `TP` fixent `px − pz` et `px + pz`.
+
+| pièce | pivot | établi par |
+|---|---|---|
+| épave | (4, 0, 15) | la boîte de l'épave CCW90 du chunk (−6560, 442) |
+| portail en ruine | (taille x / 2, 0, taille z / 2) | les deux `portal_4`, dont un en miroir |
+| igloo `top` / `middle` / `bottom` | (3, 5, 5) / (1, 3, 1) / (3, 6, 7) | les deux igloos |
+| ruine océanique | (0, 0, 0) | la ruine chaude CCW90 |
+
+Les trois pivots de l'igloo **s'empilent sur une seule colonne** (origine + pivot = coin du chunk +
+(3, ·, 5) pour les trois pièces). C'est pour ça que leurs décalages ne tournent pas avec l'igloo : la
+rotation autour d'un pivot laisse le pivot en place. Seule la rotation CLOCKWISE_180 est observée
+pour l'igloo (deux sur deux) ; les trois autres suivent de cette propriété, elles ne sont pas
+mesurées.
+
+Les états tournent avec le bloc : `facing`, `axis`, les seize pas de `rotation` (miroir
+`FRONT_BACK` : 16 − r ; `LEFT_RIGHT` : 8 − r), les quatre côtés (clôtures, vitres, vignes,
+redstone), les formes de rail, la charnière d'une porte et la moitié d'un coffre au miroir — et
+**pas** le `type` d'une dalle, qui s'appelle pareil et ne veut pas dire la même chose.
+
+### 12.3 Trois tirages positionnels, mesurés
+
+Chaque tirage de la couche gabarit sort d'un `java.util.Random` semé par `Mth.getSeed` d'une
+**position monde** — jamais du chunk, sans quoi un même bloc changerait selon le chunk qui le pose.
+Le produit `x * 3129871` est une multiplication **entière** qui déborde à 32 bits avant d'être
+élargie ; celui de z est long. Le test unitaire fige cette asymétrie.
+
+| tirage | clé | mesure |
+|---|---|---|
+| palette (épaves) | l'**origine** du gabarit, `nextInt(nombre de palettes)` | épaves : 2 blocs sur 385 → 383/385 dès cette règle ; avant, palette 0 : 245/383 |
+| `block_rot` (intégrité) | la position du bloc, `nextFloat() <= intégrité` | ruines chaudes : **177 gardés par nous, 177 gardés par le jeu**, 0 gardé à tort |
+| `rule` / `block_age` | la position du bloc, un aléa par bloc et par processeur | portails : magma au-dessus du fond du gabarit, 223/226 (voir § 15) |
+
+Conséquence directe, et vérifiée : les trois couches d'une ruine froide (`brick` 0,8, `cracked`
+0,7, `mossy` 0,5) posées à la même origine tirent **le même nombre** en chaque position. Ce que la
+couche moussue garde, les deux autres le gardent aussi ; la ruine se lit comme « moussu si le
+tirage ≤ 0,5, fissuré si ≤ 0,7, brique si ≤ 0,8 (0,9 pour une grande), rien sinon ».
+
+### 12.4 Les processeurs
+
+`ProcessorList::parse_json` lit le corps `{"processors": [...]}` d'un `worldgen/processor_list`.
+Implémentés : `block_rot`, `block_ignore`, `rule` (tests `always_true`, `block_match`,
+`blockstate_match`, `tag_match`, `random_block_match`, `random_blockstate_match` ; modificateurs
+`passthrough` et `append_loot`), `protected_blocks`, `gravity`, `jigsaw_replacement`, `nop`,
+`block_age`. **Refusés et nommés** : `capped` (l'archéologie, § 16), `blackstone_replace`,
+`lava_submerged_block`, les prédicats de position autres que `always_true`, et tout type inconnu —
+un processeur ignoré en silence poserait une structure crédible et fausse.
+
+Un test `random_block_match` court-circuite : **pas de tirage** quand le bloc ne correspond pas
+(c'est le `&&` de Java, et c'est ce que la mesure du magma demande).
+
+Les listes que le jeu construit en code (l'intégrité des ruines, le vieillissement des portails)
+passent par les mêmes classes ; les règles du portail sont écrites **comme leur jumeau JSON** et
+parsées par le même code, pour qu'aucune pièce n'épelle une règle à la main.
+
+### 12.5 Ce que la pose fait après coup : la mise à jour de forme
+
+Les gabarits stockent les formes telles qu'au jour de la sauvegarde : une épave est pleine
+d'escaliers `outer_right` et de clôtures non reliées que le jeu redresse et relie à la pose.
+Mesuré sur les épaves : **245/383 sans la mise à jour, 362/383 avec les escaliers seuls,
+379/383 avec les clôtures, 383/383 avec la moitié basse des portes** (qui recopie la moitié
+haute). Deux pièges dans cette mise à jour :
+
+* **L'ordre compte.** Qu'une clôture se joigne à un escalier dépend de la *forme* de l'escalier (un
+  côté est plein ou non), jamais l'inverse. Escaliers et portes d'abord, clôtures ensuite — sinon le
+  résultat dépend du dernier chunk posé. Trouvé par le test « posé chunk par chunk = posé d'un
+  coup », qui donnait 382/385 dans un ordre et 385/385 dans l'autre.
+* **Un voisin d'un autre chunk n'existe pas encore** quand le premier chunk pose sa moitié. Le jeu
+  y revient au post-traitement ; nous, chaque fois qu'un chunk du voisinage 3×3 est posé (§ 14).
+
+### 12.6 Les coffres et leur graine de butin — un oracle au bit près
+
+Un coffre de structure non ouvert porte `LootTable` et `LootTableSeed` : 64 bits, qui ne tombent
+pas juste par hasard. Trois faits, tous fixés par la mesure :
+
+1. **La graine vient de l'aléa du chunk**, `setFeatureSeed(décoration, index, étape)`, pas de la
+   position.
+2. **Tout conteneur porté par le gabarit tire un `nextLong` en étant posé**, qu'il ait une table ou
+   non. Les coffres vides de l'épave (`Items: []`) décalent donc la graine du coffre que le marqueur
+   de données pose ensuite : sans ce tirage, 0 épave sur 7 ; avec, 6 sur 7.
+3. **L'index est le rang de la structure, par ordre alphabétique, parmi toutes les structures de son
+   étape** (toutes dimensions confondues). Cherché à l'aveugle (`--find-index`, index 0 à 47), puis
+   reconnu :
+
+| structure | étape | index trouvé | rang alphabétique |
+|---|---|---:|---:|
+| buried_treasure | underground_structures | 0 | 0 |
+| igloo | surface_structures | 3 | 3 (après bastion_remnant, desert_pyramid, end_city) |
+| ocean_ruin_cold / warm | surface_structures | 7 / 8 | 7 / 8 |
+| ruined_portal / _mountain | surface_structures | 10 / 13 | 10 / 13 |
+| shipwreck | surface_structures | 17 | 17 |
+
+Le registre des structures est donc dans l'ordre des noms, et c'est ce que
+`structure_step_index()` calcule. Une épave échouée tire en plus un `nextInt(3)` **avant** de
+poser, dans chaque chunk qu'elle traverse (sa hauteur) : sans lui, 0/2 ; avec, 2/2.
+
+## 13. Les pièces, depuis la graine seule — 100 départs sur 100
+
+`StructureBuilder::generate` tire les pièces d'un départ d'un `WorldgenRandom` à cœur legacy semé
+par `setLargeFeatureSeed(graine, chunkX, chunkZ)`. **L'oracle n'a pas besoin de blocs** : un chunk
+que le jeu a seulement mené à `structure_starts` a déjà écrit ses pièces dans `structures.starts`.
+Les trois mondes de référence en portent **100** dans le périmètre (dont 19 seulement dans des
+chunks `full`) — c'est l'échantillon. Aucun n'est dans `run/reference-987654321`.
+
+| structure | ordre des tirages retenu | départs | exacts |
+|---|---|---:|---:|
+| igloo | rotation `nextInt(4)` ; sous-sol si `nextDouble() < 0,5` ; profondeur `nextInt(8) + 4`, **segments = profondeur − 1** | 2 | 2 |
+| shipwreck | rotation ; gabarit `nextInt(20)` | 27 | 27 |
+| shipwreck_beached | rotation ; gabarit `nextInt(11)` | 2 | 2 |
+| ocean_ruin_cold / warm | rotation ; grande si `nextFloat() <= 0,3` ; gabarit `nextInt(4 ou 8)` ; amas si grande et `nextFloat() <= 0,9` | 23 / 11 | 23 / 11 |
+| ruined_portal (×7) | réglage pondéré (tiré **seulement s'il y en a plusieurs**) ; poche d'air (tirée seulement si 0 < p < 1) ; géant si `nextFloat() < 0,05` ; gabarit `nextInt(3 ou 10)` ; rotation ; miroir `FRONT_BACK` si `nextFloat() >= 0,5` | 25 | 25 |
+| buried_treasure | aucun tirage : coin du chunk + (9, ·, 9) | 10 | 10 |
+
+L'ordre des listes de gabarits n'est dans aucun fichier : il a été **lu à l'envers**, index tiré
+contre gabarit stocké. Pour les 20 épaves en mer, 14 index observés suffisent à reconnaître un motif
+régulier (entier, avant, arrière × à l'endroit, sur le flanc, à l'envers, puis les mêmes dégradés) ;
+**les 6 index restants (6, 9, 15, 16, 17, 18) sont déduits du motif, pas observés.** La liste des
+11 épaves échouées est déduite de la même façon ; un seul index y est observé (le dernier, 10). Les
+listes de ruines sont l'ordre des numéros (grandes froides 1, 2, 3, 8 ; grandes chaudes 4, 5, 6, 7).
+Pour les portails, les 25 tirages rendent les six champs (réglage, poche d'air, géant, gabarit,
+rotation, miroir) exacts — mais aucun des 25 n'est géant : la branche géante n'est pas exercée.
+
+Deux choses restent absentes et **sont nommées dans le départ** (`StructureStart::incomplete`) plutôt
+que cachées : l'**amas de petites ruines** autour d'une grande ruine (13 départs sur 34 ; la grande
+ruine est bien posée, pas les petites), et, pour les portails, la **recherche de hauteur**, le
+**test de biome froid** et l'**étalement de netherrack** (§ 15).
+
+## 14. La pose dans le pipeline : `StructureStage`
+
+`ChunkPipeline::set_structure_stage` attache une `StructureStage` ; l'étage `features` l'appelle
+**avant** la décoration du chunk. Le bloc ajouté à `pipeline.cpp` est contigu et marqué
+`// ── structures ──` ; `chunk_generator.cpp` n'est pas touché, parce que c'est `pipeline.cpp` qui
+possède le voisinage 3×3 — le générateur ne voit qu'un chunk.
+
+* Le chunk décoré collecte les départs dont la boîte le traverse, sur un rayon de 3 chunks
+  (`kReach` : une épave fait au plus 28 blocs et part du coin de son chunk). Les départs sont
+  construits une fois par chunk de départ et gardés.
+* Chaque pièce écrit **la part qui tombe dans la colonne du chunk décoré**, et seulement elle : c'est
+  ce que fait le jeu, et c'est ce qui rend le résultat indépendant de l'ordre des chunks. Les lectures
+  (terrain, voisins, eau) couvrent le 3×3 ; au-delà, le `StructureWorldSampler` répond.
+* Un aléa par structure et par chunk, partagé par ses départs et ses pièces dans l'ordre (§ 12.6) ;
+  les structures dans l'ordre (étape, rang).
+* Après chaque chunk, la mise à jour de forme est rejouée sur les positions enregistrées de tout le
+  3×3 : c'est notre post-traitement.
+* Tout ce qui n'est pas construit est **compté par raison** dans `StructureStageStats` : un départ
+  refusé (`desert_pyramid is not built here`, `jigsaw is not built here`…), un départ incomplet.
+
+Test : une épave dont la boîte traverse quatre chunks, posée chunk par chunk dans deux ordres
+opposés, redonne **exactement** les 385 blocs de la même épave posée d'un coup.
+
+**Écart d'ordre nommé.** Le jeu pose les structures des étapes 3 et 4 *après* les features des
+étapes 0 à 2 (lacs, géodes, icebergs) ; ici elles passent avant toute la décoration, parce que
+l'interface de `Decorator` ne découpe pas par étape et que ce fichier appartient à un autre
+chantier. Un iceberg qui chevauche une ruine océanique est donc posé dans l'autre ordre.
+
+**Les hauteurs** se règlent à la première pose d'une pièce, sur le terrain du voisinage, et restent :
+igloo — `WORLD_SURFACE_WG` à la colonne des pivots, moins 91 ; épave — la moyenne
+d'`OCEAN_FLOOR_WG` sur l'empreinte **non tournée** partant de l'origine (échouée : le minimum de
+`WORLD_SURFACE_WG`, moins la moitié de la hauteur, moins le tirage de § 12.6) ; ruine — `OCEAN_FLOOR_WG`
+à l'origine. Ce sont des **hypothèses**, dont le § 17 donne la mesure sur notre propre terrain.
+
+## 15. Les portails en ruine
+
+Le gabarit, le miroir, la rotation, le vieillissement et les règles sont en place. Mesuré (niveau A,
+pièces du jeu) : **676/698, 200/214 et 193/206** blocs identiques pour les trois portails complets
+des mondes de référence, avec le coffre et sa graine exacts pour deux d'entre eux.
+
+* **L'air du gabarit n'est pas posé sans poche d'air** : la mer reste dans un portail océanique
+  (536 blocs d'eau à tort avant cette règle), les feuilles dans un portail de forêt.
+* **Le magma.** Le 7 % du netherrack se tire sur le **premier** tirage de l'aléa positionnel
+  (autres hypothèses mesurées : 2e, 3e, 4e tirage, clé locale au lieu de monde — toutes pires). Au
+  dessus de la couche du fond, 223 positions sur 226 concordent ; **dans la couche du fond, 35
+  désaccords sur 43** : c'est l'**étalement de netherrack** que la pièce pose sous et autour
+  d'elle, qui réécrit cette couche avec ses propres tirages, et qui n'est pas implémenté.
+* **Le vieillissement** (`block_age`) : pierre taillée → fissurée / escalier au hasard / moussue,
+  dalles, escaliers et murets → moussus, obsidienne → pleureuse à 15 %. L'ordre des tirages retenu
+  (0,5 ; les deux escaliers au hasard tirés *avant* le choix ; mousse ; élément) donne les
+  concordances ci-dessus ; la branche « escalier du gabarit » n'est pas exercée par les mondes.
+* **Pas faits, nommés** : la recherche de hauteur (`findSuitableY` et ses six placements), le test
+  « froid » (température du biome), l'étalement de netherrack, les vignes et la végétation des
+  portails de jungle, `lava_submerged_block`, le remplacement par la pierre noire du Nether. Le
+  portail océanique a sa table de butin juste et **sa graine fausse** (0/1) : un tirage de plus ou de
+  moins avant le coffre, non trouvé.
+
+## 16. Niveau A — les pièces du jeu, notre code : le tableau
+
+`tools/ov_structblocks --level=a` : chaque départ d'un chunk `full`, pièces lues dans le NBT du jeu,
+posées **chunk par chunk** par `StructureBuilder::place`, comparées **état complet** (bloc et
+propriétés) au monde de référence. Colonne « coffres » : coffres posés / table juste / graine
+juste.
+
+`run/reference-1234567890` :
+
+| structure | départs | pièces | comparés | identiques | % | coffres |
+|---|---:|---:|---:|---:|---:|---|
+| shipwreck | 3 | 3 | 1 236 | 1 236 | **100,000** | 7 / 6 / 6 |
+| shipwreck_beached | 1 | 1 | 383 | 383 | **100,000** | 2 / 2 / 2 |
+| igloo | 1 | 12 | 546 | 543 | 99,451 | 1 / 1 / 1 |
+| ruined_portal | 2 | 2 | 698 | 676 | 96,848 | 2 / 2 / 2 |
+| ruined_portal_mountain | 1 | 1 | 214 | 200 | 93,458 | 1 / 1 / 1 |
+| ruined_portal_ocean | 1 | 1 | 206 | 193 | 93,689 | 1 / 1 / 0 |
+| ocean_ruin_cold | 4 | 39 | 1 500 | 1 382 | 92,133 | 14 / 12 / 12 |
+| ocean_ruin_warm | 2 | 2 | 122 | 112 | 91,803 | 2 / 2 / 2 |
+| buried_treasure | 1 | 1 | 1 | 1 | 100,000 | 1 / 1 / 1 |
+
+`run/struct-locate-1234567890` : igloo **456/456**, épave échouée **383/383**, ruine chaude 56/61.
+`run/reference-987654321` ne contient aucun départ de ces types dans un chunk `full`.
+
+**Le témoin** (`--witness`, chaque pièce un quart de tour à côté, même origine) : épaves 2,845 %
+et 2,872 %, ruines 10,8 % et 16,5 %, portails 1 à 52 %, igloo 47 % — et **aucune table ni graine de
+coffre juste sur les 30 coffres de gabarit** (le 31e, celui du trésor enfoui, n'a pas de gabarit à
+tourner et passe). Le trésor enfoui passe le témoin (un bloc, pas de gabarit) : son 1/1 ne prouve que la
+position et l'orientation du coffre.
+
+Les écarts restants, tous nommés :
+
+| écart | blocs | cause |
+|---|---:|---|
+| gravier / sable → gravier / sable **suspect** (ruines) | 90 | le processeur `capped` d'archéologie (1.20), refusé et nommé : il choisit N blocs parmi les candidats avec un aléa qui n'est pas reproduit |
+| gravier → eau (ruines froides) | 36 | le gravier **tombe** : posé sur de l'eau, il est planifié et chute au premier tick du chunk |
+| netherrack ↔ magma, couche du fond (portails) | 35 | l'étalement de netherrack, non implémenté (§ 15) |
+| pierre → granite (igloo) | 3 | un amas de granite de l'étape des minerais, posé après |
+| herbes marines (ruines) | 2 | la végétation, posée après |
+| pierre → gravier, pierre taillée → netherrack (portail de montagne) | 6 | l'étalement et la gravité, non implémentés |
+
+**Précaution de mesure.** Le niveau A lit le monde *fini* comme « le monde avant la structure » là
+où la pose le consulte (eau à garder, bloc protégé). Deux cas en dépendent, et sont traités
+explicitement : un coffre du monde fini est lu comme de l'eau s'il est gorgé d'eau, comme de l'air
+sinon — sans quoi `protected_blocks` refuse de poser le coffre du portail parce que le coffre du jeu
+est déjà là.
+
+## 17. Niveau C — notre monde
+
+`tools/ov_structblocks --level=c` : le pipeline complet (bruit, biomes, surface, carvers, **étage
+des structures**, features) génère les chunks que couvre chaque départ `full` du jeu ; on lit, dans
+**notre** monde, les positions dont la structure du jeu est faite (celles qu'écrivent ses propres
+pièces) et on compare aux blocs du jeu. C'est le seul niveau dont le chiffre contient notre
+terrain : une pièce se pose sur le sol qu'elle trouve.
+
+`run/reference-1234567890` (graine 1234567890) :
+
+| structure | départs | trouvés | hauteurs exactes | comparés | identiques | % |
+|---|---:|---:|---:|---:|---:|---:|
+| igloo | 1 | 1 | **12/12** | 546 | **546** | **100,000** |
+| shipwreck | 3 | 3 | 2/3 | 1 236 | 800 | 64,725 |
+| shipwreck_beached | 1 | 1 | **1/1** | 383 | 360 | 93,995 |
+| ocean_ruin_cold | 4 | 4 | 3/12 | 1 500 | 224 | 14,933 |
+| ocean_ruin_warm | 2 | 2 | 0/2 | 122 | 25 | 20,492 |
+| ruined_portal (×3 variantes) | 4 | 4 | 0/4 | 1 118 | 0 | 0,000 |
+| buried_treasure | 1 | 1 | 0/1 | 1 | 0 | 0,000 |
+
+`run/struct-locate-1234567890` : igloo trouvé, **ses six pièces un bloc trop bas** (y 62 contre 63) :
+184/456 = 40,351 % ; ruine chaude un bloc trop haute (50 contre 49) : 25/61 ; l'épave échouée (le
+même départ, chunk (9, 5), que dans l'autre monde : même graine) 360/383.
+
+L'épave échouée est la mesure du tirage de § 12.6 : **sans le `nextInt(3)` retranché à sa
+hauteur, elle se pose un bloc trop haut, 65/383 ; avec, à la bonne hauteur, 360/383.** Les 23 blocs
+restants sont tous des escaliers, dalles et trappes dont seul `waterlogged` diffère : notre eau ne
+monte pas exactement là où monte celle du jeu sur cette plage.
+
+**Ce que ce tableau établit.** Là où la hauteur tombe juste, la chaîne entière — décision du
+placement sur notre bruit, pièces tirées de la graine, pose chunk par chunk dans le pipeline, formes,
+coffres — rend **la structure du jeu au bloc près dans un monde que nous avons généré** : l'igloo de
+`reference-1234567890`, 546 blocs sur 546, ses douze pièces à la bonne hauteur ; l'épave échouée,
+360/383, l'écart étant de l'eau et non de la structure. Tout le reste de
+l'écart du niveau C est une question de **hauteur**, pas de géométrie : le niveau A a déjà montré
+la géométrie juste.
+
+**Ce qu'il n'établit pas, nommé :**
+
+* **Les hauteurs des ruines océaniques sont fausses.** `OCEAN_FLOOR_WG` à l'origine donne 3 pièces
+  justes sur 12 pour les froides, 0 sur 3 pour les chaudes, et jusqu'à 20 blocs d'écart (la grande
+  ruine du chunk (3249, −4250) : 51 chez nous, 31 dans le jeu). La règle du jeu n'est pas trouvée ;
+  ce n'est probablement pas notre terrain seul (20 blocs), et c'est l'hypothèse de § 14 qui tombe.
+* **Un bloc d'écart sur l'igloo de `struct-locate` et sur trois des cinq autres pièces à hauteur
+  réglable** : notre terrain un bloc plus bas ou plus haut que celui du jeu à la colonne lue, ou une
+  règle décalée d'un bloc — les deux ne sont pas départagés, faute du terrain du jeu *avant* la
+  structure (le monde de référence n'a que le terrain d'après). L'igloo de `reference-1234567890`,
+  juste au bloc, dit que la règle de l'igloo n'est pas décalée.
+* **Les portails (0 %) et le trésor (0 %)** ne règlent pas leur hauteur (§ 15, § 18) : ils sont
+  posés à la hauteur de départ, et le tableau le montre au lieu de l'arrondir.
+
+Coût (build debug, sous la charge de huit autres agents) : 16 départs, 18 min pour le monde de
+référence ; la mesure du coût de l'étage seul n'est pas faite.
+
+## 18. Ce qui n'est pas fait, nommé
+
+* **Temple du désert, temple de la jungle, cabane de sorcière** : le jeu les construit **en code**,
+  pas depuis un gabarit. Les reconstruire bloc par bloc de mémoire serait traduire du code — interdit
+  ici ; les spécifier depuis la documentation est un chantier à part. Refusés par nom
+  (`desert_pyramid is not built here`).
+* **Fossiles et puits du désert** : ce sont des *features* (`fossil_upper`, `fossil_lower`,
+  `desert_well`), pas des structures ; ils appartiennent à l'agent des features. Les gabarits
+  `fossil/` sont lisibles par la même bibliothèque le jour où la feature les demande.
+* **Fossiles du Nether** : structure d'une dimension que ce générateur ne produit pas.
+* **L'amas de petites ruines océaniques** (13 départs sur 34 le demandent) : les positions observées
+  suivent une grille de 3 × 3 cellules de 16 blocs autour de la grande ruine avec un décalage de 1 à
+  8, mais la règle n'est pas trouvée pour les grandes ruines tournées ; rien n'est posé plutôt
+  qu'une approximation.
+* **Portails** : hauteur, froid, étalement de netherrack, vignes, végétation (§ 15). Un portail est
+  posé à y = 0 tant que sa hauteur n'est pas réglée : le départ est marqué incomplet.
+* **Le trésor enfoui** est posé à la hauteur réglée par son départ ; la recherche vers le bas du jeu
+  (sable, grès, pierre) et le grès qu'il pose autour ne sont pas faits.
+* **Les entités** des gabarits (villageois et zombie de l'igloo, noyés des ruines) ne sont pas
+  créées : il n'y a pas d'entités dans le pipeline de génération.
+* **L'archéologie** (`capped`) et la **chute du gravier** (§ 16).
+* **Le serveur** n'attache pas encore la `StructureStage` : `generated_world.cpp` n'attache même pas
+  le placeur (`set_structures`) aujourd'hui ; le brancher demande le chemin du jar au démarrage, et
+  c'est un bloc de plus dans un fichier partagé, laissé à l'intégration.
+
+## 19. Rejouer
+
+```bash
+cmake --build --preset macos-debug --target ov_structblocks test_ov_worldgen
+./build/macos-debug/bin/ov_structblocks --level=a --world=run/reference-1234567890/world
+./build/macos-debug/bin/ov_structblocks --level=a --world=run/reference-1234567890/world --witness
+./build/macos-debug/bin/ov_structblocks --level=a --world=run/reference-1234567890/world --find-index
+./build/macos-debug/bin/ov_structblocks --level=b --world=run/reference-1234567890/world --seed=1234567890
+./build/macos-debug/bin/ov_structblocks --level=c --world=run/reference-1234567890/world
+./build/macos-debug/bin/test_ov_worldgen "[template],[pieces],[stage]"
+```
+
+Sources de cette partie : les gabarits et les JSON du jar serveur 1.20.1 (lus, jamais copiés) ; le
+NBT des chunks des trois mondes de référence (`structures.starts` : pièces, origines, rotations,
+miroirs, intégrités ; `block_entities` : tables et graines de butin) ; la page *Ruined Portal* de
+minecraft.wiki pour les probabilités du vieillissement et des remplacements (15 % d'obsidienne
+pleureuse, 7 % de magma, 30 % d'or) et *Buried Treasure* pour la position (9, 9) et le coffre tourné
+vers l'est. Aucun code tiers, aucun code du jeu.

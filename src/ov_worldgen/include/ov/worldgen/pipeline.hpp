@@ -45,6 +45,8 @@
 
 namespace ov::worldgen {
 
+class StructureStage;  // ── structures ── structure_stage.hpp
+
 /// How far a chunk has got. The game's statuses, in the game's order.
 ///
 /// Named after the game's rather than after our stages, because the ordering
@@ -180,6 +182,11 @@ public:
     /// Drives the chunk to `StructureStarts` if it has not got there, which is
     /// the whole cost of the question: no block is generated.
     [[nodiscard]] std::vector<std::string_view> structure_starts(i32 chunk_x, i32 chunk_z);
+
+    // ── structures ──
+    /// Give the pipeline the stage that writes structure blocks at `features`,
+    /// before the decoration. Borrowed; null, the default, writes none.
+    void set_structure_stage(StructureStage* stage) noexcept;
 
     /// Drop cached chunks that no chunk within `keep` of `centre` needs.
     ///

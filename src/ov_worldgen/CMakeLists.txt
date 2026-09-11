@@ -22,13 +22,18 @@ ov_add_library(ov_worldgen
         src/placement.cpp
         src/random_factory.cpp
         src/structure.cpp
+        src/structure_pieces.cpp
         src/structure_set.cpp
+        src/structure_stage.cpp
+        src/structure_template.cpp
         src/surface_rules.cpp
         src/surface_system.cpp
         src/tree_feature.cpp
         src/vegetation_feature.cpp
     DEPS
+        ov_io
         ov_math
+        ov_nbt
         ov_registry
         ov_world
     PRIVATE_DEPS
@@ -50,6 +55,7 @@ ov_add_test(test_ov_worldgen
         tests/test_noise.cpp
         tests/test_pipeline.cpp
         tests/test_structure_set.cpp
+        tests/test_structure_template.cpp
         tests/test_surface_rules.cpp
         tests/test_tree_feature.cpp
     DEPS ov_worldgen
