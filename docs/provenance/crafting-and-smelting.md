@@ -184,6 +184,26 @@ simple précision : la partie entière, plus un point avec une probabilité éga
 L'ancien champ `ovExperience`, propre à ce projet, est effacé à la première
 écriture.
 
+Mesuré sur le vrai serveur par `scripts/measure_furnaces.py` (campagnes `xp`
+et `xp-iron`), avec une sonde qui vide la sortie au shift-clic :
+
+| Cas | Vanilla |
+|---|---|
+| 10 lingots de fer, `RecipesUsed` = 10 (10 × 0,7 = 7) | **7 points, 6 fois sur 6** |
+| 5 pierres, `RecipesUsed` = 5 (5 × 0,1 = 0,5) | **1 point 18 fois sur 40**, 0 sinon |
+| Sortie vidée par un joueur | `RecipesUsed: {}` |
+| Sortie vidée par un entonnoir dessous | les 3 lingots dans l'entonnoir, `RecipesUsed` **gardé** (3) |
+
+### Le piège du niveau
+
+`xp query … points` ne compte que les points **dans le niveau courant**. Sept
+points font exactement le niveau 1 et s'y lisent 0 : la première campagne a lu
+0, 7, 0, 0 pour dix lingots de fer. La sonde additionne maintenant les niveaux,
+les points et les orbes encore au sol. Deux autres pièges du même relevé :
+`setblock` sur un four identique répond « Could not set the block » et
+n'applique pas le NBT (chaque four est donc posé sur de l'air), et une sonde
+qui flotte un bloc au-dessus du sol est expulsée au bout de quatre secondes.
+
 ---
 
 ## 5. L'oracle d'appariement — 2885 grilles, 2885 identiques

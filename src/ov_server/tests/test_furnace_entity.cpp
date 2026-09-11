@@ -9,6 +9,7 @@
 //   * the screen lit its furnace through `Chunk::set_block`, which drops the
 //     block entity at the position it writes: a furnace that caught while its
 //     screen was open lost its ore, its fuel and its experience.
+#include "../src/block_container.hpp"
 #include "../src/furnace_entity.hpp"
 
 #include "ov/nbt/tag.hpp"
@@ -310,4 +311,28 @@ TEST_CASE("RecipesUsed turns into experience at extraction, per recipe", "[furna
     count_recipe_used(data, "minecraft:not_a_recipe");
     math::LegacyRandomSource random{7};
     CHECK(take_recipes_used_experience(data, *loaded().book, random).empty());
+}
+
+TEST_CASE("a hopper emptying the output leaves RecipesUsed for the next player", "[furnace]") {
+    if (!have_data()) {
+        SKIP("data/vanilla/1.20.1/registry.ovpack is not generated");
+    }
+    // Measured: a hopper under a furnace took its 3 ingots and the furnace
+    // still held `RecipesUsed` = 3 — only a player's extraction pays it out.
+    const std::string iron = recipe_name(gameplay::FurnaceKind::Furnace, "minecraft:iron_ore");
+    nbt::Tag          data = furnace_with({stack(2, "minecraft:iron_ingot", 3)});
+    for (int i = 0; i < 3; ++i) {
+        count_recipe_used(data, iron);
+    }
+
+    const ContainerSpec* spec = container_spec_for_block("minecraft:furnace");
+    REQUIRE(spec != nullptr);
+    BlockInventory inventory{*spec, &*loaded().registries, loaded().items};
+    inventory.load(data);
+    REQUIRE(inventory.stacks()[2].count == 3);
+    inventory.stacks()[2] = {};  // what the hopper pulls
+    inventory.store(data);
+
+    CHECK(slots_of(data).output.empty());
+    CHECK(recipes_used(data, iron) == 3);
 }
