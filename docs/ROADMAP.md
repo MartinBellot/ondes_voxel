@@ -847,7 +847,15 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       client sur les boîtes, le champ et les suggestions ; +0,09 ms p50
       d'enregistrement pour 10 lignes. Restent la complétion des noms dans un
       message, les erreurs d'analyse côté client, les clics dans le chat*
-- [ ] Écrans : menu principal, création et sélection de monde, options
+- [~] Écrans *(**2026-09-11** : menu principal au lancement (7 widgets
+      identiques au pixel au vrai client), liste des mondes et **Créer un monde
+      par graine** (onglets et boutons mesurés sur le vrai client), menu pause
+      qui arrête vraiment le serveur intégré (128 ticks mesurés pour 129
+      attendus), écran de mort, options Vidéo/Sons/Contrôles/Touches/Langue
+      persistées dans `options.txt` — un fichier écrit par le vrai client, 137
+      lignes, relu et réécrit à l'octet —, F3. Non mesurés contre le vrai
+      client : options, pause, mort, F3 ; l'écran de mort n'a pas été vu de bout
+      en bout. Voir `docs/provenance/ecrans.md`)* : menu principal, création et sélection de monde, options
       (contrôles, vidéo, son, langue, accessibilité, packs), pause, mort,
       inventaire, établi, fours ×3, coffres ×4, entonnoir, distributeur,
       enclume, enchantement, brassage, balise, métier à tisser, pierre de
