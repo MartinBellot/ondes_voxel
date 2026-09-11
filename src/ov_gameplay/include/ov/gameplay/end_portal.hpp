@@ -16,9 +16,9 @@
 //     `end_portal`, at the frames' height;
 //   * an entity whose box meets a portal block's shape — the slab from 6/16 to
 //     12/16 of the block — goes to the End at once: no wait, no cooldown;
-//   * it arrives at (100.5, 50, 0.5), facing yaw 90, on a 5 x 5 obsidian
-//     platform at y = 49 whose three layers above are cleared to air — rebuilt
-//     on every arrival.
+//   * it arrives at (100.5, 50, 0.5), facing yaw 90, over a 5 x 5 obsidian
+//     platform at y = 48 — two below the spawn point, measured — whose three
+//     layers above (49..51) are cleared to air; rebuilt on every arrival.
 //
 // The arrival and the platform are measured against the real server by
 // scripts/measure_end_portal.py (docs/provenance/end.md).
@@ -97,8 +97,8 @@ public:
     /// Does a box meet the shape of an end portal block in `level`?
     [[nodiscard]] bool box_in_portal(const world::LevelView& level, const AABB& box) const;
 
-    /// The arrival platform round `spawn`: obsidian under it, three layers of
-    /// air over it, five by five.
+    /// The arrival platform round `spawn`: obsidian two below it, three layers
+    /// of air over that, five by five.
     void build_platform(world::LevelWriter& level, BlockPos spawn = kEndSpawnPoint) const;
 
     /// The exit portal — the game's `end_podium` — with its top ring at

@@ -206,22 +206,24 @@ TEST_CASE("the twenty gateways are on a circle of radius 96", "[gameplay][end]")
     CHECK(end_gateway_order(1234567890)[0] == gateways[0]);
 }
 
-TEST_CASE("the arrival platform is five by five, obsidian under three of air", "[gameplay][end]") {
+TEST_CASE("the arrival platform: obsidian at y = 48 under three layers of air", "[gameplay][end]") {
+    // Measured on the real server (scripts/measure_end_portal.py): 25 obsidian
+    // at y = 48 for the spawn point (100, 50, 0).
     const EndPortalRules rules{blocks()};
     MapLevel             level;
     const auto           stone = blocks().default_state(*blocks().find_block("minecraft:end_stone"));
-    level.set_block({100, 51, 0}, stone);
-    level.set_block({103, 49, 0}, stone);
+    level.set_block({100, 50, 0}, stone);
+    level.set_block({103, 48, 0}, stone);
     rules.build_platform(level);
     CHECK(level.writes() == 2 + 5 * 5 * 4);
     for (i32 dx = -2; dx <= 2; ++dx) {
         for (i32 dz = -2; dz <= 2; ++dz) {
-            CHECK(level.name_at({100 + dx, 49, dz}) == "minecraft:obsidian");
-            for (i32 y = 50; y <= 52; ++y) {
+            CHECK(level.name_at({100 + dx, 48, dz}) == "minecraft:obsidian");
+            for (i32 y = 49; y <= 51; ++y) {
                 CHECK(level.name_at({100 + dx, y, dz}) == "minecraft:air");
             }
         }
     }
-    CHECK(level.name_at({103, 49, 0}) == "minecraft:end_stone");  // outside it
-    CHECK(level.name_at({100, 53, 0}) == "minecraft:air");
+    CHECK(level.name_at({103, 48, 0}) == "minecraft:end_stone");  // outside it
+    CHECK(level.name_at({100, 52, 0}) == "minecraft:air");
 }

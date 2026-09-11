@@ -63,6 +63,7 @@ CB_CHUNK = 0x24
 CB_GAME_EVENT = 0x1F
 CB_COMBAT_DEATH = 0x38
 CB_SPAWN_ORB = 0x02
+CB_SECTION_BLOCKS = 0x43
 SB_POSITION = 0x14
 SB_USE_ITEM_ON = 0x31
 SB_SET_HELD_ITEM = 0x28
@@ -162,6 +163,10 @@ class Ender(Probe):
                 pos, i = unpacked(payload, 0)
                 state, _ = read_varint(payload, i)
                 self.blocks[pos] = state
+            elif packet_id == CB_SECTION_BLOCKS:
+                # Update Section Blocks: several changes in one section in one
+                # tick — the game sends the nine portal blocks this way.
+                self.section_blocks(payload)
             elif packet_id == CB_WORLD_EVENT:
                 event = struct.unpack_from(">i", payload, 0)[0]
                 pos, i = unpacked(payload, 4)
@@ -197,6 +202,44 @@ class Ender(Probe):
                 self.events.append(("sync", (self.dimension, x, y, z, yaw, pitch)))
                 self.send(0x00, varint(teleport_id))
                 self.send(SB_POSITION, struct.pack(">ddd", x, y, z) + bytes([1]))
+
+    def section_blocks(self, payload: bytes) -> None:
+        """Update Section Blocks: a packed section position, then VarLongs of
+        state << 12 | x << 8 | z << 4 | y. Whether a boolean follows the
+        position is decided by which reading consumes the payload exactly."""
+        packed_section = struct.unpack_from(">q", payload, 0)[0]
+        sx = packed_section >> 42
+        sy = packed_section << 44 >> 44
+        sz = packed_section << 22 >> 42
+
+        def varlong(buf: bytes, i: int) -> tuple[int, int]:
+            value, shift = 0, 0
+            while True:
+                byte = buf[i]
+                i += 1
+                value |= (byte & 0x7F) << shift
+                shift += 7
+                if not byte & 0x80:
+                    return value, i
+
+        for start in (8, 9):
+            try:
+                count, i = read_varint(payload, start)
+                entries = []
+                for _ in range(count):
+                    value, i = varlong(payload, i)
+                    entries.append(value)
+            except IndexError:
+                continue
+            if i != len(payload):
+                continue
+            for value in entries:
+                state = value >> 12
+                x = sx * 16 + ((value >> 8) & 15)
+                z = sz * 16 + ((value >> 4) & 15)
+                y = sy * 16 + (value & 15)
+                self.blocks[(x, y, z)] = state
+            return
 
     def stand(self, seconds: float) -> None:
         deadline = time.monotonic() + seconds
@@ -242,10 +285,12 @@ def scenario(bot: Ender, console, report: dict) -> None:
         # thirty seconds over them (a Debug build relighting after every write
         # on a loaded machine) trips its own idle timer, which is armed per
         # read, and closes the connection without a word.
-        before = bot.blocks.get((x, y, z))
+        # Waiting for the eye itself: on a slow server the console's own
+        # setblock (eye=false) can arrive after the eye has been sent.
         bot.use_on(x, y, z, 1)
         deadline = time.monotonic() + 90
-        while bot.blocks.get((x, y, z)) == before and time.monotonic() < deadline:
+        while ("eye=true" not in STATE_NAMES.get(bot.blocks.get((x, y, z)), "")
+               and time.monotonic() < deadline):
             bot.stand(0.1)
         bot.stand(0.25)
         frame_states.append(bot.blocks.get((x, y, z)))
@@ -274,6 +319,12 @@ def scenario(bot: Ender, console, report: dict) -> None:
         target = (cx + 0.5, cy + 0.5, cz + 0.5)
         stepped_in = time.monotonic()
         mark = len(bot.events)
+        if bot.dimension == "minecraft:the_end":
+            # Already across — the game took the probe before it was put in
+            # the portal: the crossing to read is the last one.
+            mark = max(i for i, (kind, value) in enumerate(bot.events)
+                       if kind == "respawn" and value[1] == "minecraft:the_end")
+            report[key + "_early"] = True
         arrived = None
         seen = None
         # Ten minutes: our Debug server generating the End's first blocks on a

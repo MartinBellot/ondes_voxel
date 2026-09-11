@@ -70,6 +70,10 @@ struct Options {
     /// blocks — the outer islands on their own.
     i32 min_distance{0};
     i32 show{8};
+    /// Only finished chunks where the game has something besides air and end
+    /// stone: the spikes, the chorus, the gateways, the islands' features. A
+    /// sample of the first chunks in file order is mostly empty void.
+    bool interesting{false};
 };
 
 [[nodiscard]] Options parse(int argc, char** argv) {
@@ -97,6 +101,8 @@ struct Options {
             options.min_distance = std::atoi(value("--min-distance=").c_str());
         } else if (argument.starts_with("--show=")) {
             options.show = std::atoi(value("--show=").c_str());
+        } else if (argument == "--interesting") {
+            options.interesting = true;
         }
     }
     return options;
@@ -567,6 +573,12 @@ int main(int argc, char** argv) {
             }
             auto document = region->read_chunk(static_cast<u32>(cx & 31), static_cast<u32>(cz & 31));
             if (!document || !decode(*document, reference, true)) {
+                continue;
+            }
+            if (options.interesting &&
+                std::ranges::all_of(reference.names, [](const std::string& name) {
+                    return name == "minecraft:air" || name == "minecraft:end_stone";
+                })) {
                 continue;
             }
             const world::Chunk& ours = pipeline.promote(cx, cz, worldgen::ChunkStatus::Full);
