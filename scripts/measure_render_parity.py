@@ -255,9 +255,16 @@ def run_ours(tag, only, extra, binary):
                                           timeout=600).returncode
                 except subprocess.TimeoutExpired:
                     code = "délai"
+            # A capture taken short of the full square (the client logs "FEWER
+            # than asked") is a scene that was cut off, not a scene: retried.
+            with open(log) as f:
+                short = "FEWER than asked" in f.read()
+            if short and os.path.exists(ppm):
+                os.remove(ppm)
             if os.path.exists(ppm):
                 break
-            print("notre client %-14s : pas de capture (essai %d)" % (name, attempt + 1))
+            print("notre client %-14s : pas de capture%s (essai %d)"
+                  % (name, " complète" if short else "", attempt + 1))
         print("notre client %-14s : %s -> %s%s" % (name, code, os.path.relpath(ppm, ROOT),
                                                   "" if os.path.exists(ppm) else " MANQUANTE"))
 

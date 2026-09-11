@@ -190,9 +190,62 @@ GPU médian** (la passe de présentation plein écran et le disque de ciel) et
 +0,15 ms de CPU médian. Les p99 d'un tour à l'autre varient plus que l'écart
 entre binaires : c'est la charge des autres agents, pas le rendu.
 
-### 3.2 Parité par scène
+### 3.2 Ce que l'oracle a imprimé (premier passage : `plains`, `aolab`)
 
-*(à compléter par la capture vanilla — voir la section 6 pour le protocole)*
+Midi, plaine, 8 chunks, luminosité 0,5 :
+
+| grandeur | le jeu | nous, avant | verdict |
+|---|---|---|---|
+| couleur du ciel | 0,4706 0,6549 1,0 = **0x78A7FF** | 0x78A7FF | identique |
+| couleur du brouillard | 0,7002 0,8112 1,0 = **(179, 207, 255)** | 0xC0D8FF (192, 216, 255) | corrigé : le brouillard est tiré vers le ciel de 1 − (0,25 + 0,75·8/32)^¼ = 0,1867 — les trois canaux tombent juste |
+| brouillard du terrain | **115,2 → 128**, cylindrique | 117,76 → 128 (92 %) | corrigé : distance − clamp(distance/10, 4, 64) |
+| brouillard du ciel | **0 → 128, cylindrique** | (pas de ciel) | appliqué au disque |
+| ombrage par face | bas 0,5 · haut 1,0 · N/S 0,8 · E/O 0,6 | idem | identique |
+| hauteur des nuages | 192 | — | nuages non faits |
+| lightmap (bloc 0, ciel 15) / (0, 14) | **251 / 224** | 254 / 226 | corrigé (ci-dessous) |
+
+**L'échantillonnage du lightmap entre deux texels est confirmé.** Le sol
+plein soleil de la capture vanilla vaut 0,981 du nôtre. Si le jeu lisait le
+centre du texel 15 (notre ancienne lecture), son sol serait 4,6 % plus clair
+que le nôtre ; il est plus sombre, et la moyenne des texels 14 et 15,
+(224 + 251)/2 = 237,5, rend compte de l'écart restant avec notre ancien
+lightmap.
+
+**Le lightmap, reconstruit sur les texels du jeu.** Les 512 texels des deux
+frames de midi (256 chacune, scintillement relevé à chaque fois) sont
+reproduits **exactement, 512 sur 512**, par une seule structure : lumière de
+bloc chaude sur deux polynômes (vert `b·((0,6b+0,4)·0,6+0,4)`, bleu
+`b·(0,6b²+0,4)`), scintillement ajouté à 1,5, rappel vers 0,75 de 0,04
+**avant et après** l'adoucissement de la luminosité, et **troncature** (arrondir
+met 63 % des texels à une unité au-dessus). L'ancien lightmap ne tenait ni les
+polynômes, ni le double rappel, ni la troncature. Les deux constantes qui ne
+jouent qu'hors du plein jour — plancher du ciel et bleuissement nocturne — ne
+sont pas départagées par des frames de midi : le balayage nocturne de l'oracle
+les fixe *(second passage, en attente du verrou)*.
+
+### 3.3 Parité par scène
+
+Pourcentage de pixels identiques, à ±8 niveaux sur chaque canal, et écart
+moyen par canal (0..255), sur 1708×960. Témoin : la capture vanilla contre
+elle-même décalée d'un pixel.
+
+| scène | identiques avant → après | ±8 avant → après | écart moyen avant → après | témoin décalé (identiques / ±8) |
+|---|---:|---:|---:|---:|
+| `plains` | 0,00 → 1,43 % | 0,09 → 39,58 % | 32,91 → 8,51 | 74,17 / 85,38 % |
+| `aolab` | 0,56 → 1,47 % | 23,11 → 47,68 % | 17,24 → 7,66 | 90,15 / 94,36 % |
+
+(« après » = binaire *after3* : scène en espace des octets, lumière lissée,
+disque de ciel, animations, tri translucide — **avant** les corrections de
+brouillard et de lightmap ci-dessus, dont les chiffres suivent.)
+
+Lecture de la carte des écarts d'`aolab` : **la géométrie coïncide au pixel**
+(toutes les arêtes tombent juste — projection, FOV, hauteur de l'œil, ordre des
+sommets) et les zones assombries par l'AO et l'ombrage sont dans les ±8 ; ce
+qui dépasse, c'est le ciel entier (la couleur du brouillard, corrigée depuis)
+et le sol en plein soleil, texel par texel (le lightmap, corrigé depuis). Le
+témoin décalé fait beaucoup mieux que nous en pixels identiques parce que
+l'image est faite de grands aplats : c'est la colonne ±8 et l'écart moyen qui
+mesurent quelque chose ici.
 
 ---
 

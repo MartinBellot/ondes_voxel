@@ -1485,6 +1485,7 @@ int main(int argc, char** argv) {
     usize                                 settle_chunks     = 0;
     std::chrono::steady_clock::time_point settle_since      = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point settle_first      = settle_since;
+    bool                                  settle_after_close = false;
     std::string window_dump;
 
     bool use_sent   = false;
@@ -1598,11 +1599,34 @@ int main(int argc, char** argv) {
         if (online && !client->connected()) {
             const auto why       = client->disconnect_reason();
             const auto preparing = why.find("menu.preparingSpawn");
-            if (preparing == std::string::npos) {
+            // ── render-parity ── a settled capture whose clock and every chunk
+            // had arrived is taken even if the server has since closed the
+            // connection: the picture is of what was sent, and nothing more
+            // would have been. Anything short of that still ends the run, and
+            // the capture script retries it.
+            const bool capture_what_arrived =
+                preparing == std::string::npos && options.settle_shot && settle_clock_seen &&
+                options.settle_chunks > 0 && session && session->chunk_count() >= options.settle_chunks;
+            if (capture_what_arrived) {
+                if (!settle_after_close) {
+                    OV_LOG_WARN("disconnected ({}) with {} chunks in: capturing what arrived",
+                                why.empty() ? "the server went away" : why, session->chunk_count());
+                    settle_after_close = true;
+                }
+                (void)session->mesh_pending(50.0);
+                if (session->pending_sections() == 0 &&
+                    std::chrono::steady_clock::now() - settle_first > std::chrono::seconds(3) &&
+                    (options.frames == 0 || options.frames > rendered + 1)) {
+                    options.frames = rendered + 1;
+                    OV_LOG_INFO("settled: {} chunks (after the connection closed)",
+                                session->chunk_count());
+                }
+            } else if (preparing == std::string::npos) {
                 OV_LOG_ERROR("disconnected: {}", why.empty() ? "the server went away" : why);
                 running = false;
                 continue;
             }
+            if (!capture_what_arrived) {  // ── render-parity ── no knocking again
             std::string percent = "0";
             if (const auto open = why.find("[\"", preparing); open != std::string::npos) {
                 if (const auto close = why.find('"', open + 2); close != std::string::npos) {
@@ -1620,6 +1644,7 @@ int main(int argc, char** argv) {
                     events.clear();
                 }
             }
+            }  // ── end render-parity ──
         }
         if (online && client->connected()) {
 
