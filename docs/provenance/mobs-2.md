@@ -240,7 +240,15 @@ pas (§ 8).
 à cet endroit (le dernier des cinq ; la sonde n'a plus rien reçu) et la cause n'est pas élucidée.
 Les slimes de surface et les grenouilles **ne sont donc pas vérifiés** contre le vrai serveur.
 
-*(Notre serveur, aux mêmes positions : § rempli à la mesure.)*
+**Notre serveur, aux mêmes positions : non mesuré.** `check_mobs2_e2e.py biomes` lance
+`ov_dedicated` sur le monde généré à la même graine (`OV_WORLDGEN_SEED=1234567890`) pour y poser la
+sonde aux cinq positions du vrai serveur. En Debug, sur une machine qui portait neuf agents, la zone
+d'apparition est restée à **0 % pendant treize minutes** (« spawn area 0% ready — refused for now »
+toutes les 34 s) ; le montage a été arrêté. Ce qui établit le tirage par biome de notre côté est donc :
+le test unitaire `the type is drawn from the biome of the position` (deux biomes, chaque apparition
+du bon côté), le chemin de code réel du serveur (`ChunkBiomes` → `entries_at`), et la ligne de
+démarrage du § 2.1. La comparaison de composition chiffrée reste à faire — en Release, ou sur une
+machine moins chargée.
 
 ---
 
