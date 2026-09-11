@@ -133,6 +133,10 @@ public:
                                       const Deliver& deliver);
 
     [[nodiscard]] const gameplay::FallingBlocks& falling() const noexcept { return falling_; }
+
+    /// ── rails ── The queue a TNT minecart's charge joins, drained with the
+    /// primed TNT's by `after_entity_tick`.
+    [[nodiscard]] gameplay::BlastEvents& blasts() noexcept { return blast_events_; }
     [[nodiscard]] const gameplay::Explosions&    explosions() const noexcept {
         return explosions_;
     }

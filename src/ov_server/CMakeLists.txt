@@ -37,6 +37,7 @@ ov_add_library(ov_server
         src/survival_session.cpp
         src/tick_profile.cpp
         src/tnt_gravity.cpp
+        src/rails_session.cpp
         src/weather_session.cpp
         src/workbench.cpp
         src/world_ticks.cpp
@@ -96,6 +97,7 @@ ov_add_test(test_ov_server
         tests/test_weather_session.cpp
         tests/test_tick_profile.cpp
         tests/test_end_fight.cpp
+        tests/test_rails_session.cpp
     DEPS ov_server
     LABELS unit
 )

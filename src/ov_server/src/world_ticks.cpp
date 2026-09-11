@@ -97,6 +97,9 @@ usize WorldTicks::settle(ServerLevel& level, usize& waves) {
             if (fire_extension_ != nullptr) {  // ── fire ──
                 fire_extension_->neighbour_changed(level, pos);
             }
+            if (rails_extension_ != nullptr) {  // ── rails ──
+                rails_extension_->neighbour_changed(level, pos);
+            }
             ++notified;
             if (plants_ != nullptr) {  // ── agriculture ──
                 // The written block itself: a leaf placed next to a log learns
@@ -116,6 +119,9 @@ usize WorldTicks::settle(ServerLevel& level, usize& waves) {
                 }
                 if (fire_extension_ != nullptr) {  // ── fire ──
                     fire_extension_->neighbour_changed(level, neighbour);
+                }
+                if (rails_extension_ != nullptr) {  // ── rails ──
+                    rails_extension_->neighbour_changed(level, neighbour);
                 }
                 if (plants_ != nullptr) {  // ── agriculture ──
                     plants_->neighbour_changed(level, *plant_env_, neighbour, pos);
@@ -222,6 +228,12 @@ WorldTickStats WorldTicks::run(ServerLevel& level, i64 now) {
         // ── fire: a fire's own tick ──
         if (fire_extension_ != nullptr &&
             fire_extension_->scheduled_tick(level, tick.pos, tick.what)) {
+            ++stats.block_ticks;
+            continue;
+        }
+        // ── rails: the detector rail's recheck ──
+        if (rails_extension_ != nullptr &&
+            rails_extension_->scheduled_tick(level, tick.pos, tick.what)) {
             ++stats.block_ticks;
             continue;
         }

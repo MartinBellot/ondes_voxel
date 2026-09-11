@@ -773,6 +773,14 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       fois sans horloge réseau. Restent les rails, la cible, le transport
       d'objets par entonnoir dans le serveur, et l'algorithme d'explosion —
       refusé faute de résistance des blocs, absente de tout rapport)*
+      *(**2026-09-11 — rails et wagonnets** : formes des rails **1536/1536**
+      poses et 4608/4608 voisins sur le banc exhaustif, alimentation des
+      propulseurs et activateurs (9 rails, 17 au milieu, pente), détecteur et
+      comparateur sur wagonnet à coffre, et **14 trajectoires rejouées tick
+      par tick à moins de 1e-9** du vrai serveur. Wagonnets posés, montés,
+      sauvegardés, relus par vanilla. Restent le rendu dans notre client, les
+      collisions, les fenêtres coffre/entonnoir, l'aspiration, le distributeur
+      et le wagonnet TNT. Voir `docs/provenance/rails-wagonnets.md`)*
 - [~] **Fluides** : écoulement, sources, mélanges (pierre / cobble / obsidienne),
       poussée d'entités, waterlogging, colonnes de bulles, éponge
       *(**branché au tick** : casser le bord d'un bassin fait un losange exact

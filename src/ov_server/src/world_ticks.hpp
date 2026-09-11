@@ -285,6 +285,17 @@ private:
     // ── end nether ──
 
     BlockRuleExtension* fire_extension_{nullptr};  // ── fire ──
+
+    // ── rails ── A fifth engine: rails, their power and the detector's tick
+    // (rails_session.hpp). Not owned; null turns it off.
+public:
+    void set_rails_extension(BlockRuleExtension* extension) noexcept {
+        rails_extension_ = extension;
+    }
+
+private:
+    BlockRuleExtension* rails_extension_{nullptr};
+    // ── end rails ──
 };
 
 }  // namespace ov::server
