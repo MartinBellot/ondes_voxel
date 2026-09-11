@@ -216,11 +216,12 @@ void Mob::tick(entity::EntityWorld& world, entity::EntityHandle self,
                     // table — and since the table's number is the measured one,
                     // every mob in the world would be 45 % too slow while the
                     // constant it was compared against still read correct.
-                    const f64 friction =
-                        state->on_ground ? motion_.air_drag * motion_.default_slipperiness
-                                         : motion_.air_drag;
-                    state->velocity.x = dx / length * speed / friction;
-                    state->velocity.z = dz / length * speed / friction;
+                    // ── movement physics ── the floor's own friction, and the
+                    // walk law's ratio for it (ice, soul sand).
+                    const f64 friction = entity_friction(*state, motion_, *mob->world);
+                    const f64 floor    = walk_floor_scale(*state, motion_, *mob->world);
+                    state->velocity.x  = dx / length * speed * floor / friction;
+                    state->velocity.z  = dz / length * speed * floor / friction;
                     // Face where it is going. A mob that walks sideways is the
                     // most obvious possible sign that nothing is steering it.
                     state->yaw =

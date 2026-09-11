@@ -69,6 +69,19 @@ struct EntityMotionConstants {
 /// The box an entity of this size occupies at this position.
 [[nodiscard]] AABB entity_box(const entity::EntityState& state) noexcept;
 
+/// The horizontal drag `step_entity` applies this tick: the air's 0.91, times
+/// the supporting block's friction on the ground.
+[[nodiscard]] f64 entity_friction(const entity::EntityState&   state,
+                                  const EntityMotionConstants& constants,
+                                  const CollisionWorld&        world);
+
+/// How a walk's cruising speed on the floor under `state` compares with the
+/// same walk on ordinary ground — 1 on grass, a little under on ice, 0.58 on
+/// soul sand. A mob that sets its own velocity multiplies by this.
+[[nodiscard]] f64 walk_floor_scale(const entity::EntityState&   state,
+                                   const EntityMotionConstants& constants,
+                                   const CollisionWorld&        world);
+
 /// A dropped stack falls at **half** the gravity of everything else.
 ///
 /// Measured the same way and the fit is exact — residual 1.2e-15, which is

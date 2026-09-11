@@ -10,6 +10,7 @@
 // constants below are derived from those traces — see docs/PROVENANCE.md.
 #pragma once
 
+#include "ov/gameplay/block_motion.hpp"
 #include "ov/gameplay/collision.hpp"
 #include "ov/math/vec.hpp"
 
@@ -177,6 +178,10 @@ struct MotionConstants {
     /// who stops walking drifts by ever smaller amounts forever and every
     /// position report carries a different number.
     f64 negligible_speed{0.003};
+
+    /// What blocks do: ladders, slime, honey, bubble columns. Only read when
+    /// the CollisionWorld carries a BlockMotionTable.
+    BlockEffectConstants effects{};
 };
 
 /// Advance one tick.
