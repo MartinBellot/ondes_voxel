@@ -96,6 +96,8 @@
 #include "mob_despawn.hpp"       // ── mobs-3 ──
 #include "entity_storage.hpp"    // ── mobs-3 ──
 #include "zombie_villagers.hpp"  // ── mobs-3 ──
+#include "dimension_entities.hpp"  // ── persistence ──
+#include "ground_entities.hpp"     // ── persistence ── ItemEntity, GroundOrb
 
 #include <fmt/format.h>
 
@@ -548,45 +550,8 @@ struct Superflat {
     return 0;
 }
 
-/// A stack lying on the ground, waiting to be walked into.
-///
-/// Kept in a flat list on the tick thread. There are a handful at a time, and
-/// an index would cost more than the scan it saves.
-struct ItemEntity {
-    i32            entity_id{0};
-    net::Uuid      uuid{};
-    /// ── nether ── The level it lies in: only players there see it and pick
-    /// it up. Items have no physics here, so nothing else needs to know.
-    DimensionId dimension{DimensionId::Overworld};
-    f64            x{0.0};
-    f64            y{0.0};
-    f64            z{0.0};
-    net::ItemStack stack{};
-    /// The tick it appeared, for the five minutes vanilla gives it.
-    i64 born{0};
-    /// Ticks before anyone may pick it up. Vanilla gives a dropped stack half a
-    /// second so the player who broke the block does not instantly re-absorb a
-    /// block they meant to place.
-    i32 pickup_delay{10};
-};
-
-/// One experience orb lying in the world.
-///
-/// Its own type rather than an ItemEntity with a special item: an orb carries a
-/// *value* and no stack, it is attracted to a player instead of waiting to be
-/// walked into, and two of them can become one. None of that is true of a
-/// dropped stack.
-struct GroundOrb {
-    i32 entity_id{0};
-    f64 x{0.0};
-    f64 y{0.0};
-    f64 z{0.0};
-    i32 value{1};
-    /// The tick it appeared, for the five minutes vanilla gives it.
-    i64 born{0};
-    /// Ticks before anyone may pick it up.
-    i32 delay{0};
-};
+// ── persistence ── `ItemEntity` and `GroundOrb` live in ground_entities.hpp,
+// with what writes them into entities/.
 
 struct Player {
     /// Held so the tick thread can send keep-alives without going through the
@@ -2225,6 +2190,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     std::optional<ZombieVillagers> zombie_villagers;  // the risen, and their cure
     std::optional<EntityStorage>   entity_storage;    // entities/r.x.z.mca
     std::vector<ChunkPos>          mobs3_to_load;
+    i64 mobs3_last_read{-10};  // ── persistence ── the tick of the last entities/ read
     std::vector<i32>               mobs3_unloaded;  // mobs a chunk took to disk, to remove
     // ── villagers ──
     std::optional<Villagers> villagers;
@@ -2822,6 +2788,11 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         zombie_villagers.emplace(*registries);                                  // ── mobs-3 ──
         entity_storage.emplace(*registries, level_dir / "entities");            // ── mobs-3 ──
         entity_storage->add_adopter(*rails_session);  // ── entities ── the carts
+        // ── persistence ── the TNT, the falling blocks, the projectiles, the
+        // clouds; the items and orbs further down, once their host exists
+        entity_storage->add_adopter(*tnt_gravity);
+        entity_storage->add_adopter(*projectiles);
+        entity_storage->add_loose(*brewing);
         // ── villagers ──
         villagers.emplace(*registries, *blocks);
         tick_broadcasts.reserve(4096);
@@ -3277,6 +3248,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             orb.z         = z;
             orb.value     = value;
             orb.born      = server_tick.load(std::memory_order_relaxed);
+            orb.dimension = who.dimension;  // ── persistence ──
             broadcast(nullptr, net::clientbound::kSpawnExperienceOrb,
                       net::encode_spawn_experience_orb(orb.entity_id, orb.x, orb.y, orb.z,
                                                        static_cast<i16>(orb.value)));
@@ -3646,6 +3618,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     // ── end effects ─────────────────────────────────────────────────────────
 
     // ── player data ─────────────────────────────────────────────────────────
+    /// ── persistence ── The `RootVehicle` of a player leaving in a cart, by
+    /// wire id, between the cart's taking and the file's writing.
+    std::unordered_map<i32, nbt::Tag> leaving_vehicles;
     /// A player's record as they stand, their own game mode included.
     const auto player_record_of = [&](const Player& who) {
         usize        overflow = 0;
@@ -3655,6 +3630,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             who.effects, &overflow);
         record.dimension = std::string{dimension_info(who.dimension).name};  // ── nether ──
         record.xp_seed = who.xp_seed;  // ── enchanting ──
+        if (const auto vehicle = leaving_vehicles.find(who.entity_id);  // ── persistence ──
+            vehicle != leaving_vehicles.end()) {
+            record.root_vehicle = vehicle->second;
+        }
         if (overflow > 0) {
             OV_LOG_WARN("{}: {} stacks from the crafting grid or the cursor found no free slot "
                         "and are not in the save",
@@ -4445,7 +4424,18 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                          *it->second.enchant, it->second.inventory);
                     it->second.enchant.reset();
                 }
+                // ── persistence ── the cart they sit in leaves with them
+                if (rails_session && mobs) {
+                    if (auto taken = rails_session->take_vehicle(*mobs, entity_id)) {
+                        leaving_vehicles[entity_id] = std::move(taken->root_vehicle);
+                        if (taken->cart_id >= 0) {
+                            broadcast(connection.get(), net::clientbound::kRemoveEntities,
+                                      net::encode_remove_entity(taken->cart_id));
+                        }
+                    }
+                }
                 leaving.emplace(uuid, it->second.name, player_record_of(it->second));  // ── player data ──
+                leaving_vehicles.erase(entity_id);  // ── persistence ──
                 players.erase(it);
                 // ── projectiles: a draw does not outlive its archer ──
                 if (projectiles) {
@@ -4921,6 +4911,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     }
 
                     players[connection.get()] = player;
+                }
+                // ── persistence ── the cart they left in comes back with them
+                if (stored && stored->record.root_vehicle && rails_session) {
+                    rails_session->request_restore(player.entity_id, *stored->record.root_vehicle);
                 }
                 // ── crafting and smelting ───────────────────────────────────
                 // Every recipe, once, after the join sequence — which is when
@@ -7106,6 +7100,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         stack.count   = static_cast<i8>(std::clamp(count, 1, 64));
         tnt_host.drop_item(at, stack);
     };
+    rails_host.player_ready = [&](i32 id) {  // ── persistence ── RootVehicle
+        const Player* who = projectile_player(id);
+        return who != nullptr && who->confirmed;
+    };
     rails_host.carry_rider = [&](i32 id, Vec3d seat) {
         Player* who = projectile_player(id);
         if (who == nullptr) {
@@ -7489,11 +7487,75 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             zombie_villagers->set_conversion_time(id, ticks);
         }
     };
+    // ── persistence ── The items and orbs of every level, the Nether's mobs,
+    // the End's dragon and crystals: each dimension through its own storage,
+    // the only writer of its own entities/ (ground_entities.hpp,
+    // dimension_entities.hpp).
+    GroundHost ground_host;
+    ground_host.now            = [&] { return server_tick.load(std::memory_order_relaxed); };
+    ground_host.next_entity_id = [&] { return next_entity_id.fetch_add(1); };
+    ground_host.uuid_for       = [&](i32 id) { return uuid_for_entity(id); };
+    ground_host.announce_item  = [&](const ItemEntity& item) {
+        broadcast_in(item.dimension, nullptr, net::clientbound::kSpawnEntity,
+                     net::encode_spawn_entity(item.entity_id, item.uuid, net::kItemEntityType,
+                                              item.x, item.y, item.z));
+        broadcast_in(item.dimension, nullptr, net::clientbound::kEntityMetadata,
+                     net::encode_item_metadata(item.entity_id, item.stack.item_id, item.stack.count));
+    };
+    ground_host.announce_orb = [&](const GroundOrb& orb) {
+        broadcast_in(orb.dimension, nullptr, net::clientbound::kSpawnExperienceOrb,
+                     net::encode_spawn_experience_orb(orb.entity_id, orb.x, orb.y, orb.z,
+                                                      static_cast<i16>(std::min(orb.value, 32767))));
+    };
+    std::optional<GroundEntities>    overworld_ground, nether_ground, end_ground;
+    std::optional<DimensionEntities> nether_entities, end_entities;
+    std::vector<ChunkPos>            persist_evicted;
+    std::vector<i32>                 persist_removed;
+    if (registries) {
+        overworld_ground.emplace(DimensionId::Overworld, *registries, ground_items, ground_orbs,
+                                 ground_host);
+        if (entity_storage) {
+            entity_storage->add_loose(*overworld_ground);
+        }
+        if (brewing) {
+            brewing->set_persistence_host(&potion_host);
+        }
+        if (projectiles) {
+            projectiles->set_owner_lookup([&](i32 id) -> std::optional<net::Uuid> {
+                const Player* who = projectile_player(id);
+                return who != nullptr ? std::optional<net::Uuid>{who->uuid} : std::nullopt;
+            });
+        }
+        if (nether_mobs) {
+            nether_ground.emplace(DimensionId::Nether, *registries, ground_items, ground_orbs,
+                                  ground_host);
+            nether_entities.emplace(*registries, level_dir / "DIM-1" / "entities",
+                                    &nether_mobs->world(), nether_mobs->storage_host(nether_mob_host));
+            nether_entities->storage().add_loose(*nether_ground);
+        }
+        if (end_fight) {
+            end_ground.emplace(DimensionId::End, *registries, ground_items, ground_orbs, ground_host);
+            end_entities.emplace(*registries, level_dir / "DIM1" / "entities", nullptr,
+                                 EntityStorageHost{});
+            end_entities->storage().add_loose(*end_fight);
+            end_entities->storage().add_loose(*end_ground);
+            end_fight->set_host(&end_fight_host);
+        }
+    }
     mobs3_save_entities = [&] {
         if (entity_storage && mobs) {
             const EntityStorageStats saved =
                 entity_storage->save_all(*mobs, mob_records, entity_storage_host);
             OV_LOG_INFO("entities: saved {} mobs across {} chunks", saved.entities, saved.chunks);
+        }
+        for (auto* level : {nether_entities ? &*nether_entities : nullptr,  // ── persistence ──
+                            end_entities ? &*end_entities : nullptr}) {
+            if (level != nullptr) {
+                const EntityStorageStats saved = level->save();
+                OV_LOG_INFO("entities: saved {} in {} across {} chunks", saved.entities,
+                            level->storage().directory().parent_path().filename().string(),
+                            saved.chunks);
+            }
         }
     };
     // ── end mobs-3 ──
@@ -9039,9 +9101,13 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
 
         // ── mobs-3: the mobs of chunks that have just arrived, from entities/,
         // and the Remove Entities of those an unload took to disk ──
-        if (entity_storage && mobs && clock.tick_count() % 10 == 0) {
+        // ── persistence ── every ten ticks *since the last read*: the clock
+        // swallows the ticks a slow server misses (piège 22), and a modulo it
+        // steps over never reads a chunk — measured, 16 iterations and no read
+        if (entity_storage && mobs && clock.tick_count() - mobs3_last_read >= 10) {
             std::unique_lock mobs3_lock{players_mutex, std::try_to_lock};
             if (mobs3_lock.owns_lock()) {
+                mobs3_last_read = clock.tick_count();  // ── persistence ──
                 const std::scoped_lock mobs3_chunks{chunk_mutex};
                 for (const i32 gone : mobs3_unloaded) {
                     broadcast(nullptr, net::clientbound::kRemoveEntities,
@@ -9065,6 +9131,32 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 if (!mobs3_to_load.empty()) {
                     OV_LOG_DEBUG("entities: {} mobs read from {} new chunks", read,
                                  mobs3_to_load.size());
+                }
+                // ── persistence ── the Nether's and the End's: what their levels
+                // evicted goes to disk and leaves, what is resident comes back
+                const auto persist_level = [&](DimensionEntities& level, NetherWorld& from,
+                                               DimensionId dimension) {
+                    persist_evicted.clear();
+                    persist_removed.clear();
+                    from.take_evicted(persist_evicted);
+                    level.unload(persist_evicted, persist_removed);
+                    if (dimension == DimensionId::Nether && nether_mobs) {
+                        nether_mobs->forget(persist_removed);
+                    }
+                    for (const i32 gone : persist_removed) {
+                        broadcast_in(dimension, nullptr, net::clientbound::kRemoveEntities,
+                                     net::encode_remove_entity(gone));
+                    }
+                    (void)level.load_resident(from.chunks());
+                };
+                if (nether_entities && nether) {
+                    persist_level(*nether_entities, *nether, DimensionId::Nether);
+                }
+                if (end_entities && end_world) {
+                    persist_level(*end_entities, *end_world, DimensionId::End);
+                    end_fight->set_arena_read(
+                        end_entities->is_loaded(ChunkPos{-1, -1}) && end_entities->is_loaded(ChunkPos{0, -1}) &&
+                        end_entities->is_loaded(ChunkPos{-1, 0}) && end_entities->is_loaded(ChunkPos{0, 0}));
                 }
             }
         }
@@ -9892,6 +9984,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         item.z     = who.z;
                         item.stack = stack;
                         item.born  = clock.tick_count();
+                        item.dimension = who.dimension;  // ── persistence ──
                         death_drops.push_back(std::move(item));
                         stack = net::ItemStack{};
                     }
@@ -9906,6 +9999,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         dropped.z         = who.z;
                         dropped.value     = outcome.orbs[orb];
                         dropped.born      = clock.tick_count();
+                        dropped.dimension = who.dimension;  // ── persistence ──
                         // Half a second before the player who died can walk back
                         // into their own experience, the same grace a dropped
                         // stack gets.
@@ -9947,7 +10041,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         const gameplay::OrbState b{other.value,
                                                    static_cast<i32>(now - other.born),
                                                    other.delay};
-                        if (gameplay::orbs_can_merge(a, b, dx * dx + dy * dy + dz * dz)) {
+                        if (other.dimension == orb.dimension &&  // ── persistence ──
+                            gameplay::orbs_can_merge(a, b, dx * dx + dy * dy + dz * dz)) {
                             other.value += orb.value;
                             other.born = std::min(other.born, orb.born);
                             broadcast(nullptr, net::clientbound::kRemoveEntities,
@@ -9964,7 +10059,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     Player* taker  = nullptr;
                     f64     nearest = orb_rules.follow_range * orb_rules.follow_range;
                     for (auto& [orb_key, candidate] : players) {
-                        if (!candidate.confirmed || candidate.survival.awaiting_respawn) {
+                        if (!candidate.confirmed || candidate.survival.awaiting_respawn ||
+                            candidate.dimension != orb.dimension) {  // ── persistence ──
                             continue;
                         }
                         const f64 dx = candidate.x - orb.x;
@@ -10114,7 +10210,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             now - last_autosave >= std::chrono::seconds{30}) {
             last_autosave = now;
             save_online_players();  // ── player data ── before level.dat, for the host
-            save_world();
+            {
+                // ── persistence ── the ground items and the entity world are
+                // the players' lock's, as when /save-all runs
+                const std::scoped_lock persist_lock{players_mutex};
+                save_world();
+            }
         }
 
         perf->enter(TickPhase::ChunkSend);  // ── perf ──
@@ -10451,8 +10552,23 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         OV_LOG_INFO("allocations: {} ({} bytes), tick violations: {}", stats.allocations,
                     stats.bytes, stats.violations);
     }
+    // ── persistence ── as at a leave: a player sitting in a cart takes it with
+    // them into their file (RootVehicle), and the world is saved without it
+    {
+        const std::scoped_lock persist_lock{players_mutex};
+        for (const auto& [key, who] : players) {
+            if (rails_session && mobs && who.connection) {
+                if (auto taken = rails_session->take_vehicle(*mobs, who.entity_id)) {
+                    leaving_vehicles[who.entity_id] = std::move(taken->root_vehicle);
+                }
+            }
+        }
+    }
     save_online_players();  // ── player data ──
-    save_world();
+    {
+        const std::scoped_lock persist_lock{players_mutex};  // ── persistence ──
+        save_world();
+    }
 
     listener->stop();
     network_thread.join();

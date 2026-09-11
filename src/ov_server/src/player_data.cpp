@@ -419,6 +419,11 @@ std::expected<LoadedPlayer, PlayerDataError> read_player(const nbt::Tag& root,
     record.xp_points = points_of(get_f64(root, "XpP", 0.0), record.xp_level);
 
     record.selected_slot = std::clamp(static_cast<i32>(get_i64(root, "SelectedItemSlot", 0)), 0, 8);
+    // ── persistence ──
+    if (const nbt::Tag* vehicle = root.find("RootVehicle");
+        vehicle != nullptr && vehicle->compound() != nullptr && vehicle->find("Entity") != nullptr) {
+        record.root_vehicle = *vehicle;
+    }
 
     if (const nbt::Tag* items = root.find("Inventory"); items != nullptr && items->list() != nullptr) {
         for (const nbt::Tag& entry : *items->list()) {
@@ -522,6 +527,13 @@ nbt::Tag write_player(const PlayerRecord& record, const nbt::Tag* original, cons
         old_abilities != nullptr && get_bool(*old_abilities, "flying", false);
 
     put(root, "AbsorptionAmount", nbt::Tag{record.absorption});
+    // ── persistence ── what they ride, or nothing: a file read with a
+    // `RootVehicle` must not keep it once the player has got off.
+    if (record.root_vehicle) {
+        put(root, "RootVehicle", *record.root_vehicle);
+    } else {
+        (void)root.erase("RootVehicle");
+    }
     {
         nbt::Tag abilities = old_abilities != nullptr && old_abilities->compound() != nullptr
                                  ? *old_abilities

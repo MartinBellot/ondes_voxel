@@ -2,6 +2,7 @@
 
 #include "tnt_gravity.hpp"
 
+#include "entity_nbt.hpp"  // ── persistence ──
 #include "survival_session.hpp"
 
 #include "ov/base/log.hpp"
@@ -321,19 +322,27 @@ TntGravityStats TntGravity::after_entity_tick(entity::EntityWorld& world, Server
 
     for (const gameplay::FallingEvents::Landed& landed : falling_events_.landed) {
         ++stats.landed;
+        // ── persistence ── a falling block read with `DropItem:0b` drops nothing
+        const auto kept     = saved_.find(landed.network_id);
+        const bool may_drop = kept == saved_.end() || get_bool(kept->second, "DropItem", true);
         if (landed.expired) {
-            drop_block_item(landed.state, landed.cell, host);
-            ++stats.dropped;
+            if (may_drop) {
+                drop_block_item(landed.state, landed.cell, host);
+                ++stats.dropped;
+            }
             continue;
         }
         const gameplay::Landing result =
             falling_.land(level, landed.cell, landed.state, landed.in_water);
-        if (result == gameplay::Landing::Dropped) {
+        if (result == gameplay::Landing::Dropped && may_drop) {
             drop_block_item(landed.state, landed.cell, host);
             ++stats.dropped;
         }
     }
     falling_events_.landed.clear();
+    for (const i32 gone : world.removed_ids()) {  // ── persistence ──
+        saved_.erase(gone);
+    }
 
     // The fuse, every tick, for every TNT still burning. Measured: vanilla
     // re-sends index 8 on each tick of the countdown.
@@ -519,6 +528,104 @@ void TntGravity::drop_block_item(registry::BlockStateId state, BlockPos cell,
         return;
     }
     host.drop_item(block_centre(cell), net::ItemStack{*item, 1, {}});
+}
+
+// ── persistence ─────────────────────────────────────────────────────────────
+
+std::optional<entity::EntityHandle> TntGravity::adopt_saved(entity::EntityWorld& world,
+                                                            const nbt::Tag&      compound) {
+    const nbt::Tag* id = compound.find("id");
+    if (id == nullptr) {
+        return std::nullopt;
+    }
+    const bool tnt = id->as_string() == "minecraft:tnt";
+    if ((!tnt && id->as_string() != "minecraft:falling_block") || (tnt && tnt_type_ < 0) ||
+        (!tnt && falling_type_ < 0)) {
+        return std::nullopt;
+    }
+    std::optional<registry::BlockStateId> block;
+    if (!tnt) {
+        block = block_state_from(*blocks_, compound.find("BlockState"));
+        if (!block || *block == registry::kAirState) {
+            // Vanilla discards a falling block of air; an unknown block is
+            // refused and carried, never turned into sand.
+            OV_LOG_WARN("entities: a falling block of a state this server does not know");
+            return std::nullopt;
+        }
+    }
+    const Vec3d at = list_vec3(compound, "Pos");
+    const auto  handle =
+        world.spawn(tnt ? tnt_type_ : falling_type_, at,
+                    uuid_from(compound.find("UUID")).value_or(net::Uuid{}));
+    if (!handle) {
+        OV_LOG_WARN("entities: cannot spawn a {} read from disk: {}", id->as_string(),
+                    entity::to_string(handle.error()));
+        return std::nullopt;
+    }
+    entity::EntityState* state = world.mutable_state(*handle);
+    if (state->uuid == net::Uuid{}) {
+        state->uuid = uuid_for(state->network_id);
+    }
+    state->velocity           = list_vec3(compound, "Motion");
+    state->on_ground          = get_bool(compound, "OnGround", false);
+    state->broadcast_position = state->position;
+    state->broadcast_valid    = true;
+    if (tnt) {
+        // Vanilla's default when the key is missing is 80.
+        const i32 fuse = static_cast<i32>(get_i64(compound, "Fuse", net::kDefaultTntFuse));
+        world.set_logic(*handle, std::make_unique<gameplay::PrimedTntLogic>(fuse, blast_events_));
+    } else {
+        const BlockPos start{static_cast<i32>(std::floor(at.x)), static_cast<i32>(std::floor(at.y)),
+                             static_cast<i32>(std::floor(at.z))};
+        auto logic = std::make_unique<gameplay::FallingBlockLogic>(falling_, *block, start,
+                                                                   falling_events_);
+        logic->set_time(static_cast<i32>(get_i64(compound, "Time", 0)));
+        world.set_logic(*handle, std::move(logic));
+    }
+    saved_[state->network_id] = compound;
+    return *handle;
+}
+
+std::optional<nbt::Tag> TntGravity::save_entity(entity::EntityWorld& world,
+                                                entity::EntityHandle handle) const {
+    const entity::EntityState* state = world.state(handle);
+    if (state == nullptr || state->removed) {
+        return std::nullopt;
+    }
+    const entity::IEntityLogic* logic = world.logic(handle);
+    const auto                  kept  = saved_.find(state->network_id);
+    nbt::Tag out = kept != saved_.end() ? kept->second : nbt::Tag::make_compound();
+    if (state->type == tnt_type_) {
+        const auto* tnt = dynamic_cast<const gameplay::PrimedTntLogic*>(logic);
+        if (tnt == nullptr) {
+            return std::nullopt;
+        }
+        put_entity_base(out, "minecraft:tnt", state->position, state->velocity, state->yaw,
+                        state->pitch, state->uuid, state->on_ground, i16{-1});
+        (void)out.put("Fuse", nbt::Tag{static_cast<i16>(std::clamp(tnt->fuse(), -32768, 32767))});
+        return out;
+    }
+    const auto* falling = dynamic_cast<const gameplay::FallingBlockLogic*>(logic);
+    if (falling == nullptr) {
+        return std::nullopt;
+    }
+    put_entity_base(out, "minecraft:falling_block", state->position, state->velocity, state->yaw,
+                    state->pitch, state->uuid, state->on_ground, i16{0});
+    (void)out.put("BlockState", block_state_tag(*blocks_, falling->state()));
+    (void)out.put("Time", nbt::Tag{falling->time()});
+    // What vanilla writes for a block that fell by itself (measured).
+    default_to(out, "DropItem", nbt::Tag::make_bool(true));
+    default_to(out, "HurtEntities", nbt::Tag::make_bool(false));
+    default_to(out, "FallHurtMax", nbt::Tag{i32{40}});
+    default_to(out, "FallHurtAmount", nbt::Tag{0.0F});
+    default_to(out, "CancelDrop", nbt::Tag::make_bool(false));
+    return out;
+}
+
+void TntGravity::release(entity::EntityWorld& world, entity::EntityHandle handle) {
+    if (const entity::EntityState* state = world.state(handle)) {
+        saved_.erase(state->network_id);
+    }
 }
 
 }  // namespace ov::server

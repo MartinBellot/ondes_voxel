@@ -199,7 +199,7 @@ bool RailsSession::owns(i32 type) const noexcept {
 bool RailsSession::has_pending() const {
     const std::scoped_lock lock{pending_mutex_};
     return !pending_shapes_.empty() || !pending_carts_.empty() || !pending_touches_.empty() ||
-           !pending_inputs_.empty();
+           !pending_inputs_.empty() || !pending_restores_.empty();
 }
 
 i32 RailsSession::vehicle_of(i32 player_id) const {
@@ -462,7 +462,66 @@ void RailsSession::before_entity_tick(entity::EntityWorld& world, ServerLevel& l
         carts_now_.swap(pending_carts_);
         touches_now_.swap(pending_touches_);
         inputs_now_.swap(pending_inputs_);
+        restores_now_.swap(pending_restores_);
     }
+    // ── persistence ── the carts that came back with their riders
+    for (PendingRestore& restore : restores_now_) {
+        if (host.player_ready && !host.player_ready(restore.player_id)) {
+            if (++restore.waited < 1200) {
+                const std::scoped_lock lock{pending_mutex_};
+                pending_restores_.push_back(std::move(restore));
+            } else {
+                OV_LOG_WARN("minecart: player {} never arrived to ride the cart from their file "
+                            "— the cart is dropped",
+                            restore.player_id);
+            }
+            continue;
+        }
+        const nbt::Tag* entity = restore.root_vehicle.find("Entity");
+        if (entity == nullptr) {
+            continue;
+        }
+        const auto               uuid = uuid_of(*entity);
+        std::optional<net::Uuid> attach;
+        if (const nbt::Tag* ints = restore.root_vehicle.find("Attach")) {
+            nbt::Tag wrap = nbt::Tag::make_compound();
+            put(wrap, "UUID", *ints);
+            attach = uuid_of(wrap);
+        }
+        // The cart may be here already: a world saved with it in its chunk.
+        i32 cart_id = -1;
+        for (const auto& [id, cart] : carts_) {
+            const entity::EntityState* state = world.state(cart.handle);
+            if (state != nullptr && uuid && state->uuid == *uuid && cart.rider < 0) {
+                cart_id = id;
+                break;
+            }
+        }
+        if (cart_id < 0) {
+            const auto handle = adopt_saved(world, *entity);
+            if (!handle) {
+                OV_LOG_WARN("minecart: the vehicle in player {}'s file is not a cart this server "
+                            "runs — not put back",
+                            restore.player_id);
+                continue;
+            }
+            const entity::EntityState* state = world.state(*handle);
+            cart_id                          = state->network_id;
+            spawn_packets(world, *state, host.broadcast);
+        }
+        if (attach && uuid && *attach != *uuid) {
+            OV_LOG_WARN("minecart: player {} sat in an entity riding the cart, not in the cart — "
+                        "the cart is back, the player is not in it",
+                        restore.player_id);
+            continue;
+        }
+        const auto cart = carts_.find(cart_id);
+        if (cart != carts_.end() && !vehicle_of_.contains(restore.player_id)) {
+            mount(world, cart->second, cart_id, restore.player_id, host);
+            OV_LOG_INFO("minecart: player {} is back in their cart", restore.player_id);
+        }
+    }
+    restores_now_.clear();
     for (const PendingShape& shape : shapes_now_) {
         const registry::BlockStateId state = level.block_at(shape.pos);
         if (!rails_.is_rail(state)) {
@@ -768,6 +827,58 @@ void RailsSession::release(entity::EntityWorld& world, entity::EntityHandle hand
         press = press->second == state->network_id ? pressed_.erase(press) : std::next(press);
     }
     carts_.erase(it);
+}
+
+// ── persistence: RootVehicle ────────────────────────────────────────────────
+
+std::optional<TakenVehicle> RailsSession::take_vehicle(entity::EntityWorld& world, i32 player_id) {
+    {
+        // Left before their cart was put back: it goes back into the file.
+        const std::scoped_lock lock{pending_mutex_};
+        for (auto it = pending_restores_.begin(); it != pending_restores_.end(); ++it) {
+            if (it->player_id == player_id) {
+                TakenVehicle taken{std::move(it->root_vehicle), -1};
+                pending_restores_.erase(it);
+                return taken;
+            }
+        }
+    }
+    const auto vehicle = vehicle_of_.find(player_id);
+    if (vehicle == vehicle_of_.end()) {
+        return std::nullopt;
+    }
+    const i32  cart_id = vehicle->second;
+    const auto cart    = carts_.find(cart_id);
+    if (cart == carts_.end()) {
+        vehicle_of_.erase(vehicle);
+        return std::nullopt;
+    }
+    const entity::EntityState*     state = world.state(cart->second.handle);
+    const gameplay::MinecartLogic* logic = logic_of(world, cart->second.handle);
+    if (state == nullptr || logic == nullptr) {
+        return std::nullopt;
+    }
+    // The cart as it is saved, its rider not among its passengers: the
+    // player is the one holding it.
+    TakenVehicle taken;
+    taken.root_vehicle = nbt::Tag::make_compound();
+    put(taken.root_vehicle, "Attach", uuid_tag(state->uuid));
+    put(taken.root_vehicle, "Entity", cart_nbt(*state, logic->body()));
+    taken.cart_id = cart_id;
+    const entity::EntityHandle handle = cart->second.handle;
+    for (auto press = pressed_.begin(); press != pressed_.end();) {
+        press = press->second == cart_id ? pressed_.erase(press) : std::next(press);
+    }
+    carts_.erase(cart);
+    vehicle_of_.erase(player_id);
+    controls_.erase(player_id);
+    (void)world.remove(handle);
+    return taken;
+}
+
+void RailsSession::request_restore(i32 player_id, nbt::Tag root_vehicle) {
+    const std::scoped_lock lock{pending_mutex_};
+    pending_restores_.push_back(PendingRestore{player_id, std::move(root_vehicle), 0});
 }
 
 }  // namespace ov::server

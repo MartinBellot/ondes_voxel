@@ -199,6 +199,8 @@ public:
     [[nodiscard]] registry::BlockStateId state() const noexcept { return state_; }
     [[nodiscard]] BlockPos               start() const noexcept { return start_; }
     [[nodiscard]] i32                    time() const noexcept { return time_; }
+    /// ── persistence ── A falling block read from disk goes on from its `Time`.
+    void set_time(i32 time) noexcept { time_ = time; }
 
 private:
     const FallingBlocks*   rules_;

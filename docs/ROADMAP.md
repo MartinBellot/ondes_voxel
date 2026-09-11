@@ -307,7 +307,14 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] Murets : `low`, `tall` et le poteau, relevés avec le bloc du dessus
 - [x] Durées de cassage et outils corrects : vérifiés tick pour tick sur 985 des 996 blocs
 - [x] Tables de butin, Silk Touch et Fortune : tirages comparés à ceux du vrai serveur
-- [x] Entités objet : les butins tombent au sol et se ramassent *(sans gravité ni sauvegarde)*
+- [x] Entités objet : les butins tombent au sol et se ramassent *(sans gravité)*
+      *(**2026-09-11 — persistance** : objets et orbes **sauvés** dans le chunk où ils sont,
+      par dimension (`Item`, `Age` court, `PickupDelay`, `Health` ; `Value` court, `Count`
+      entier — types relevés sur le vrai serveur), relus avec leur âge : ils partent au même
+      tick qu'avant. Avec eux : flèches plantées et ramassables, tridents, lancers en vol,
+      TNT amorcée (`Fuse`), sable qui tombe (`BlockState`, `Time`), nuages, mobs du Nether
+      (`DIM-1/entities`), dragon et cristaux (`DIM1/entities`), et le wagonnet du joueur
+      (`RootVehicle`). Voir `docs/provenance/persistance-entites.md`)*
 - [x] Conteneurs : ouverture, clic gauche et droit, hotbar
 - [x] Shift-clic : fusion jusqu'à la taille de pile réelle, mesurée item par item
 - [x] Glissés, touches numériques, lâcher d'objet, inventaire autoritatif en survie
@@ -704,6 +711,11 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       serveur relu par le nôtre (24/24 sur le fil), réécrit, et relu par le
       vrai serveur (24/24). `NoAI` est rendu mais ignoré. Voir
       `docs/provenance/mobs-3.md`)*
+      *(**2026-09-11 — persistance** : les mobs du **Nether** aussi, dans `DIM-1/entities`,
+      par un stockage à eux — main principale et taille du cube de magma relues ; le
+      **dragon** et les **cristaux** dans `DIM1/entities` : santé, phase et position
+      revenues, un cristal détruit ne revient pas, le combat ne redémarre plus. Voir
+      `docs/provenance/persistance-entites.md`)*
 - [ ] **Passifs (32)** : allay, axolotl, bat, camel, cat, chicken, cod, cow,
       donkey, fox, frog, glow_squid, horse, mooshroom, mule, ocelot, parrot,
       pig, pufferfish, rabbit, salmon, sheep, skeleton_horse, sniffer,
