@@ -43,7 +43,14 @@
 
 namespace ov::worldgen {
 
-enum class PieceKind : u8 { Igloo, Shipwreck, OceanRuin, RuinedPortal, BuriedTreasure };
+enum class PieceKind : u8 {
+    Igloo,
+    Shipwreck,
+    OceanRuin,
+    RuinedPortal,
+    BuriedTreasure,
+    NetherFossil,  // ── nether-2 ──
+};
 
 [[nodiscard]] std::string_view to_string(PieceKind kind) noexcept;
 

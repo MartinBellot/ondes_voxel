@@ -37,6 +37,12 @@
 #include "ov/worldgen/density.hpp"
 #include "ov/worldgen/feature.hpp"
 #include "ov/worldgen/pipeline.hpp"
+#include "ov/worldgen/structure_pieces.hpp"  // ── nether-2 ── the fossils
+#include "ov/worldgen/structure_set.hpp"     // ── nether-2 ──
+#include "ov/worldgen/structure_stage.hpp"   // ── nether-2 ──
+
+#include <memory>
+#include <optional>
 #include "ov/worldgen/surface_system.hpp"
 
 #include <fmt/format.h>
@@ -74,6 +80,17 @@ struct Options {
     /// `minecraft:full` chunks to run through the pipeline with the Nether's
     /// decorator: the features' parity, and the list of what is not built.
     i32 full_chunks{0};
+    /// ── nether-2 ── With `--full`: take one `full` chunk in this many, in
+    /// file order, so that a sample spans every patch (and every biome) of
+    /// the reference world rather than the first region file's.
+    i32 full_stride{1};
+    /// ── nether-2 ── Compare every Nether fossil start the game stored with
+    /// the one our builder draws from the seed alone (template, rotation,
+    /// origin), over our own base column.
+    bool                  fossils{false};
+    std::filesystem::path jar{"tools/vanilla/server.jar"};
+    /// ── nether-2 ── `--full` without the structure stage: the "before" arm.
+    bool no_structures{false};
     /// Print this many surface-block disagreements in full: position, biome,
     /// and the column around it on both sides. Only pairs of blocks the
     /// surface rules place, so a feature's neighbour write does not crowd out
@@ -120,6 +137,14 @@ struct Options {
             options.show = std::atoi(value("--show=").c_str());
         } else if (argument.starts_with("--full=")) {
             options.full_chunks = std::atoi(value("--full=").c_str());
+        } else if (argument == "--fossils") {  // ── nether-2 ──
+            options.fossils = true;
+        } else if (argument == "--no-structures") {  // ── nether-2 ──
+            options.no_structures = true;
+        } else if (argument.starts_with("--jar=")) {  // ── nether-2 ──
+            options.jar = value("--jar=");
+        } else if (argument.starts_with("--full-stride=")) {  // ── nether-2 ──
+            options.full_stride = std::max(1, std::atoi(value("--full-stride=").c_str()));
         } else if (argument.starts_with("--pairs=")) {
             options.pairs = std::atoi(value("--pairs=").c_str());
         } else if (argument.starts_with("--portal=")) {
@@ -536,6 +561,137 @@ int place_portals(const Options& options, const registry::BlockRegistry& blocks,
     return 0;
 }
 
+// ── nether-2 ── The fossils ─────────────────────────────────────────────────
+
+/// Our generator as a structure sees it: the base column (noise alone) and the
+/// biome at a block. The two heights are never asked by a fossil.
+class FossilSampler final : public worldgen::StructureWorldSampler {
+public:
+    explicit FossilSampler(const worldgen::ChunkGenerator& generator) : generator_(generator) {}
+    [[nodiscard]] std::string_view biome_at(i32 x, i32 y, i32 z) const override {
+        return generator_.biome_name_at(x, y, z);
+    }
+    [[nodiscard]] i32 surface_height(i32, i32) const override { return 128; }
+    [[nodiscard]] i32 ocean_floor_height(i32, i32) const override { return 128; }
+    [[nodiscard]] std::optional<bool> base_solid(i32 x, i32 y, i32 z) const override {
+        return generator_.is_solid(x, y, z);
+    }
+
+private:
+    const worldgen::ChunkGenerator& generator_;
+};
+
+/// Every `minecraft:nether_fossil` start the game stored, against ours from
+/// the seed: template, rotation, origin. The draws are all in the start, so a
+/// wrong order shows on the first one.
+int compare_fossils(const Options& options, const registry::BlockRegistry& blocks,
+                    const worldgen::ChunkGenerator&           generator,
+                    const std::vector<std::filesystem::path>& files) {
+    auto tags = worldgen::BlockTags::load(options.data, blocks);
+    if (!tags) {
+        OV_LOG_ERROR("block tags did not load");
+        return 1;
+    }
+    std::string detail;
+    auto builder = worldgen::StructureBuilder::load(options.jar, options.data, blocks, *tags, &detail);
+    if (!builder) {
+        OV_LOG_ERROR("templates: {}", detail);
+        return 1;
+    }
+    worldgen::StructureDefinition fossil;
+    fossil.name = "minecraft:nether_fossil";
+    fossil.kind = worldgen::StructureKind::NetherFossil;
+    const FossilSampler sampler{generator};
+
+    usize starts = 0, exact = 0, same_xz = 0, same_template = 0, same_rotation = 0;
+    usize refused = 0;
+    std::map<i32, usize> dy_histogram;
+    std::map<std::string, usize> reasons;
+    std::vector<std::string> shown;
+    for (const auto& file : files) {
+        auto region = nbt::RegionFile::open(file);
+        if (!region) {
+            continue;
+        }
+        for (u32 index = 0; index < 1024; ++index) {
+            const u32 lx = index % 32;
+            const u32 lz = index / 32;
+            if (!region->has_chunk(lx, lz)) {
+                continue;
+            }
+            auto document = region->read_chunk(lx, lz);
+            if (!document) {
+                continue;
+            }
+            const nbt::Tag* structures = document->root.find("structures");
+            const nbt::Tag* all        = structures != nullptr ? structures->find("starts") : nullptr;
+            const nbt::Tag* start      = all != nullptr ? all->find("minecraft:nether_fossil") : nullptr;
+            if (start == nullptr || start->find("id") == nullptr ||
+                start->find("id")->as_string() == "INVALID") {
+                continue;
+            }
+            const nbt::Tag* children = start->find("Children");
+            const auto*     list     = children != nullptr ? children->list() : nullptr;
+            if (list == nullptr || list->empty()) {
+                continue;
+            }
+            const nbt::Tag& piece = list->front();
+            const i32 cx = static_cast<i32>(start->find("ChunkX")->as_i64());
+            const i32 cz = static_cast<i32>(start->find("ChunkZ")->as_i64());
+            const std::string_view tpl = piece.find("Template")->as_string();
+            const std::string_view rot = piece.find("Rot")->as_string();
+            const BlockPos         origin{static_cast<i32>(piece.find("TPX")->as_i64()),
+                                  static_cast<i32>(piece.find("TPY")->as_i64()),
+                                  static_cast<i32>(piece.find("TPZ")->as_i64())};
+            ++starts;
+            const auto ours = builder->generate(fossil, options.seed, cx, cz, &sampler);
+            if (!ours || ours->pieces.empty()) {
+                ++refused;
+                ++reasons[ours ? std::string{"no piece"} : ours.error()];
+                continue;
+            }
+            const worldgen::StructurePiece& mine = ours->pieces.front();
+            const std::string_view rotation_names[] = {"NONE", "CLOCKWISE_90", "CLOCKWISE_180",
+                                                       "COUNTERCLOCKWISE_90"};
+            const std::string_view my_rot = rotation_names[static_cast<usize>(mine.rotation)];
+            const bool t_ok  = mine.template_name == tpl;
+            const bool r_ok  = my_rot == rot;
+            const bool xz_ok = mine.origin.x == origin.x && mine.origin.z == origin.z;
+            same_template += t_ok ? 1 : 0;
+            same_rotation += r_ok ? 1 : 0;
+            same_xz += xz_ok ? 1 : 0;
+            if (xz_ok) {
+                ++dy_histogram[mine.origin.y - origin.y];
+            }
+            if (t_ok && r_ok && xz_ok && mine.origin.y == origin.y) {
+                ++exact;
+            } else if (shown.size() < static_cast<usize>(options.show)) {
+                shown.push_back(fmt::format("  chunk ({}, {}): game {} {} ({}, {}, {}); ours {} {} "
+                                            "({}, {}, {})",
+                                            cx, cz, tpl, rot, origin.x, origin.y, origin.z,
+                                            mine.template_name, my_rot, mine.origin.x,
+                                            mine.origin.y, mine.origin.z));
+            }
+        }
+    }
+    fmt::print("\nnether fossils: {} starts stored by the game\n", starts);
+    fmt::print("  template {} / {}, rotation {} / {}, origin x,z {} / {}\n", same_template, starts,
+               same_rotation, starts, same_xz, starts);
+    fmt::print("  **whole start identical (template, rotation, x, y, z): {} / {}**\n", exact, starts);
+    fmt::print("  our y minus the game's, where x and z agree:\n");
+    for (const auto& [dy, n] : dy_histogram) {
+        fmt::print("    {:+d}: {}\n", dy, n);
+    }
+    fmt::print("  refused by us: {}\n", refused);
+    for (const auto& [why, n] : reasons) {
+        fmt::print("    {} × {}\n", n, why);
+    }
+    for (const auto& line : shown) {
+        fmt::print("{}\n", line);
+    }
+    return 0;
+}
+
 /// Finished chunks, through the pipeline and the Nether's decorator.
 ///
 /// What a `full` chunk has that a `carvers` one has not is the features — and
@@ -563,12 +719,45 @@ int compare_full(const Options& options, const registry::BlockRegistry& blocks,
 
     worldgen::ChunkPipeline pipeline{generator, &*decorator, blocks, world::WorldShape::nether(),
                                      options.seed};
+
+    // ── nether-2 ── The structures this generator builds in the Nether — the
+    // fossils — placed by the pipeline's structure stage, as in the overworld.
+    // The placer only asks for the five Nether biomes' sets.
+    auto tags = worldgen::BlockTags::load(options.data, blocks);
+    auto sets = worldgen::StructureSetRegistry::load(options.data);
+    std::optional<worldgen::StructurePlacer>  placer;
+    std::optional<worldgen::StructureBuilder> builder;
+    std::unique_ptr<worldgen::StructureStage> stage;
+    const FossilSampler                       sampler{generator};
+    if (tags && sets) {
+        if (auto loaded = worldgen::StructurePlacer::load(options.data, *sets)) {
+            placer.emplace(std::move(*loaded));
+            placer->restrict_to_biomes({"minecraft:nether_wastes", "minecraft:crimson_forest",
+                                        "minecraft:warped_forest", "minecraft:soul_sand_valley",
+                                        "minecraft:basalt_deltas"});
+        }
+        std::string detail;
+        if (auto loaded = worldgen::StructureBuilder::load(options.jar, options.data, blocks, *tags,
+                                                           &detail)) {
+            builder.emplace(std::move(*loaded));
+        } else {
+            OV_LOG_WARN("templates: {} — no structures", detail);
+        }
+    }
+    if (placer && builder && !options.no_structures) {
+        stage = std::make_unique<worldgen::StructureStage>(*placer, *builder, &sampler, blocks,
+                                                           nullptr, options.seed);
+        pipeline.set_structures(&*placer, &sampler);
+        pipeline.set_structure_stage(stage.get());
+    }
     const auto name_of = [&](registry::BlockStateId state) -> std::string_view {
         return state == registry::kAirState ? std::string_view("minecraft:air")
                                             : blocks.block_name(blocks.block_of(state));
     };
 
     usize                        compared_chunks = 0;
+    usize                        full_seen       = 0;  // ── nether-2 ──
+    std::map<std::string, usize> ours_total;           // ── nether-2 ── how many we placed
     Count                        cells;
     std::map<std::string, Count> by_game_block;
     std::map<std::pair<std::string, std::string>, usize> confusion;
@@ -593,6 +782,9 @@ int compare_full(const Options& options, const registry::BlockRegistry& blocks,
                 reference.status != "minecraft:full") {
                 continue;
             }
+            if (full_seen++ % static_cast<usize>(options.full_stride) != 0) {  // ── nether-2 ──
+                continue;
+            }
             const world::Chunk& ours =
                 pipeline.promote(reference.chunk_x, reference.chunk_z, worldgen::ChunkStatus::Full);
             ++compared_chunks;
@@ -605,6 +797,7 @@ int compare_full(const Options& options, const registry::BlockRegistry& blocks,
                         ++cells.compared;
                         auto& per = by_game_block[std::string(game)];
                         ++per.compared;
+                        ++ours_total[std::string(mine)];  // ── nether-2 ──
                         if (game == mine) {
                             ++cells.agreed;
                             ++per.agreed;
@@ -615,14 +808,26 @@ int compare_full(const Options& options, const registry::BlockRegistry& blocks,
                 }
             }
             pipeline.trim(reference.chunk_x, reference.chunk_z, 3);
+            if (stage) {  // ── nether-2 ──
+                stage->trim(reference.chunk_x, reference.chunk_z, 3 + worldgen::StructureStage::kReach);
+            }
+        }
+    }
+    if (stage) {  // ── nether-2 ── what the structure stage did, and refused
+        const auto& stats = stage->stats();
+        fmt::print("\nstructure stage: {} starts built, {} placements, {} blocks written\n",
+                   stats.starts_built, stats.placements, stats.blocks_written);
+        for (const auto& [why, n] : stats.refused) {
+            fmt::print("  refused {} × {}\n", n, why);
         }
     }
 
     fmt::print("\nfull chunks through the pipeline: {} chunks, {} / {} blocks agree ({:.3f} %)\n",
                compared_chunks, cells.agreed, cells.compared, percent(cells.agreed, cells.compared));
     for (const auto& [name, count] : by_game_block) {
-        fmt::print("    {:<36} {:>9} / {:<9} {:.3f} %\n", name, count.agreed, count.compared,
-                   percent(count.agreed, count.compared));
+        // ── nether-2 ── and how many of that block we placed in all
+        fmt::print("    {:<36} {:>9} / {:<9} {:.3f} %   ours {}\n", name, count.agreed,
+                   count.compared, percent(count.agreed, count.compared), ours_total[name]);
     }
     std::vector<std::pair<usize, std::pair<std::string, std::string>>> ranked;
     for (const auto& [pair, n] : confusion) {
@@ -975,6 +1180,11 @@ int main(int argc, char** argv) {
         }
     }
 
+    if (options.fossils) {  // ── nether-2 ──
+        if (const int status = compare_fossils(options, *blocks, generator, files); status != 0) {
+            return status;
+        }
+    }
     if (options.full_chunks > 0) {
         return compare_full(options, *blocks, generator, *source, files);
     }

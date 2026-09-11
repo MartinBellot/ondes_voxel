@@ -37,6 +37,7 @@
 #include <expected>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -174,6 +175,14 @@ public:
     /// The first free y above the terrain in a column, treating water and lava
     /// as free. The sea bed.
     [[nodiscard]] virtual i32 ocean_floor_height(i32 x, i32 z) const = 0;
+
+    /// ── nether-2 ── Is the generator's **base** column solid here — the
+    /// noise alone, before surface rules and carvers (`getBaseColumn`)? A
+    /// Nether fossil looks for its floor in it. Nothing: this sampler cannot
+    /// say, and a structure that needs it is refused rather than guessed.
+    [[nodiscard]] virtual std::optional<bool> base_solid(i32 /*x*/, i32 /*y*/, i32 /*z*/) const {
+        return std::nullopt;
+    }
 };
 
 /// Why a chunk does or does not start a structure.

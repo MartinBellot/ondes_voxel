@@ -32,7 +32,8 @@ namespace {
         case StructureKind::Shipwreck:
         case StructureKind::OceanRuin:
         case StructureKind::RuinedPortal:
-        case StructureKind::BuriedTreasure: return true;
+        case StructureKind::BuriedTreasure:
+        case StructureKind::NetherFossil: return true;  // ── nether-2 ──
         default: return false;
     }
 }
