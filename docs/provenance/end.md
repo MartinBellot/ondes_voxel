@@ -158,6 +158,10 @@ et 5 du § 6 — et trois dans la sonde (pièges 6 et 7, et l'attente de chaque 
 
 ## 4. Le combat
 
+> **Suite : `docs/provenance/dragon.md`** (2026-09-11) — le vol et les phases, les cristaux qui
+> explosent, la boule de feu et le souffle, la mort animée et ses 12 000 points, `DragonFight` lu et
+> écrit, la réinvocation, mesurés contre le vrai serveur. Ce qui suit est l'état du premier jet.
+
 `ov_server/src/end_fight.{hpp,cpp}`. Ce qui est fait, et ce qui ne l'est pas, est écrit en tête
 du fichier ; en bref :
 
@@ -222,6 +226,9 @@ corrigé (§ 3).
 ---
 
 ## 5. Ce qui n'est pas fait — nommé
+
+Les lignes « Combat » ci-dessous sont celles du premier jet ; leur état actuel est dans
+`docs/provenance/dragon.md` § 9.
 
 | sujet | état |
 |---|---|

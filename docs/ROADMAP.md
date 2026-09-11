@@ -643,12 +643,19 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       vindicator, **warden**, witch, wither_skeleton, zoglin, zombie,
       zombie_villager
 - [ ] **Boss** : ender_dragon (phases, cristaux, combat complet), wither
-      *(**2026-09-11 — début du combat** : barre de boss (mêmes octets que le
-      jeu), cristaux qui soignent, parties du dragon qui le touchent, sa mort
-      qui ouvre le portail de sortie, pose l'œuf et une passerelle — en tests
-      unitaires. Le dragon **tourne en rond** : pas de vrai vol, pas de phase
-      `dying`, pas d'XP, pas de sauvegarde du combat, jamais tué de bout en
-      bout. Voir `docs/provenance/end.md`)*
+      *(**2026-09-11 — le combat contre l'Ender Dragon, côté serveur** : les
+      onze phases et leurs transitions documentées, les 24 nœuds, un vol ajusté
+      aux trajectoires du vrai serveur ; cristaux qui explosent (puissance 6),
+      −10 PV au dragon pour celui qui le soignait, strafe et boule de feu,
+      nuages de souffle (fiole), corps qui casse tout sauf `#dragon_immune`,
+      ailes et tête ; mort animée, **12 000 points** (500 ensuite) ;
+      `DragonFight` lu et écrit aux clés et types du jeu ; réinvocation par
+      quatre cristaux sur la chronologie mesurée (604 ticks). **Tué de bout en
+      bout** contre notre serveur à l'épée, sans commande. Restent : le
+      **rendu du dragon** dans notre client (aucun modèle : chantier à part), les
+      grandes embardées du vol (p90 du rayon 52 contre 78–84), la santé et la
+      position du dragon non sauvées, flèches et tridents qui ne le touchent pas ;
+      et le **wither**. Voir `docs/provenance/dragon.md`)*
 - [~] Projectiles
       *(**2026-09-10** : flèche, trident, boule de neige, œuf, perle, bouteille
       d'XP et potion jetable volent, se plantent et se ramassent ; arc,

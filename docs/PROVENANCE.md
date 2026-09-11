@@ -50,6 +50,7 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`feu.md`](provenance/feu.md) | Le feu qui se propage, la lave qui allume deux fois par tirage, et une fenêtre de dégâts de 10 ticks et non 11 |
 | [`alchimie.md`](provenance/alchimie.md) | L'alambic et les 43 potions : 2709/2709 recettes, et l'éclaboussure qui part d'où était la fiole |
 | [`end.md`](provenance/end.md) | L'End à 100 % des biomes et 99,9996 % des blocs, son portail, et un dragon qui ne vole pas encore |
+| [`dragon.md`](provenance/dragon.md) | Le combat contre l'Ender Dragon : phases, cristaux qui explosent (puissance 6), souffle, 12 000 points en dix lots, `DragonFight` aux clés du jeu, réinvocation en 604 ticks — mesurés contre le vrai serveur |
 | [`mobs-2.md`](provenance/mobs-2.md) | La loi de marche, l'apparition par biome, douze espèces, et les monstres qui n'apparaissaient jamais en surface la nuit |
 | [`nether.md`](provenance/nether.md) | Le Nether à 99,9 %, des portails là où le jeu les met, et le bruit de l'Overworld qui lisait ses octaves à l'envers |
 | [`son.md`](provenance/son.md) | Les sons de 1003 blocs et 79 créatures, relevés sur le fil, et le client qui les joue |
