@@ -119,6 +119,11 @@ public:
     [[nodiscard]] u8   emission(registry::BlockStateId state) const noexcept;
     [[nodiscard]] bool stops_light(registry::BlockStateId state) const noexcept;
 
+    /// The sections whose light the last `propagate`, `stitch` or
+    /// `light_chunk` wrote — what a client has to mesh again. Valid until the
+    /// next call.
+    [[nodiscard]] std::span<const SectionPos> changed_sections() const noexcept;
+
     /// The control of the equivalence test: propagate without the removal
     /// pass. Never set outside a test — the light it leaves is wrong, which is
     /// the point.

@@ -268,8 +268,9 @@ usize differences(Loaded& loaded, const Reference& ref, bool has_sky = true) {
 // ── Terrain ─────────────────────────────────────────────────────────────────
 
 /// A flat world of `side` x `side` chunks from (0, 0): stone up to y 0.
-Loaded flat(const registry::BlockRegistry& blocks, i32 side) {
-    Loaded     out;
+std::unique_ptr<Loaded> flat(const registry::BlockRegistry& blocks, i32 side) {
+    auto       holder = std::make_unique<Loaded>();
+    Loaded&    out    = *holder;
     const auto stone = state_of(blocks, "minecraft:stone");
     const auto air   = world::AirStates::from(blocks);
     for (i32 cz = 0; cz < side; ++cz) {
@@ -286,13 +287,13 @@ Loaded flat(const registry::BlockRegistry& blocks, i32 side) {
             out.chunks.emplace(std::pair{cx, cz}, std::move(chunk));
         }
     }
-    return out;
+    return holder;
 }
 
 /// Chunks read from a real world, read-only: `side` x `side` from
 /// (`first_x`, `first_z`). Missing chunks are left out, and are a hole the
 /// engine has to respect like any unloaded neighbour.
-std::optional<Loaded> real(const registry::BlockRegistry& blocks, const std::filesystem::path& dir,
+std::unique_ptr<Loaded> real(const registry::BlockRegistry& blocks, const std::filesystem::path& dir,
                            i32 first_x, i32 first_z, i32 side) {
     std::vector<std::string_view> biome_names(blocks.biome_count());
     for (u32 index = 0; index < blocks.biome_count(); ++index) {
@@ -303,7 +304,8 @@ std::optional<Loaded> real(const registry::BlockRegistry& blocks, const std::fil
     context.biome_names = biome_names;
     context.air         = world::AirStates::from(blocks);
 
-    Loaded                                               out;
+    auto                                                 holder = std::make_unique<Loaded>();
+    Loaded&                                              out    = *holder;
     std::map<std::pair<i32, i32>, std::optional<nbt::RegionFile>> regions;
     for (i32 cz = first_z; cz < first_z + side; ++cz) {
         for (i32 cx = first_x; cx < first_x + side; ++cx) {
@@ -333,9 +335,9 @@ std::optional<Loaded> real(const registry::BlockRegistry& blocks, const std::fil
         }
     }
     if (out.chunks.size() < 4) {
-        return std::nullopt;
+        return nullptr;
     }
-    return out;
+    return holder;
 }
 
 // ── Random edits ────────────────────────────────────────────────────────────
@@ -472,7 +474,8 @@ TEST_CASE("a torch lights its surroundings across a chunk border and goes out wh
     if (blocks == nullptr) {
         SKIP("registry.ovpack is not built");
     }
-    Loaded             loaded = flat(*blocks, 2);
+    auto               holder = flat(*blocks, 2);
+    Loaded&            loaded = *holder;
     world::LightEngine engine{*blocks};
     engine.light_region(loaded, loaded.positions());
 
@@ -507,7 +510,8 @@ TEST_CASE("a shaft opened to the sky fills with 15 and a roof puts it back in sh
     }
     for (const bool filtering : {false, true}) {
         CAPTURE(filtering);
-        Loaded             loaded = flat(*blocks, 3);
+        auto               holder = flat(*blocks, 3);
+        Loaded&            loaded = *holder;
         world::LightEngine engine{*blocks, world::LightRules{true, filtering}};
         engine.light_region(loaded, loaded.positions());
         const auto air   = world::AirStates::from(*blocks).air;
@@ -545,7 +549,8 @@ TEST_CASE("chunks lit alone and stitched as they arrive reach the region's fixed
     if (blocks == nullptr) {
         SKIP("registry.ovpack is not built");
     }
-    Loaded       full = flat(*blocks, 3);
+    auto         holder    = flat(*blocks, 3);
+    Loaded&      full      = *holder;
     const auto   glowstone = state_of(*blocks, "minecraft:glowstone");
     const auto   stone     = state_of(*blocks, "minecraft:stone");
     std::mt19937 random{11};
@@ -574,7 +579,8 @@ TEST_CASE("a dimension without sky keeps block light only", "[light]") {
     if (blocks == nullptr) {
         SKIP("registry.ovpack is not built");
     }
-    Loaded             loaded = flat(*blocks, 2);
+    auto               holder = flat(*blocks, 2);
+    Loaded&            loaded = *holder;
     world::LightEngine engine{*blocks, world::LightRules{false, false}};
     engine.light_region(loaded, loaded.positions());
     for (const auto& [pos, chunk] : loaded.chunks) {
@@ -597,13 +603,13 @@ TEST_CASE("random edits on flat terrain stay at the fixed point, and the control
     }
     for (const bool filtering : {false, true}) {
         CAPTURE(filtering);
-        Loaded honest = flat(*blocks, 3);
-        CHECK(run_edits(honest, *blocks, world::LightRules{true, filtering}, 5, 600, 1, false,
+        auto honest = flat(*blocks, 3);
+        CHECK(run_edits(*honest, *blocks, world::LightRules{true, filtering}, 5, 600, 1, false,
                         nullptr) == 0);
     }
     // The control: without the removal pass, a torch broken keeps shining.
-    Loaded control = flat(*blocks, 3);
-    CHECK(run_edits(control, *blocks, world::LightRules{}, 5, 600, 100, true, nullptr) > 0);
+    auto control = flat(*blocks, 3);
+    CHECK(run_edits(*control, *blocks, world::LightRules{}, 5, 600, 100, true, nullptr) > 0);
 }
 
 TEST_CASE("thousands of random edits on real worlds match a full recompute", "[light][real]") {
@@ -644,4 +650,224 @@ TEST_CASE("thousands of random edits on real worlds match a full recompute", "[l
     if (tried == 0) {
         SKIP("no real world under run/");
     }
+}
+
+// ── After an edit, against the real server ─────────────────────────────────
+//
+// A measurement: `test_ov_world "[.light-vanilla-edits]"`, after
+// scripts/measure_light_edits.py has written `.scratch/light-lab/{before,after}`.
+// Our light over `before`, the edits found by comparing the blocks of the two
+// saves and applied incrementally, then every cell whose light vanilla changed
+// between the two saves is compared with ours. The control is our light before
+// the edits: on those same cells it must be wrong.
+TEST_CASE("the light after an edit against what the real server wrote", "[.light-vanilla-edits]") {
+    const registry::BlockRegistry* blocks = registry_or_null();
+    if (blocks == nullptr) {
+        SKIP("registry.ovpack is not built");
+    }
+    const auto lab = std::filesystem::path{OV_SOURCE_DIR} / ".scratch" / "light-lab";
+    constexpr i32 kFirst = -2;
+    constexpr i32 kSide  = 8;
+    for (const bool filtering : {false, true}) {
+        auto before = real(*blocks, lab / "before", kFirst, kFirst, kSide);
+        auto after  = real(*blocks, lab / "after", kFirst, kFirst, kSide);
+        if (!before || !after) {
+            SKIP("run scripts/measure_light_edits.py first");
+        }
+        auto ours = real(*blocks, lab / "before", kFirst, kFirst, kSide);
+        world::LightEngine engine{*blocks, world::LightRules{true, filtering}};
+        engine.light_region(*ours, ours->positions());
+        // Our light before the edit, kept for the control.
+        auto control = real(*blocks, lab / "before", kFirst, kFirst, kSide);
+        engine.light_region(*control, control->positions());
+
+        usize edits = 0;
+        for (const auto& [pos, chunk] : after->chunks) {
+            world::Chunk* mine = ours->light_chunk(pos.first, pos.second);
+            if (mine == nullptr) {
+                continue;
+            }
+            const auto shape = chunk->shape();
+            for (i32 y = shape.min_y; y <= shape.max_y(); ++y) {
+                for (usize z = 0; z < 16; ++z) {
+                    for (usize x = 0; x < 16; ++x) {
+                        const auto state = chunk->get_block(x, y, z);
+                        if (mine->get_block(x, y, z) != state) {
+                            ours->set(*blocks, &engine,
+                                      BlockPos{pos.first * 16 + static_cast<i32>(x), y,
+                                               pos.second * 16 + static_cast<i32>(z)},
+                                      state);
+                            ++edits;
+                        }
+                    }
+                }
+            }
+        }
+        const auto stats = engine.propagate(*ours);
+
+        std::array<usize, 2> changed{}, same{}, control_same{};
+        for (const auto& [pos, chunk] : after->chunks) {
+            bool inner = true;
+            for (i32 dz = -1; dz <= 1; ++dz) {
+                for (i32 dx = -1; dx <= 1; ++dx) {
+                    inner = inner && after->chunks.contains({pos.first + dx, pos.second + dz}) &&
+                            ours->chunks.contains({pos.first + dx, pos.second + dz});
+                }
+            }
+            if (!inner) {
+                continue;
+            }
+            const world::Chunk& was = *before->chunks.at(pos);
+            const world::Chunk& now = *chunk;
+            const world::Chunk& us  = *ours->chunks.at(pos);
+            const world::Chunk& ctl = *control->chunks.at(pos);
+            const auto          shape = now.shape();
+            for (usize s = 0; s < shape.section_count(); ++s) {
+                const i32 bottom = shape.min_y + static_cast<i32>(s) * 16;
+                for (usize kind = 0; kind < 2; ++kind) {
+                    const auto array = [&](const world::Chunk& c) -> const world::LightArray& {
+                        const world::ChunkSection& section = *c.section_for_y(bottom);
+                        return kind == 0 ? section.sky_light() : section.block_light();
+                    };
+                    // A section vanilla did not store sky light for is not
+                    // compared: absent there means "not written", not dark.
+                    if (kind == 0 && (array(was).is_absent() || array(now).is_absent())) {
+                        continue;
+                    }
+                    for (usize i = 0; i < world::kLightCellCount; ++i) {
+                        if (array(was).get(i) == array(now).get(i)) {
+                            continue;
+                        }
+                        ++changed[kind];
+                        same[kind] += static_cast<usize>(array(us).get(i) == array(now).get(i));
+                        control_same[kind] +=
+                            static_cast<usize>(array(ctl).get(i) == array(now).get(i));
+                    }
+                }
+            }
+        }
+        std::printf("filtering_dims_sky=%d: %zu edits found, %zu cells darkened, %zu raised\n",
+                    filtering ? 1 : 0, edits, stats.removed, stats.raised);
+        std::printf("  sky light:   %zu/%zu cells vanilla changed are identical (control %zu/%zu)\n",
+                    same[0], changed[0], control_same[0], changed[0]);
+        std::printf("  block light: %zu/%zu cells vanilla changed are identical (control %zu/%zu)\n",
+                    same[1], changed[1], control_same[1], changed[1]);
+    }
+    SUCCEED();
+}
+
+// ── Against the light vanilla itself stored ────────────────────────────────
+//
+// A measurement, not a test: run with `test_ov_world "[.light-vanilla]"`. A
+// world written by the real 1.20.1 server carries the light the game computed.
+// Our engine relights a copy from the blocks alone, and every cell of every
+// chunk whose eight neighbours are loaded (so that nothing from outside the
+// patch could have reached it) is compared with what vanilla wrote.
+//
+// Not `run/saves/New World` itself: every chunk of it is stored with
+// `isLightOn` unset — the game never finished lighting it and relights it on
+// load, so its light is no oracle. The world vanilla itself saved after
+// loading and relighting it is: `.scratch/light-lab/before`, written by
+// scripts/measure_light_edits.py.
+TEST_CASE("our light over a real 1.20.1 world against the light vanilla stored",
+          "[.light-vanilla]") {
+    const registry::BlockRegistry* blocks = registry_or_null();
+    if (blocks == nullptr) {
+        SKIP("registry.ovpack is not built");
+    }
+    const auto dir = std::filesystem::path{OV_SOURCE_DIR} / ".scratch" / "light-lab" / "before";
+    constexpr i32 kFirst = -4;
+    constexpr i32 kSide  = 8;
+    auto stored = real(*blocks, dir, kFirst, kFirst, kSide);
+    if (!stored) {
+        SKIP("no real world under run/saves");
+    }
+    for (const bool filtering : {false, true}) {
+        auto ours = real(*blocks, dir, kFirst, kFirst, kSide);
+        world::LightEngine engine{*blocks, world::LightRules{true, filtering}};
+        engine.light_region(*ours, ours->positions());
+
+        usize sky_same = 0, sky_total = 0, block_same = 0, block_total = 0;
+        usize absent_sections = 0, absent_but_lit = 0, chunks_compared = 0;
+        std::map<std::string, usize> sky_by_block;
+        std::map<std::string, usize> block_by_block;
+        std::map<int, usize>         sky_delta;
+        for (const auto& [pos, chunk] : ours->chunks) {
+            bool inner = true;
+            for (i32 dz = -1; dz <= 1; ++dz) {
+                for (i32 dx = -1; dx <= 1; ++dx) {
+                    inner = inner && ours->chunks.contains({pos.first + dx, pos.second + dz});
+                }
+            }
+            if (!inner) {
+                continue;
+            }
+            ++chunks_compared;
+            const world::Chunk& theirs = *stored->chunks.at(pos);
+            const auto          shape  = chunk->shape();
+            for (usize s = 0; s < shape.section_count(); ++s) {
+                const i32 bottom = shape.min_y + static_cast<i32>(s) * 16;
+                const world::ChunkSection& mine  = *chunk->section_for_y(bottom);
+                const world::ChunkSection& other = *theirs.section_for_y(bottom);
+                const bool sky_stored = !other.sky_light().is_absent();
+                if (!sky_stored) {
+                    ++absent_sections;
+                }
+                for (usize i = 0; i < world::kLightCellCount; ++i) {
+                    const auto name = [&] {
+                        const auto state = mine.blocks().get(i);
+                        return std::string{blocks->block_name(
+                            blocks->block_of(registry::BlockStateId{state}))};
+                    };
+                    if (sky_stored) {
+                        ++sky_total;
+                        const int a = mine.sky_light().get(i);
+                        const int b = other.sky_light().get(i);
+                        if (a == b) {
+                            ++sky_same;
+                        } else {
+                            ++sky_by_block[name()];
+                            ++sky_delta[a - b];
+                        }
+                    } else if (mine.sky_light().get(i) != 0) {
+                        ++absent_but_lit;
+                    }
+                    ++block_total;
+                    if (mine.block_light().get(i) == other.block_light().get(i)) {
+                        ++block_same;
+                    } else {
+                        ++block_by_block[name()];
+                    }
+                }
+            }
+        }
+        std::printf("filtering_dims_sky=%d over %zu inner chunks:\n", filtering ? 1 : 0,
+                    chunks_compared);
+        std::printf("  sky light   %zu/%zu identical (%zu differ) in sections vanilla stored\n",
+                    sky_same, sky_total, sky_total - sky_same);
+        std::printf("  block light %zu/%zu identical (%zu differ)\n", block_same, block_total,
+                    block_total - block_same);
+        std::printf("  %zu sections with no stored sky light; %zu of their cells are lit by us\n",
+                    absent_sections, absent_but_lit);
+        const auto top = [](const std::map<std::string, usize>& counts, const char* what) {
+            std::vector<std::pair<usize, std::string>> sorted;
+            for (const auto& [name, count] : counts) {
+                sorted.emplace_back(count, name);
+            }
+            std::ranges::sort(sorted, std::greater<>{});
+            std::printf("  %s differences by block at the cell:", what);
+            for (usize i = 0; i < std::min<usize>(sorted.size(), 10); ++i) {
+                std::printf(" %s %zu,", sorted[i].second.c_str(), sorted[i].first);
+            }
+            std::printf("\n");
+        };
+        top(sky_by_block, "sky");
+        top(block_by_block, "block");
+        std::printf("  sky (ours - vanilla):");
+        for (const auto& [delta, count] : sky_delta) {
+            std::printf(" %+d:%zu", delta, count);
+        }
+        std::printf("\n");
+    }
+    SUCCEED();
 }

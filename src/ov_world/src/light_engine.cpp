@@ -68,7 +68,14 @@ struct LightEngine::Impl {
     std::vector<Node>          removal;
     std::vector<Node>          increase;
     std::vector<Node>          reseed;
-    std::vector<ChunkSection*> touched;
+
+    /// Sections written during a call, for compaction and for the caller.
+    struct Touched {
+        ChunkSection* section;
+        SectionPos    pos;
+    };
+    std::vector<Touched>    touched;
+    std::vector<SectionPos> changed;
 
     // Chunk lookups are a virtual call and a hash probe on the caller's side;
     // a flood asks for the same few chunks hundreds of thousands of times. A
@@ -87,6 +94,7 @@ struct LightEngine::Impl {
         ChunkSection* section{nullptr};
         usize         index{0};
         i32           max_y{0};
+        SectionPos    where{};
     };
 
     void begin(LightChunkSource& chunks) {
@@ -118,6 +126,7 @@ struct LightEngine::Impl {
         out.index   = section_index(static_cast<usize>(x & 15), static_cast<usize>(y & 15),
                                     static_cast<usize>(z & 15));
         out.max_y   = chunk->shape().max_y();
+        out.where   = SectionPos{x >> 4, y >> 4, z >> 4};
         return true;
     }
 
@@ -135,8 +144,8 @@ struct LightEngine::Impl {
 
     void set(const Cell& cell, u8 kind, u8 value) {
         array_of(*cell.section, kind).set(cell.index, value);
-        if (touched.empty() || touched.back() != cell.section) {
-            touched.push_back(cell.section);
+        if (touched.empty() || touched.back().section != cell.section) {
+            touched.push_back(Touched{cell.section, cell.where});
         }
     }
 
@@ -230,12 +239,14 @@ struct LightEngine::Impl {
     }
 
     void finish() {
-        std::ranges::sort(touched);
-        const auto [first, last] = std::ranges::unique(touched);
+        std::ranges::sort(touched, {}, &Touched::section);
+        const auto [first, last] = std::ranges::unique(touched, {}, &Touched::section);
         touched.erase(first, last);
-        for (ChunkSection* section : touched) {
-            section->sky_light().compact();
-            section->block_light().compact();
+        changed.clear();
+        for (const Touched& entry : touched) {
+            entry.section->sky_light().compact();
+            entry.section->block_light().compact();
+            changed.push_back(entry.pos);
         }
         touched.clear();
         source = nullptr;
@@ -432,8 +443,10 @@ struct LightEngine::Impl {
         }
         const WorldShape shape = chunk.shape();
         for (usize i = 0; i < shape.section_count(); ++i) {
-            if (ChunkSection* section = chunk.section_for_y(shape.min_y + static_cast<i32>(i) * 16)) {
-                touched.push_back(section);
+            const i32 bottom = shape.min_y + static_cast<i32>(i) * 16;
+            if (ChunkSection* section = chunk.section_for_y(bottom)) {
+                touched.push_back(Touched{
+                    section, SectionPos{chunk.position().x, bottom >> 4, chunk.position().z}});
             }
         }
         finish();
@@ -553,6 +566,10 @@ u8 LightEngine::emission(registry::BlockStateId state) const noexcept {
 
 bool LightEngine::stops_light(registry::BlockStateId state) const noexcept {
     return (impl_->info_of_state(state.value()) & kOpaqueBit) != 0;
+}
+
+std::span<const SectionPos> LightEngine::changed_sections() const noexcept {
+    return impl_->changed;
 }
 
 void LightEngine::testing_skip_removal(bool skip) noexcept { impl_->skip_removal = skip; }
