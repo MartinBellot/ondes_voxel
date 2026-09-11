@@ -171,6 +171,11 @@ struct ProjectileEvent {
     bool  target_is_player{false};
     /// Where the hit was.
     Vec3d point{};
+    /// ── brewing ── Where the projectile was when this tick began. A potion's
+    /// splash is measured from here, not from `point`: measured, a potion that
+    /// fell through a player and broke on the floor gave 909 of 1000, which is
+    /// its height 0.365 at the start of its last tick — the impact would be 0.
+    Vec3d from{};
     /// The velocity at the moment of the hit — what the damage is scaled by.
     Vec3d velocity{};
     /// What the projectile was, and who shot it. Carried here because a

@@ -956,7 +956,9 @@ ProjectileStats Projectiles::after_entity_tick(entity::EntityWorld& world,
                         if (const auto it = potion_items_.find(event.projectile);
                             it != potion_items_.end()) {
                             if (host.potion_broke) {
-                                host.potion_broke(event.point, it->second, event.target,
+                                // From the start of the breaking tick, as
+                                // measured — not the impact point.
+                                host.potion_broke(event.from, it->second, event.target,
                                                   event.target_is_player);
                             }
                             potion_items_.erase(it);

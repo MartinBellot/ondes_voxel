@@ -68,7 +68,7 @@ enum class SidedAccess : u8 {
     // ── brewing ──
     /// Five slots: three bottles, the ingredient, the fuel. The ingredient
     /// from above, bottles and blaze powder from the sides, and out through
-    /// the bottom — checked by `scripts/measure_brewing.py faces`.
+    /// the bottom — measured, 13 cells of `scripts/measure_brewing.py faces`.
     BrewingStand,
 };
 

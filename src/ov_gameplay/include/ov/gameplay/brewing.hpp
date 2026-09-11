@@ -136,18 +136,20 @@ struct Bottle {
 /// keeps the potion; a potion mix keeps the bottle and changes the potion.
 [[nodiscard]] std::optional<Bottle> brew(const Bottle& bottle, std::string_view ingredient) noexcept;
 
-/// What the ingredient leaves behind after a brew. Dragon's breath leaves its
-/// glass bottle (wiki; checked by the `timing` campaign).
+/// What the ingredient leaves behind after a brew: dragon's breath's glass
+/// bottle. Measured (`timing`): it is dropped beside the stand when breath is
+/// left in the slot, and **lost** when that was the last one — the slot comes
+/// back empty, against the wiki.
 [[nodiscard]] std::string_view brewing_remainder(std::string_view ingredient) noexcept;
 
 // ── The brewing stand ───────────────────────────────────────────────────────
 
-/// Ticks from the start of a brew to the bottles changing. Wiki; checked by
-/// the `timing` campaign.
+/// Ticks from the start of a brew to the bottles changing. Measured
+/// (`timing`): started on tick 1 at 400, changed on tick 401.
 inline constexpr i32 kBrewTicks = 400;
 
-/// Brews one blaze powder pays for. Wiki; the `timing` campaign reads the
-/// refuel and the fuel at the start of each brew.
+/// Brews one blaze powder pays for. Measured (`timing`): a refuel reads 20 and
+/// three consecutive brews start at 18, 17, 16 — one each, taken as it starts.
 inline constexpr i32 kFuelPerPowder = 20;
 
 /// The stand's five slots as the rules read them. Built by the caller from the
@@ -170,7 +172,9 @@ struct StandState {
     i32 brew_time{0};
     i32 fuel{0};
     /// The ingredient the brew in progress started with. Taking it out, or
-    /// swapping it for another, stops the brew.
+    /// swapping it for another, stops the brew. Not saved — and measured
+    /// (`timing`): a chunk unloaded at BrewTime 314, fuel 19, reloads to 396
+    /// and 18. Vanilla forgets it too, abandons the brew and starts again.
     std::string_view brewing{};
 };
 
@@ -188,8 +192,7 @@ struct StandTick {
     std::array<std::optional<Bottle>, 3> results{};
 };
 
-/// One tick of a brewing stand. The rules, in the order the `timing` campaign
-/// checks:
+/// One tick of a brewing stand. The rules, in the order measured (`timing`):
 ///
 ///   * out of fuel with blaze powder in slot 4: refuel to 20, one powder used;
 ///   * brewing: count down; at zero, brew if the mix still holds; stop as soon
@@ -233,14 +236,18 @@ void splash_effects(std::span<const PotionEffect> effects, f64 factor, ActiveEff
                     EffectTarget& target);
 
 /// An arrow's effect lasts an eighth of the potion's, at least one tick.
+/// Measured (`arrow`): swiftness 450, long swiftness 1200, poison 112, strong
+/// poison 54, turtle master 50 and 50.
 [[nodiscard]] i32 arrow_duration(i32 duration) noexcept;
 
 /// A spectral arrow makes its target glow this long.
 inline constexpr i32 kSpectralGlowTicks = 200;
 
-/// Apply a tipped arrow's effects to what it hit.
-void arrow_effects(std::span<const PotionEffect> effects, ActiveEffects& active,
-                   EffectTarget& target);
+/// Apply a tipped arrow's effects to what it hit: the potion's own at an
+/// eighth, its `CustomPotionEffects` **at full length** — measured, a custom
+/// speed of 5 ticks arrived as 5, where an eighth would have been 1.
+void arrow_effects(std::span<const PotionEffect> potion, std::span<const PotionEffect> custom,
+                   ActiveEffects& active, EffectTarget& target);
 
 // ── The lingering cloud ─────────────────────────────────────────────────────
 

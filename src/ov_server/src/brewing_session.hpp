@@ -50,6 +50,9 @@ struct PotionContents {
     /// The potion's effects, then its `CustomPotionEffects`, as vanilla lists
     /// them.
     std::vector<gameplay::PotionEffect> effects;
+    /// How many of `effects` are the potion's own; the rest are custom. An
+    /// arrow cuts only the first ones to an eighth — measured.
+    usize own{0};
     /// The `Potion` tag named something that is not one of the forty-three.
     /// Vanilla reads that as `minecraft:empty`; so does this, and says so.
     bool unknown_name{false};

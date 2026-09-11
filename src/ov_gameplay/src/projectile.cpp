@@ -323,6 +323,7 @@ std::optional<ProjectileEvent> step_projectile(entity::EntityState& state, Proje
                                       : ProjectileEvent::Kind::Broke,
                                 state.network_id, hit_target->network_id, hit_target->player,
                                 point, v};
+        event->from = from;  // ── brewing ──
         if (!arrow) {
             state.position = point;
             state.removed  = true;
@@ -338,6 +339,7 @@ std::optional<ProjectileEvent> step_projectile(entity::EntityState& state, Proje
         if (!is_arrow_like(data.kind)) {
             event = ProjectileEvent{ProjectileEvent::Kind::Broke, state.network_id, 0, false,
                                     block->point, v};
+            event->from = from;  // ── brewing ──
             state.position = block->point;
             state.removed  = true;
             return event;

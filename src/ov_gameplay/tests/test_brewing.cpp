@@ -7,6 +7,7 @@
 // skip, rather than passing on an empty comparison. The other cases hold the
 // numbers the campaigns established, so they run everywhere.
 #include "ov/gameplay/brewing.hpp"
+#include "ov/gameplay/projectile.hpp"
 #include "ov/registry/registries.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -172,6 +173,9 @@ TEST_CASE("potion colours", "[brewing]") {
     // Poison alone is poison's own measured colour, as the arrow metadata
     // campaign of projectiles.md read it: 8889187.
     CHECK(potion_color(Potion::Poison) == 8889187U);
+    // The swiftness and strong healing clouds' index 9 (`lingering`).
+    CHECK(potion_color(Potion::LongSwiftness) == 3402751U);
+    CHECK(potion_color(Potion::StrongHealing) == 16262179U);
 }
 
 // ── Parity: the raw campaigns ───────────────────────────────────────────────
@@ -201,8 +205,12 @@ TEST_CASE("every bottle the real server brewed", "[brewing][parity]") {
         std::optional<Bottle>  expected;
         simdjson::dom::array   out;
         if (row["out"].get(out) == simdjson::SUCCESS) {
-            const Bottle now = bottle_of(out.at(0).get_string().value(),
-                                         out.at(1).get_string().value());
+            // Measured: vanilla **removes** the `Potion` tag of an uncraftable
+            // potion, so a brewed `minecraft:empty` comes back with no tag at
+            // all — which is what "no tag" means, and read as such.
+            std::string_view potion_out = "minecraft:empty";
+            (void)out.at(1).get(potion_out);
+            const Bottle now = bottle_of(out.at(0).get_string().value(), potion_out);
             if (!(now == in)) {
                 expected = now;
             }
@@ -270,9 +278,45 @@ TEST_CASE("every potion the real server's bot drank", "[brewing][parity]") {
 
 namespace {
 
-/// A measured campaign, or nothing (and a warning) when it has not run.
+/// Squared distance from where the `splash` campaign's potion was when its
+/// breaking tick began to the bot's feet.
+///
+/// r > 0: summoned 0.01 above the floor at horizontal distance r, moving down
+/// at 0.2 — it breaks in its first tick, from where it was summoned.
+///
+/// r = 0 was meant as a direct hit and is not one: dropped from 2 blocks up at
+/// −0.5, the potion fell **through** the bot without touching it and broke on
+/// the floor. Its own fall — the projectile module's gravity and drag — puts it
+/// 0.365 up when that last tick began, and the real server's 909 of 1000 is
+/// exactly `1 − 0.365 / 4`. The impact point would have given 1000.
+[[nodiscard]] f64 campaign_distance_sq(f64 r) {
+    if (r > 0.0) {
+        return r * r + 0.0001;
+    }
+    const ProjectileMotion motion = projectile_motion(ProjectileKind::Potion);
+    f64                    y      = 2.0;
+    f64                    v      = -0.5;
+    while (y + v > 0.0) {
+        y += v;
+        v = v * motion.air_drag - motion.gravity;
+    }
+    return y * y;
+}
+
+/// A measured campaign, or nothing (and a warning) when it has not run. The
+/// follow-up run's file wins when it holds the campaign without an error.
 [[nodiscard]] std::optional<simdjson::dom::element> campaign(simdjson::dom::parser& parser,
                                                              std::string_view       name) {
+    if (const auto followup = normalized("brewing_followup.json");
+        std::filesystem::exists(followup)) {
+        simdjson::dom::element document;
+        simdjson::dom::element out;
+        if (parser.load(followup.string()).get(document) == simdjson::SUCCESS &&
+            document[name].get(out) == simdjson::SUCCESS &&
+            out["error"].error() != simdjson::SUCCESS) {
+            return out;
+        }
+    }
     const auto path = normalized("brewing.json");
     if (!std::filesystem::exists(path)) {
         WARN("no brewing.json — run scripts/measure_brewing.py");
@@ -315,9 +359,8 @@ TEST_CASE("the splash law against the bot's Entity Effects", "[brewing][parity]"
     for (const auto& [label, base] :
          {std::pair{std::string_view{"speed_1000"}, 1000}, std::pair{std::string_view{"speed_100"}, 100}}) {
         for (auto [key, row] : (*splash)[label].get_object().value()) {
-            const f64 r = std::stod(std::string{key});
-            // The potion broke a hundredth of a block above the bot's floor.
-            const f64  factor = splash_factor(r * r + 0.0001, r == 0.0);
+            const f64  r      = std::stod(std::string{key});
+            const f64  factor = splash_factor(campaign_distance_sq(r), false);
             const i32  expect = splash_duration(base, factor);
             const auto got    = measured_effect(row["effects"], "minecraft:speed");
             INFO(label << " at r = " << r);
@@ -332,7 +375,7 @@ TEST_CASE("the splash law against the bot's Entity Effects", "[brewing][parity]"
     }
     for (auto [key, row] : (*splash)["heal_amp1"].get_object().value()) {
         const f64 r      = std::stod(std::string{key});
-        const f64 factor = splash_factor(r * r + 0.0001, r == 0.0);
+        const f64 factor = splash_factor(campaign_distance_sq(r), false);
         const f64 before = row["health_before"].get_double().value();
         const f64 after  = row["health_after"].get_double().value();
         Target    target{static_cast<f32>(before)};
@@ -364,9 +407,20 @@ TEST_CASE("tipped and spectral arrows against the bot's Entity Effects", "[brewi
             }
             continue;
         }
+        if (nbt.find("CustomPotionEffects") != std::string_view::npos) {
+            // A custom speed of 5 ticks, which an eighth would have made 1.
+            const auto custom = measured_effect(row["effects"], "minecraft:speed");
+            REQUIRE(custom.has_value());
+            ActiveEffects active;
+            Target        victim{20.0F};
+            const std::array<PotionEffect, 1> five{{{Effect::Speed, 5, 0}}};
+            arrow_effects({}, five, active, victim);
+            CHECK(custom->second == active.get(Effect::Speed)->duration);
+            ++checked;
+            continue;
+        }
         const auto quote = nbt.find("Potion:\"");
-        if (quote == std::string_view::npos ||
-            nbt.find("CustomPotionEffects") != std::string_view::npos) {
+        if (quote == std::string_view::npos) {
             continue;
         }
         const auto name = nbt.substr(quote + 8, nbt.find('"', quote + 8) - quote - 8);
@@ -381,7 +435,7 @@ TEST_CASE("tipped and spectral arrows against the bot's Entity Effects", "[brewi
             ++checked;
         }
     }
-    CHECK(checked >= 5);
+    CHECK(checked >= 6);
 }
 
 TEST_CASE("the lingering cloud as the real server made it", "[brewing][parity]") {
@@ -392,16 +446,34 @@ TEST_CASE("the lingering cloud as the real server made it", "[brewing][parity]")
     }
     const Cloud            ours = lingering_cloud();
     simdjson::dom::element born = (*lingering)["long_swiftness"]["born"];
-    CHECK(born["Radius"].get_double().value() == static_cast<f64>(ours.radius));
-    CHECK(born["RadiusOnUse"].get_double().value() == static_cast<f64>(ours.radius_on_use));
-    CHECK(born["RadiusPerTick"].get_double().value() == static_cast<f64>(ours.radius_per_tick));
-    CHECK(born["Duration"].get_int64().value() == ours.duration);
-    CHECK(born["DurationOnUse"].get_int64().value() == ours.duration_on_use);
-    CHECK(born["WaitTime"].get_int64().value() == ours.wait_time);
-    CHECK(born["ReapplicationDelay"].get_int64().value() == ours.reapplication_delay);
+    if (born.is_null()) {
+        // The first run's reads carried a trailing space and were rejected.
+        WARN("this run did not read the cloud's NBT");
+    } else {
+        CHECK(born["Radius"].get_double().value() == static_cast<f64>(ours.radius));
+        CHECK(born["RadiusOnUse"].get_double().value() == static_cast<f64>(ours.radius_on_use));
+        CHECK(born["RadiusPerTick"].get_double().value() ==
+              static_cast<f64>(ours.radius_per_tick));
+        CHECK(born["Duration"].get_int64().value() == ours.duration);
+        CHECK(born["DurationOnUse"].get_int64().value() == ours.duration_on_use);
+        CHECK(born["WaitTime"].get_int64().value() == ours.wait_time);
+        CHECK(born["ReapplicationDelay"].get_int64().value() == ours.reapplication_delay);
+    }
     const auto got = measured_effect((*lingering)["long_swiftness"]["effects"], "minecraft:speed");
     REQUIRE(got.has_value());
     CHECK(got->second == cloud_duration(9600));
+
+    // Strong healing in a cloud: every application heals half of 8.
+    f64 last = -1.0;
+    for (simdjson::dom::element health : (*lingering)["strong_healing"]["healths"].get_array().value()) {
+        const f64 now = health.get_double().value();
+        if (last >= 0.0) {
+            Target target{static_cast<f32>(last)};
+            apply_instant(Effect::InstantHealth, 1, kCloudInstantFactor, target);
+            CHECK_THAT(static_cast<f64>(target.health()), Catch::Matchers::WithinAbs(now, 1e-4));
+        }
+        last = now;
+    }
 }
 
 TEST_CASE("suspicious stew as the real server's bot ate it", "[brewing][parity]") {

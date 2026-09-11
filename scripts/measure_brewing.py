@@ -281,7 +281,7 @@ def campaign_timing(server: Server, bot: ms.Bot, origin: tuple[int, int]) -> dic
                   "kill @e[type=item]"])
     water = [bottle("minecraft:potion", "minecraft:water", s) for s in range(3)]
     a, b, c, d, e = [(x0 + 3 * k, Y, z0) for k in range(5)]
-    f, g, h = [(x0 + 3 * k, Y, z0 + 4) for k in range(3)]
+    f, g, h = [(x0 + 8 * k, Y, z0 + 4) for k in range(3)]
     placing = [
         f"setblock {a[0]} {a[1]} {a[2]} {stand_nbt(water, 'minecraft:nether_wart', fuel=20)}",
         f"setblock {b[0]} {b[1]} {b[2]} {stand_nbt(water, 'minecraft:nether_wart', fuel=0, powder=1)}",
@@ -507,6 +507,11 @@ def campaign_window(server: Server, bot: ms.Bot, origin: tuple[int, int]) -> dic
             window, i = read_varint(payload, 0)
             menu, _ = read_varint(payload, i)
     properties = []
+    for pid, payload in captured:
+        if len(payload) == 5 and window is not None and payload[0] == window:
+            _, prop, value = struct.unpack(">bhh", payload)
+            properties.append({"id": pid, "t": 0.0, "property": prop, "value": value,
+                               "opening": True})
     content_len = None
     started = time.monotonic()
     while time.monotonic() - started < 24.0:
@@ -616,7 +621,33 @@ def campaign_drinktime(server: Server, bot: ms.Bot, origin: tuple[int, int]) -> 
         rows.append({"used": used, "applied": applied, "offset": offset,
                      "ticks": applied - used if None not in (applied, used) else None})
         print(f"  trial {trial}: offset {offset}, drink ticks {rows[-1]['ticks']}", flush=True)
-    return {"trials": rows}
+
+    # The control: the same instrument on a food whose use time survie.md
+    # established another way. A golden apple is always edible and gives
+    # absorption for 2400 ticks; if it reads the same as the potion, the two
+    # share one use time and any gap to 32 is this instrument's phase.
+    food = []
+    for trial in range(6):
+        reset_bot(server, bot)
+        server.batch([f"item replace entity {BOT} hotbar.0 with minecraft:golden_apple"])
+        bot.pump(0.3)
+        bot.hold(0)
+        bot.drain()
+        bot.use_item(2100 + trial)
+        used = gametime(server)
+        bot.pump(2.4)
+        effects = [e for e in entity_effects(bot) if e["effect"] == "minecraft:absorption"]
+        lines = server.batch(["time query gametime",
+                              f"data get entity {BOT} ActiveEffects[{{Id:22}}].Duration"])
+        read_f = gametime_of(lines)
+        remaining_f = ms.number(lines)
+        duration = effects[0]["duration"] if effects else None
+        applied = (read_f - (duration - remaining_f)
+                   if None not in (read_f, remaining_f, duration) else None)
+        food.append({"used": used, "applied": applied,
+                     "ticks": applied - used if None not in (applied, used) else None})
+        print(f"  golden apple {trial}: eat ticks {food[-1]['ticks']}", flush=True)
+    return {"trials": rows, "golden_apple": food}
 
 
 # ── splash ──────────────────────────────────────────────────────────────────
@@ -674,7 +705,10 @@ def campaign_splash(server: Server, bot: ms.Bot, origin: tuple[int, int]) -> dic
 
 def cloud_data(server: Server) -> tuple[int | None, dict | None]:
     lines = server.batch(["time query gametime",
-                          "data get entity @e[type=area_effect_cloud,limit=1] "])
+                          # No trailing space: with one, Brigadier waits for a
+                          # path, rejects the command, and every read is empty —
+                          # which is how the first run lost the cloud's NBT.
+                          "data get entity @e[type=area_effect_cloud,limit=1]"])
     data = None
     for line in lines:
         match = ENTITY_DATA.search(line)
@@ -694,7 +728,10 @@ def campaign_lingering(server: Server, bot: ms.Bot, origin: tuple[int, int]) -> 
         "protocol_id"]
     for label, tag, health in (("long_swiftness", '{Potion:"minecraft:long_swiftness"}', None),
                                ("strong_healing", '{Potion:"minecraft:strong_healing"}', 2.0),
-                               ("awkward", '{Potion:"minecraft:awkward"}', None)):
+                               ("awkward", '{Potion:"minecraft:awkward"}', None),
+                               # Instant damage's colour: an effect never visible
+                               # on an entity, but a potion shows it.
+                               ("harming", '{Potion:"minecraft:harming"}', None)):
         reset_bot(server, bot, health)
         server.batch([f"tp {BOT} {cx + 7} {Y} {cz}"])
         bot.pump(0.4)
@@ -733,6 +770,9 @@ def campaign_lingering(server: Server, bot: ms.Bot, origin: tuple[int, int]) -> 
                 healths.append(bot.health)
         after_t, after = cloud_data(server)
         server.batch([f"tp {BOT} {cx + 7} {Y} {cz}"])
+        metadata += [parse_metadata(p)[1] for pid, p in bot.captured
+                     if pid == CB_SET_METADATA and cloud_id is not None
+                     and parse_metadata(p)[0] == cloud_id]
         out[label] = {"cloud_id": cloud_id, "metadata": metadata, "born_t": born_t,
                       "born": born, "later_t": later_t, "later": later, "entered": entered,
                       "effects": effects, "effect_gametimes": stamps,

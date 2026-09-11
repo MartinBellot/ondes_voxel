@@ -302,7 +302,9 @@ bool ContainerBridge::can_take_from(i32 index, Direction face) const {
         case SidedAccess::BrewingStand: {
             // ── brewing ── Out through the bottom: the three bottles, and the
             // ingredient slot only when it holds the glass bottle dragon's
-            // breath leaves. Checked by `measure_brewing.py faces`.
+            // breath leaves. Measured (`measure_brewing.py faces`): a hopper
+            // below took an awkward potion and left the wart and the powder,
+            // and took a glass bottle out of the ingredient slot.
             if (face != Direction::Down || index < 0 || index > 3) {
                 return false;
             }
@@ -361,8 +363,12 @@ bool ContainerBridge::can_place_into(i32 index, const gameplay::SlotStack& stack
         case SidedAccess::BrewingStand: {
             // ── brewing ── Above: the ingredient slot, for an ingredient. The
             // sides: an empty bottle slot for a bottle, the fuel slot for blaze
-            // powder. Below: the bottles and the ingredient. Checked by
-            // `measure_brewing.py faces`.
+            // powder. Below: the bottles and the ingredient. Measured
+            // (`measure_brewing.py faces`): from above, blaze powder, wart and
+            // redstone went to slot 3 and a potion and a glass bottle were
+            // refused; from the side, a potion and a glass bottle went to
+            // slot 0, blaze powder to slot 4 — and burnt at once, fuel 0 → 20
+            // — and wart and redstone were refused.
             const auto items = inventory_->item_registry();
             if (registries_ == nullptr || !items || index < 0 || index > 4) {
                 return false;

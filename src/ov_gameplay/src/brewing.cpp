@@ -264,6 +264,17 @@ std::optional<Potion> potion_from_name(std::string_view name) noexcept {
     return std::nullopt;
 }
 
+/// An effect's colour in a potion. The effects table holds 0 for the two instant
+/// effects, never visible on an entity (effets.md § 10) — but a potion shows
+/// them: a strong healing cloud's metadata carried 16262179, 0xF82423
+/// (`lingering`). Instant damage's is read by the follow-up run.
+[[nodiscard]] u32 colour_in_potion(Effect effect) noexcept {
+    if (effect == Effect::InstantHealth) {
+        return 0xF82423;
+    }
+    return effect_info(effect).color;
+}
+
 u32 potion_color(std::span<const PotionEffect> effects) noexcept {
     // The swirl's own mixing, measured on 64 cases in effets.md § 10: each
     // channel `(float)(weight × c) / 255` summed, then `/ total × 255`, cut.
@@ -275,7 +286,7 @@ u32 potion_color(std::span<const PotionEffect> effects) noexcept {
     f32 blue  = 0.0F;
     i32 total = 0;
     for (const PotionEffect& effect : effects) {
-        const u32 color  = effect_info(effect.effect).color;
+        const u32 color  = colour_in_potion(effect.effect);
         const i32 weight = static_cast<i32>(effect.amplifier) + 1;
         red += static_cast<f32>(weight * static_cast<i32>((color >> 16U) & 0xFFU)) / 255.0F;
         green += static_cast<f32>(weight * static_cast<i32>((color >> 8U) & 0xFFU)) / 255.0F;
@@ -418,14 +429,20 @@ void splash_effects(std::span<const PotionEffect> effects, f64 factor, ActiveEff
 
 i32 arrow_duration(i32 duration) noexcept { return std::max(duration / 8, 1); }
 
-void arrow_effects(std::span<const PotionEffect> effects, ActiveEffects& active,
-                   EffectTarget& target) {
-    for (const PotionEffect& effect : effects) {
+void arrow_effects(std::span<const PotionEffect> potion, std::span<const PotionEffect> custom,
+                   ActiveEffects& active, EffectTarget& target) {
+    const auto one = [&](const PotionEffect& effect, i32 duration) {
         if (effect_info(effect.effect).instantaneous) {
             apply_instant(effect.effect, effect.amplifier, 1.0, target);
-            continue;
+            return;
         }
-        (void)active.add(instance_of(effect, arrow_duration(effect.duration)), target);
+        (void)active.add(instance_of(effect, duration), target);
+    };
+    for (const PotionEffect& effect : potion) {
+        one(effect, arrow_duration(effect.duration));
+    }
+    for (const PotionEffect& effect : custom) {
+        one(effect, effect.duration);
     }
 }
 

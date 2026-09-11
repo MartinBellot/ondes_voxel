@@ -35,8 +35,9 @@ constexpr std::string_view kPowder      = "minecraft:blaze_powder";
 constexpr std::string_view kGlassBottle = "minecraft:glass_bottle";
 
 /// The two numbers the screen draws its bars from, in the protocol's order:
-/// 0 the brew time, 1 the fuel. Protocol archive; checked by the `window`
-/// campaign.
+/// 0 the brew time — measured (`window`): 362 values, 361 down to 0, one a
+/// tick — and 1 the fuel, from the protocol archive: it did not change during
+/// the measured brew and the opening burst was not recorded.
 constexpr i16 kBrewTimeProperty = 0;
 constexpr i16 kFuelProperty     = 1;
 
@@ -170,8 +171,8 @@ constexpr std::array<std::string_view, 9> kGaps{
     "splash potions, clouds and tipped arrows reach players only; mobs carry no effects on this "
     "server",
     "a thrown potion carries no item metadata, so the client draws the default bottle",
-    "a stand reloaded mid-brew keeps brewing here; vanilla forgets the ingredient it started "
-    "with (not measured)",
+    "the glass bottle a non-last dragon's breath drops is not told apart from its neighbour's in "
+    "the measurement (item search reach 3 = stand spacing)",
     "tipped arrows are not crafted (lingering potion + 8 arrows is a special recipe)",
     "the cloud's owner, its particle and a custom colour are not modelled",
     "mushroom stew, rabbit stew and beetroot soup do not give their bowl back (only suspicious "
@@ -198,6 +199,7 @@ PotionContents potion_contents(const net::ItemStack& stack) {
     }
     const auto own = gameplay::potion_info(out.potion).effects;
     out.effects.assign(own.begin(), own.end());
+    out.own = out.effects.size();
     if (!document) {
         return out;
     }
@@ -224,6 +226,13 @@ PotionContents potion_contents(const net::ItemStack& stack) {
 }
 
 std::vector<u8> potion_tag(Potion potion) {
+    // Measured (`recipes`): the uncraftable potion brewed with gunpowder comes
+    // out of a real stand with **no tag at all**, not `{Potion:"minecraft:
+    // empty"}`. The two read the same, but a stack compares its NBT, and one
+    // that carried the tag would not stack with vanilla's.
+    if (potion == Potion::Empty) {
+        return {};
+    }
     nbt::Document document;
     document.root = nbt::Tag::make_compound();
     (void)document.root.put("Potion", nbt::Tag{std::string{gameplay::potion_info(potion).name}});
@@ -416,17 +425,13 @@ BrewingStats Brewing::tick_stands(const StandHost& host, std::span<const ChunkPo
                     }
                 }
                 shrink(slots[kIngredientSlot]);
-                // Dragon's breath leaves its glass bottle in the slot when it
-                // was the last one, and on the ground when it was not (wiki;
-                // checked by the `timing` campaign).
+                // Measured (`timing`): the **last** dragon's breath leaves
+                // nothing — the slot is empty afterwards, no glass bottle,
+                // against the wiki. One that is not the last leaves a bottle
+                // on the ground beside the stand.
                 if (const std::string_view left = gameplay::brewing_remainder(ingredient);
-                    !left.empty()) {
-                    const net::ItemStack bottle{item_id(left), 1, {}};
-                    if (slots[kIngredientSlot].empty()) {
-                        slots[kIngredientSlot] = bottle;
-                    } else if (host.drop) {
-                        host.drop(at, bottle);
-                    }
+                    !left.empty() && !slots[kIngredientSlot].empty() && host.drop) {
+                    host.drop(at, net::ItemStack{item_id(left), 1, {}});
                 }
             }
             inventory.store(entity->data);
@@ -859,8 +864,10 @@ void Brewing::arrow_hit(const PotionHost& host, const net::ItemStack& arrow, i32
     if (contents.effects.empty()) {
         return;
     }
+    const std::span<const PotionEffect> all{contents.effects};
     host.affect(target, [&](gameplay::ActiveEffects& active, gameplay::EffectTarget& victim) {
-        gameplay::arrow_effects(contents.effects, active, victim);
+        gameplay::arrow_effects(all.first(contents.own), all.subspan(contents.own), active,
+                                victim);
     });
     ++stats_.applied;
 }
