@@ -200,6 +200,40 @@ générateur de la feature, bloc par bloc dans l'ordre du fichier du gabarit (qu
 trié du jeu), et la palette est tirée même unique. Un seul des deux faux, et la moitié des os
 tombait à côté.
 
+### 2.6 Les coraux : la forme est juste, c'est le récif qui ne l'était pas
+
+`features.md` (« L'océan ») donnait les coraux à 37–53 % et concluait « arbre, pince et
+champignon tirent des dizaines de flottants ; lequel des trois est faux n'est pas isolé ».
+Aucune ligne de `ocean_feature.cpp` n'a été changée ici ; la mesure, si.
+
+Monde sonde `probe-ocean-coral`, graine 1234567890, la zone d'océan chaud de la référence
+(x −105 120, z 6 960 ; régions `r.-206.13` …), trois placed features à nous à l'étape 9 :
+`rarity_filter(2) → in_square → heightmap(OCEAN_FLOOR_WG) → coral_tree` (puis `coral_claw`, puis
+`coral_mushroom`), chacune tenue en ligne dans son fichier — ces trois types n'ont pas de
+configured feature à eux dans les données. Un corail pour deux chunks et par forme, au lieu du
+récif dense de `warm_ocean_vegetation` (`noise_based_count`). Contre le témoin sans feature,
+200 chunks comparés, 184 touchés :
+
+| | la bonne graine | témoin décalé d'un index |
+|---|---:|---:|
+| blocs changés par le jeu / par nous | 8 806 / 8 821 | 8 806 / — |
+| **même bloc** | **8 627 (97,967 %)** | 346 (3,929 %) |
+| chunks identiques bloc pour bloc | **174 / 184 (94,6 %)** | 0 |
+
+| famille | identiques |
+|---|---:|
+| blocs de corail (5 couleurs) | 95,1 à 100 % (cerveau et bulle 100 %) |
+| éventails muraux (5) | 97,4 à 99,0 % |
+| coraux et éventails posés dessus (10) | 94,5 à 100 % |
+| cornichons de mer | 97,6 % |
+
+Les trois formes et `placeCoralBlock` — la plante une fois sur quatre, sinon le cornichon une
+fois sur vingt, l'éventail de chaque côté une fois sur cinq, dans l'ordre nord, est, sud, ouest —
+sont donc justes à la précision près des chevauchements entre chunks voisins. Les 37–53 %
+d'avant mesuraient le **récif** : des dizaines de coraux par chunk qui se recouvrent, dont
+l'ordre de pose entre chunks voisins décide lequel tient. Ce n'est pas corrigé ici, et ce n'est
+plus attribué aux formes.
+
 ## 3. Les fluides à réveiller
 
 L'aquifère marquait déjà les fluides que le jeu réveille (`aquiferes.md` § 10.4, règle
