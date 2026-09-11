@@ -265,6 +265,34 @@ GPU médian** (la passe de présentation plein écran et le disque de ciel) et
 +0,15 ms de CPU médian. Les p99 d'un tour à l'autre varient plus que l'écart
 entre binaires : c'est la charge des autres agents, pas le rendu.
 
+Binaire final (*after8* : en plus les variantes par position, le calcul d'AO
+sur neuf voisins par face, la bande, le soleil, la lune), même protocole, sur
+une machine plus chargée encore (la médiane de l'*avant* passe de 2,3 à
+7,9–9,6 ms) :
+
+| binaire | CPU p50 | CPU p99 | CPU max | GPU p50 | GPU p99 |
+|---|---:|---:|---:|---:|---:|
+| avant, tour 1 | 9,56 | 16,45 | 16,99 | 5,80 | 7,73 |
+| après, tour 1 | 10,09 | 16,39 | 32,29 | 6,15 | 8,38 |
+| avant, tour 2 | 7,89 | 16,70 | 18,10 | 5,80 | 7,90 |
+| après, tour 2 | 2,42 | **19,95** | **1009,78** | 2,35 | 6,72 |
+
+Le p99 tient (16,39 et 19,95), mais le second tour du binaire final contient
+**une image d'une seconde** et un p99 à la limite. Un troisième tour, ordre
+inversé :
+
+| binaire | CPU p50 | CPU p99 | CPU max | GPU p50 | GPU p99 |
+|---|---:|---:|---:|---:|---:|
+| après, tour 3 | 5,76 | 16,72 | 79,33 | 6,13 | 8,28 |
+| avant, tour 3 | 12,56 | 16,89 | 18,26 | 5,78 | 7,81 |
+
+L'image d'une seconde ne revient pas et le p99 est le même des deux côtés
+(16,7 contre 16,9). **Mais le maximum du binaire final est plus haut à chacun
+des trois tours** (32, 1010, 79 ms contre 17 à 18) : il a des pics isolés que
+l'ancien n'avait pas, et que le p99 ne voit pas. Suspects, non départagés :
+une frame où les animations re-copient beaucoup de sprites, et le re-tri
+translucide (16 sections au plus par image). Nommé pour l'agent performance.
+
 ### 3.2 Ce que l'oracle a imprimé (premier passage : `plains`, `aolab`)
 
 Midi, plaine, 8 chunks, luminosité 0,5 :
@@ -306,14 +334,43 @@ Pourcentage de pixels identiques, à ±8 niveaux sur chaque canal, et écart
 moyen par canal (0..255), sur 1708×960. Témoin : la capture vanilla contre
 elle-même décalée d'un pixel.
 
-| scène | identiques avant → après | ±8 avant → après | écart moyen avant → après | témoin décalé (identiques / ±8) |
-|---|---:|---:|---:|---:|
-| `plains` | 0,00 → 1,43 % | 0,09 → 39,58 % | 32,91 → 8,51 | 74,17 / 85,38 % |
-| `aolab` | 0,56 → 1,47 % | 23,11 → 47,68 % | 17,24 → 7,66 | 90,15 / 94,36 % |
+Contre les captures du troisième passage de l'oracle
+(`compare_render_parity.py --vanilla=…`). Trois binaires : **avant** (la
+branche de départ), **étape** (*after5* : scène en espace des octets, lumière
+lissée et lightmap mesurés, brouillard, disque de ciel, animations, tri
+translucide) et **après** (*after8* : en plus, variante et décalage par
+position, règle d'AO mesurée, bande du crépuscule, soleil, lune).
 
-(« après » = binaire *after3* : scène en espace des octets, lumière lissée,
-disque de ciel, animations, tri translucide — **avant** les corrections de
-brouillard et de lightmap ci-dessus, dont les chiffres suivent.)
+| scène | identiques avant → étape → après | ±8 avant → étape → après | écart moyen avant → après | témoin décalé (id. / ±8) | autre scène (±8) |
+|---|---:|---:|---:|---:|---:|
+| `aolab` | 0,56 → 53,81 → **94,14 %** | 23,11 → 65,26 → **98,00 %** | 17,24 → **0,36** | 90,15 / 94,36 % | 9,91 % |
+| `desert` | 0,07 → 49,04 → **63,01 %** | 6,64 → 76,17 → **95,04 %** | 82,47 → **1,18** | — / 90,69 % | 2,32 % |
+| `jungle` | 0,00 → 41,70 → **46,69 %** | 0,46 → 81,51 → **86,60 %** | 40,03 → **2,54** | — / 69,15 % | 0,73 % |
+| `plains` | 0,00 → 37,88 → **57,54 %** | 0,10 → 65,96 → **84,30 %** | 32,78 → **2,96** | — / 85,33 % | 9,91 % |
+| `plains_night` | 0,00 → 59,59 → **62,82 %** | 0,00 → 74,01 → **76,20 %** | 65,75 → **2,31** | — / 99,67 % | 0,00 % |
+| `sky_noon` | 0,00 → 57,79 → **66,51 %** | 0,01 → 67,69 → **72,72 %** | 46,99 → **6,35** | — / 99,13 % | 5,66 % |
+| `beach` | 0,00 → 10,53 → **31,53 %** | 2,15 → 37,02 → **72,12 %** | 30,86 → **5,33** | — / 81,39 % | 7,51 % |
+| `sky_midnight` | 0,00 → 56,05 → **59,37 %** | 1,85 → 67,37 → **69,61 %** | 63,62 → **2,96** | — / 99,55 % | 0,00 % |
+| `sunrise` | 0,00 → 0,00 → **26,79 %** | 0,07 → 10,51 → **49,97 %** | 67,54 → **10,83** | — / 93,32 % | 0,01 % |
+| `plains_sunset` | 0,00 → 0,02 → **12,54 %** | 0,10 → 21,13 → **41,75 %** | 56,21 → **8,31** | — / 87,82 % | 0,31 % |
+| `dusk_west` | 0,00 → 0,01 → **6,90 %** | 0,08 → 21,28 → **22,15 %** | 46,80 → **9,99** | — / 80,67 % | 2,18 % |
+| `underwater` ⚠ | 0,00 → 37,42 → 37,41 % | 0,01 → 44,97 → 44,96 % | 71,82 → 23,36 | — / 92,30 % | 0,09 % |
+| `cave` ⚠ | 0 → 0 → 0 % | 0,24 → 0,31 → 0,18 % | 57,63 → 47,34 | — / 96,73 % | 0,12 % |
+| `cave_deep` ⚠ | 0 → 0 → 0 % | 0,37 → 1,03 → 0,34 % | 39,60 → 32,63 | — / 94,76 % | 0,14 % |
+
+⚠ contenu différent entre les deux mondes (pièges 9 et 12) : ces trois scènes
+ne mesurent pas le rendu.
+
+**Lecture.** Le témoin « autre scène » reste sous 10 % à ±8 partout : la
+mesure n'est pas dégénérée. Le témoin « décalé d'un pixel » (la capture
+vanilla contre elle-même décalée ; colonne ±8) fait mieux que nous partout
+sauf sur `aolab` et `desert`, où nous faisons mieux que lui (`aolab` : 94,14 %
+d'identiques contre 90,15 % au témoin, 98,00 % à ±8 contre 94,36 %) : là, ce
+qui reste est plus petit qu'un pixel de décalage. Ailleurs, ce qui
+reste est nommé en section 5 — d'abord les **nuages** (la moitié du ciel de
+`sky_noon`, le haut de `plains` et de `sunrise`), les **étoiles** (les deux
+nuits, l'aube), la forme de la bande du crépuscule (`dusk_west` reste à
+22 %), et l'eau (`beach` : phase d'animation, eau non vérifiée de dessous).
 
 Lecture de la carte des écarts d'`aolab` : **la géométrie coïncide au pixel**
 (toutes les arêtes tombent juste — projection, FOV, hauteur de l'œil, ordre des
