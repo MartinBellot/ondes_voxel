@@ -204,6 +204,15 @@ blocs changés relus dans les paquets reçus :
 | `DragonFight` après | `DragonKilled` 1, `PreviouslyKilled` 1, `Gateways` sans la 17 | non écrit |
 | expérience | **aucune orbe** : `/kill` retire le dragon sans son agonie de 200 ticks, donc sans les 12 000 points | non versée (nommé) |
 
+Un troisième passage du jeu, la sonde corrigée, a relu les vingt blocs du portail ouvert avec leurs
+coordonnées : (−2, 63, −1..1), (−1, 63, −2..2), (0, 63, ±1 et ±2), (1, 63, −2..2), (2, 63, −1..1)
+— **20 / 20 cellules de notre `build_exit_portal(…, true)`**. Il n'a pas mesuré la **sortie** : la
+sonde a sauté d'un coup d'une centaine de blocs, de la plateforme au portail, et ce pas n'a produit
+aucun Game Event 4 (vraisemblablement refusé comme mouvement trop rapide — non vérifié). Le
+générique, le Client Command qui suit et le retour « en gardant tout » (`data_kept` 3 chez nous)
+sont codés et **non mesurés** ; il faudrait téléporter la sonde près du portail de sortie avant le
+pas.
+
 Le premier passage du jeu a aussi pris la sonde **avant** qu'elle ne se place dans le portail
 (0,05 s après le début du pas, quand elle se tenait encore au-dessus, en y = 101) ; notre règle de
 la tranche 6/16 → 12/16 ne la prend pas là. L'arrivée, elle, est la même au dixième de bloc près :
@@ -224,7 +233,7 @@ corrigé (§ 3).
 | Combat : réinvocation par quatre cristaux | non |
 | Combat de bout en bout contre notre serveur | le dragon n'y a pas été tué : le démarrage (arène chargée), la barre, les parties, la mort, le portail ouvert, l'œuf et la passerelle sont tenus par `test_end_fight` ; la sonde ne frappe pas le dragon |
 | Mobs dans l'End (endermen), cités de l'End, élytres | non : `EntityWorld` est celui de l'overworld ; les structures sont un autre mandat |
-| Portail de sortie vers l'overworld par le générique | codé (Game Event 4, Client Command 0, retour en gardant tout) ; mesuré seulement là où le dragon est tué, donc pas contre notre serveur |
+| Portail de sortie vers l'overworld par le générique | codé (Game Event 4, Client Command 0, retour en gardant tout) ; **non mesuré**, ni chez le jeu (la sonde n'a pas atteint le portail, § 4.1) ni chez nous (le dragon n'y est pas tué) |
 | Chorus à 92 %, une passerelle de trop | § 1.5 |
 | Première traversée d'une vie de serveur | construit la pile de l'End sur le thread de tick (quelques secondes en Debug) |
 
