@@ -115,6 +115,25 @@ struct RandomTickStats {
     usize ticked{0};
 };
 
+// ── fire ─────────────────────────────────────────────────────────────────────
+/// A second answer to the random tick, owned outside this file: lava lighting
+/// fire (fire_session.hpp). Asked at the same pick, when the plants pass —
+/// vanilla ticks a block and then its fluid, and lava is no plant.
+class RandomTickExtension {
+public:
+    RandomTickExtension()                                      = default;
+    RandomTickExtension(const RandomTickExtension&)            = delete;
+    RandomTickExtension& operator=(const RandomTickExtension&) = delete;
+    RandomTickExtension(RandomTickExtension&&)                 = delete;
+    RandomTickExtension& operator=(RandomTickExtension&&)      = delete;
+    virtual ~RandomTickExtension()                             = default;
+
+    [[nodiscard]] virtual bool ticks_randomly(registry::BlockStateId state) const noexcept = 0;
+    virtual void random_tick(world::LevelWriter& level, BlockPos pos,
+                             registry::BlockStateId state) = 0;
+};
+// ── end fire ─────────────────────────────────────────────────────────────────
+
 /// The picking: which positions a tick reaches.
 class RandomTicks {
 public:
@@ -154,10 +173,15 @@ public:
                       const gameplay::Plants& plants, gameplay::PlantEnvironment& env,
                       RandomTickStats& stats);
 
+    // ── fire ──
+    /// Hand the picks the plants pass to a second engine. Not owned.
+    void set_extension(RandomTickExtension* extension) noexcept { extension_ = extension; }
+
 private:
     gameplay::PlantRandom random_;
     i32                   speed_{3};
     std::vector<ChunkPos> chunks_;
+    RandomTickExtension*  extension_{nullptr};  // ── fire ──
 };
 
 }  // namespace ov::server

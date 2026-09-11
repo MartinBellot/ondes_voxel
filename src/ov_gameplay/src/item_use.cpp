@@ -1,5 +1,7 @@
 #include "ov/gameplay/item_use.hpp"
 
+#include "ov/gameplay/fire.hpp"  // ── fire ──
+
 #include "ov/gameplay/food.hpp"
 
 #include <array>
@@ -431,14 +433,21 @@ UseOutcome ItemUse::use_item_on(world::LevelWriter& level, const UseContext& con
             }
         }
         const BlockPos target = offset_by_face(context.position, context.face);
-        if (level.block_at(target) != registry::kAirState) {
+        // ── fire ── The one point where a flint decides its fire: an empty
+        // cell where the fire `FireRules::placement` shapes can stand
+        // (`BaseFireBlock.canBePlacedAt`). A Nether portal lit from here is
+        // decided before this line — vanilla lets a frame take a flint the
+        // fire itself could not survive — and replaces the fire it would light.
+        std::optional<registry::BlockStateId> fire;
+        if (fire_ != nullptr) {
+            fire = fire_->placement(level, target);
+        } else if (level.block_at(target) == registry::kAirState) {
+            fire = default_of("minecraft:fire");
+        }
+        if (!fire) {
             UseOutcome out;
             out.result = UseResult::Fail;
             return out;
-        }
-        const auto fire = default_of("minecraft:fire");
-        if (!fire) {
-            return {};
         }
         // Measured: fire[age=0] with every side false, one block along the face.
         level.set_block(target, *fire);

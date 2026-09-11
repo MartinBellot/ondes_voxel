@@ -23,6 +23,8 @@ ov_add_library(ov_server
         src/combat_session.cpp
         src/effect_session.cpp
         src/enchant_session.cpp
+        src/fire_session.cpp
+        src/campfire.cpp
         src/mob_combat.cpp
         src/player_level.cpp
         src/player_data.cpp
@@ -78,6 +80,7 @@ ov_add_library(ov_server
 ov_add_test(test_ov_server
     SOURCES
         tests/test_agriculture.cpp
+        tests/test_fire_session.cpp
         tests/test_block_container.cpp
         tests/test_enchant_session.cpp
         tests/test_player_inventory.cpp

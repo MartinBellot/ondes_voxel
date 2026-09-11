@@ -80,7 +80,7 @@ std::string_view MobCombat::type_name(const entity::EntityState& state) const {
 
 gameplay::DrawResult MobCombat::loot(const entity::EntityState& state, bool killed_by_player,
                                      u8 looting, math::XoroshiroRandomSource& random,
-                                     std::vector<gameplay::Drop>& out) const {
+                                     std::vector<gameplay::Drop>& out, bool on_fire) const {
     gameplay::DrawResult drawn;
     if (loot_ == nullptr) {
         return drawn;
@@ -97,12 +97,10 @@ gameplay::DrawResult MobCombat::loot(const entity::EntityState& state, bool kill
     kill.entity_type      = name;
     kill.killed_by_player = killed_by_player;
     kill.looting          = looting;
-    // Not tracked by this server, and left at their neutral values rather than
-    // guessed: nothing here sets an entity on fire, and `EntityState` carries
-    // no slime size — so a slime draws its size-0 row. Both are stated gaps,
-    // written down in docs/provenance/branchement.md rather than hidden behind
-    // a plausible default.
-    kill.on_fire    = false;
+    // `EntityState` carries no slime size — so a slime draws its size-0 row, a
+    // stated gap (docs/provenance/branchement.md). Fire is told by the caller:
+    // ── fire ── fire_session.cpp knows which mobs are burning.
+    kill.on_fire    = on_fire;
     kill.slime_size = 0;
 
     return loot_->drops(kill, random, out);

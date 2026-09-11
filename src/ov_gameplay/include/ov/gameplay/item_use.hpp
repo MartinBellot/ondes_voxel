@@ -37,6 +37,8 @@
 
 namespace ov::gameplay {
 
+class FireRules;  // ── fire ── fire.hpp
+
 /// How an interaction ended. Vanilla's own four, and they are four rather than
 /// two because the animation and the cooldown follow from which one it was.
 enum class UseResult : u8 {
@@ -158,6 +160,13 @@ public:
     /// The block one step along `context.face` from the clicked one.
     [[nodiscard]] static BlockPos offset_by_face(BlockPos position, i32 face) noexcept;
 
+    // ── fire ──
+    /// The rules a flint and steel's fire obeys: `FireRules::placement` decides
+    /// whether a fire may stand in the cell and in which shape (soul fire over
+    /// soul soil, face flags against flammable walls). Not owned; null keeps
+    /// the older rule — fire[age=0] into any empty cell.
+    void set_fire_rules(const FireRules* fire) noexcept { fire_ = fire; }
+
 private:
     [[nodiscard]] std::string_view name_of(registry::BlockStateId state) const noexcept;
     [[nodiscard]] std::optional<registry::BlockStateId> toggled(registry::BlockStateId state,
@@ -170,6 +179,7 @@ private:
     [[nodiscard]] std::optional<registry::BlockStateId> default_of(std::string_view name) const;
 
     const registry::BlockRegistry* blocks_{nullptr};
+    const FireRules*               fire_{nullptr};  // ── fire ──
 };
 
 // ── Using an item on nothing in particular ──────────────────────────────────

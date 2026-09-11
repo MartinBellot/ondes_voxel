@@ -780,6 +780,11 @@ void Projectiles::hit_mob(entity::EntityWorld& world, entity::EntityState& proje
         return;
     }
     landed = true;
+    // ── fire ── a Flame arrow is a burning arrow, and a burning arrow sets
+    // what it hits alight for five seconds (the wiki's Flame article).
+    if (data.flaming && host.set_on_fire) {
+        host.set_on_fire(victim->network_id, 5);
+    }
     deliver(net::clientbound::kDamageEvent,
             net::encode_damage_event(
                 victim->network_id,

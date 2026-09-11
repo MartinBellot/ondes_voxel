@@ -250,6 +250,13 @@ public:
     }
     // ── end tnt and gravity ──────────────────────────────────────────────────
 
+    // ── fire ──
+    /// A fourth engine, beside the TNT's: fire (fire_session.hpp). A slot of its
+    /// own rather than a list, so the two merge as two lines. Not owned.
+    void set_fire_extension(BlockRuleExtension* extension) noexcept {
+        fire_extension_ = extension;
+    }
+
 private:
     /// Notify around everything in `seeds`, and keep going while writes appear.
     usize settle(ServerLevel& level, usize& waves);
@@ -276,6 +283,8 @@ public:
 private:
     const gameplay::PortalRules* portals_{nullptr};
     // ── end nether ──
+
+    BlockRuleExtension* fire_extension_{nullptr};  // ── fire ──
 };
 
 }  // namespace ov::server

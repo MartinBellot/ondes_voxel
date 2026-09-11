@@ -61,22 +61,28 @@ enum class PlantSurvivalRule : u8 {
     NotAirBelow,
     /// A sturdy face above and no water here. The spore blossom.
     HangingFromAbove,
+    // ── fire ──
+    /// Fire's `canSurvive`: a sturdy top face below. Its other half — a
+    /// flammable neighbour — asks the flammability table, which is gameplay
+    /// (layer 9) and not visible here, so that half is refused rather than
+    /// guessed. It never decides in 1.20.1: `patch_fire` filters on
+    /// netherrack below, which is sturdy. See docs/provenance/feu.md.
+    Fire,
+    /// `#minecraft:soul_fire_base_blocks` below: soul sand or soul soil.
+    SoulFire,
 };
 
 /// The rule for one block, or nothing when this layer does not know it.
 ///
 /// Nothing is a refusal and never a default: a feature whose block has no rule
-/// here does not load, and `FeatureRegistry::unavailable()` names it. The four
-/// vanilla features this costs are the two mushroom patches — whose rule reads
-/// the light level, which worldgen does not compute — and the two fire
-/// patches, whose rule asks what is flammable nearby.
+/// here does not load, and `FeatureRegistry::unavailable()` names it. The two
+/// vanilla features this costs are the mushroom patches, whose rule reads the
+/// light level, which worldgen does not compute. (The two fire patches load
+/// since the fire wave: `Fire`, `SoulFire`.)
 ///
-/// ── nether ── The fire patches load now, under `NotAirBelow`. Fire's own
-/// rule is "a sturdy face below, *or* something flammable beside it", and both
-/// patches carry a predicate that already demands netherrack (soul sand or soul
-/// soil for soul fire) underneath — so in every position the feature can reach,
-/// the first half of the rule holds and the answer is yes. The mushrooms stay
-/// refused: their rule reads the light.
+/// ── nether ── measured with the fire rule's sturdy-floor half: 43/43 fire and
+/// 6/6 soul fire blocks where the game put them in 25 full Nether chunks — the
+/// patches' own predicate demands netherrack (soul sand, soul soil) below.
 [[nodiscard]] std::optional<PlantSurvivalRule> plant_survival_rule(
     std::string_view block_name) noexcept;
 

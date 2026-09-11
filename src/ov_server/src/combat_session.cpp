@@ -185,6 +185,11 @@ CombatOutcome CombatSession::on_interact(const net::Interact& packet, const Comb
 
     deliver(resolved, packet.entity_id, player, io);
     wear_held(io, player, gameplay::ToolAction::Attack, 1);
+    // ── fire ── Fire Aspect: four seconds a level, after the hit lands (the
+    // wiki's; `fire_aspect_ticks_per_level` holds the 80 ticks).
+    if (resolved.fire_ticks > 0 && io.set_on_fire) {
+        io.set_on_fire(packet.entity_id, resolved.fire_ticks / 20);
+    }
 
     if (resolved.sprint_knockback) {
         // A sprinting hit stops the sprint and slows the attacker. Only the

@@ -55,6 +55,8 @@
 #include "sounds.hpp"  // ── sound ──
 #include "agriculture.hpp"  // ── agriculture ──
 #include "weather_session.hpp"  // ── weather ──
+#include "campfire.hpp"      // ── fire ──
+#include "fire_session.hpp"  // ── fire ──
 #include "ov/world/chunk.hpp"
 #include "ov/world/chunk_map.hpp"
 #include "ov/world/chunk_storage.hpp"
@@ -2643,6 +2645,83 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     }
     // ── end agriculture ─────────────────────────────────────────────────────
 
+    // ── fire ────────────────────────────────────────────────────────────────
+    // The fire block, the lava that lights it, and what burns: fire_session.hpp.
+    // Every read below runs on the tick thread with `chunk_mutex` held.
+    std::optional<FireSession> fire_session;
+    if (blocks && registries && world_ticks) {
+        FireHost fire_host;
+        fire_host.block_at = [&](BlockPos pos) {
+            return block_at(net::WirePosition{pos.x, pos.y, pos.z});
+        };
+        fire_host.biome_at = [&](BlockPos pos) -> i32 {
+            const world::Chunk* chunk = chunk_if_resident(pos.x >> 4, pos.z >> 4);
+            return chunk == nullptr ? -1
+                                    : static_cast<i32>(chunk->get_biome(
+                                          static_cast<usize>(pos.x & 15), pos.y,
+                                          static_cast<usize>(pos.z & 15)));
+        };
+        fire_host.rain_top = [&](i32 x, i32 z) -> i32 {
+            const world::Chunk* chunk = chunk_if_resident(x >> 4, z >> 4);
+            return chunk == nullptr ? (1 << 30)
+                                    : chunk->heightmap(world::HeightmapType::MotionBlocking)
+                                          .first_free(static_cast<usize>(x & 15),
+                                                      static_cast<usize>(z & 15));
+        };
+        fire_host.sky_light   = [&](BlockPos pos) { return stored_light(pos, true); };
+        fire_host.block_light = [&](BlockPos pos) { return stored_light(pos, false); };
+        fire_host.prime_tnt   = [&](BlockPos pos) {
+            if (tnt_gravity) {
+                tnt_gravity->request_prime(pos, gameplay::kTntFuseTicks);
+            }
+        };
+        fire_session.emplace(*blocks, *registries, std::move(fire_host),
+                             mob_combat ? &*mob_combat : nullptr);
+        world_ticks->set_fire_extension(&*fire_session);
+        random_ticks.set_extension(&*fire_session);
+        if (item_use) {
+            item_use->set_fire_rules(&fire_session->rules());
+        }
+    }
+    // Campfires: the grill (campfire.hpp), cooking by the `campfire_cooking`
+    // recipes. The host runs with both locks held.
+    std::optional<Campfires> campfires;
+    std::vector<ChunkPos>    campfire_chunks;
+    CampfireHost             campfire_host;
+    if (blocks && registries && recipe_book) {
+        campfires.emplace(*blocks, *registries, *recipe_book);
+        campfire_chunks.reserve(1024);
+        campfire_host.each_chunk = [&](const std::function<void(world::Chunk&)>& visit) {
+            campfire_chunks.clear();
+            chunks.for_each(
+                [&](ChunkPos pos, const world::Chunk&) { campfire_chunks.push_back(pos); });
+            for (const ChunkPos pos : campfire_chunks) {
+                if (world::Chunk* chunk = chunks.find(pos); chunk != nullptr) {
+                    visit(*chunk);
+                }
+            }
+        };
+        campfire_host.drop_item = [&](Vec3d at, const net::ItemStack& stack) {
+            std::vector<ItemEntity> one(1);
+            one[0].entity_id = next_entity_id.fetch_add(1);
+            one[0].uuid      = net::Uuid{0x4f564954454d0000ULL | static_cast<u64>(one[0].entity_id),
+                                         static_cast<u64>(one[0].entity_id) * 0x9E3779B97F4A7C15ULL};
+            one[0].x         = at.x;
+            one[0].y         = at.y;
+            one[0].z         = at.z;
+            one[0].stack     = stack;
+            one[0].born      = server_tick.load(std::memory_order_relaxed);
+            publish_items(one);
+        };
+        campfire_host.send_entity = [&](BlockPos pos, const world::BlockEntity& entity) {
+            broadcast(nullptr, net::clientbound::kBlockEntityData,
+                      net::encode_block_entity_data(net::WirePosition{pos.x, pos.y, pos.z},
+                                                    entity.type_id, entity.data));
+        };
+        campfire_host.mark_dirty = [&](i32 cx, i32 cz) { dirty_chunks.insert(chunk_key(cx, cz)); };
+    }
+    // ── end fire ────────────────────────────────────────────────────────────
+
     /// Send what the drain wrote, and relight the chunks it touched.
     ///
     /// Called with `chunk_mutex` **released**: broadcasting walks the player
@@ -3175,7 +3254,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             .entity_id    = who.entity_id,
             .mortal       = who.mortal(),  // ── commands: per player ──
             .shared_flags = static_cast<u8>((who.sneaking ? 0x02 : 0) |
-                                            (who.survival.sprinting ? 0x08 : 0))};
+                                            (who.survival.sprinting ? 0x08 : 0) |
+                                            (who.survival.fire.on_fire() ? 0x01 : 0))};  // ── fire ──
     };
     // ── end effects ─────────────────────────────────────────────────────────
 
@@ -3473,6 +3553,11 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         io.break_held_item  = [&] { break_held_item(who); };
         io.consume_one_held = [&] { consume_one_held(who); };
         io.held_weapon      = [&] { return held_weapon(who); };
+        io.set_on_fire      = [&](i32 entity_id, i32 seconds) {  // ── fire ── Fire Aspect
+            if (fire_session) {
+                fire_session->set_mob_on_fire(entity_id, seconds);
+            }
+        };
         return io;
     };
     // ── end combat and interaction ──────────────────────────────────────────
@@ -5170,6 +5255,32 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         // ── end spawn eggs ──────────────────────────────────
 
                         // ── agriculture ─────────────────────────────────────
+                        // ── fire ── raw food onto a campfire's grill: the
+                        // campfire's own use, before anything is placed.
+                        if (campfires) {
+                            const net::ItemStack& grill_hand =
+                                player.inventory[36 + static_cast<usize>(player.held_slot)];
+                            if (!grill_hand.empty() && campfires->cook_time(grill_hand.item_id)) {
+                                bool placed = false;
+                                {
+                                    const std::scoped_lock grill_lock{chunk_mutex};
+                                    if (world::Chunk* grill = chunk_if_resident(
+                                            place->position.x >> 4, place->position.z >> 4)) {
+                                        placed = campfires->place_food(
+                                            *grill,
+                                            BlockPos{place->position.x, place->position.y,
+                                                     place->position.z},
+                                            grill_hand.item_id, campfire_host);
+                                    }
+                                }
+                                if (placed) {
+                                    if (player.game_mode != 1) {
+                                        consume_one_held(player);
+                                    }
+                                    return true;
+                                }
+                            }
+                        }
                         // Bone meal and planting. After the block's own
                         // interaction — a chest clicked with seeds opens — and
                         // before the generic placement, which would put a
@@ -6372,6 +6483,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         }
     };
     // ── end brewing ──
+    // ── fire ── a Flame arrow's victim, and what a burning mob's death drops
+    projectile_host.set_on_fire = [&](i32 entity_id, i32 seconds) {
+        if (fire_session) {
+            fire_session->set_mob_on_fire(entity_id, seconds);
+        }
+    };
+    const FireMobHost fire_mob_host{tnt_deliver, tnt_host.drop_item};
+    // ── end fire ──
     const ProjectileDeliver projectile_deliver = tnt_deliver;
     // ── end projectiles ─────────────────────────────────────────────────────
 
@@ -7109,6 +7228,16 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // ── end commands ────────────────────────────────────────────────────
 
         perf->enter(TickPhase::ScheduledTicks);  // ── perf ──
+        // ── fire ── the rule, the rain and the difficulty a fire reads this tick
+        if (fire_session) {
+            fire_session->set_world(FireWorld{
+                .fire_tick  = !commands || commands->world().rules.flag("doFireTick"),
+                .raining    = commands && commands->world().weather.is_raining(),
+                .difficulty = commands ? static_cast<i32>(commands->world().difficulty) : 2,
+                .sky_darken = sky_darken_for(commands ? commands->world().day_time
+                                                      : clock.tick_count())});
+        }
+
         // ── Scheduled ticks ─────────────────────────────────────────
         //
         // Water flows and levers light things here, and nowhere else. Two
@@ -7426,6 +7555,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                              clock.tick_count(), transport.hoppers, transport.hopper_moves,
                              transport.collected, transport.fired, transport.unsupported);
             }
+        }
+
+        // ── fire: campfires cook ──
+        if (campfires) {
+            const std::scoped_lock grill_pass{players_mutex, chunk_mutex};
+            (void)campfires->tick(campfire_host);
         }
 
         perf->enter(TickPhase::NaturalSpawning);  // ── perf ──
@@ -7823,6 +7958,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 if (brewing) {
                     brewing->tick_clouds(potion_host);
                 }
+                // ── fire: burning mobs, zombies in the sun ──
+                if (fire_session) {
+                    (void)fire_session->tick_mobs(*mobs, fire_mob_host);
+                }
 
                 for (const i32 gone : mobs->removed_ids()) {
                     broadcast(nullptr, net::clientbound::kRemoveEntities,
@@ -8206,6 +8345,40 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                                  worn, static_cast<gameplay::DamageKind>(kind))));
                             }
                         }
+                    }
+                    // ── fire ── the player's counter, before the survival tick
+                    if (fire_session) {
+                        gameplay::FireContact touching;
+                        {
+                            const std::scoped_lock fire_lock{chunk_mutex};
+                            touching = fire_session->contact(Vec3d{who.x, who.y, who.z}, 0.6, 1.8);
+                        }
+                        fire_session->tick_player(
+                            who.survival.fire, who.survival.fire_flag_sent, touching, who.mortal(),
+                            who.effects.effects.has(gameplay::Effect::FireResistance),
+                            FirePlayerIo{
+                                .hurt =
+                                    [&](gameplay::DamageKind kind, f32 amount) {
+                                        return who.survival
+                                            .hurt(kind, amount, io, who.entity_id,
+                                                  &fire_session->damage_window())
+                                            .applied;
+                                    },
+                                .flag =
+                                    [&](bool) {
+                                        const auto& active = who.effects.effects;
+                                        const u8    bits   = static_cast<u8>(
+                                            effect_bearer_for(who).shared_flags |
+                                            (active.has(gameplay::Effect::Invisibility) ? 0x20 : 0) |
+                                            (active.has(gameplay::Effect::Glowing) ? 0x40 : 0));
+                                        net::MetadataWriter fields;
+                                        fields.byte_value(net::metadata::kSharedFlags,
+                                                          static_cast<i8>(bits));
+                                        const auto payload =
+                                            net::encode_entity_metadata(who.entity_id, fields.take());
+                                        io.send(net::clientbound::kEntityMetadata, payload);
+                                        io.broadcast(net::clientbound::kEntityMetadata, payload);
+                                    }});
                     }
                     SurvivalOutcome outcome = who.survival.tick(
                         view, io,

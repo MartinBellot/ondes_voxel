@@ -83,9 +83,12 @@ public:
     /// draw could not do — a referenced table that is not an entity table, an
     /// unsupported function — so the caller can count it instead of believing
     /// an empty result.
+    ///
+    /// `on_fire` is the loot tables' `this is on fire` — a cow that dies
+    /// burning drops cooked beef. ── fire ──
     gameplay::DrawResult loot(const entity::EntityState&   state, bool killed_by_player,
                               u8 looting, math::XoroshiroRandomSource& random,
-                              std::vector<gameplay::Drop>& out) const;
+                              std::vector<gameplay::Drop>& out, bool on_fire = false) const;
 
     /// The registry name of an entity's type, or empty when the registry does
     /// not carry it.

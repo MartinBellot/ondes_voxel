@@ -280,6 +280,11 @@ void RandomTicks::tick_section(world::LevelWriter& level, const world::ChunkSect
         const registry::BlockStateId state =
             section.get_block(static_cast<usize>(x), static_cast<usize>(y), static_cast<usize>(z));
         if (!plants.ticks_randomly(state)) {
+            // ── fire ── lava's random tick, which lights fire
+            if (extension_ != nullptr && extension_->ticks_randomly(state)) {
+                ++stats.ticked;
+                extension_->random_tick(level, origin.offset(x, y, z), state);
+            }
             continue;
         }
         ++stats.ticked;

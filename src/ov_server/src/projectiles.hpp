@@ -96,6 +96,9 @@ struct ProjectileHost {
     /// An arrow's hit landed on `target`. `arrow` is what a pickup would give
     /// back — a tipped arrow carries its potion there.
     std::function<void(const net::ItemStack& arrow, i32 target, bool target_is_player)> arrow_hit;
+    /// ── fire ── Set a mob on fire: a Flame arrow that landed. Empty when
+    /// nothing on this server burns.
+    std::function<void(i32 entity_id, i32 seconds)> set_on_fire;
 };
 
 /// What one tick did, for the log and the end-to-end check.
