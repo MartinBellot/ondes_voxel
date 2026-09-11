@@ -199,9 +199,18 @@ public:
 
     /// Lava's random tick: one to two steps upward looking for an empty cell
     /// with a lava-ignitable neighbour, or three looks at the blocks level with
-    /// it for a lava-ignitable one with room above. Returns the fires lit.
+    /// it for a lava-ignitable one with room above. Returns the fires lit. A
+    /// fire is written only where it can stand: vanilla writes one anywhere and
+    /// takes it back at once when it cannot (measured: a fire lit above the
+    /// lava under a crafting table never shows).
     i32 lava_random_tick(world::LevelWriter& level, FireEnvironment& env, BlockPos pos,
                          FireRandom& random) const;
+
+    /// How many times a lava block's random tick runs when the chunk's random
+    /// tick picks it. **Two**, measured: 1.315 fires per pick under a plank
+    /// roof where one tick gives 2/3, 0.430 under a roof one higher where one
+    /// gives 49/243 (docs/provenance/feu.md § 5). The caller loops.
+    static constexpr i32 kLavaTicksPerPick = 2;
 
     /// The blocks of the table this build could not find in the registry.
     /// Zero in 1.20.1; a table written for another version says so here.

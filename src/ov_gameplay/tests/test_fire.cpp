@@ -373,7 +373,10 @@ TEST_CASE("fire: rain puts out fires on stone and not on netherrack", "[fire]") 
 namespace {
 
 /// A lava source ringed at its own level, and a roof, as the bench's rigs.
-[[nodiscard]] f64 lava_rate(std::string_view ring, std::string_view roof, i32 roof_dy, int picks) {
+/// `per_pick` random ticks each pick: 1 checks one call's rule, and
+/// `FireRules::kLavaTicksPerPick` is what the server does.
+[[nodiscard]] f64 lava_rate(std::string_view ring, std::string_view roof, i32 roof_dy, int picks,
+                            int per_pick = 1) {
     TestEnv    env;
     FireRandom random{99};
     TickLevel  level;
@@ -390,7 +393,9 @@ namespace {
     level.put(lava, state_of("minecraft:lava"));
     i64 fires = 0;
     for (int i = 0; i < picks; ++i) {
-        fires += rules().lava_random_tick(level, env, lava, random);
+        for (int k = 0; k < per_pick; ++k) {
+            fires += rules().lava_random_tick(level, env, lava, random);
+        }
         // Removed at once, as the measurement's tick function does.
         for (i32 dy = 1; dy <= 3; ++dy) {
             for (i32 dz = -2; dz <= 2; ++dz) {
@@ -417,6 +422,44 @@ TEST_CASE("fire: lava's random tick, geometry by geometry", "[fire]") {
                    49.0 / 243.0) < 0.01);
     // A stone roof lights nothing.
     CHECK(lava_rate("minecraft:stone", "minecraft:stone", 2, kPicks) == 0.0);
+}
+
+TEST_CASE("fire parity: lava's fires per pick, against the vanilla bench", "[fire][parity]") {
+    // scripts/measure_fire.py `lava`: 16 enclosed sources per geometry,
+    // randomTickSpeed 200 for 1201 ticks with a player present — 938.3 picks
+    // per geometry expected. Fires counted and removed the tick after they
+    // appear. Vanilla's rates, and the standard error of each (Poisson on the
+    // count, over 938.3 picks).
+    struct Row {
+        std::string_view ring;
+        std::string_view roof;
+        i32              dy;
+        f64              vanilla;
+        i64              count;
+    };
+    constexpr f64  kPicksVanilla = 938.28125;
+    const std::vector<Row> rows{
+        {"minecraft:stone", "minecraft:oak_planks", 2, 1.3152, 1234},
+        {"minecraft:stone", "minecraft:oak_planks", 3, 0.4295, 403},
+        {"minecraft:oak_planks", "", 0, 2.4641, 2312},
+        {"minecraft:stone", "minecraft:crafting_table", 2, 1.1446, 1074},
+    };
+    constexpr int kPicks = 40000;
+    for (const Row& row : rows) {
+        const f64 ours =
+            lava_rate(row.ring, row.roof, row.dy, kPicks, FireRules::kLavaTicksPerPick);
+        const f64 single = lava_rate(row.ring, row.roof, row.dy, kPicks, 1);
+        const f64 se     = std::sqrt(static_cast<f64>(row.count)) / kPicksVanilla;
+        INFO(row.ring << " / " << row.roof << " +" << row.dy);
+        WARN(row.roof << " +" << row.dy << " ring " << row.ring << ": vanilla " << row.vanilla
+                      << " ± " << se << ", ours " << ours << " (" << (ours - row.vanilla) / se
+                      << " SE); one tick a pick " << single);
+        CHECK(std::abs(ours - row.vanilla) < 3.0 * se);
+        // The control: one random tick a pick is many errors away.
+        CHECK(std::abs(single - row.vanilla) > 6.0 * se);
+    }
+    CHECK(lava_rate("minecraft:stone", "minecraft:stone", 2, kPicks,
+                    FireRules::kLavaTicksPerPick) == 0.0);
 }
 
 TEST_CASE("fire: an entity's counter", "[fire]") {

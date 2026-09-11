@@ -89,7 +89,10 @@ bool FireSession::ticks_randomly(registry::BlockStateId state) const noexcept {
 void FireSession::random_tick(world::LevelWriter& level, BlockPos pos,
                               registry::BlockStateId state) {
     (void)state;
-    (void)rules_.lava_random_tick(level, *this, pos, random_);
+    // Twice per pick, measured (fire.hpp, kLavaTicksPerPick).
+    for (i32 i = 0; i < gameplay::FireRules::kLavaTicksPerPick; ++i) {
+        (void)rules_.lava_random_tick(level, *this, pos, random_);
+    }
 }
 
 bool FireSession::biome_rains(i32 biome, i32 y) const noexcept {

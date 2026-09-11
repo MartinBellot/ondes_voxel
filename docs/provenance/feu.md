@@ -179,6 +179,43 @@ précipitations à une température ≥ 0,15. Le toit de pierre des vaches témo
 
 ---
 
+## 5. La lave qui allume — mesurée, et deux corrections
+
+Campagne `lava` : cinq géométries de 16 sources de lave enfermées au niveau du sol, un joueur
+connecté (sans lui, aucun random tick), `randomTickSpeed` 200 pendant **1201** ticks comptés à la
+console — soit **938,3** tirages attendus par géométrie. La fonction `tick` du datapack efface
+et compte chaque feu le tick suivant son apparition : le feu ne vit jamais assez pour faire autre
+chose, et la lave est la seule à en allumer.
+
+| géométrie | feux | par tirage | un random tick par tirage | deux |
+|---|---|---|---|---|
+| toit de planches à +2 (3 × 3) | 1234 | **1,315** | 2/3 = 0,667 | 1,333 |
+| toit de planches à +3 | 403 | **0,430** | 49/243 = 0,202 | 0,403 |
+| anneau de planches au niveau de la lave | 2312 | **2,464** | — | (simulé, ci-dessous) |
+| toit d'**établis** à +2 | 1074 | **1,145** | — | — |
+| toit de pierre à +2 | 0 | **0** | 0 | 0 |
+
+1. **Deux random ticks par tirage.** Un seul donnerait 0,667 et 0,202 ; vanilla donne le double,
+   à 1 et 1,3 écart-type. La cause probable — le tick aléatoire du bloc liquide *et* celui de son
+   fluide, au même tirage — n'est pas vérifiée ; le nombre, si. Notre serveur en faisait **un** :
+   il allumait la moitié des feux de lave. Corrigé : `FireRules::kLavaTicksPerPick = 2`, bouclé
+   par `FireSession::random_tick`.
+2. **L'établi prend feu de la lave.** Ses odds sont 0 (le feu ne le voit pas, § 3 : 0 / 16), mais
+   sous un toit d'établis la lave allume **1,145** feux par tirage, contre 0 sous la pierre. La
+   propriété vanilla `ignitedByLava` déborde de la table. Corrigé : l'établi est dans `kLavaOnly`.
+   D'autres blocs de bois la portent probablement (coffres, panneaux, portes…) : **non mesurés,
+   non ajoutés**.
+3. **Un feu qui ne tient pas n'apparaît pas.** Sous les établis, 1,145 et non 1,333 : la cellule
+   juste au-dessus de la lave (un neuvième des pas) n'a ni sol solide ni voisin inflammable pour
+   le feu, qui est retiré aussitôt posé — 1,333 × 8/9 = 1,185, à 1 écart-type. `lava_random_tick`
+   n'écrit donc un feu que là où il tient.
+
+`test_fire.cpp` rejoue les quatre géométries allumantes par `FireRules`, deux ticks par tirage, et
+exige d'être à moins de trois erreurs types du taux vanilla ; le témoin « un tick par tirage » doit
+en être à plus de six.
+
+---
+
 ## 8. De bout en bout, contre notre serveur
 
 `scripts/check_fire_e2e.py` fait tourner `ov_dedicated` (Debug) sur un monde plat neuf, construit
@@ -241,11 +278,11 @@ délais exacts sont ceux de l'oracle (§§ 1–6), lus tick par tick par le data
 
 ## 10. Nommés, et pas faits
 
-* **`ignitedByLava` hors de la table** : la colonne « catches from lava » du wiki ne couvre que
-  les blocs que le feu brûle. Que la lave allume aussi à côté de blocs de bois que le feu
-  ignore (établi, coffres, panneaux…) n'est **pas établi** : le montage `crafting_roof_2` de la
-  campagne `lava` le teste sur l'établi. D'ici là, rien n'est branché hors de la table
-  (`kLavaOnly` est vide) — une liste devinée allumerait des feux que vanilla n'allume pas.
+* **`ignitedByLava` hors de la table** : mesuré sur l'établi (§ 5, 1,145 feux par tirage, 0 sous
+  la pierre) et branché pour lui seul (`kLavaOnly`). Les autres blocs de bois que le feu ignore
+  — coffres, panneaux, portes, trappes, tables d'artisanat diverses — portent probablement la
+  même propriété : **non mesurés, non ajoutés**. Une liste devinée allumerait des feux que
+  vanilla n'allume peut-être pas.
 * **Les flèches qui traversent le feu ou la lave** ne s'enflamment pas ; seules les flèches
   Flamme allument leur cible (5 s, d'après l'article « Flame » du wiki, non mesuré).
 * **Protection contre le feu** : `setSecondsOnFire` n'applique pas la réduction de

@@ -138,10 +138,12 @@ constexpr std::array kNamed{
 }
 
 // Blocks lava lights that fire itself does not burn. Vanilla's `ignitedByLava`
-// is a property of its own and may reach wooden blocks outside the table (a
-// crafting table, a chest). Empty until the `lava` campaign's crafting-table
-// rig says so: a guessed list would light fires vanilla does not.
-constexpr std::array<std::string_view, 0> kLavaOnly{};
+// is a property of its own and reaches past the table: under a roof of crafting
+// tables — ignite odds 0, the fire never touches them — lava lit 1.145 fires a
+// pick, against 0 under stone (docs/provenance/feu.md § 5). Only the measured
+// block is listed. Other wooden blocks (chests, signs, doors…) likely carry the
+// property too; unmeasured, they are named there rather than guessed here.
+constexpr std::array<std::string_view, 1> kLavaOnly{"minecraft:crafting_table"};
 
 [[nodiscard]] Direction dir(u8 i) { return static_cast<Direction>(i); }
 
@@ -669,7 +671,11 @@ i32 FireRules::lava_random_tick(world::LevelWriter& level, FireEnvironment& env,
             if (in.is_air(here)) {
                 for (u8 i = 0; i < kDirectionCount; ++i) {
                     if (lava_lights(at.offset(dir(i)))) {
-                        level.set_block(at, in.state_for(level, at));
+                        const registry::BlockStateId fire = in.state_for(level, at);
+                        if (!in.survives(level, at, fire)) {
+                            return 0;  // written and taken back, in vanilla
+                        }
+                        level.set_block(at, fire);
                         return 1;
                     }
                 }
@@ -692,8 +698,11 @@ i32 FireRules::lava_random_tick(world::LevelWriter& level, FireEnvironment& env,
             // Vanilla asks for the fire's shape at the burning block, not at
             // the cell it lights; the neighbour notification the write makes
             // corrects the face flags straight away.
-            level.set_block(above, in.state_for(level, at));
-            ++lit;
+            const registry::BlockStateId fire = in.state_for(level, at);
+            if (in.survives(level, above, fire)) {
+                level.set_block(above, fire);
+                ++lit;
+            }
         }
     }
     return lit;
