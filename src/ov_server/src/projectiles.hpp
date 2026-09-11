@@ -88,6 +88,9 @@ struct ProjectileHost {
     std::function<void(Vec3d at, i32 value)> spawn_orb;
     /// Put a stack on the ground (a mob an arrow killed).
     std::function<void(Vec3d at, const net::ItemStack& stack)> drop_item;
+    /// ── fire ── Set a mob on fire: a Flame arrow that landed. Empty when
+    /// nothing on this server burns.
+    std::function<void(i32 entity_id, i32 seconds)> set_on_fire;
 };
 
 /// What one tick did, for the log and the end-to-end check.

@@ -170,10 +170,12 @@ TEST_CASE("a survival rule is named or refused, never guessed", "[worldgen][tree
     CHECK(plant_survival_rule("minecraft:dead_bush") == PlantSurvivalRule::DeadBush);
     CHECK(plant_survival_rule("minecraft:lily_pad") == PlantSurvivalRule::Waterlily);
     CHECK(plant_survival_rule("minecraft:azalea") == PlantSurvivalRule::DirtOrClay);
-    // The two mushrooms read the light level, which worldgen does not compute,
-    // and fire asks what is flammable nearby. Both are absent on purpose.
+    // The two mushrooms read the light level, which worldgen does not compute:
+    // absent on purpose. Fire has a rule since the fire wave — its sturdy-floor
+    // half; the flammable-neighbour half is refused inside the rule.
     CHECK(!plant_survival_rule("minecraft:brown_mushroom").has_value());
-    CHECK(!plant_survival_rule("minecraft:fire").has_value());
+    CHECK(plant_survival_rule("minecraft:fire") == PlantSurvivalRule::Fire);
+    CHECK(plant_survival_rule("minecraft:soul_fire") == PlantSurvivalRule::SoulFire);
     CHECK(!plant_survival_rule("minecraft:stone").has_value());
 
     CHECK(is_double_plant("minecraft:tall_grass"));

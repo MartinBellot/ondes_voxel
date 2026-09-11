@@ -85,6 +85,10 @@ struct CombatIo {
     /// The enchantment levels on the held item. Read once per swing rather than
     /// stored, because the player can change hands between two of them.
     std::function<gameplay::Weapon()> held_weapon;
+
+    /// ── fire ── Set an entity on fire for this many seconds: Fire Aspect.
+    /// Empty when nothing on this server burns.
+    std::function<void(i32 entity_id, i32 seconds)> set_on_fire;
 };
 
 /// What the server must know about the player doing the hitting.

@@ -42,6 +42,7 @@ constexpr std::array kSurvival{
     SurvivalEntry{"minecraft:dark_oak_sapling", PlantSurvivalRule::DirtOrFarmland},
     SurvivalEntry{"minecraft:dead_bush", PlantSurvivalRule::DeadBush},
     SurvivalEntry{"minecraft:fern", PlantSurvivalRule::DirtOrFarmland},
+    SurvivalEntry{"minecraft:fire", PlantSurvivalRule::Fire},  // ── fire ──
     SurvivalEntry{"minecraft:flowering_azalea", PlantSurvivalRule::DirtOrClay},
     SurvivalEntry{"minecraft:grass", PlantSurvivalRule::DirtOrFarmland},
     SurvivalEntry{"minecraft:jack_o_lantern", PlantSurvivalRule::Always},
@@ -65,6 +66,7 @@ constexpr std::array kSurvival{
     SurvivalEntry{"minecraft:red_tulip", PlantSurvivalRule::DirtOrFarmland},
     SurvivalEntry{"minecraft:rose_bush", PlantSurvivalRule::DirtOrFarmland},
     SurvivalEntry{"minecraft:seagrass", PlantSurvivalRule::Seagrass},
+    SurvivalEntry{"minecraft:soul_fire", PlantSurvivalRule::SoulFire},  // ── fire ──
     SurvivalEntry{"minecraft:spore_blossom", PlantSurvivalRule::HangingFromAbove},
     SurvivalEntry{"minecraft:spruce_sapling", PlantSurvivalRule::DirtOrFarmland},
     SurvivalEntry{"minecraft:sugar_cane", PlantSurvivalRule::SugarCane},
@@ -119,6 +121,7 @@ struct GroundTags {
     registry::BlockId cactus{0};
     registry::BlockId sugar_cane{0};
     registry::BlockId magma_block{0};
+    registry::BlockId soul_sand{0};  // ── fire ──
 };
 
 using GroundTagsRef = std::shared_ptr<const GroundTags>;
@@ -177,6 +180,8 @@ using GroundTagsRef = std::shared_ptr<const GroundTags>;
     if (auto ok = named("minecraft:sugar_cane", result->sugar_cane); !ok)
         return std::unexpected(ok.error());
     if (auto ok = named("minecraft:magma_block", result->magma_block); !ok)
+        return std::unexpected(ok.error());
+    if (auto ok = named("minecraft:soul_sand", result->soul_sand); !ok)  // ── fire ──
         return std::unexpected(ok.error());
     return std::static_pointer_cast<const GroundTags>(result);
 }
@@ -272,6 +277,11 @@ using GroundTagsRef = std::shared_ptr<const GroundTags>;
             }
             return !is_water_at(blocks, ground, level, at);
         }
+        // ── fire ── (the flammable-neighbour half is refused: see the enum)
+        case PlantSurvivalRule::Fire:
+            return blocks.face_is_sturdy(below_state, registry::BlockRegistry::Face::Up);
+        case PlantSurvivalRule::SoulFire:
+            return below == ground.soul_sand || below == ground.soul_soil;
     }
     return false;
 }

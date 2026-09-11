@@ -91,6 +91,9 @@ usize WorldTicks::settle(ServerLevel& level, usize& waves) {
             if (extension_ != nullptr) {  // ── tnt and gravity ──
                 extension_->neighbour_changed(level, pos);
             }
+            if (fire_extension_ != nullptr) {  // ── fire ──
+                fire_extension_->neighbour_changed(level, pos);
+            }
             ++notified;
             if (plants_ != nullptr) {  // ── agriculture ──
                 // The written block itself: a leaf placed next to a log learns
@@ -107,6 +110,9 @@ usize WorldTicks::settle(ServerLevel& level, usize& waves) {
                 (void)redstone_.neighbour_changed(level, neighbour, pos);
                 if (extension_ != nullptr) {  // ── tnt and gravity ──
                     extension_->neighbour_changed(level, neighbour);
+                }
+                if (fire_extension_ != nullptr) {  // ── fire ──
+                    fire_extension_->neighbour_changed(level, neighbour);
                 }
                 if (plants_ != nullptr) {  // ── agriculture ──
                     plants_->neighbour_changed(level, *plant_env_, neighbour, pos);
@@ -207,6 +213,12 @@ WorldTickStats WorldTicks::run(ServerLevel& level, i64 now) {
         }
         // ── tnt and gravity: a falling block's tick is not redstone's ──
         if (extension_ != nullptr && extension_->scheduled_tick(level, tick.pos, tick.what)) {
+            ++stats.block_ticks;
+            continue;
+        }
+        // ── fire: a fire's own tick ──
+        if (fire_extension_ != nullptr &&
+            fire_extension_->scheduled_tick(level, tick.pos, tick.what)) {
             ++stats.block_ticks;
             continue;
         }

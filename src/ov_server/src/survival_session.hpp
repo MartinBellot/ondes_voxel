@@ -17,6 +17,7 @@
 #include "ov/base/types.hpp"
 #include "ov/gameplay/damage.hpp"
 #include "ov/gameplay/experience.hpp"
+#include "ov/gameplay/fire.hpp"  // ── fire ──
 #include "ov/gameplay/food.hpp"
 
 #include <array>
@@ -190,6 +191,13 @@ public:
     gameplay::DamageConstants constants_damage{};
     gameplay::FoodConstants   constants_food{};
     gameplay::OrbConstants    constants_orbs{};
+
+    // ── fire ──
+    /// The player's `Fire` counter: twenty ticks of grace in a fire block
+    /// before it lights (`getFireImmuneTicks` is 20 for a player), and
+    /// whether the client was last told the player burns (shared flag 0x01).
+    gameplay::EntityFire fire{.remaining = -20, .immune_ticks = 20, .fire_immune = false};
+    bool                 fire_flag_sent{false};
 
 private:
     void send_health_if_changed(const SurvivalIo& io);
