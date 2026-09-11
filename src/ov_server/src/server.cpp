@@ -79,6 +79,8 @@
 #include "tnt_gravity.hpp"
 #include "projectiles.hpp"  // ── projectiles ──
 #include "husbandry.hpp"    // ── husbandry ──
+#include "slimes.hpp"       // ── mobs-2 ──
+#include "drowning.hpp"     // ── mobs-2 ──
 
 #include <fmt/format.h>
 
@@ -1964,6 +1966,13 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     std::optional<Projectiles> projectiles;
     // ── husbandry ──
     std::optional<Husbandry> husbandry;
+    // ── mobs-2: slimes — a size each, and the division on death ──
+    std::optional<Slimes>             slimes;
+    math::LegacyRandomSource          slime_random{0x4f56'534c'494d'4531LL};
+    std::vector<gameplay::SlimeChild> slime_births;
+    std::vector<gameplay::SlimeChild> slime_scratch;
+    std::optional<Drowning>           drowning;  // zombies and husks under water
+    std::vector<Drowning::Conversion> drowned_now;
 
     /// The packets that make one mob appear.
     ///
@@ -2014,6 +2023,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // ── husbandry: baby, fleece, saddle ──
         if (husbandry && mobs) {
             husbandry->spawn_metadata(*mobs, state, fields);
+        }
+        if (slimes) {  // ── mobs-2 ──
+            slimes->spawn_metadata(state, fields);
         }
         deliver(net::clientbound::kEntityMetadata,
                 net::encode_entity_metadata(state.network_id, fields.take()));
@@ -2487,6 +2499,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         projectiles.emplace(*registries, *blocks, mob_combat ? &*mob_combat : nullptr);
         // ── husbandry ──
         husbandry.emplace(*registries, *blocks);
+        slimes.emplace(*registries);  // ── mobs-2 ──
+        drowning.emplace(*registries);
         tick_broadcasts.reserve(4096);
     } else {
         OV_LOG_WARN("no block registry — fluids and redstone stay inert");
@@ -3280,6 +3294,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // Flagged, never removed here: the entity world applies removals at the
         // end of its own tick, and taking one out from under the tick's loop is
         // how a list gets modified underneath itself.
+        if (slimes) {  // ── mobs-2: a big slime splits, next tick ──
+            slimes->on_death(*state, slime_random, slime_scratch);
+            slime_births.insert(slime_births.end(), slime_scratch.begin(), slime_scratch.end());
+        }
         state->removed = true;
         mob_combat->forget(state->network_id);
         return true;
@@ -3596,6 +3614,11 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     dropped.push_back(std::move(item));
                 }
                 publish_items(dropped);
+                if (slimes) {  // ── mobs-2: a big slime splits, next tick ──
+                    slimes->on_death(*state, slime_random, slime_scratch);
+                    slime_births.insert(slime_births.end(), slime_scratch.begin(),
+                                        slime_scratch.end());
+                }
                 state->removed = true;
                 mob_combat->forget(id);
                 return true;
@@ -3630,6 +3653,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         state->uuid                = uuid_for_entity(state->network_id);
         state->broadcast_position  = state->position;
         state->broadcast_valid     = true;
+        if (slimes && slimes->owns(state->type)) {  // ── mobs-2 ──
+            slimes->on_spawn(*state, slime_random, 0.0F);
+        }
         // The same behaviour a natural spawn gets: a brain for a species with
         // goals, the falling floor for one without — refused, not invented.
         if (const gameplay::MobKind* kind = gameplay::mob_kind(type)) {
@@ -6012,7 +6038,20 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     // and a spawner configured with an empty list is indistinguishable from one
     // that is not wired up — so a failure here turns spawning **off** and says
     // so, rather than running with nothing in it.
-    spawning_ready = load_biome_spawners(std::filesystem::path{OV_DATA_DIR} / "vanilla" /
+    // ── mobs-2: every biome's lists, drawn from the biome of each position ──
+    std::vector<std::string> spawner_biome_names;
+    const ChunkBiomes        spawn_biomes{[&](BlockPos pos) -> u16 {
+        const world::Chunk* chunk = chunk_if_resident(pos.x >> 4, pos.z >> 4);
+        return chunk == nullptr ? u16{0}
+                                       : chunk->get_biome(static_cast<usize>(pos.x & 15), pos.y,
+                                                   static_cast<usize>(pos.z & 15));
+    }};
+    const bool per_biome = load_all_biome_spawners(std::filesystem::path{OV_DATA_DIR} / "vanilla" /
+                                                       "1.20.1" / "generated",
+                                                   biome_names, spawner, spawner_biome_names) > 0;
+    // ── end mobs-2 ──
+    spawning_ready = per_biome ||
+                     load_biome_spawners(std::filesystem::path{OV_DATA_DIR} / "vanilla" /
                                              "1.20.1" / "generated",
                                          "minecraft:plains", spawner, spawner_names);
 
@@ -7357,6 +7396,11 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     environment.ticking_chunks    = spawn_ticking;
                     environment.live_per_category = spawn_live;
                     environment.registries        = &*registries;
+                    // ── mobs-2 ──
+                    environment.biomes     = per_biome ? &spawn_biomes : nullptr;
+                    environment.world_seed = level_settings.seed;
+                    environment.day_time   = commands ? commands->world().day_time
+                                                      : server_tick.load(std::memory_order_relaxed);
 
                     spawner.spawn_tick(environment, spawn_requests);
                 }
@@ -7371,6 +7415,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     state->uuid               = uuid_for_entity(state->network_id);
                     state->broadcast_position = state->position;
                     state->broadcast_valid    = true;
+                    if (slimes && slimes->owns(state->type)) {  // ── mobs-2 ──
+                        slimes->on_spawn(*state, slime_random, 0.0F);
+                    }
                     // Behaviour, by name, and refused rather than invented: a
                     // mob given a plausible default brain is worse than one that
                     // only falls, because only one of them says so.
@@ -7405,6 +7452,103 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         }
 
         perf->enter(TickPhase::Entities);  // ── perf ──
+
+        // ── mobs-2: the slimes a dead slime left, each half its size ──
+        if (!slime_births.empty() && mobs && slimes && registries) {
+            const auto entity_types = registries->find("minecraft:entity_type");
+            const auto player_type =
+                entity_types ? registries->protocol_id(*entity_types, "minecraft:player")
+                             : std::nullopt;
+            const gameplay::MobKind* slime_kind = gameplay::mob_kind("minecraft:slime");
+            for (const gameplay::SlimeChild& child : slime_births) {
+                const auto born = mobs->spawn("minecraft:slime", child.offset, net::Uuid{});
+                if (!born || slime_kind == nullptr) {
+                    continue;
+                }
+                entity::EntityState* state = mobs->mutable_state(*born);
+                state->uuid                = uuid_for_entity(state->network_id);
+                state->broadcast_position  = state->position;
+                state->broadcast_valid     = true;
+                slimes->set_size(*state, child.size);
+                mobs->set_logic(*born, std::make_unique<gameplay::Mob>(
+                                           *slime_kind, state->width, state->height,
+                                           state->network_id,
+                                           player_type ? *player_type : gameplay::kNoQuarry));
+                const std::unique_lock lock{players_mutex, std::try_to_lock};
+                if (lock.owns_lock()) {
+                    mob_packets(*state, [&](i32 id, std::span<const u8> payload) {
+                        broadcast(nullptr, id, payload);
+                    });
+                }
+            }
+            OV_LOG_DEBUG("{} slime(s) born of a division", slime_births.size());
+            slime_births.clear();
+        }
+        // A zombie whose eyes stay in water becomes a drowned; a husk, a zombie.
+        if (mobs && drowning && blocks && registries) {
+            drowned_now.clear();
+            {
+                const std::scoped_lock chunk_lock{chunk_mutex};
+                // ── perf ── resident chunks only: `block_at` would generate a
+                // missing chunk on the tick thread (performance-tick.md § 5.4).
+                const auto resident_block = [&](BlockPos at) -> registry::BlockStateId {
+                    const world::Chunk* chunk = chunk_if_resident(at.x >> 4, at.z >> 4);
+                    if (chunk == nullptr || !world::WorldShape::overworld().contains_y(at.y)) {
+                        return registry::kAirState;
+                    }
+                    return chunk->get_block(static_cast<usize>(at.x & 15), at.y,
+                                            static_cast<usize>(at.z & 15));
+                };
+                struct WaterContext {
+                    const decltype(resident_block)* read;
+                    const registry::BlockRegistry*  registry;
+                };
+                const WaterContext water_context{&resident_block, &*blocks};
+                const auto         water = [](const void* context, BlockPos pos) -> bool {
+                    const auto& in = *static_cast<const WaterContext*>(context);
+                    const registry::BlockStateId state = (*in.read)({pos.x, pos.y, pos.z});
+                    return in.registry->holds_fluid(state) &&
+                           in.registry->block_name(in.registry->block_of(state)) ==
+                               "minecraft:water";
+                };
+                drowning->tick(*mobs, water, &water_context, drowned_now);
+            }
+            for (const Drowning::Conversion& conversion : drowned_now) {
+                entity::EntityState* old = mobs->mutable_state(conversion.handle);
+                const gameplay::MobKind* kind = gameplay::mob_kind(conversion.to);
+                if (old == nullptr || kind == nullptr) {
+                    continue;
+                }
+                const auto born = mobs->spawn(conversion.to, old->position, net::Uuid{});
+                if (!born) {
+                    continue;
+                }
+                entity::EntityState* state = mobs->mutable_state(*born);
+                old                        = mobs->mutable_state(conversion.handle);
+                state->uuid                = uuid_for_entity(state->network_id);
+                state->yaw                 = old->yaw;
+                state->head_yaw            = old->head_yaw;
+                state->broadcast_position  = state->position;
+                state->broadcast_valid     = true;
+                const auto entity_types = registries->find("minecraft:entity_type");
+                const auto player_type =
+                    entity_types ? registries->protocol_id(*entity_types, "minecraft:player")
+                                 : std::nullopt;
+                mobs->set_logic(*born, std::make_unique<gameplay::Mob>(
+                                           *kind, state->width, state->height, state->network_id,
+                                           player_type ? *player_type : gameplay::kNoQuarry));
+                old->removed = true;
+                const std::unique_lock lock{players_mutex, std::try_to_lock};
+                if (lock.owns_lock()) {
+                    mob_packets(*state, [&](i32 id, std::span<const u8> payload) {
+                        broadcast(nullptr, id, payload);
+                    });
+                }
+                OV_LOG_INFO("a mob drowned and became {}", conversion.to);
+            }
+        }
+        // ── end mobs-2 ──
+
         // Mobs: gravity, collision, and only the movement that actually
         // happened. A delta packet when the move fits in one — six bytes rather
         // than twenty-eight — and a teleport when it does not.

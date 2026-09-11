@@ -329,8 +329,10 @@ private:
 /// one.
 class MeleeAttackGoal final : public Goal {
 public:
-    explicit MeleeAttackGoal(f64 speed = 1.0, i32 cooldown = 20) noexcept
-        : speed_{speed}, cooldown_{cooldown} {}
+    /// `hold_at` (── mobs-2 ──): a ranged attacker stops closing in inside
+    /// this distance — 15 for a skeleton's bow, 10 for a witch. 0 for melee.
+    explicit MeleeAttackGoal(f64 speed = 1.0, i32 cooldown = 20, f64 hold_at = 0.0) noexcept
+        : speed_{speed}, cooldown_{cooldown}, hold_at_{hold_at} {}
 
     [[nodiscard]] bool     can_use(GoalContext& context) override;
     [[nodiscard]] bool     can_continue_to_use(GoalContext& context) override;
@@ -348,6 +350,7 @@ public:
 private:
     f64 speed_{1.0};
     i32 cooldown_{20};
+    f64 hold_at_{0.0};  // ── mobs-2 ──
     i32 ticks_until_attack_{0};
     i64 next_repath_{0};
 };

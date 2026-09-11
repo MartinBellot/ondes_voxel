@@ -1,6 +1,7 @@
 #include "ov/gameplay/spawning.hpp"
 
 #include "ov/gameplay/pathfinding.hpp"
+#include "ov/gameplay/spawn_rules.hpp"  // ── mobs-2 ──
 
 #include <algorithm>
 #include <cmath>
@@ -64,6 +65,17 @@ constexpr CategoryName kCategories[] = {
     {"minecraft:pufferfish", MobCategory::WaterAmbient},
 
     {"minecraft:axolotl", MobCategory::Axolotls},
+
+    // ── mobs-2 ── the rest of what an overworld biome file lists, so that a
+    // mob the biome spawns is counted against its own category's cap.
+    {"minecraft:cat", MobCategory::Creature},
+    {"minecraft:frog", MobCategory::Creature},
+    {"minecraft:polar_bear", MobCategory::Creature},
+    {"minecraft:mooshroom", MobCategory::Creature},
+    {"minecraft:panda", MobCategory::Creature},
+    {"minecraft:parrot", MobCategory::Creature},
+    {"minecraft:turtle", MobCategory::Creature},
+    {"minecraft:ocelot", MobCategory::Creature},
 };
 
 [[nodiscard]] usize category_index(MobCategory category) noexcept {
@@ -227,7 +239,19 @@ bool NaturalSpawner::position_plausible(const SpawnEnvironment& environment,
         }
     }
 
-    if (rules.max_spawn_light >= 0) {
+    // ── mobs-2 ── A monster's light is a draw, not a threshold (spawn_rules.hpp
+    // and docs/provenance/mobs-2.md § 3). What is asked here is only the part
+    // no draw can rescue — block light over the dimension's limit of 0, or a
+    // light level above the provider's 7 — so a lit position costs no draw.
+    // The draw itself is the type's (`can_spawn_type_at`): a slime has its own.
+    if (category == MobCategory::Monster) {
+        if (environment.light == nullptr) {
+            return false;  // refused, not assumed dark
+        }
+        if (!monster_light_possible(*environment.light, pos)) {
+            return false;
+        }
+    } else if (rules.max_spawn_light >= 0) {
         if (environment.light == nullptr) {
             return false;  // refused, not assumed dark
         }
@@ -237,15 +261,11 @@ bool NaturalSpawner::position_plausible(const SpawnEnvironment& environment,
     }
 
     if (category == MobCategory::Creature) {
-        // An animal needs grass under it and sky above. Both are measured
-        // properties of the world rather than of the animal, which is why they
-        // are here and not in a per-type predicate.
-        const registry::BlockRegistry& blocks = level.blocks();
-        const registry::BlockStateId   floor  = level.block_at(pos.below());
-        if (blocks.block_name(blocks.block_of(floor)) != "minecraft:grass_block") {
-            return false;
-        }
-        if (environment.light == nullptr || environment.light->sky_light(pos) < 9) {
+        // An animal needs a raw light level above 8 — sky or block, undimmed
+        // by the hour. Which floor it needs is the type's (a rabbit stands on
+        // sand, a wolf on snow), so the floor is asked after the draw.
+        if (environment.light == nullptr ||
+            std::max(environment.light->sky_light(pos), environment.light->block_light(pos)) < 9) {
             return false;
         }
     }
@@ -260,6 +280,14 @@ bool NaturalSpawner::can_spawn_at(const SpawnEnvironment& environment, MobCatego
     const world::LevelView& level = *environment.level;
     const CategoryRules     rules = rules_for(category);
     const MobSize           size  = MobSize::from_box(width, height);
+
+    // ── mobs-2 ── With no type named, an animal stands on the game's default
+    // floor, `#animals_spawnable_on` (grass). A type with its own floor goes
+    // through `can_spawn_type_at` instead.
+    if (category == MobCategory::Creature &&
+        !floor_in_tag(environment, pos.below(), "minecraft:animals_spawnable_on")) {
+        return false;
+    }
 
     if (rules.aquatic) {
         // Every block of the body in water, and a floor of some kind under it
@@ -318,7 +346,7 @@ void NaturalSpawner::spawn_tick(const SpawnEnvironment& environment,
 
     for (usize index = 0; index < 8; ++index) {
         const MobCategory category = static_cast<MobCategory>(index);
-        if (category == MobCategory::Misc || entries(category).empty()) {
+        if (category == MobCategory::Misc || !category_has_entries(category)) {  // ── mobs-2 ──
             continue;
         }
         if (category == MobCategory::Creature && !passive_pass) {
@@ -373,13 +401,14 @@ void NaturalSpawner::spawn_tick(const SpawnEnvironment& environment,
                 // Which type. A weighted draw over the category's entries, so
                 // a biome that lists four zombies and one witch gets four
                 // zombies and one witch.
-                const std::vector<SpawnerEntry>& list = entries(category);
+                // ── mobs-2 ── From the biome **of this position**.
+                const std::vector<SpawnerEntry>& list = entries_at(environment, category, pos);
                 i32                              total = 0;
                 for (const SpawnerEntry& entry : list) {
                     total += entry.weight;
                 }
                 if (total <= 0) {
-                    break;
+                    continue;  // this biome spawns nothing of the category
                 }
                 i32                 roll   = random_.next_int(total);
                 const SpawnerEntry* chosen = &list.front();
@@ -400,7 +429,8 @@ void NaturalSpawner::spawn_tick(const SpawnEnvironment& environment,
                 if (!info) {
                     continue;
                 }
-                if (!can_spawn_at(environment, category, pos, info->width, info->height)) {
+                if (!can_spawn_type_at(environment, category, chosen->type_name, pos,
+                                       info->width, info->height)) {  // ── mobs-2 ──
                     continue;
                 }
 
@@ -417,7 +447,8 @@ void NaturalSpawner::spawn_tick(const SpawnEnvironment& environment,
                                     : BlockPos{pos.x + random_.next_int(11) - 5, pos.y,
                                                pos.z + random_.next_int(11) - 5};
                     if (member != 0 &&
-                        !can_spawn_at(environment, category, where, info->width, info->height)) {
+                        !can_spawn_type_at(environment, category, chosen->type_name, where,
+                                           info->width, info->height)) {  // ── mobs-2 ──
                         continue;
                     }
                     out.push_back(SpawnRequest{
@@ -431,6 +462,132 @@ void NaturalSpawner::spawn_tick(const SpawnEnvironment& environment,
         }
     }
 }
+
+// ── mobs-2 ── Biome lists and the type's own predicate ───────────────────────
+
+void NaturalSpawner::set_biome_entries(u16 biome, MobCategory category,
+                                       std::span<const SpawnerEntry> entries) {
+    if (biome >= biomes_.size()) {
+        biomes_.resize(static_cast<usize>(biome) + 1);
+    }
+    std::vector<SpawnerEntry>& list = biomes_[biome].lists[category_index(category)];
+    list.assign(entries.begin(), entries.end());
+}
+
+void NaturalSpawner::set_surface_slimes(u16 biome, bool allowed) {
+    if (biome >= biomes_.size()) {
+        biomes_.resize(static_cast<usize>(biome) + 1);
+    }
+    biomes_[biome].surface_slimes = allowed;
+}
+
+bool NaturalSpawner::category_has_entries(MobCategory category) const noexcept {
+    if (!entries(category).empty()) {
+        return true;
+    }
+    for (const BiomeLists& biome : biomes_) {
+        if (!biome.lists[category_index(category)].empty()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+const std::vector<SpawnerEntry>& NaturalSpawner::entries_at(const SpawnEnvironment& environment,
+                                                            MobCategory category,
+                                                            BlockPos    pos) const noexcept {
+    if (environment.biomes == nullptr || biomes_.empty()) {
+        return entries(category);
+    }
+    const u16 biome = environment.biomes->biome_at(pos);
+    if (biome >= biomes_.size()) {
+        // A biome no file was loaded for spawns nothing — refused, not given
+        // the category-wide list, which would be a plains list in a desert.
+        static const std::vector<SpawnerEntry> kNone;
+        return kNone;
+    }
+    return biomes_[biome].lists[category_index(category)];
+}
+
+bool NaturalSpawner::floor_in_tag(const SpawnEnvironment& environment, BlockPos floor,
+                                  std::string_view tag) const {
+    const registry::Registries* registries = environment.registries;
+    if (registries == nullptr || environment.level == nullptr) {
+        return false;
+    }
+    const auto block_registry = registries->find("minecraft:block");
+    if (!block_registry) {
+        return false;
+    }
+    const auto found = registries->find_tag(*block_registry, tag);
+    if (!found) {
+        return false;  // a tag the pack does not carry is refused, not "anything"
+    }
+    const registry::BlockRegistry& blocks = environment.level->blocks();
+    const auto id = registries->protocol_id(
+        *block_registry, blocks.block_name(blocks.block_of(environment.level->block_at(floor))));
+    return id && registries->tag_contains(*found, *id);
+}
+
+bool NaturalSpawner::can_spawn_type_at(const SpawnEnvironment& environment, MobCategory category,
+                                       std::string_view type_name, BlockPos pos, f32 width,
+                                       f32 height) {
+    const TypeSpawnRule rule = spawn_rule_of(type_name, category == MobCategory::Creature);
+
+    if (rule.rule == SpawnRule::Animal) {
+        // The category's checks, then the type's floor instead of grass.
+        if (!position_plausible(environment, category, pos)) {
+            return false;
+        }
+        if (!floor_in_tag(environment, pos.below(), rule.floor_tag)) {
+            return false;
+        }
+        const WalkNodeEvaluator walk;
+        PathAbilities           abilities;
+        abilities.enters_water = false;
+        return walk.type_at(*environment.level, pos, MobSize::from_box(width, height), abilities) ==
+               PathNodeType::Walkable;
+    }
+
+    if (category != MobCategory::Monster || environment.light == nullptr) {
+        return can_spawn_at(environment, category, pos, width, height);
+    }
+
+    if (rule.rule == SpawnRule::Slime) {
+        // minecraft.wiki *Slime*: a surface-slime biome between y 51 and 69,
+        // half the time times the moon, and a light draw; or a slime chunk
+        // below y 40, one attempt in ten. No monster darkness draw.
+        bool allowed = false;
+        const u16 biome = environment.biomes != nullptr ? environment.biomes->biome_at(pos) : 0;
+        if (environment.biomes != nullptr && biome < biomes_.size() &&
+            biomes_[biome].surface_slimes && pos.y > 50 && pos.y < 70 &&
+            environment.day_time >= 0) {
+            const f32 half  = random_.next_float();
+            const f32 moon  = random_.next_float();
+            const i32 light = random_.next_int(8);
+            allowed         = half < 0.5F && moon < moon_brightness(environment.day_time) &&
+                      static_cast<i32>(environment.light->effective_light(pos)) <= light;
+        }
+        if (!allowed) {
+            const i32 tenth = random_.next_int(10);
+            allowed = tenth == 0 && pos.y < 40 &&
+                      is_slime_chunk(environment.world_seed, pos.x >> 4, pos.z >> 4);
+        }
+        return allowed && can_spawn_at(environment, category, pos, width, height);
+    }
+
+    if (!monster_dark_enough(*environment.light, pos, random_)) {
+        return false;
+    }
+    if (rule.rule == SpawnRule::MonsterUnderSky && environment.light->sky_light(pos) < 15) {
+        // "Can see the sky", approximated by unobstructed sky light: a glass
+        // roof lets 15 through and the game's heightmap test would not. Named
+        // in docs/provenance/mobs-2.md.
+        return false;
+    }
+    return can_spawn_at(environment, category, pos, width, height);
+}
+// ── end mobs-2 ──
 
 DespawnDecision decide_despawn(MobCategory category, f64 distance_to_nearest_player,
                                bool persistence_required, i32 idle_ticks,

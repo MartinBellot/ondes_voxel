@@ -133,6 +133,23 @@ public:
     }
 };
 
+// ── mobs-2 ──
+/// Which biome a position is in, as the index the chunk stores (the order of
+/// the registry codec's `minecraft:worldgen/biome`). Supplied by the caller
+/// for the same reason light is: a LevelView answers blocks.
+class BiomeLookup {
+public:
+    BiomeLookup()                              = default;
+    BiomeLookup(const BiomeLookup&)            = delete;
+    BiomeLookup& operator=(const BiomeLookup&) = delete;
+    BiomeLookup(BiomeLookup&&)                 = delete;
+    BiomeLookup& operator=(BiomeLookup&&)      = delete;
+    virtual ~BiomeLookup()                     = default;
+
+    [[nodiscard]] virtual u16 biome_at(BlockPos pos) const = 0;
+};
+// ── end mobs-2 ──
+
 /// One mob the spawner decided to create.
 ///
 /// Returned rather than created: `ov_gameplay` may not know how a caller
@@ -182,6 +199,16 @@ struct SpawnEnvironment {
     /// counts its own calls instead, which is exactly as good a clock as long
     /// as `spawn_tick` means what it says.
     i64 game_time{-1};
+
+    // ── mobs-2 ──
+    /// The biome of a position. Null: the category-wide lists of
+    /// `set_entries` are used everywhere, as before this existed.
+    const BiomeLookup* biomes{nullptr};
+    /// For slime chunks.
+    i64 world_seed{0};
+    /// For the moon phase a swamp slime is drawn against. -1: no moon, so no
+    /// swamp slime — refused rather than assumed full.
+    i64 day_time{-1};
 };
 
 /// Which mob types a category may put in a biome, and how many at a time.
@@ -255,8 +282,39 @@ public:
     /// How many positions one chunk is offered per tick.
     static constexpr i32 kAttemptsPerChunk = 3;
 
+    // ── mobs-2 ──
+    /// One biome's list for a category, from its `spawners`. A biome with a
+    /// list is drawn from wherever a position lies in it — the game draws the
+    /// type from the biome **of the position**, not of the player.
+    void set_biome_entries(u16 biome, MobCategory category, std::span<const SpawnerEntry> entries);
+    /// Whether the biome is in `#minecraft:allows_surface_slime_spawns`.
+    void set_surface_slimes(u16 biome, bool allowed);
+    /// The list a category draws from at a position: the biome's when biomes
+    /// are known, the category-wide one otherwise.
+    [[nodiscard]] const std::vector<SpawnerEntry>& entries_at(const SpawnEnvironment& environment,
+                                                              MobCategory category,
+                                                              BlockPos    pos) const noexcept;
+    /// `can_spawn_at`, and then the type's own predicate (spawn_rules.hpp):
+    /// its floor, the sky, the slime rules, the darkness draw. Draws from the
+    /// spawner's own source, which is why it is not const.
+    [[nodiscard]] bool can_spawn_type_at(const SpawnEnvironment& environment,
+                                         MobCategory category, std::string_view type_name,
+                                         BlockPos pos, f32 width, f32 height);
+    // ── end mobs-2 ──
+
 private:
     [[nodiscard]] const std::vector<SpawnerEntry>& entries(MobCategory category) const noexcept;
+
+    // ── mobs-2 ──
+    struct BiomeLists {
+        std::vector<SpawnerEntry> lists[8];
+        bool                      surface_slimes{false};
+    };
+    [[nodiscard]] bool category_has_entries(MobCategory category) const noexcept;
+    [[nodiscard]] bool floor_in_tag(const SpawnEnvironment& environment, BlockPos floor,
+                                    std::string_view tag) const;
+    std::vector<BiomeLists> biomes_;
+    // ── end mobs-2 ──
 
     math::LegacyRandomSource   random_;
     std::vector<SpawnerEntry>  entries_[8];

@@ -6,40 +6,9 @@
 #include <cmath>
 
 namespace ov::gameplay {
-namespace {
 
-/// The eight species, and nothing about them that is not a number or a flag.
-///
-/// `walk_speed` is the measured `movement_speed` attribute halved. Only the
-/// zombie's has been checked against the game — 0.11419 blocks a tick measured
-/// against 0.115 predicted, which is 0.7 % — and the other seven are derived
-/// from the same relation rather than measured. docs/provenance/mobs.md says so
-/// there too, because a table that looks uniform is exactly how a derived
-/// number gets mistaken for a measured one.
-constexpr std::array<MobKind, 8> kKinds{{
-    // type name                category                    speed    doors  sun   hostile panic breed
-    {"minecraft:zombie",   MobCategory::Monster,  0.115,  true,  true,  true,  false, false},
-    {"minecraft:skeleton",  MobCategory::Monster,  0.125,  false, true,  true,  false, false},
-    {"minecraft:creeper",   MobCategory::Monster,  0.125,  false, false, true,  false, false},
-    {"minecraft:spider",    MobCategory::Monster,  0.150,  false, false, true,  false, false},
-    {"minecraft:cow",       MobCategory::Creature, 0.100,  false, false, false, true,  true},
-    {"minecraft:pig",       MobCategory::Creature, 0.125,  false, false, false, true,  true},
-    {"minecraft:sheep",     MobCategory::Creature, 0.115,  false, false, false, true,  true},
-    {"minecraft:chicken",   MobCategory::Creature, 0.125,  false, false, false, true,  true},
-}};
-
-}  // namespace
-
-std::span<const MobKind> mob_kinds() noexcept { return kKinds; }
-
-const MobKind* mob_kind(std::string_view type_name) noexcept {
-    for (const MobKind& kind : kKinds) {
-        if (kind.type_name == type_name) {
-            return &kind;
-        }
-    }
-    return nullptr;
-}
+// ── mobs-2 ── The species table, `mob_kinds` and `mob_kind` live in
+// mob_species.cpp: every speed there is an attribute and a measured modifier.
 
 void FallingMob::tick(entity::EntityWorld& world, entity::EntityHandle self,
                       const entity::TickContext& context) {
@@ -71,14 +40,16 @@ void install_goals(GoalSelector& selector, const MobKind& kind, i32 look_type,
     // where to wander is a mob nobody sees again.
     selector.add(0, std::make_unique<FloatGoal>());
 
+    // ── mobs-2 ── Every speed below is `kind.speed(modifier)`: the attribute
+    // times the goal's measured modifier, through the walk law.
     if (kind.panics) {
-        selector.add(1, std::make_unique<PanicGoal>(kind.walk_speed * 1.25));
+        selector.add(1, std::make_unique<PanicGoal>(kind.speed(kind.panic)));
     }
     if (kind.avoids_sun) {
-        selector.add(2, std::make_unique<AvoidSunGoal>(kind.walk_speed));
+        selector.add(2, std::make_unique<AvoidSunGoal>(kind.speed(kind.avoid_sun)));
     }
     if (kind.hostile) {
-        selector.add(3, std::make_unique<MeleeAttackGoal>(kind.walk_speed));
+        selector.add(3, std::make_unique<MeleeAttackGoal>(kind.speed(kind.chase), 20, kind.hold_at));
         // Target selection holds only the Target control, so it runs alongside
         // whatever is moving the body. That separation is the whole reason
         // Target is a flag of its own.
@@ -91,16 +62,13 @@ void install_goals(GoalSelector& selector, const MobKind& kind, i32 look_type,
         // ── husbandry ── Breed before tempt before following a parent, which
         // is the order the game's animals show: a cow in love ignores the
         // wheat it has just eaten and walks to its mate.
-        // `walk_speed` is the attribute halved, so the attribute is twice it.
-        const f64 attribute = kind.walk_speed * 2.0;
-        selector.add(3, std::make_unique<BreedGoal>(walk_blocks_per_tick(attribute), kMateReach));
+        selector.add(3, std::make_unique<BreedGoal>(kind.speed(1.0), kMateReach));  // ── mobs-2 ──
         if (const AnimalKind* animal = animal_kind(kind.type_name)) {
             // Measured: cow 0.1347, sheep 0.1380, pig 0.1936, chicken 0.1349
             // blocks a tick, which the law gives from 1.25, 1.1, 1.2 and 1.0.
-            selector.add(4, std::make_unique<TemptGoal>(
-                                *animal, walk_blocks_per_tick(attribute * animal->tempt_speed)));
+            selector.add(4, std::make_unique<TemptGoal>(*animal, kind.speed(animal->tempt_speed)));
         }
-        selector.add(5, std::make_unique<FollowParentGoal>(kind.walk_speed * 1.1));
+        selector.add(5, std::make_unique<FollowParentGoal>(kind.speed(kind.follow_parent)));
         if (const AnimalKind* animal = animal_kind(kind.type_name);
             animal != nullptr && animal->shearable) {
             selector.add(5, std::make_unique<EatGrassGoal>());
@@ -110,7 +78,7 @@ void install_goals(GoalSelector& selector, const MobKind& kind, i32 look_type,
 
     // 6 and 7 — what a mob does when nothing else is happening, which is most
     // of the time and therefore most of what anyone actually watches.
-    selector.add(6, std::make_unique<RandomStrollGoal>(kind.walk_speed));
+    selector.add(6, std::make_unique<RandomStrollGoal>(kind.speed(kind.stroll)));  // ── mobs-2 ──
     selector.add(7, std::make_unique<LookAtEntityGoal>(look_type, 8.0, 0.02F));
     selector.add(8, std::make_unique<RandomLookGoal>());
 }
@@ -198,7 +166,8 @@ void Mob::tick(entity::EntityWorld& world, entity::EntityHandle self,
                 const f64 dz     = waypoint.z - state->position.z;
                 const f64 length = std::sqrt(dx * dx + dz * dz);
                 if (length > 1e-6) {
-                    const f64 speed = brain_.speed > 0.0 ? brain_.speed : kind_->walk_speed;
+                    const f64 speed =
+                        brain_.speed > 0.0 ? brain_.speed : kind_->speed(kind_->stroll);  // ── mobs-2 ──
                     // Divided by the friction the step is about to apply, so
                     // that what comes out is `speed` blocks of *displacement*.
                     // Without this the mob moves at 0.546 of the number in the

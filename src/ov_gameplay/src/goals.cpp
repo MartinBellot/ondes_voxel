@@ -536,7 +536,8 @@ void MeleeAttackGoal::tick(GoalContext& context) {
         --ticks_until_attack_;
     }
 
-    const f64 reach = static_cast<f64>(self->width) + static_cast<f64>(target->width) + 1.0;
+    const f64 reach = std::max(static_cast<f64>(self->width) + static_cast<f64>(target->width) + 1.0,
+                               hold_at_);  // ── mobs-2 ── a ranged attacker holds off
     const f64 gap   = distance_sq(self->position, target->position);
     if (gap <= reach * reach) {
         brain.wants_move = false;
