@@ -168,6 +168,23 @@ void Overlay::draw_block_outline(rhi::CommandList& cmd, const render::Mat4& view
     draw_lines(cmd, scratch_, push);
 }
 
+void Overlay::draw_shape_outline(rhi::CommandList& cmd, const render::Mat4& view_projection,
+                                 std::span<const std::array<Vec3d, 2>> edges) {  // ── breaking ──
+    scratch_.clear();
+    for (const auto& [from, to] : edges) {
+        for (const Vec3d& point : {from, to}) {
+            scratch_.push_back(static_cast<f32>(point.x));
+            scratch_.push_back(static_cast<f32>(point.y));
+            scratch_.push_back(static_cast<f32>(point.z));
+        }
+    }
+    Push push;
+    push.view_projection = view_projection;
+    push.colour          = {0.0F, 0.0F, 0.0F, 0.4F};
+    push.flags           = {1.0F, 0.0F, 0.0F, 0.0F};
+    draw_lines(cmd, scratch_, push);
+}
+
 void Overlay::draw_crosshair(rhi::CommandList& cmd, u32 width, u32 height) {
     // Nine pixels each way, which is vanilla's. In clip space that is a
     // fraction of the viewport, so it stays the same size on screen whatever

@@ -182,6 +182,13 @@ public:
         return window_slots_;
     }
 
+    /// ── breaking ── The player's own window 0, 46 slots: armour at 5..8, the
+    /// hotbar at 36..44. What is held and what the helmet carries decide how
+    /// fast this client counts its own cracks.
+    [[nodiscard]] const std::vector<net::ItemStack>& inventory() const noexcept {
+        return inventory_;
+    }
+
     void close(client::Window& window, netclient::Client& client);
 
     // ── screens ──

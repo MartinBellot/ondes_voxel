@@ -278,12 +278,13 @@ void CombatSession::on_release(const CombatIo&) {
 }
 
 void CombatSession::on_swing(net::Hand hand, const CombatPlayer& player, const CombatIo& io) {
-    if (!io.broadcast) {
+    const auto& sink = io.broadcast_others ? io.broadcast_others : io.broadcast;  // ── breaking ──
+    if (!sink) {
         return;
     }
     const auto packet = net::encode_entity_animation(
         player.entity_id, hand == net::Hand::Main ? kAnimationSwingMain : kAnimationSwingOff);
-    io.broadcast(net::clientbound::kEntityAnimation, packet);
+    sink(net::clientbound::kEntityAnimation, packet);
 }
 
 }  // namespace ov::server

@@ -978,6 +978,13 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       particules**, entités d'affichage, cadres d'item, tableaux, bannières,
       cartes, texte et police, premier plan (main, blocs, armes), GUI 3D des
       items
+      *(**2026-09-11 — le cassage** : fissures des 10 étapes sur le vrai modèle
+      du bloc (couverture au pixel près contre le vrai client, 0,556 / 5,437 /
+      18,158 % aux étapes 0 / 4 / 9), fissures des autres joueurs, particules
+      de casse et de frappe (64 par bloc, texturées), sons, contour qui suit la
+      forme, calendrier local identique au tick près (pierre à la main 151).
+      Restent la main à la première personne et la prédiction locale du bloc
+      cassé. Voir `docs/provenance/cassage-bloc.md`)*
 - [ ] Audio : tous les événements sonores, musique adaptative par biome et
       dimension, disques, sous-titres
 - [ ] Resource packs empilables, i18n, options persistées, captures d'écran

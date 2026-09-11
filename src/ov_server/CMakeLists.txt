@@ -24,6 +24,7 @@ ov_add_library(ov_server
         src/player_inventory.cpp
         src/server.cpp
         src/combat_session.cpp
+        src/destroy_stages.cpp  # ── breaking ──
         src/effect_session.cpp
         src/enchant_session.cpp
         src/fire_session.cpp
@@ -93,6 +94,7 @@ ov_add_test(test_ov_server
         tests/test_player_data.cpp
         tests/test_relight.cpp
         tests/test_sounds.cpp
+        tests/test_destroy_stages.cpp  # ── breaking ──
         tests/test_nether_travel.cpp
         tests/test_weather_session.cpp
         tests/test_tick_profile.cpp

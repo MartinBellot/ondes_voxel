@@ -91,6 +91,15 @@ std::expected<std::unique_ptr<EntityRenderer>, rhi::RhiError> EntityRenderer::cr
         pipeline.cull_mode       = rhi::CullMode::None;
         pipeline.debug_name      = "weather";
     }
+    if (pass == EntityPass::Crumbling) {  // ── breaking ──
+        pipeline.fragment_shader     = "crumbling.frag.spv";
+        pipeline.blend               = rhi::BlendMode::Multiply;
+        pipeline.depth_write         = false;
+        pipeline.depth_compare       = rhi::CompareOp::LessOrEqual;
+        pipeline.depth_bias_constant = -10.0F;
+        pipeline.depth_bias_slope    = -1.0F;
+        pipeline.debug_name          = "crumbling";
+    }
 
     auto created = device.create_graphics_pipeline(pipeline);
     if (!created) {
@@ -104,7 +113,7 @@ std::expected<std::unique_ptr<EntityRenderer>, rhi::RhiError> EntityRenderer::cr
     auto sampler = device.create_sampler(rhi::SamplerDesc{rhi::Filter::Nearest,
                                                           rhi::Filter::Nearest,
                                                           rhi::MipFilter::Nearest,
-                                                          pass == EntityPass::Translucent
+                                                          pass != EntityPass::Cutout
                                                               ? rhi::AddressMode::Repeat
                                                               : rhi::AddressMode::ClampToEdge,
                                                           1.0F,
