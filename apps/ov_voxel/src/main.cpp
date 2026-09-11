@@ -1065,7 +1065,22 @@ int main(int argc, char** argv) {
         return 1;
     }
     auto sky_renderer =
-        client::SkyRenderer::create(device, client::SceneTarget::kFormat, rhi::Format::Depth32Float);
+        [&]() {
+            // The sun and the moon's phases, from the pack like any texture.
+            const auto load = [&](std::string_view name) -> std::optional<render::TextureImage> {
+                const auto location = ResourceLocation::parse(name);
+                if (!location) {
+                    return std::nullopt;
+                }
+                auto image = render::load_texture(source, *location);
+                return image ? std::optional<render::TextureImage>(std::move(*image)) : std::nullopt;
+            };
+            const auto sun  = load("minecraft:environment/sun");
+            const auto moon = load("minecraft:environment/moon_phases");
+            return client::SkyRenderer::create(device, client::SceneTarget::kFormat,
+                                               rhi::Format::Depth32Float, sun ? &*sun : nullptr,
+                                               moon ? &*moon : nullptr);
+        }();
     if (!sky_renderer) {
         OV_LOG_ERROR("sky renderer: {}", rhi::to_string(sky_renderer.error()));
         return 1;
@@ -2240,10 +2255,18 @@ int main(int argc, char** argv) {
         const u32   sky_rgb   = render::sky_colour(effects.sky_colour, darken);
         // ── render-parity ── the fog pulled towards the sky by the render
         // distance, as the real client's is (docs/provenance/rendu-parite.md).
+        // ── render-parity ── at twilight, the fog towards the sun takes the
+        // band's colour first (render::tint_fog_towards_sunrise).
+        const f64  celestial = render::celestial_angle(time_of_day);
+        const auto sunrise   = render::sunrise_colour(celestial);
+        u32        fog_base  = render::fog_colour(effects.fog_colour, darken);
+        if (sunrise) {
+            fog_base = render::tint_fog_towards_sunrise(fog_base, *sunrise, camera.forward(), celestial);
+        }
         const u32 fog_rgb =
             eye_in_water ? effects.water_fog_colour
-                         : render::blend_fog_towards_sky(render::fog_colour(effects.fog_colour, darken),
-                                                         sky_rgb, static_cast<f32>(options.radius));
+                         : render::blend_fog_towards_sky(fog_base, sky_rgb,
+                                                         static_cast<f32>(options.radius));
 
         auto frame = device.begin_frame();
         if (!frame) {
@@ -2341,6 +2364,9 @@ int main(int argc, char** argv) {
             sky_draw.fog_end    = options.fog ? render_distance : 1.1e9F;
             // The oracle: FOG_SKY 0 to the render distance, CYLINDER.
             sky_draw.spherical_fog = false;
+            sky_draw.celestial     = celestial;
+            sky_draw.sunrise       = sunrise;
+            sky_draw.moon_phase    = render::moon_phase(time_of_day);
             (*sky_renderer)->draw(cmd, sky_draw);
         }
 

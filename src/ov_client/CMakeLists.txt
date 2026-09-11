@@ -65,6 +65,10 @@ ov_add_shaders(ov_client_shaders
         shaders/present.frag
         shaders/sky.vert
         shaders/sky.frag
+        shaders/sky_colour.vert
+        shaders/sky_colour.frag
+        shaders/sky_texture.vert
+        shaders/sky_texture.frag
         shaders/terrain.vert
         shaders/terrain.frag
 )

@@ -102,6 +102,99 @@ f32 terrain_fog_start(f32 render_distance_blocks) noexcept {
     return render_distance_blocks - std::clamp(render_distance_blocks / 10.0F, 4.0F, 64.0F);
 }
 
+std::optional<SunriseColour> sunrise_colour(f64 celestial) noexcept {
+    const f32 c = static_cast<f32>(std::cos(celestial * 2.0 * std::numbers::pi));
+    if (c < -0.4F || c > 0.4F) {
+        return std::nullopt;
+    }
+    const f32 t     = c / 0.4F * 0.5F + 0.5F;
+    f32       alpha = 1.0F - (1.0F - std::sin(t * std::numbers::pi_v<f32>)) * 0.99F;
+    alpha *= alpha;
+    return SunriseColour{t * 0.3F + 0.7F, t * t * 0.7F + 0.2F, 0.2F, alpha};
+}
+
+u32 tint_fog_towards_sunrise(u32 fog, const SunriseColour& sunrise, Vec3f forward,
+                             f64 celestial) noexcept {
+    // The sun is west while it sets and east while it rises.
+    const f32 towards = std::sin(celestial * 2.0 * std::numbers::pi) > 0.0 ? -1.0F : 1.0F;
+    f32       amount  = std::max(forward.x * towards, 0.0F) * sunrise.a;
+    const auto mix    = [amount](u32 a, f32 b) {
+        return to_byte(static_cast<f32>(a) / 255.0F * (1.0F - amount) + b * amount);
+    };
+    return (mix(channel(fog, 16), sunrise.r) << 16) | (mix(channel(fog, 8), sunrise.g) << 8) |
+           mix(channel(fog, 0), sunrise.b);
+}
+
+namespace {
+
+/// The rotation that carries the sun from the zenith across the sky: about
+/// the east–west plane, so that a quarter turn puts it on the west horizon.
+[[nodiscard]] Vec3f celestial_turn(Vec3f v, f64 celestial) noexcept {
+    const f64 a  = celestial * 2.0 * std::numbers::pi;
+    const f64 ca = std::cos(a);
+    const f64 sa = std::sin(a);
+    // About X by the angle, then about Y by -90 degrees.
+    const f64 y = static_cast<f64>(v.y) * ca - static_cast<f64>(v.z) * sa;
+    const f64 z = static_cast<f64>(v.y) * sa + static_cast<f64>(v.z) * ca;
+    return Vec3f{static_cast<f32>(-z), static_cast<f32>(y), v.x};
+}
+
+}  // namespace
+
+std::array<Vec3f, 4> sun_quad(f64 celestial) noexcept {
+    constexpr f32 kHalf = 30.0F;
+    return {celestial_turn({-kHalf, 100.0F, -kHalf}, celestial),
+            celestial_turn({kHalf, 100.0F, -kHalf}, celestial),
+            celestial_turn({kHalf, 100.0F, kHalf}, celestial),
+            celestial_turn({-kHalf, 100.0F, kHalf}, celestial)};
+}
+
+std::array<Vec3f, 4> moon_quad(f64 celestial) noexcept {
+    constexpr f32 kHalf = 20.0F;
+    return {celestial_turn({-kHalf, -100.0F, kHalf}, celestial),
+            celestial_turn({kHalf, -100.0F, kHalf}, celestial),
+            celestial_turn({kHalf, -100.0F, -kHalf}, celestial),
+            celestial_turn({-kHalf, -100.0F, -kHalf}, celestial)};
+}
+
+i32 moon_phase(i64 day_time) noexcept {
+    const i64 day = day_time / 24000;
+    return static_cast<i32>(((day % 8) + 8) % 8);
+}
+
+std::vector<f32> sunrise_fan(const SunriseColour& sunrise, f64 celestial) {
+    // Built lying on the horizon towards +X... then turned to the sun's side:
+    // the centre at 100 out on the horizon, the rim a circle of 120 tilted up
+    // and down by 40 x the band's opacity.
+    const bool rising = std::sin(celestial * 2.0 * std::numbers::pi) < 0.0;
+    // +1 at dusk puts the centre on the west horizon, -1 at dawn on the east.
+    const f32  side   = rising ? -1.0F : 1.0F;
+    const auto place  = [side](f32 x, f32 y, f32 z) {
+        // Rotated about Z by 90 (and 180 more at sunrise), then about X by 90.
+        const f32 rx = -y * side;
+        const f32 ry = x * side;
+        return Vec3f{rx, -z, ry};
+    };
+    std::vector<f32> out;
+    out.reserve(16 * 3 * 7);
+    const Vec3f centre = place(0.0F, 100.0F, 0.0F);
+    for (i32 i = 0; i < 16; ++i) {
+        const f32 a0 = static_cast<f32>(i) * 2.0F * std::numbers::pi_v<f32> / 16.0F;
+        const f32 a1 = static_cast<f32>(i + 1) * 2.0F * std::numbers::pi_v<f32> / 16.0F;
+        const auto rim = [&](f32 a) {
+            return place(std::sin(a) * 120.0F, std::cos(a) * 120.0F,
+                         -std::cos(a) * 40.0F * sunrise.a);
+        };
+        const Vec3f p0 = rim(a0);
+        const Vec3f p1 = rim(a1);
+        const f32 v[21] = {centre.x, centre.y, centre.z, sunrise.r, sunrise.g, sunrise.b, sunrise.a,
+                           p0.x,     p0.y,     p0.z,     sunrise.r, sunrise.g, sunrise.b, 0.0F,
+                           p1.x,     p1.y,     p1.z,     sunrise.r, sunrise.g, sunrise.b, 0.0F};
+        out.insert(out.end(), v, v + 21);
+    }
+    return out;
+}
+
 std::vector<f32> sky_disc(f32 height) {
     // Rim vertices at -180, -135, ... 180 degrees: nine, the last closing the
     // fan on the first. Wound by the sign of the height, so that both discs

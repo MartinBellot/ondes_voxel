@@ -3,6 +3,8 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <cmath>
+
 using namespace ov;
 using namespace ov::render;
 using Catch::Approx;
@@ -26,6 +28,81 @@ TEST_CASE("the noon lightmap is the real client's, texel for texel", "[render][e
     CHECK(at(4, 14) == std::array<u32, 3>{239, 235, 231});
     CHECK(at(7, 14) == std::array<u32, 3>{252, 248, 239});
     CHECK(at(9, 14) == std::array<u32, 3>{252, 252, 249});
+}
+
+TEST_CASE("the twilight band's colour is the real client's", "[render][environment]") {
+    // DimensionSpecialEffects.getSunriseColor as the oracle printed it for the
+    // dusk, sunset and dawn scenes.
+    const auto check = [](i64 time, f32 r, f32 g, f32 b, f32 a) {
+        const auto c = sunrise_colour(celestial_angle(time));
+        REQUIRE(c.has_value());
+        CHECK(c->r == Approx(r).margin(1e-4));
+        CHECK(c->g == Approx(g).margin(1e-4));
+        CHECK(c->b == Approx(b).margin(1e-4));
+        CHECK(c->a == Approx(a).margin(1e-4));
+    };
+    check(12300, 0.9004321F, 0.512457F, 0.2F, 0.7484704F);
+    check(12700, 0.85895133F, 0.39650977F, 0.2F, 0.9913391F);
+    check(23300, 0.85891545F, 0.3964209F, 0.2F, 0.9914096F);
+    // None at noon or midnight.
+    CHECK_FALSE(sunrise_colour(celestial_angle(6000)).has_value());
+    CHECK_FALSE(sunrise_colour(celestial_angle(18000)).has_value());
+}
+
+TEST_CASE("dusk fog is tinted towards the band, then pulled to the sky", "[render][environment]") {
+    // The sunset scene: plains, 12700, looking west (yaw 90, pitch -15). The
+    // real client's fog colour: 0.7334 0.3911 0.2791 = (187, 100, 71).
+    const f64   celestial = celestial_angle(12700);
+    const f32   darken    = sky_darken(12700, 0.0F, 0.0F);
+    const Vec3f forward{-0.9659258F, 0.2588190F, 0.0F};
+    const auto  band      = sunrise_colour(celestial);
+    REQUIRE(band.has_value());
+    const u32 tinted = tint_fog_towards_sunrise(fog_colour(0xC0D8FF, darken), *band, forward,
+                                                celestial);
+    const u32 fog    = blend_fog_towards_sky(tinted, sky_colour(0x78A7FF, darken), 8.0F);
+    const auto near  = [](u32 value, u32 expected) {
+        return value + 1 >= expected && value <= expected + 1;
+    };
+    CHECK(near((fog >> 16) & 0xFF, 187));
+    CHECK(near((fog >> 8) & 0xFF, 100));
+    CHECK(near(fog & 0xFF, 71));
+    // Facing away from the sun, no tint at all.
+    const Vec3f east{1.0F, 0.0F, 0.0F};
+    CHECK(tint_fog_towards_sunrise(0x6E7C96, *band, east, celestial) == 0x6E7C96);
+}
+
+TEST_CASE("the sun stands at the zenith at noon and sets in the west", "[render][environment]") {
+    for (const Vec3f& corner : sun_quad(celestial_angle(6000))) {
+        CHECK(corner.y == Approx(100.0F).margin(1e-3));
+        CHECK(std::abs(corner.x) == Approx(30.0F).margin(1e-3));
+        CHECK(std::abs(corner.z) == Approx(30.0F).margin(1e-3));
+    }
+    // A quarter turn later the sun's centre is on the west horizon.
+    Vec3f centre{};
+    for (const Vec3f& corner : sun_quad(0.25)) {
+        centre = Vec3f{centre.x + corner.x / 4.0F, centre.y + corner.y / 4.0F,
+                       centre.z + corner.z / 4.0F};
+    }
+    CHECK(centre.x == Approx(-100.0F).margin(1e-3));
+    CHECK(centre.y == Approx(0.0F).margin(1e-3));
+    // The moon is opposite: the nadir at noon.
+    CHECK(moon_quad(0.0)[0].y == Approx(-100.0F).margin(1e-3));
+    CHECK(moon_phase(18000) == 0);
+    CHECK(moon_phase(24000 * 3 + 100) == 3);
+    CHECK(moon_phase(24000 * 9) == 1);
+}
+
+TEST_CASE("the twilight band is a fan centred on the sun's horizon", "[render][environment]") {
+    const auto band = sunrise_colour(celestial_angle(12700));
+    REQUIRE(band.has_value());
+    const auto dusk = sunrise_fan(*band, celestial_angle(12700));
+    REQUIRE(dusk.size() == 16 * 3 * 7);
+    CHECK(dusk[0] == Approx(-100.0F).margin(1e-3));  // centre, west
+    CHECK(dusk[1] == Approx(0.0F).margin(1e-3));
+    CHECK(dusk[6] == Approx(band->a));  // opaque at the centre
+    CHECK(dusk[13] == 0.0F);            // transparent at the rim
+    const auto dawn = sunrise_fan(*band, celestial_angle(23300));
+    CHECK(dawn[0] == Approx(100.0F).margin(1e-3));  // centre, east
 }
 
 TEST_CASE("the fog is pulled towards the sky as the real client's is", "[render][environment]") {
