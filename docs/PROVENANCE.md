@@ -68,7 +68,7 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | **Client** | |
 | [`interface.md`](provenance/interface.md) | Police, HUD, inventaire : 2414 glyphes validés glyphe par glyphe |
 | [`inventaire-creatif.md`](provenance/inventaire-creatif.md) | Les 14 onglets demandés au jar serveur, 1689 cases, et la géométrie comptée dans les pixels |
-| [`rendu-entites.md`](provenance/rendu-entites.md) | Modèles d'entités, leur source, et le chest refusé faute de source permise |
+| [`rendu-entites.md`](provenance/rendu-entites.md) | Les ~200 modèles d'entités lus du vrai client pendant qu'il tourne, textures par métadonnées, et chaque espèce mesurée contre lui — et la vache qui se tenait debout |
 
 ---
 
