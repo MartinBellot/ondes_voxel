@@ -1195,7 +1195,11 @@ void Menus::draw_title_screen(f32 width, f32 height) {
                    64.0F);
     }
     if (textures_.edition != client::GuiTexture::Invalid) {
-        gui_->blit(textures_.edition, x + 88.0F, 67.0F, 98.0F, 14.0F, 0.0F, 0.0F, 98.0F, 14.0F,
+        // The whole label: in 1.20.1's edition.png "JAVA EDITION" spans all
+        // 128 logical columns and 14 rows. A 98-wide crop, from an older
+        // artwork, cut it to "JAVA EDIT!" (docs/provenance/rendu-parite.md).
+        // Centred under the 256-wide logo: measured ink, centring deduced.
+        gui_->blit(textures_.edition, x + 64.0F, 67.0F, 128.0F, 14.0F, 0.0F, 0.0F, 128.0F, 14.0F,
                    128.0F, 16.0F);
     }
     // Not vanilla's "Minecraft 1.20.1" and copyright line: this is not
