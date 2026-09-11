@@ -1773,6 +1773,7 @@ int main(int argc, char** argv) {
             case demo::MenuAction::Kind::Respawn:
                 if (client) {
                     client->send_respawn();
+                    OV_LOG_INFO("death screen: Respawn pressed, Client Command sent");
                 }
                 break;
             case demo::MenuAction::Kind::Leave:
@@ -1894,6 +1895,9 @@ int main(int argc, char** argv) {
                 ++menu_pressed;
             } else if (step == "?game") {
                 done = online && spawned && !menus->any_open();
+                if (done) {
+                    OV_LOG_INFO("menu script: in the game at frame {}", rendered);
+                }
             } else if (step.starts_with('?')) {
                 done = demo::to_string(menus->screen()) == std::string_view(step).substr(1);
             } else if (step.starts_with("type:")) {
@@ -2035,8 +2039,14 @@ int main(int argc, char** argv) {
                 experience_total = events.experience->total;
             }
             if (events.death_message) {
+                OV_LOG_INFO("death screen: Combat Death received at frame {} ({})", rendered,
+                            *events.death_message);
                 menus->show_death(*events.death_message, experience_total, hardcore);
                 (*window)->set_cursor_captured(false);
+            }
+            if (events.respawned) {
+                OV_LOG_INFO("death screen: Respawn received at frame {}{}", rendered,
+                            menus->screen() == demo::MenuScreen::Death ? ", screen closed" : "");
             }
             if (events.respawned && menus->screen() == demo::MenuScreen::Death) {
                 menus->open(demo::MenuScreen::None);

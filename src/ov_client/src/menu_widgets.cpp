@@ -183,10 +183,19 @@ void draw_widgets(Gui& gui, const MenuTextures& textures, std::span<const Widget
                     gui.text_centred(centre, rect.y, widget.text, widget.colour);
                 }
                 break;
-            case WidgetKind::Tab:
-                gui.text_centred(centre, text_y, widget.text,
-                                 widget.selected ? 0xFFFFFFFFU : 0xFFA0A0A0U);
+            case WidgetKind::Tab: {
+                // Read off the vanilla capture: the selected caption at rows
+                // 8–14 with a caption-wide underline at row 22; the others
+                // light too, two pixels lower (rows 10–16).
+                const f32 y = widget.selected ? text_y : text_y + 2.0F;
+                gui.text_centred(centre, y, widget.text, 0xFFFFFFFFU);
+                if (widget.selected) {
+                    const f32 caption = gui.font().width(widget.text);
+                    gui.fill(std::round(centre - caption * 0.5F), rect.y + 22.0F, caption, 1.0F,
+                             0xFFFFFFFFU);
+                }
                 break;
+            }
             case WidgetKind::Icon: break;  // the owner draws the image
         }
     }
