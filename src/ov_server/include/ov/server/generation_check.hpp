@@ -20,6 +20,7 @@
 #include "ov/base/types.hpp"
 
 #include <filesystem>
+#include <string_view>
 
 namespace ov::server {
 
@@ -60,5 +61,26 @@ struct GenerationCheck {
 [[nodiscard]] GenerationCheck check_generation_determinism(
     const std::filesystem::path& data_root, i64 seed, i32 origin_block_x, i32 origin_block_z,
     i32 side, usize workers);
+
+// ── structures ──
+/// What an export wrote.
+struct GenerationExport {
+    bool  loaded{false};
+    usize squares{0};
+    usize chunks{0};
+    f64   seconds{0.0};
+};
+
+/// Generate every chunk of `[min, max]` (chunk coordinates, inclusive) through
+/// the server's own `GeneratedWorld` — the squares the job pool asks for, with
+/// the structure stage attached — and write them with `world::to_nbt` into
+/// region files under `region_dir`. The disk form a player's `ov_dedicated`
+/// would write, without a player: what a parity harness compares against the
+/// game's regions. `settings` is "overworld", "nether" or "end".
+[[nodiscard]] GenerationExport export_generated_chunks(const std::filesystem::path& data_root,
+                                                       i64 seed, std::string_view settings,
+                                                       i32 min_chunk_x, i32 min_chunk_z,
+                                                       i32 max_chunk_x, i32 max_chunk_z,
+                                                       const std::filesystem::path& region_dir);
 
 }  // namespace ov::server

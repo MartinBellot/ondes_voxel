@@ -740,6 +740,19 @@ std::vector<u8> encode_look_at(bool eyes, f64 x, f64 y, f64 z) {
     return writer.take();
 }
 
+std::vector<u8> encode_look_at_entity(bool eyes, f64 x, f64 y, f64 z, i32 entity_id,
+                                      bool entity_eyes) {  // ── tp ──
+    io::ByteWriter writer;
+    write_varint(writer, eyes ? 1 : 0);
+    writer.write_f64(x);
+    writer.write_f64(y);
+    writer.write_f64(z);
+    write_bool(writer, true);
+    write_varint(writer, entity_id);
+    write_varint(writer, entity_eyes ? 1 : 0);
+    return writer.take();
+}
+
 std::vector<u8> encode_synchronize_position_relative(f64 x, f64 y, f64 z, f32 yaw, f32 pitch,
                                                      u8 flags, i32 teleport_id) {
     io::ByteWriter writer;

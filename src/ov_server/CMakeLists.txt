@@ -47,6 +47,7 @@ ov_add_library(ov_server
         src/weather_session.cpp
         src/workbench.cpp
         src/world_ticks.cpp
+        src/world_structures.cpp  # ── structures ──
         # ── commands and chat ──
         src/commands/arguments.cpp
         src/commands/console.cpp
@@ -107,6 +108,7 @@ ov_add_test(test_ov_server
         tests/test_rails_session.cpp
         tests/test_nether_mobs.cpp  # ── nether-2 ──
         tests/test_mobs3_server.cpp  # ── mobs-3 ──
+        tests/test_world_structures.cpp  # ── structures ──
     DEPS ov_server
     LABELS unit
 )

@@ -84,6 +84,19 @@ public:
     /// Forget cached starts and pending shape updates far from `centre`.
     void trim(i32 centre_x, i32 centre_z, i32 keep);
 
+    // ── structures ──
+    /// Forget every cached start and pending shape update: the stage's
+    /// counterpart of `ChunkPipeline::clear`, for a caller whose unit of work
+    /// is a square generated from a cold cache.
+    void clear();
+
+    /// Refuse a kind the builder can make, with the reason, before it is
+    /// asked. For a caller that must not place what is built only in part —
+    /// the server, where a ruined portal whose height search is missing would
+    /// stand at y 0 and a buried treasure's chest would float at y 90.
+    /// Counted under `refused` like any other refusal.
+    void refuse(StructureKind kind, std::string reason);
+
     [[nodiscard]] const StructureStageStats& stats() const noexcept;
 
     /// How far, in chunks, a start's pieces can reach from its start chunk.

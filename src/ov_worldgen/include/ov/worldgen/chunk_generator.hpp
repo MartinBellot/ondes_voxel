@@ -135,9 +135,12 @@ public:
     /// or to what `OV_AQUIFER` said at construction (`OV_AQUIFER=0` is off).
     void set_aquifer_enabled(bool enabled) noexcept { use_aquifer_ = enabled; }
 
-    /// Whether the aquifer is actually answering: attached, fully built, on.
+    /// Whether the aquifer is actually answering: attached, fully built, on —
+    /// and enabled by the dimension's settings (── carvers-3 ── the Nether's
+    /// and the End's say no).
     [[nodiscard]] bool aquifer_active() const noexcept {
-        return use_aquifer_ && aquifer_ != nullptr && aquifer_->enabled();
+        return use_aquifer_ && aquifer_ != nullptr && aquifer_->enabled() &&
+               router_->aquifers_enabled();
     }
 
     /// Give the generator the surface rules, so a generated chunk gets grass,

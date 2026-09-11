@@ -189,6 +189,8 @@ struct StructureStage::Impl {
     /// Positions whose shape follows neighbours, by the chunk they are in.
     std::unordered_map<i64, std::vector<BlockPos>> shaped;
     StructureStageStats                            stats;
+    /// ── structures ── Kinds refused by the caller, with the reason.
+    std::map<StructureKind, std::string> refused_kinds;
 
     std::vector<StructureStart>& starts_at(i32 chunk_x, i32 chunk_z) {
         const i64 key = key_of(chunk_x, chunk_z);
@@ -205,13 +207,21 @@ struct StructureStage::Impl {
             if (definition == nullptr) {
                 continue;
             }
+            // ── structures ── Refusals carry the structure's name: "jigsaw"
+            // alone does not say whether a village or a bastion is missing.
             if (!buildable(definition->kind)) {
-                ++stats.refused[std::string{to_string(definition->kind)} + " is not built here"];
+                ++stats.refused[definition->name + ": " + std::string{to_string(definition->kind)} +
+                                " is not built here"];
+                continue;
+            }
+            if (const auto refused = refused_kinds.find(definition->kind);
+                refused != refused_kinds.end()) {
+                ++stats.refused[definition->name + ": " + refused->second];
                 continue;
             }
             auto start = builder->generate(*definition, level_seed, chunk_x, chunk_z, sampler);
             if (!start) {
-                ++stats.refused[start.error()];
+                ++stats.refused[definition->name + ": " + start.error()];
                 continue;
             }
             if (!start->incomplete.empty()) {
@@ -346,6 +356,16 @@ void StructureStage::trim(i32 centre_x, i32 centre_z, i32 keep) {
     };
     std::erase_if(impl_->starts, [&](const auto& entry) { return far(entry.first); });
     std::erase_if(impl_->shaped, [&](const auto& entry) { return far(entry.first); });
+}
+
+// ── structures ──
+void StructureStage::clear() {
+    impl_->starts.clear();
+    impl_->shaped.clear();
+}
+
+void StructureStage::refuse(StructureKind kind, std::string reason) {
+    impl_->refused_kinds[kind] = std::move(reason);
 }
 
 const StructureStageStats& StructureStage::stats() const noexcept {

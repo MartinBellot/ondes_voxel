@@ -403,6 +403,11 @@ std::expected<StructurePlacer, StructureSetError> StructurePlacer::load(
         if (document.at_key("step").get(step) == simdjson::SUCCESS) {
             definition.step = std::string{step};
         }
+        // ── structures ── widens the box the start is referenced by
+        std::string_view adaptation;
+        if (document.at_key("terrain_adaptation").get(adaptation) == simdjson::SUCCESS) {
+            definition.terrain_adaptation = adaptation != "none";
+        }
 
         placer.impl_->structures.push_back(std::move(definition));
     }

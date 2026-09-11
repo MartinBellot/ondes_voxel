@@ -27,6 +27,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+
 #include <filesystem>
 #include <map>
 #include <optional>
@@ -85,6 +87,7 @@ struct FakeServer {
     i32  next_id{100};
     bool stopped{false};
     bool saved{false};
+    u8   teleport_flags{0xFF};  // ── tp ── the relative flags of the last teleport
 
     CommandHost host() {
         CommandHost h;
@@ -116,12 +119,13 @@ struct FakeServer {
             broadcast.emplace_back(id, std::vector<u8>(payload.begin(), payload.end()));
             sent.emplace_back(id, std::vector<u8>(payload.begin(), payload.end()));
         };
-        h.teleport_player = [this](i32, Vec3d p, f32 new_yaw, f32 new_pitch, u8) {
-            x     = p.x;
-            y     = p.y;
-            z     = p.z;
-            yaw   = new_yaw;
-            pitch = new_pitch;
+        h.teleport_player = [this](i32, Vec3d p, f32 new_yaw, f32 new_pitch, u8 flags) {
+            x              = p.x;
+            y              = p.y;
+            z              = p.z;
+            yaw            = new_yaw;
+            pitch          = new_pitch;
+            teleport_flags = flags;
         };
         h.teleport_entity = [this](i32 id, Vec3d p, f32, f32) {
             for (EntityInfo& e : mobs) {
@@ -527,6 +531,60 @@ TEST_CASE("tp moves the player and names it as vanilla does", "[commands][vanill
                                    kProbe + R"(,"10.500000","-60.000000","10.500000"]})"});
     CHECK(h.server.x == 10.5);
     CHECK(h.run("tp @s ~ ~5 ~")[0].find("\"-55.000000\"") != std::string::npos);
+}
+
+// ── tp ── The forms reported refused ("Unknown or incomplete command"), and
+// the relative flags Synchronize Player Position carries for each.
+TEST_CASE("tp takes a rotation, relative or absolute, after a location", "[commands][vanilla][tp]") {
+    if (!have_packs()) {
+        SKIP("no registry pack");
+    }
+    namespace tf = teleport_flags;
+    Harness h;
+    const auto absolute = h.run("tp @s ~ ~ ~ 0 70");
+    REQUIRE(absolute.size() == 1);
+    CHECK(absolute[0].find("commands.teleport.success.location.single") != std::string::npos);
+    CHECK(h.server.yaw == 0.0F);
+    CHECK(h.server.pitch == 70.0F);
+    // The position is relative, the rotation is not.
+    CHECK(h.server.teleport_flags == (tf::kX | tf::kY | tf::kZ));
+
+    const auto relative = h.run("tp @s ~ ~ ~ ~10 ~-5");
+    REQUIRE(relative.size() == 1);
+    CHECK(h.server.yaw == 10.0F);
+    CHECK(h.server.pitch == 65.0F);
+    CHECK(h.server.teleport_flags == (tf::kX | tf::kY | tf::kZ | tf::kYaw | tf::kPitch));
+
+    // Absolute everything: no flag at all.
+    (void)h.run("tp @s 0.5 -60 0.5 90 0");
+    CHECK(h.server.yaw == 90.0F);
+    CHECK(h.server.teleport_flags == 0);
+
+    // No rotation given: the rotation is kept, which is sent as relative.
+    (void)h.run("tp @s 1 -60 1");
+    CHECK(h.server.teleport_flags == (tf::kYaw | tf::kPitch));
+}
+
+TEST_CASE("tp faces a position or an entity, and takes local coordinates", "[commands][vanilla][tp]") {
+    if (!have_packs()) {
+        SKIP("no registry pack");
+    }
+    Harness h;
+    const auto facing = h.run("tp @s 0.5 -60 0.5 facing 10.5 -60 0.5");
+    REQUIRE(facing.size() == 1);
+    CHECK(facing[0].find("commands.teleport.success.location.single") != std::string::npos);
+    CHECK(std::ranges::any_of(h.server.sent,
+                              [](const auto& packet) { return packet.first == net::clientbound::kLookAt; }));
+
+    const auto eyes = h.run("tp @s 0.5 -60 0.5 facing entity @s eyes");
+    REQUIRE(eyes.size() == 1);
+    CHECK(eyes[0].find("commands.teleport.success.location.single") != std::string::npos);
+
+    const auto local = h.run("tp @s ^ ^ ^1");
+    REQUIRE(local.size() == 1);
+    CHECK(local[0].find("commands.teleport.success.location.single") != std::string::npos);
+    CHECK(h.server.teleport_flags == (teleport_flags::kX | teleport_flags::kY | teleport_flags::kZ |
+                                      teleport_flags::kYaw | teleport_flags::kPitch));
 }
 
 TEST_CASE("setblock and fill count as vanilla counts", "[commands][vanilla]") {

@@ -485,7 +485,11 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       98,3 % des marques `PostProcessing` — ne sont livrés à aucune file, donc
       une cascade générée ne coule pas ; un tiers de la lave des carvers sous
       −56 est marqué par une règle inconnue ; coût ≈ ×2,5 en debug. Voir
-      `docs/provenance/aquiferes.md` § 10)*
+      `docs/provenance/aquiferes.md` § 10. **2026-09-11** : `aquifers_enabled`
+      des réglages enfin lu — l'aquifère tournait aussi dans le Nether et l'End,
+      qui n'en ont pas, et vidait la mer de lave du Nether : lave retrouvée
+      25,2 → **99,99 %**, Nether 98,12 → **99,65 %** sur 200 chunks `carvers`,
+      `docs/provenance/nether.md` § 1.6)*
 - [x] Minerais par couche, distributions triangulaires
       *(**99,509 % des positions au bloc près** en rejouant sur le terrain du
       jeu, et **82,406 % sur notre propre terrain généré de bout en bout** —
@@ -545,12 +549,16 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       épaves **1 236/1 236** et 383/383 blocs, igloos **456/456** et 546/546,
       ruines océaniques 92 %, portails en ruine 94-97 % ; graines de butin des
       coffres 27/28 au bit près. Pièces tirées de la graine : **100/100 départs**
-      identiques au jeu. **Pas encore visibles en jeu** : le serveur ne branche
-      pas le pipeline de structures (`generated_world.cpp`), et la hauteur des
-      ruines, des portails et du trésor n'est pas réglée. Temples du désert et
+      identiques au jeu. **2026-09-11 : posées par le serveur** (Overworld,
+      Nether, End) : étage attaché à chaque pile de génération, vidé avec le
+      carré (déterminisme), `structures.starts` et `References` écrits au
+      format du jeu — l'épave échouée du chunk (9, 5) identique champ pour
+      champ, types compris ; portails et trésor refusés par le serveur tant
+      que leur hauteur n'est pas réglée, tout refus nommé au journal
+      (`structures.md` § 20). Temples du désert et
       de la jungle, cabane de sorcière : construits en code par le jeu,
       refusés par nom. Jigsaw (villages, avant-postes, bastions…) : autre
-      mandat. Voir `docs/provenance/structures.md` §§ 12-19)* :
+      mandat. Voir `docs/provenance/structures.md` §§ 12-20)* :
       villages ×5 (plains, desert, savanna, taiga, snowy),
       avant-poste pillard, mine abandonnée (+ mesa), forteresse (stronghold),
       pyramide du désert, temple de la jungle, igloo, cabane de sorcière,
