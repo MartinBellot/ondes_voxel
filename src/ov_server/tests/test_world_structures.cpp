@@ -161,7 +161,8 @@ TEST_CASE("a start with terrain adaptation is referenced 12 blocks wider", "[str
     CHECK(references(far, "minecraft:nether_fossil").empty());
 }
 
-TEST_CASE("the server refuses the portals and the treasure by name", "[structures][server]") {
+TEST_CASE("the server places the portals and refuses the treasure by name",
+          "[structures][server]") {
     const auto jar = server::WorldStructures::default_jar(data_dir());
     if (!std::filesystem::is_regular_file(pack()) || !std::filesystem::exists(jar)) {
         SKIP("no registry pack or server jar");
@@ -193,6 +194,22 @@ TEST_CASE("the server refuses the portals and the treasure by name", "[structure
         if (reason.starts_with("minecraft:buried_treasure: buried treasure:")) {
             named = count > 0;
         }
+        CHECK_FALSE(reason.starts_with("minecraft:ruined_portal"));
     }
     CHECK(named);
+
+    // ── portals ── Its portal of chunk (4571, 3940) is placed, where the game
+    // put it: portal_4, on the land surface, its box's bottom at y 64.
+    bool portal = false;
+    for (const auto& start : stack->stage->starts_at(4571, 3940)) {
+        if (start.structure == "minecraft:ruined_portal") {
+            REQUIRE(start.pieces.size() == 1);
+            CHECK(start.pieces.front().template_name == "minecraft:ruined_portal/portal_4");
+            CHECK(start.pieces.front().origin.y == 64);
+            CHECK(start.box.min_y == 64);
+            CHECK_FALSE(start.pieces.front().portal.cold);
+            portal = true;
+        }
+    }
+    CHECK(portal);
 }

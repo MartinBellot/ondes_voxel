@@ -560,9 +560,12 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       Nether, End) : étage attaché à chaque pile de génération, vidé avec le
       carré (déterminisme), `structures.starts` et `References` écrits au
       format du jeu — l'épave échouée du chunk (9, 5) identique champ pour
-      champ, types compris ; portails et trésor refusés par le serveur tant
-      que leur hauteur n'est pas réglée, tout refus nommé au journal
-      (`structures.md` § 20). Temples du désert et
+      champ, types compris ; tout refus nommé au journal
+      (`structures.md` § 20). **Portails en ruine à la hauteur du jeu** :
+      hauteur et test « froid » décidés à la génération, depuis le bruit,
+      **34/34 départs** exacts (25 Overworld, 9 Nether ; témoins à graine
+      décalée 0/29) — le serveur les place ; trésor enfoui encore refusé
+      tant que sa recherche vers le bas n'est pas réglée (§ 15.1). Temples du désert et
       de la jungle, cabane de sorcière : construits en code par le jeu,
       refusés par nom. Jigsaw (villages, avant-postes, bastions…) : autre
       mandat. Voir `docs/provenance/structures.md` §§ 12-20)* :

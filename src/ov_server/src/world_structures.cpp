@@ -3,6 +3,9 @@
 #include "world_structures.hpp"
 
 #include "ov/base/log.hpp"
+#include "ov/gameplay/weather.hpp"
+#include "ov/registry/block_states.hpp"
+#include "ov/worldgen/aquifer.hpp"
 #include "ov/worldgen/chunk_generator.hpp"
 #include "ov/worldgen/placement.hpp"
 #include "ov/worldgen/structure.hpp"
@@ -28,10 +31,44 @@ namespace {
 /// extent — 319 to -64 in the overworld, 127 to 0 in the Nether and the End.
 class GeneratorSampler final : public worldgen::StructureWorldSampler {
 public:
-    explicit GeneratorSampler(const worldgen::ChunkGenerator& generator)
+    GeneratorSampler(const worldgen::ChunkGenerator& generator,
+                     const registry::BlockRegistry&  blocks)
         : generator_(&generator),
+          blocks_(&blocks),
           low_(generator.gen_min_y()),
-          high_(generator.gen_min_y() + generator.gen_depth() - 1) {}
+          high_(generator.gen_min_y() + generator.gen_depth() - 1),
+          lava_(lava_state(blocks)) {}
+
+    /// ── portals ── The noise stage's own decision: the aquifer given the
+    /// density where there is one, the global fluid rule otherwise. A fresh
+    /// aquifer sampler per question — its memo is a chunk's, and a portal asks
+    /// a handful of columns once per start.
+    [[nodiscard]] std::optional<worldgen::Substance> base_substance(i32 x, i32 y,
+                                                                    i32 z) const override {
+        const f64 density = generator_->density_at(x, y, z);
+        if (generator_->aquifer_active()) {
+            worldgen::AquiferSampler aquifer{*generator_->aquifer()};
+            return aquifer.compute(x, y, z, density).substance;
+        }
+        if (density > 0.0) {
+            return worldgen::Substance::Solid;
+        }
+        const auto fluid = generator_->fluid_at(y);
+        if (fluid == registry::kAirState) {
+            return worldgen::Substance::Air;
+        }
+        return fluid == lava_ ? worldgen::Substance::Lava : worldgen::Substance::Water;
+    }
+
+    /// ── portals ── The biome's temperature with the frozen patches and the
+    /// height adjustment, as the weather reads it.
+    [[nodiscard]] std::optional<f32> temperature_at(i32 x, i32 y, i32 z) const override {
+        const auto biome = blocks_->find_biome(generator_->biome_name_at(x, y, z));
+        if (!biome) {
+            return std::nullopt;
+        }
+        return climate_.temperature_at(gameplay::climate_of(blocks_->biome(*biome)), {x, y, z});
+    }
 
     [[nodiscard]] std::string_view biome_at(i32 x, i32 y, i32 z) const override {
         return generator_->biome_name_at(x, y, z);
@@ -61,9 +98,19 @@ public:
     }
 
 private:
+    /// Lava's default state: what the global fluid rule fills the Nether's
+    /// sea with. Air when the registry has no lava, so nothing matches it.
+    [[nodiscard]] static registry::BlockStateId lava_state(const registry::BlockRegistry& blocks) {
+        const auto block = blocks.find_block("minecraft:lava");
+        return block ? blocks.default_state(*block) : registry::kAirState;
+    }
+
     const worldgen::ChunkGenerator* generator_;
+    const registry::BlockRegistry*  blocks_;
     i32                             low_;
     i32                             high_;
+    registry::BlockStateId          lava_;
+    gameplay::ClimateNoise          climate_;
 };
 
 }  // namespace
@@ -137,12 +184,10 @@ std::unique_ptr<WorldStructures::StackStage> WorldStructures::make_stage(
     const registry::Registries& registries, i64 seed) const {
     auto out     = std::make_unique<StackStage>();
     out->placer  = &*impl_->placer;
-    out->sampler = std::make_unique<GeneratorSampler>(generator);
+    out->sampler = std::make_unique<GeneratorSampler>(generator, blocks);
     out->stage   = std::make_unique<worldgen::StructureStage>(*impl_->placer, *impl_->builder,
                                                             out->sampler.get(), blocks,
                                                             &registries, seed);
-    out->stage->refuse(worldgen::StructureKind::RuinedPortal,
-                       "ruined portal: its height search is not implemented, it would stand at y 0");
     out->stage->refuse(
         worldgen::StructureKind::BuriedTreasure,
         "buried treasure: its downward search is not implemented, its chest would hang at y 90");

@@ -41,6 +41,7 @@ ov_add_library(ov_worldgen
         src/random_factory.cpp
         src/structure.cpp
         src/structure_pieces.cpp
+        src/ruined_portal.cpp  # ── portals ──
         src/structure_nbt.cpp  # ── structures ──
         src/structure_set.cpp
         src/structure_stage.cpp
@@ -76,6 +77,7 @@ ov_add_test(test_ov_worldgen
         tests/test_noise.cpp
         tests/test_overworld_feature.cpp
         tests/test_pipeline.cpp
+        tests/test_ruined_portal.cpp  # ── portals ──
         tests/test_structure_nbt.cpp  # ── structures ──
         tests/test_structure_set.cpp
         tests/test_structure_template.cpp

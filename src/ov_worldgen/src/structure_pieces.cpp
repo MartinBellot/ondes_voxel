@@ -5,6 +5,7 @@
 #include "ov/base/log.hpp"
 #include "ov/math/random.hpp"
 #include "ov/worldgen/structure_set.hpp"
+#include "ruined_portal.hpp"  // ── portals ──
 
 #include <simdjson.h>
 
@@ -511,9 +512,33 @@ std::expected<StructureStart, std::string> StructureBuilder::generate(
             if (auto added = add(std::move(piece)); !added) {
                 return std::unexpected(added.error());
             }
-            start.incomplete =
-                "ruined portal: the height search, the cold biome test and the netherrack "
-                "spread are not implemented";
+            // ── portals ── The height and the cold test, from the noise, here:
+            // the game's stored starts carry both before any block exists.
+            StructurePiece& placed = start.pieces.back();
+            if (sampler == nullptr) {
+                start.incomplete = "ruined portal: no sampler, the height is not searched";
+                break;
+            }
+            // The dimension's bottom: a Nether portal is the only one there.
+            const i32  bottom = placed.portal.placement == "in_nether" ? 0 : -64;
+            const auto y      = ruined_portal_height(*sampler, placed.portal.placement,
+                                                     placed.portal.air_pocket, placed.box, bottom,
+                                                     random);
+            if (!y) {
+                return std::unexpected(y.error());
+            }
+            placed.origin.y           = *y;
+            placed.generated_origin.y = *y;
+            placed.box.move(0, *y - placed.box.min_y, 0);
+            placed.height_settled = true;
+            if (setup->can_be_cold) {
+                const auto cold = ruined_portal_cold(*sampler, placed.origin);
+                if (!cold) {
+                    return std::unexpected(cold.error());
+                }
+                placed.portal.cold = *cold;
+            }
+            start.incomplete = "ruined portal: the netherrack spread is not implemented";
             break;
         }
         case StructureKind::NetherFossil: {  // ── nether-2 ──

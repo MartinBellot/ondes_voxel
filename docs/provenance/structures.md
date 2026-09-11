@@ -581,11 +581,58 @@ des mondes de référence, avec le coffre et sa graine exacts pour deux d'entre 
   dalles, escaliers et murets → moussus, obsidienne → pleureuse à 15 %. L'ordre des tirages retenu
   (0,5 ; les deux escaliers au hasard tirés *avant* le choix ; mousse ; élément) donne les
   concordances ci-dessus ; la branche « escalier du gabarit » n'est pas exercée par les mondes.
-* **Pas faits, nommés** : la recherche de hauteur (`findSuitableY` et ses six placements), le test
-  « froid » (température du biome), l'étalement de netherrack, les vignes et la végétation des
-  portails de jungle, `lava_submerged_block`, le remplacement par la pierre noire du Nether. Le
-  portail océanique a sa table de butin juste et **sa graine fausse** (0/1) : un tirage de plus ou de
-  moins avant le coffre, non trouvé.
+* **Pas faits, nommés** : l'étalement de netherrack, les vignes et la végétation des portails de
+  jungle, `lava_submerged_block`, le remplacement par la pierre noire du Nether. Le portail
+  océanique a sa table de butin juste et **sa graine fausse** (0/1) : un tirage de plus ou de moins
+  avant le coffre, non trouvé.
+
+### 15.1 La hauteur et le froid — 34 départs sur 34 (2026-09-11)
+
+La hauteur d'un portail est décidée **à la génération du départ**, pas à la pose : le jeu stocke
+déjà son y réel dans les départs au statut `structure_starts`, avant qu'aucun bloc n'existe. Elle se
+calcule donc sur le bruit seul (`src/ov_worldgen/src/ruined_portal.cpp`).
+
+**Sources.** Les intervalles sont ceux de la page *Ruined Portal* de minecraft.wiki (souterrain
+« de 15 à n − n2 », montagne « de 70 à n − n2 », à moitié enterré « n − n2 plus 2 à 8 », Nether
+« 32 à 100 » avec poche d'air, sinon « 27 à 29 » ou « 29 à 100 » à 50 %). Le reste n'est pas écrit
+dans la page ; il a été **ajusté sur les 25 départs de l'Overworld** des mondes de référence
+(`ov_structblocks --level=h` sort pour chaque départ la graine, la boîte, nos hauteurs et les
+colonnes de base aux coins ; l'ajustement a été fait à part, sur ces données) :
+
+* **n** est le premier bloc **occupé** de la colonne du **milieu** de la boîte (un sous le premier
+  libre) : le fond marin pour un portail océanique, la surface (mer comprise) sinon. Premier libre :
+  0 à 14/25 ; colonne du coin : 10 à 19/25.
+* Le « 15 » du souterrain est **15 au-dessus du fond du monde** (−49), pas y = 15 : trois portails
+  du jeu sont à −48, −46 et −2. Avec y = 15 : 19/25.
+* Un intervalle vide (`min ≥ max`) ne tire rien et donne son maximum.
+* Puis le portail **descend** tant que moins de trois des quatre coins de sa boîte reposent sur
+  quelque chose dans la colonne de base (bruit et aquifère) : tout sauf l'air, ou, au fond de la
+  mer, un bloc solide ; jamais sous le fond + 15. Sans cette descente : 16 à 22/25.
+* **Froid** si le réglage le permet (`can_be_cold`) et que la température du biome **à l'origine du
+  gabarit**, taches gelées et correction d'altitude comprises (`gameplay::ClimateNoise`), est sous
+  0,15. Au milieu de la boîte, le portail souterrain du chunk (3817, 2053) tombe dans un biome de
+  grotte et n'est plus froid : 24/25. L'océan gelé (température 0) donne bien un portail non froid,
+  par ses taches gelées.
+
+Seule la dimension compte pour le fond : −64 dans l'Overworld, 0 dans le Nether, où la règle
+vérifie 9/9 sans rien ajuster.
+
+**Mesure** (niveau B, pièces tirées de la graine avec un vrai échantillonneur, comparées aux
+pièces stockées : gabarit, rotation, miroir, origine y compris sa hauteur, propriétés, froid) :
+
+| monde | portails exacts |
+|---|---|
+| reference-1234567890 | ruined_portal 9/9, _mountain 6/6, _ocean 5/5 |
+| struct-locate-1234567890 | ruined_portal 3/3, _jungle 1/1, _ocean 1/1 |
+| reference-nether-987654321 (`DIM-1`) | ruined_portal_nether 9/9 |
+| **total** | **34/34** |
+
+**Témoins.** La même mesure avec la graine décalée d'un (1234567891, 987654322) : **0/20** et
+**0/9**. Les variantes de règle écartées ci-dessus (premier libre, coin, y = 15, sans descente,
+froid au milieu) sont les témoins propres à la hauteur : aucune n'atteint 25/25.
+
+Le serveur ne refuse plus les portails (§ 20.2) : ses départs portent leur vraie hauteur, et le
+test `test_world_structures` vérifie celui du chunk (4571, 3940), `portal_4` à y = 64.
 
 ## 16. Niveau A — les pièces du jeu, notre code : le tableau
 
@@ -775,14 +822,16 @@ placed — …`). Refusés parce que non construits : villages, avant-postes, ci
 sentiers, bastions (jigsaw), forteresse, puits de mine, fort, monument, manoir, temples du désert et
 de la jungle, cabane de sorcière, cité de l'End.
 
-**Deux genres que le constructeur sait faire sont refusés aussi dans le serveur**
+**Un genre que le constructeur sait faire est refusé aussi dans le serveur**
 (`StructureStage::refuse`), parce que ce qu'il en fait aujourd'hui n'est pas la structure du jeu mais
-une invention à une hauteur de remplacement : les **portails en ruine** (sans leur recherche de
-hauteur, § 15, ils seraient posés à y = 0) et le **trésor enfoui** (sans sa recherche vers le bas, son
-coffre flotterait à y = 90). Les outils de parité, eux, continuent de les poser pour les mesurer.
+une invention à une hauteur de remplacement : le **trésor enfoui** (sans sa recherche vers le bas, son
+coffre flotterait à y = 90). Les outils de parité, eux, continuent de le poser pour le mesurer. Les
+**portails en ruine** étaient refusés pour la même raison jusqu'à leur hauteur (§ 15.1, 34/34) ; ils
+sont placés depuis.
 
 Placés : igloo, épave (en mer et échouée), ruines océaniques (froides et chaudes — la grande ruine
-sans l'amas de petites, § 13), fossiles du Nether.
+sans l'amas de petites, § 13), fossiles du Nether, portails en ruine (les sept, sans l'étalement de
+netherrack).
 
 ### 20.3 `structures.starts` et `References` dans le chunk
 
