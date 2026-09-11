@@ -291,10 +291,10 @@ demandent pas ; stb est pris sous l'alternative domaine public).
   commandes SPSC de 256 entrées et des atomiques. Aucun verrou ni allocation
   côté audio.
 - **Musique** : `music.game`, ou `music.creative` en créatif, silences tirés
-  uniformément dans 12 000–24 000 ticks — les bornes de chaque biome qui nomme
-  sa musique dans le data generator ; que le défaut les partage est une
-  inférence. La musique par biome et par dimension n'est **pas** faite : elle
-  attend que `ov_netclient` décode les effets de biome du Registry Data.
+  uniformément dans 12 000–24 000 ticks — les « 10 to 20 minutes » de la page
+  *Music* du wiki. Depuis, la musique suit toutes les situations de cette page
+  (menu, dragon, End, sous l'eau, biome, dimension), lue dans Login, Respawn et
+  Boss Bar : voir `son-client.md` § 6.
 
 ### Ce que le client joue lui-même
 
@@ -373,10 +373,11 @@ Côté client :
 
 - **Pas de coup de pioche** : notre client casse instantanément, il n'y a pas de
   progression où le jouer.
-- **Pas de son d'interface.** Notre client n'a pas encore de bouton ; ouvrir
-  l'inventaire du joueur n'envoie aucun paquet, donc un éventuel son local de
-  vanilla n'est vérifiable qu'avec le client vanilla, que ce banc n'a pas.
-- **Pas de musique par biome ni par dimension** (§ 5).
+- **Son d'interface** : les boutons des menus cliquent (`ui.button.click`,
+  `son-client.md` § 8), à un volume qui est le nôtre ; ouvrir l'inventaire du
+  joueur n'envoie aucun paquet, donc un éventuel son local de vanilla n'est
+  vérifiable qu'avec le client vanilla, que ce banc n'a pas.
+- **Musique par biome et par dimension** : faite depuis, `son-client.md` § 6.
 - **Entity Sound Effect** n'a jamais été observé ; son décodage suit
   l'archive.
 - Le **tirage de la variante** par la graine n'est pas vérifié contre le client

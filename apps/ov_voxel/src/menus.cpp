@@ -454,6 +454,9 @@ std::string Menus::option_label(std::string_view id) const {
     if (id == "vsync") {
         return generic("options.vsync", on_off(options_.vsync));
     }
+    if (id == "subtitles") {  // ── sound ──
+        return generic("options.showSubtitles", on_off(options_.show_subtitles));
+    }
     if (id == "gui_scale") {
         return generic("options.guiScale", options_.gui_scale == 0
                                                ? translate("options.guiScale.auto")
@@ -588,12 +591,12 @@ void Menus::rebuild() {
 
     // What is not implemented is shown and refused: inactive, as vanilla
     // draws a button that cannot be used, and named in ecrans.md.
-    static constexpr std::array<std::string_view, 30> kInactive{
+    static constexpr std::array<std::string_view, 29> kInactive{
         "realms", "accessibility", "advancements", "stats", "feedback", "bugs", "lan",
         "reporting", "difficulty", "difficulty_lock", "online", "skin", "chat", "packs",
         "telemetry", "credits", "graphics", "chunk_updates", "smooth_lighting", "view_bobbing",
         "attack_indicator", "clouds", "fullscreen", "particles", "mipmaps", "biome_blend",
-        "entity_distance", "entity_shadows", "device", "subtitles"};
+        "entity_distance", "entity_shadows", "device"};
     static constexpr std::array<std::string_view, 10> kInactiveMore{
         "directional", "sneak", "sprint", "auto_jump", "edit", "delete",
         "recreate", "customize", "structures", "bonus_chest"};
@@ -798,6 +801,7 @@ MenuAction Menus::back() {
 }
 
 MenuAction Menus::activate(const client::Widget& widget) {
+    clicked_ = true;  // ── sound ── every pressed button clicks
     MenuAction        action;
     const std::string id = widget.id;
     if (id == "done") {
@@ -854,6 +858,13 @@ MenuAction Menus::activate(const client::Widget& widget) {
                 open(MenuScreen::Language);
                 options_parent_ = parent;
             }
+            break;
+        case MenuScreen::Sounds:  // ── sound ──
+            if (id == "subtitles") {
+                options_.show_subtitles = !options_.show_subtitles;
+                options_changed_        = true;
+            }
+            dirty_ = true;
             break;
         case MenuScreen::Video:
             if (id == "vsync") {

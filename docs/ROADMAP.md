@@ -25,6 +25,13 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] `bench_headers.py` — poids préprocessé, **déterministe**, seuil à 10 % (risque R5) 🔒
 - [x] `bench_build.sh` — temps mural, informatif (trop bruité pour un seuil)
 - [ ] Brancher `bench_headers.py` en CI
+      *(2026-09-11 : **volontairement pas branché**. Mesuré tel quel, la porte
+      échoue d'emblée : +19,3 % par unité de compilation, et la base de
+      référence date de 40 unités quand le projet en compte 445. Un seuil
+      global sur une moyenne ne dit rien de l'en-tête qui a grossi. Avant
+      d'activer : une comparaison **par fichier** et une référence
+      rafraîchie — sinon la CI passe au rouge au premier commit et on apprend
+      à l'ignorer)*
 - [ ] En-têtes précompilées — **mesuré comme inutile à 30 TU**, à revoir vers 200
 
 ### Verrous d'architecture 🔒
@@ -86,7 +93,10 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] Message d'erreur actionnable si la version est absente
 - [x] Extraction du jar client : `models/`, `blockstates/`, `font/`, `lang/`
 - [x] Résolution via `assets/indexes/*.json` → `objects/<hash>` (142 langues)
-- [ ] Sons : `--sounds` implémenté, non activé par défaut (inutile avant M9)
+- [x] Sons : `--sounds` implémenté, **activé par défaut** depuis que le client les joue
+      *(**2026-09-11** : 152 Mo d'effets dans `run/assets/`, gitignoré ; `--no-sounds`
+      les écarte, `--music` ajoute musique et disques, 432 Mo. Voir
+      `docs/provenance/son-client.md`)*
 - [x] Empilage des packs selon la priorité vanilla, dossiers **et** zips
 - [x] Manifeste de provenance par fichier → `run/assets/PROVENANCE.tsv`
 - [ ] `ov-assetgen` : atlas procédural (démarrage sans aucun asset externe)
@@ -96,7 +106,12 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 
 ## M1 — Protocole 763
 
-- [ ] `data/protocol/763.json` — schéma des paquets (dérivé de minecraft-data, MIT) 🔒
+- [~] `data/protocol/763.json` — schéma des paquets (dérivé de minecraft-data, MIT) 🔒
+      *(2026-09-11 : le **catalogue** — état, sens, id, noms des 176 paquets —
+      dérivé de minecraft-data **et** de l'archive figée, qui s'accordent sur
+      176/176 ids ; il sert de vérité à la matrice. Les **champs** n'y sont pas :
+      tant qu'`ov-pktgen` n'existe pas, ils seraient une seconde copie de ce que
+      le C++ spécifie et teste octet à octet)*
 - [ ] `ov-pktgen` : **génération** des encodeurs, décodeurs, dumps de debug et
       harnais de fuzz. Écrire 250 paquets à la main est 2 mois de dette 🔒
 - [x] VarInt (≤ 5 o) et VarLong (≤ 10 o) — table de la spec vérifiée 🔒
@@ -126,6 +141,13 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [~] Les ~130 paquets Play, round-trip octet à octet
       *(44 identifiants implémentés — ceux dont la tranche verticale a besoin.
       Le reste arrive avec les entités, l'inventaire complet et le son)*
+      *(2026-09-11 : **+14 paquets d'interface**, encodeur et décodeur, dans
+      `ov/protocol/hud.hpp` — Boss Bar, les six paquets de bordure, Display
+      Objective, Update Objectives, Update Teams, Update Score, Award
+      Statistics, Select Advancements Tab, Seen Advancements. Octets attendus
+      écrits à la main depuis l'archive ; la matrice passe à 125/176 paquets
+      couverts, 33 en aller-retour. Pas encore émis par le serveur, et Update
+      Advancements reste à faire)*
 - [x] Métadonnées d'entité (index / type / valeur)
       *(`MetadataWriter` couvre les 28 types de valeur de 763, et la table
       d'indices est **dérivée** plutôt que recopiée : un champ NBT à la fois sur
@@ -136,8 +158,21 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       *(et **relu** : `parse_chunk_data` est le miroir exact de l'encodeur, testé
       sur 24 chunks réels comparés cellule par cellule — blocs, biomes, les deux
       lumières et les heightmaps)*
-- [ ] Cibles de fuzz sur le décodeur, aucun crash sur entrée malveillante
-- [ ] Matrice de conformité `docs/protocol/763/`
+- [x] Cibles de fuzz sur le décodeur, aucun crash sur entrée malveillante
+      *(2026-09-11 : `fuzz_ov_protocol`, **déterministe à graine fixe** — pas
+      libFuzzer, que les trois OS de CI ne partagent pas. 72 points d'entrée
+      (tous les décodeurs d'octets de socket, framer compris) nourris de préfixes,
+      de mutations de paquets valides, d'octets aléatoires et de flux coupés au
+      hasard. Vert sous ASan + UBSan ; le job CI *Sanitizers* le lance avec le
+      reste. `OV_FUZZ_SEED` / `OV_FUZZ_ITERATIONS` pour une campagne longue —
+      voir `docs/provenance/protocole-763.md`)*
+- [x] Matrice de conformité `docs/protocol/763/`
+      *(2026-09-11 : **générée depuis le code** par `scripts/protocol_matrix.py` —
+      les 176 paquets, par état et par sens, avec constante, encodeur, décodeur,
+      test, aller-retour, octets vanilla, usage serveur/client. Chaque constante
+      d'id est comparée au catalogue ; `--check` en CI. Elle a trouvé **Set
+      Cooldown envoyé en 0x16** (Chat Suggestions) au lieu de 0x15 — voir
+      `docs/provenance/protocole-763.md`)*
 
 ---
 
@@ -407,7 +442,16 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       un seul processus, et les octets restent ceux du protocole)*
 - [ ] Prédiction de mouvement et réconciliation
 - [ ] Interpolation d'entités
-- [ ] Mixeur audio, sons 3D atténués, catégories de volume
+- [x] Mixeur audio, sons 3D atténués, catégories de volume
+      *(**2026-09-11** : atténuation linéaire à `attenuation_distance` × max(1,
+      volume), panoramique sur l'axe droit `regard × haut` de la tête —
+      invariant au tangage, prouvé —, **8/8 positions** du modèle numérique
+      retrouvées dans les échantillons du mixeur à 10⁻⁴ ; priorité des voix
+      (le plus faible aux oreilles cède) : 200 sons/frame tiennent en **4,9 ms
+      p99** par rappel de 10,7 ms, contre 16,0 ms sans plafond ; dix catégories
+      et `showSubtitles` dans `options.txt` aux clés du vrai client. Bornes de
+      voix et loi de panoramique : les nôtres, non comparées au vrai client.
+      Voir `docs/provenance/son-client.md`)*
 - [~] **Deux clients pour un serveur · p99 ≤ 20 ms à 12 chunks** ⭐
       *(le p99 est tenu : 17,77 ms avec vsync, dont 0,41 ms d'enregistrement
       CPU et 10,91 ms de GPU, à 12 chunks sur M2 en 2560×1440. Les deux
@@ -1084,8 +1128,19 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       forme, calendrier local identique au tick près (pierre à la main 151).
       Restent la main à la première personne et la prédiction locale du bloc
       cassé. Voir `docs/provenance/cassage-bloc.md`)*
-- [ ] Audio : tous les événements sonores, musique adaptative par biome et
+- [~] Audio : tous les événements sonores, musique adaptative par biome et
       dimension, disques, sous-titres
+      *(**2026-09-11** : musique par situation dans l'ordre du wiki (menu,
+      crédits, dragon, End, sous l'eau, créatif, biome, jeu), dimension lue
+      dans Login et Respawn, musique des **31 biomes** lue dans le codec de
+      Login, barre du dragon par le drapeau 0x02 de Boss Bar ; disques par
+      World Event **1010/1011 mesurés** sur le vrai serveur (id d'objet, reçus
+      par l'acteur aussi), « Now Playing » en barre d'action, musique qui
+      s'efface sous un disque ; sous-titres en bas à droite avec flèches et
+      fondu ; clic des boutons des menus. Restent : éclaboussures, crédits,
+      Update Tags (liste « sous l'eau » en table), arc-en-ciel de « Now
+      Playing », sous-titres non comparés au pixel ; notre serveur n'émet pas
+      encore 1010. Voir `docs/provenance/son-client.md`)*
 - [ ] Resource packs empilables, i18n, options persistées, captures d'écran
 
 ### Commandes et progression
