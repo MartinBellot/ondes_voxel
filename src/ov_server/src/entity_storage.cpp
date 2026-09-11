@@ -163,14 +163,67 @@ bool EntityStorage::spawns(std::string_view type) const {
            gameplay::category_of(type) != gameplay::MobCategory::Misc;
 }
 
+EntityAdopter* EntityStorage::adopter_of(i32 type) const noexcept {
+    for (EntityAdopter* adopter : adopters_) {
+        if (adopter->owns(type)) {
+            return adopter;
+        }
+    }
+    return nullptr;
+}
+
 bool EntityStorage::saved(const entity::EntityState& state, const EntityStorageHost& host) const {
-    if (state.removed || state.health <= 0.0F || !types_) {
+    if (state.removed || !types_) {
         return false;
     }
     if (host.transient && host.transient(state.type)) {
         return false;
     }
+    // An adopted entity is not a living one: a minecart has no health.
+    if (adopter_of(state.type) != nullptr) {
+        return true;
+    }
+    if (state.health <= 0.0F) {
+        return false;
+    }
     return spawns(registries_->entry_of(*types_, state.type));
+}
+
+std::optional<nbt::Tag> EntityStorage::compound_of(entity::EntityWorld& world,
+                                                   entity::EntityHandle handle,
+                                                   const MobRecords&     records,
+                                                   const EntityStorageHost& host) const {
+    const entity::EntityState* state = world.state(handle);
+    if (state == nullptr) {
+        return std::nullopt;
+    }
+    if (const EntityAdopter* adopter = adopter_of(state->type)) {
+        return adopter->save_entity(world, handle);
+    }
+    return encode(world, handle, records, host);
+}
+
+void EntityStorage::read_before_write(entity::EntityWorld& world, MobRecords& records,
+                                      const EntityStorageHost&       host,
+                                      const std::unordered_set<i64>* only) {
+    std::vector<ChunkPos> unread;
+    for (const entity::EntityHandle handle : world.handles()) {
+        const entity::EntityState* state = world.state(handle);
+        if (state == nullptr || !saved(*state, host)) {
+            continue;
+        }
+        const ChunkPos chunk = chunk_of(state->position);
+        const i64      key   = key_of(chunk);
+        if (loaded_.contains(key) || (only != nullptr && !only->contains(key)) ||
+            std::ranges::find(unread, chunk) != unread.end()) {
+            continue;
+        }
+        unread.push_back(chunk);
+    }
+    // After the pass: a read spawns, and a spawn invalidates `handles()`.
+    for (const ChunkPos chunk : unread) {
+        (void)load_chunk(chunk, world, records, host);
+    }
 }
 
 // ── Villager trades ─────────────────────────────────────────────────────────
@@ -588,6 +641,27 @@ EntityStorageStats EntityStorage::load_chunk(ChunkPos chunk, entity::EntityWorld
         on_disk_.insert(key);
     }
     for (const nbt::Tag& compound : *entities->list()) {
+        // A type an adopter runs goes to it, and to nothing else.
+        const nbt::Tag* id = compound.find("id");
+        const auto type = id != nullptr && types_
+                              ? registries_->protocol_id(*types_, namespaced(id->as_string()))
+                              : std::nullopt;
+        if (EntityAdopter* adopter = type ? adopter_of(static_cast<i32>(*type)) : nullptr) {
+            if (const auto handle = adopter->adopt_saved(world, compound)) {
+                ++stats.entities;
+                ++stats.adopted;
+                if (const entity::EntityState* state = world.state(*handle);
+                    state != nullptr && host.announce) {
+                    host.announce(*state);
+                }
+            } else {
+                OV_LOG_WARN("entities: a {} in chunk {},{} refused — carried through",
+                            id->as_string(), chunk.x, chunk.z);
+                foreign_[key].push_back(compound);
+                ++stats.carried;
+            }
+            continue;
+        }
         if (decode(compound, world, records, host)) {
             ++stats.entities;
         } else if (compound.contains("id")) {
@@ -646,7 +720,16 @@ EntityStorageStats EntityStorage::unload_chunks(std::span<const ChunkPos> chunks
                                                 entity::EntityWorld& world, MobRecords& records,
                                                 const EntityStorageHost& host,
                                                 std::vector<i32>& removed) {
-    EntityStorageStats                  stats;
+    EntityStorageStats stats;
+    // A chunk leaving before its file was read, with an entity in it: read it
+    // now, or the write below would replace what the file held.
+    {
+        std::unordered_set<i64> asked;
+        for (const ChunkPos chunk : chunks) {
+            asked.insert(key_of(chunk));
+        }
+        read_before_write(world, records, host, &asked);
+    }
     std::map<i64, std::vector<nbt::Tag>> lists;
     std::unordered_set<i64>              leaving;
     for (const ChunkPos chunk : chunks) {
@@ -672,11 +755,18 @@ EntityStorageStats EntityStorage::unload_chunks(std::span<const ChunkPos> chunks
         if (!leaving.contains(key)) {
             continue;
         }
-        lists[key].push_back(encode(world, handle, records, host));
+        if (auto compound = compound_of(world, handle, records, host)) {
+            lists[key].push_back(std::move(*compound));
+        }
         taken.push_back(handle);
     }
     for (const entity::EntityHandle handle : taken) {
-        const i32 id = world.state(handle)->network_id;
+        const entity::EntityState* state = world.state(handle);
+        const i32                  id    = state->network_id;
+        if (EntityAdopter* adopter = adopter_of(state->type)) {
+            adopter->release(world, handle);
+            ++stats.adopted;
+        }
         (void)world.remove(handle);
         removed.push_back(id);
         records.forget(id);
@@ -694,9 +784,10 @@ EntityStorageStats EntityStorage::unload_chunks(std::span<const ChunkPos> chunks
     return stats;
 }
 
-EntityStorageStats EntityStorage::save_all(entity::EntityWorld& world, const MobRecords& records,
+EntityStorageStats EntityStorage::save_all(entity::EntityWorld& world, MobRecords& records,
                                            const EntityStorageHost& host) {
-    EntityStorageStats                  stats;
+    EntityStorageStats stats;
+    read_before_write(world, records, host, nullptr);
     std::map<i64, std::vector<nbt::Tag>> lists;
     // The chunks whose entry on disk must be cleared or kept (what was there
     // and what is carried through), then every chunk a mob stands in now.
@@ -713,8 +804,18 @@ EntityStorageStats EntityStorage::save_all(entity::EntityWorld& world, const Mob
         if (state == nullptr || !saved(*state, host)) {
             continue;
         }
-        lists[key_of(chunk_of(state->position))].push_back(encode(world, handle, records, host));
+        // Where it stands now: an entity that crossed a chunk border is not
+        // left behind in the chunk it came from, whose entry is rewritten
+        // without it (`on_disk_`, above).
+        auto compound = compound_of(world, handle, records, host);
+        if (!compound) {
+            continue;
+        }
+        lists[key_of(chunk_of(state->position))].push_back(std::move(*compound));
         ++stats.entities;
+        if (adopter_of(state->type) != nullptr) {
+            ++stats.adopted;
+        }
     }
     stats.chunks = lists.size();
     if (!lists.empty()) {

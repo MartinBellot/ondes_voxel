@@ -253,10 +253,30 @@ NBT à la fois contre un wagonnet témoin :
 - **Sauvegarde** : `entities/r.x.z.mca`, `DataVersion` 3465, les wagonnets avec
   `Pos`, `Motion`, `Rotation`, `UUID`, `Fuel`/`PushX`/`PushZ`, `TNTFuse`,
   `Enabled`, `Items`, `CustomDisplayTile`/`DisplayState`/`DisplayOffset`, et toute
-  clé qu'on ne modélise pas relue telle quelle. **Les autres entités d'un chunk
-  vanilla** (un cochon…) sont réécrites telles qu'elles étaient lues ; un chunk où
-  l'on a écrit un wagonnet est réécrit à chaque sauvegarde, pour qu'un wagonnet
-  parti ne reste pas derrière (testé).
+  clé qu'on ne modélise pas relue telle quelle. Ce n'est plus la session qui
+  écrit le fichier : voir « Un seul écrivain » ci-dessous.
+
+### Un seul écrivain
+
+Jusqu'à la fusion de mobs-3, la session lisait tous les fichiers `entities/` au
+démarrage et réécrivait des chunks entiers depuis sa copie, pendant que
+`EntityStorage` (mobs-3) faisait de même depuis la sienne : le dernier écrivain
+effaçait l'autre (un wagonnet voisin d'un mob revenait où il avait été lu, un
+wagonnet posé depuis pouvait disparaître). Désormais `EntityStorage` est le seul
+lecteur et le seul écrivain de `entities/`, et la session est un **adoptant**
+(`EntityAdopter`, détail dans `mobs-3.md` § 3.4) :
+
+- un chunk devient résident → le stockage lit son entrée et passe chaque wagonnet
+  à `adopt_saved`, qui le fait apparaître avec tout son composé ;
+- une sauvegarde ou un déchargement → le stockage demande à `save_entity` le
+  composé de chaque wagonnet vivant et l'écrit **dans le chunk où il se tient**,
+  à côté des mobs et des entités rendues intactes ; le chunk qu'il a quitté est
+  réécrit sans lui ;
+- un chunk déchargé → le wagonnet est écrit, oublié (`release`), retiré du monde,
+  et les clients reçoivent son `Remove Entities` comme pour un mob.
+
+Conséquence : les wagonnets ne sont plus tous chargés au démarrage, seulement
+ceux des chunks résidents, comme les mobs.
 
 ### Ce qui manque, nommé
 
@@ -310,8 +330,10 @@ file n'est plus vidée que lorsqu'elle est envoyée.
 serveur a sauvegardé après l'étape 8 ; `measure_rails.py readback` l'ouvre avec le
 vrai serveur, sous le verrou, et lit les wagonnets : **1 wagonnet**, à
 (12,61 ; −59,9375 ; 4,5), avec sa `Motion` et son `UUID`. Dans l'autre sens, le
-test `test_rails_session` relit un chunk écrit à la manière de vanilla (un cochon
-et un wagonnet à fourneau) et le réécrit avec le cochon intact.
+test `test_rails_session` relit, par `EntityStorage`, un chunk écrit à la manière
+de vanilla (un cochon, un wagonnet à fourneau, un tableau) et le réécrit avec le
+cochon vivant, le wagonnet et le tableau intact ; le monde combiné wagonnet + mob
+de `check_entities_e2e.py` est relu par vanilla (`mobs-3.md` § 3.4).
 
 ---
 

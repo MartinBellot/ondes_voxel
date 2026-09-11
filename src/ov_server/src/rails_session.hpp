@@ -5,7 +5,12 @@
 // engine the world-tick drain calls, a placed rail shaped among its
 // neighbours, carts spawned from an item, their packets, riding, breaking,
 // the detector rail a cart presses, the activator rail that throws a rider
-// off, and the carts written to and read back from `entities/r.x.z.mca`.
+// off, and a cart's compound in `entities/r.x.z.mca`.
+//
+// The files themselves are not this session's: `EntityStorage` is their one
+// reader and writer (entity_storage.hpp). The session is an `EntityAdopter`:
+// the storage hands it each cart it reads from a chunk, and asks it for each
+// live cart's compound when it writes one.
 //
 // Callbacks rather than a reference to the server, as for tnt_gravity.hpp:
 // this file must not know what a `Player` or a chunk map is.
@@ -17,6 +22,7 @@
 // only one that touches the entity world and writes the level.
 #pragma once
 
+#include "entity_storage.hpp"
 #include "world_ticks.hpp"
 
 #include "ov/entity/world.hpp"
@@ -92,7 +98,7 @@ struct RailsStats {
     usize shaped{0};
 };
 
-class RailsSession final : public BlockRuleExtension {
+class RailsSession final : public BlockRuleExtension, public EntityAdopter {
 public:
     RailsSession(const registry::BlockRegistry& blocks, const registry::Registries& registries);
 
@@ -119,8 +125,9 @@ public:
     void request_touch(CartTouch touch);
     void request_input(RiderInput input);
 
-    /// Is this entity type one of the seven carts?
-    [[nodiscard]] bool owns(i32 type) const noexcept;
+    /// Is this entity type one of the seven carts? (Any thread: the table is
+    /// set once, in the constructor.)
+    [[nodiscard]] bool owns(i32 type) const noexcept override;
 
     /// Is anything waiting for the tick?
     [[nodiscard]] bool has_pending() const;
@@ -153,14 +160,19 @@ public:
     /// A player left: they get off whatever they were riding.
     void forget_player(entity::EntityWorld& world, i32 player_id, const RailsHost& host);
 
-    // ── Persistence ─────────────────────────────────────────────────────────
+    // ── Persistence: EntityAdopter, called by EntityStorage ─────────────────
 
-    /// Read every cart of `level_dir/entities`, spawning them, and keep every
-    /// other entity of those chunks to write back untouched.
-    usize load(const std::filesystem::path& level_dir, entity::EntityWorld& world);
+    /// A cart read from a chunk: spawned where it was, with everything it was
+    /// saved with kept for its next save.
+    std::optional<entity::EntityHandle> adopt_saved(entity::EntityWorld& world,
+                                                    const nbt::Tag&      compound) override;
 
-    /// Write every cart to `level_dir/entities`, beside what was kept.
-    usize save(const std::filesystem::path& level_dir, entity::EntityWorld& world) const;
+    /// A live cart's compound (`cart_nbt`). Nullopt for one being removed.
+    [[nodiscard]] std::optional<nbt::Tag> save_entity(entity::EntityWorld& world,
+                                                      entity::EntityHandle handle) const override;
+
+    /// A cart leaves the world with its chunk: forgotten, and its rider with it.
+    void release(entity::EntityWorld& world, entity::EntityHandle handle) override;
 
     /// The NBT vanilla writes for one cart: id, Pos, Motion, Rotation, UUID,
     /// and each kind's own — Fuel and PushX/Z, TNTFuse, Enabled, Items,
@@ -225,12 +237,6 @@ private:
     std::unordered_map<i32, i32>  vehicle_of_;     // player → cart
     /// Detector rails pressed this tick, and the cart on each.
     std::map<std::tuple<i32, i32, i32>, i32> pressed_;
-
-    /// What vanilla's chunks held besides carts, written back as they came.
-    std::map<std::pair<i32, i32>, std::vector<nbt::Tag>> kept_;
-    /// Every chunk a save has written carts into: rewritten by every later
-    /// save, so a cart that rolled away does not stay behind.
-    mutable std::set<std::pair<i32, i32>> written_;
 
     mutable std::mutex pending_mutex_;
     struct PendingShape {

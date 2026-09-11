@@ -268,6 +268,93 @@ n'est déchargé à ce passage) ; chaque sauvegarde du monde écrit tous les chu
   sa minute de vie ; ils sont dans le compte des 24.
 * **De bout en bout** : § 5.
 
+### 3.4 Un seul écrivain pour `entities/`
+
+**Le défaut.** À la fusion de cette vague (3c378f6), deux modules écrivaient les mêmes fichiers
+`entities/r.x.z.mca`, chacun depuis sa propre copie de leur contenu : `RailsSession` lisait **tous**
+les fichiers au démarrage, gardait les non-wagonnets en `kept_` et réécrivait chaque chunk lu ou
+écrit avec `kept_` + les wagonnets vivants ; `EntityStorage` gardait ce qu'il ne fait pas vivre (les
+wagonnets compris) en `foreign_`, dans l'état du chargement. Le dernier écrivain effaçait l'état
+récent de l'autre : un wagonnet dans un chunk qui contient aussi des mobs était sauvé **là où il avait
+été lu**, un wagonnet posé depuis pouvait **disparaître** au redémarrage, et au déchargement d'un
+chunk `EntityStorage` réécrivait des `foreign_` périmés — en laissant le wagonnet vivant dans le
+monde, dans un chunk déchargé.
+
+**La conception.** `EntityStorage` est désormais le **seul** code qui ouvre `entities/` : lecture par
+chunk résident, écriture au déchargement et à chaque sauvegarde. Un module qui fait vivre ses propres
+entités s'y branche par l'interface `EntityAdopter` (`entity_storage.hpp`) :
+
+| appel | quand | ce que fait l'adoptant |
+|---|---|---|
+| `owns(type)` | à la lecture et à l'écriture | dit si le type (identifiant protocole) est le sien |
+| `adopt_saved(world, compound)` | lecture d'un chunk | fait apparaître l'entité et la fait vivre, en gardant tout le composé (`Passengers` compris) ; `nullopt` = refusée, le stockage la rend intacte en `foreign_` et le nomme dans le journal |
+| `save_entity(world, handle)` | écriture d'un chunk | rend le composé 1.20.1 de l'entité vivante (`cart_nbt` pour un wagonnet) |
+| `release(world, handle)` | déchargement du chunk | oublie l'entité (et son passager) avant que le stockage la retire du monde |
+
+Le stockage écrit chaque entité **dans le chunk où elle se tient au moment de l'écriture** ; le chunk
+qu'elle a quitté est réécrit sans elle parce qu'il est dans `on_disk_` (ce que faisait `written_` côté
+rails). Un chunk qui ne contient qu'un wagonnet est écrit comme un chunk qui ne contient qu'un mob. Au
+déchargement, le wagonnet est écrit, `release`, retiré du monde, et son identifiant part dans le
+`Remove Entities` des mobs.
+
+**Un deuxième défaut, trouvé en écrivant les tests** : une sauvegarde qui écrit un chunk dont le fichier
+**n'a pas encore été lu** (un chunk résident depuis moins de 10 ticks, ou jamais lu, où un mob ou un
+wagonnet vient d'entrer) remplaçait son entrée sur disque par les seules entités vivantes — et la
+lecture suivante aurait ramené **en double** ce qui était déjà vivant. `save_all` et `unload_chunks`
+lisent maintenant d'abord ces chunks (`read_before_write`), puis écrivent.
+
+`RailsSession::load` / `save` n'existent plus ; `server.cpp` n'a plus qu'un appel de sauvegarde
+(bloc `── entities ──`) et l'enregistrement de l'adoptant après la construction du stockage.
+
+**Les autres entités.** Inventaire de ce qui vit hors des mobs, et de ce qui en est sauvé :
+
+| module | entités | sauvé ici ? | vanilla |
+|---|---|---|---|
+| `rails_session` | les 7 wagonnets | **oui, adoptant** | dans le chunk |
+| `tnt_gravity` | TNT amorcée, bloc qui tombe | non (`transient`) | sauvés dans le chunk (`Fuse`, `BlockState`, `Time`) |
+| `projectiles` | flèches, projectiles | non (`transient`) | sauvés dans le chunk |
+| `server.cpp` `ground_items` / `ground_orbs` | objets au sol, orbes | non (hors `EntityWorld`) | sauvés dans le chunk |
+| `nether_mobs` | les mobs du Nether | non (magasin à part) | `DIM-1/entities/` |
+| `end_fight` | le dragon, les orbes de l'End | non (nommé dans `end_fight.hpp`) | `DIM1/entities/` |
+
+Aucun de ceux-là n'écrit dans `entities/` : il n'y a pas d'autre conflit d'écrivain. Ce sont des
+**manques de persistance**, nommés, pas des écrivains concurrents : chacun pourra devenir adoptant par
+la même interface. Les entités de ces types lues dans un monde vanilla restent rendues intactes
+(`foreign_`).
+
+**Preuves.**
+
+* **Tests unitaires** (`test_rails_session.cpp`, `[entities]`, 4 cas, 82 assertions) : un chunk écrit
+  à la vanilla avec un cochon, un wagonnet à fourneau et un tableau revient entier (cochon vivant,
+  wagonnet adopté avec `Fuel` 1200 et son `DisplayState`, tableau rendu intact avec son `variant`),
+  deux sauvegardes de suite n'en écrivent qu'un de chaque, et un redémarrage relit un cochon et un
+  wagonnet ; un wagonnet voisin d'une vache passe du chunk (0,0) à (1,0) puis à (37,0) — chaque
+  sauvegarde l'écrit là où il est et nulle part ailleurs, (0,0) garde la vache seule, et le
+  redémarrage le relit **une fois**, à x = 600,5, même UUID ; un chunk qui ne contient qu'un wagonnet
+  est écrit au déchargement, le wagonnet retiré du monde (la vache d'ailleurs reste) puis relu une fois ;
+  un chunk non lu (un tableau sur disque) où un wagonnet entre garde le tableau à la sauvegarde.
+* **Suite complète** : `ctest --preset macos-debug`, 16/16.
+* **De bout en bout** (`scripts/check_entities_e2e.py`, `ov_dedicated`, port 25651) : 31 rails de
+  x = 0 à 30, un wagonnet posé à (2,5 ; −59,9375 ; 4,5) et une vache invoquée à (6,5 ; −60 ; 9,5) —
+  enfermée dans un anneau de verre de deux blocs, parce qu'une vache libre est sortie du chunk dans
+  les deux premiers passages (notre serveur ignore `NoAI`) —, les deux dans le chunk (0,0) ; la sonde
+  pousse le wagonnet jusqu'à x = 17,54 sur le fil, descend ; `stop`. Le fichier : **une** vache, dans
+  (0,0), à (6,5 ; −60 ; 9,5) ; **un** wagonnet dans tout `entities/`, dans (1,0), à
+  (19,573 ; −59,9375 ; 4,5), seul dans son chunk. Redémarrage : un seul `Spawn Entity` de wagonnet, à
+  la position du fichier, et la vache à la sienne.
+* **Relu par le vrai serveur 1.20.1** (`lockf /tmp/ov-vanilla.lock python3
+  scripts/check_entities_e2e.py readback`, port 25652) : sur le monde que l'étape précédente a
+  sauvé, `execute as @e[type=…] run data get entity @s Pos` compte **1 wagonnet** et **1 vache** —
+  la vache à (6,5 ; −60 ; 9,5) exactement ; le wagonnet à x = 20,050 pour 19,573 écrit, sur la même
+  ligne (y et z identiques). Cause **supposée, non vérifiée** : il a continué de rouler sur le
+  `Motion` sauvé pendant les ~4 s où vanilla a fait tourner le monde avant la lecture ; ce passage
+  ne relit pas le `Motion` pour le prouver.
+
+**Passagers, nommé.** Un joueur sur un wagonnet n'est jamais écrit dans le chunk ; le wagonnet l'est, à
+sa place, et au redémarrage le joueur n'y est pas rassis. Vanilla range le véhicule d'un joueur dans le
+`RootVehicle` de ses données (format documenté de `player.dat`) — non fait ici. Un mob passager d'un
+wagonnet lu dans un monde vanilla voyage dans le `Passengers` du composé gardé, sans être animé.
+
 ---
 
 ## 4. Zombification et guérison
@@ -438,7 +525,10 @@ relu » — ressemble exactement à un chargement cassé.
 | `src/ov_gameplay/{include/ov/gameplay/mob_logic.hpp,src/mob_logic.cpp,src/mob_species.cpp}` | `melee`, `hunts_villagers`, `follow_range`, le villageois zombie |
 | `src/ov_server/src/mob_attacks.{hpp,cpp}` | le coup terminé : joueur blessé, repoussé, effet ; villageois blessé, tué |
 | `src/ov_server/src/mob_despawn.{hpp,cpp}` | le despawn et les fiches des mobs (persistance, nom, `noActionTime`) |
-| `src/ov_server/src/entity_storage.{hpp,cpp}` | `entities/r.x.z.mca`, lecture, écriture, champs rendus intacts |
+| `src/ov_server/src/entity_storage.{hpp,cpp}` | `entities/r.x.z.mca`, seul lecteur et seul écrivain, champs rendus intacts, `EntityAdopter` (§ 3.4) |
+| `src/ov_server/src/rails_session.{hpp,cpp}` | adoptant des 7 wagonnets (`adopt_saved`, `save_entity`, `release`) |
+| `src/ov_server/tests/test_rails_session.cpp` | un seul écrivain : mob + wagonnet + étranger, wagonnet déplacé, chunk à un seul wagonnet, chunk non lu |
+| `scripts/check_entities_e2e.py` | wagonnet et vache dans le même chunk, wagonnet déplacé, redémarrage ; `readback` par vanilla |
 | `src/ov_server/src/zombie_villagers.{hpp,cpp}` | la montée, la Faiblesse, la guérison |
 | `src/ov_server/src/projectiles.{hpp,cpp}` | difficulté du monde, flèche de stray, flèches de mob mises à l'échelle (blocs `mobs-3`) |
 | `src/ov_server/src/tnt_gravity.hpp` | `creeper_powered` |

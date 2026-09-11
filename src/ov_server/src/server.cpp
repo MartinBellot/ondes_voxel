@@ -1654,16 +1654,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     std::function<void()> mobs3_save_entities;
     const auto save_world = [&] {
         const std::scoped_lock lock{chunk_mutex};
-        // KNOWN GAP, interim: rails and mobs-3 both rewrite whole chunks of
-        // entities/, each passing through the other's entities as they were
-        // when it loaded them — so the last writer wins. Mobs are written last
-        // (they are everywhere, carts only where someone laid rails): a cart
-        // in a chunk that also holds mobs is saved where it was loaded. One
-        // writer for entities/ is the fix (docs/provenance/mobs-3.md).
-        if (rails_session && mobs) {  // ── rails ── the carts, into entities/
-            (void)rails_session->save(level_dir, *mobs);
-        }
-        if (mobs3_save_entities) {  // ── mobs-3 ──
+        // ── entities ── entities/ has one writer, the storage: mobs, and the
+        // carts it asks the rails session for (entity_storage.hpp).
+        if (mobs3_save_entities) {
             mobs3_save_entities();
         }
         // ── nether ── DIM-1/region, with the Nether level's own ticks.
@@ -2808,15 +2801,11 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                             mob_combat ? &*mob_combat : nullptr);
         tnt_gravity->set_redstone(&world_ticks->redstone());
         world_ticks->set_extension(&*tnt_gravity);
-        // ── rails ── rails and carts; the carts a save left in entities/
+        // ── rails ── rails and carts; the carts come from entities/ through
+        // the entity storage, chunk by chunk (── entities ──, below)
         rails_session.emplace(*blocks, *registries);
         world_ticks->set_rails_extension(&*rails_session);
         rails_session->set_blasts(&tnt_gravity->blasts());
-        if (mobs) {
-            if (const usize loaded = rails_session->load(level_dir, *mobs); loaded > 0) {
-                OV_LOG_INFO("rails: {} minecarts read from entities/", loaded);
-            }
-        }
         // ── end rails ──
         // ── projectiles ──
         projectiles.emplace(*registries, *blocks, mob_combat ? &*mob_combat : nullptr);
@@ -2832,6 +2821,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         mobs3_players.reserve(16);                                              // ── mobs-3 ──
         zombie_villagers.emplace(*registries);                                  // ── mobs-3 ──
         entity_storage.emplace(*registries, level_dir / "entities");            // ── mobs-3 ──
+        entity_storage->add_adopter(*rails_session);  // ── entities ── the carts
         // ── villagers ──
         villagers.emplace(*registries, *blocks);
         tick_broadcasts.reserve(4096);
