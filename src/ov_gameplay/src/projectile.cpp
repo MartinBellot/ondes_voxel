@@ -127,12 +127,13 @@ constexpr std::array<std::string_view, 12> kGaps{
     "piercing: an arrow stops at its first hit",
     "multishot: a crossbow fires one arrow",
     "flame and fire arrows: this server has no fire on entities",
-    "tipped arrows: the potion is not applied",
-    "spectral arrow: glowing is not applied",
+    // ── brewing ── applied since brewing_session, to players only
+    "tipped arrows: the potion reaches players only, mobs carry no effects",
+    "spectral arrow: glowing reaches players only",
     "loyalty: a trident does not come back",
     "riptide and channeling",
     "ender pearl: no endermite",
-    "splash and lingering potions fly and apply nothing",
+    "splash and lingering potions reach players only, mobs carry no effects",
     "experience bottle: breaks, and drops no orbs",
     "an arrow whose block is removed does not fall again",
     "arrows stuck in a mob (the arrow count) are not shown",
@@ -322,6 +323,7 @@ std::optional<ProjectileEvent> step_projectile(entity::EntityState& state, Proje
                                       : ProjectileEvent::Kind::Broke,
                                 state.network_id, hit_target->network_id, hit_target->player,
                                 point, v};
+        event->from = from;  // ── brewing ──
         if (!arrow) {
             state.position = point;
             state.removed  = true;
@@ -337,6 +339,7 @@ std::optional<ProjectileEvent> step_projectile(entity::EntityState& state, Proje
         if (!is_arrow_like(data.kind)) {
             event = ProjectileEvent{ProjectileEvent::Kind::Broke, state.network_id, 0, false,
                                     block->point, v};
+            event->from = from;  // ── brewing ──
             state.position = block->point;
             state.removed  = true;
             return event;

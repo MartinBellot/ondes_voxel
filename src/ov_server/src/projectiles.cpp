@@ -2,6 +2,7 @@
 
 #include "projectiles.hpp"
 
+#include "brewing_session.hpp"  // ── brewing ──
 #include "survival_session.hpp"
 
 #include "ov/base/log.hpp"
@@ -30,6 +31,7 @@ constexpr u8 kArrowFlags     = 8;
 constexpr u8 kArrowPierce    = 9;
 constexpr i8 kArrowCritical  = 0x01;
 constexpr i8 kArrowCrossbow  = 0x04;
+constexpr u8 kArrowColor     = 10;  // ── brewing ── `Potion:"poison"` → 8889187
 
 /// Ticks a stuck arrow waits before it can be picked up. From the wiki's
 /// Arrow article (the "shake"); not measured — the campaign walked onto a
@@ -372,6 +374,8 @@ bool Projectiles::on_use_item(const Shooter& shooter, i64 tick) {
         if (*kind == ProjectileKind::Potion) {
             shot.speed = 0.5F;
             shot.pitch = shooter.pitch + gameplay::kBottlePitchOffset;
+            shot.item  = held;  // ── brewing ── what it will splash
+            shot.item.count = 1;
         }
         if (*kind == ProjectileKind::EnderPearl && shooter.send) {
             // Twenty ticks of grey on the client's pearls. From the wiki; the
@@ -586,6 +590,9 @@ void Projectiles::spawn_shot(entity::EntityWorld& world, const Shot& shot, Vec3d
     if (gameplay::is_arrow_like(shot.data.kind) && shot.item.item_id != 0) {
         pickup_items_[state->network_id] = shot.item;
     }
+    if (shot.data.kind == ProjectileKind::Potion && shot.item.item_id != 0) {  // ── brewing ──
+        potion_items_[state->network_id] = shot.item;
+    }
     spawn_packets(world, *state, deliver);
 }
 
@@ -625,6 +632,12 @@ void Projectiles::spawn_packets(entity::EntityWorld& world, const entity::Entity
         }
         if (data.pierce > 0) {
             fields.byte_value(kArrowPierce, static_cast<i8>(data.pierce));
+        }
+        // ── brewing ── a tipped arrow is drawn in its potion's colour
+        if (const auto it = pickup_items_.find(state.network_id);
+            it != pickup_items_.end() && item_name(it->second.item_id) == "minecraft:tipped_arrow") {
+            fields.varint_value(kArrowColor, static_cast<i32>(gameplay::potion_color(
+                                                 potion_contents(it->second).effects)));
         }
     }
     if (!fields.empty()) {
@@ -856,6 +869,13 @@ ProjectileStats Projectiles::after_entity_tick(entity::EntityWorld& world,
                     hit_mob(world, *state, data, event, host, deliver, landed);
                 }
                 gameplay::resolve_entity_hit(*state, data, landed);
+                // ── brewing ── a tipped or spectral arrow's effect, on a hit that landed
+                if (landed && host.arrow_hit && data.kind != ProjectileKind::Trident) {
+                    if (const auto it = pickup_items_.find(state->network_id);
+                        it != pickup_items_.end()) {
+                        host.arrow_hit(it->second, event.target, event.target_is_player);
+                    }
+                }
                 if (state->removed) {
                     doomed_.push_back(state->network_id);
                 } else {
@@ -932,6 +952,18 @@ ProjectileStats Projectiles::after_entity_tick(entity::EntityWorld& world,
                             }
                         }
                         break;
+                    case ProjectileKind::Potion:  // ── brewing ──
+                        if (const auto it = potion_items_.find(event.projectile);
+                            it != potion_items_.end()) {
+                            if (host.potion_broke) {
+                                // From the start of the breaking tick, as
+                                // measured — not the impact point.
+                                host.potion_broke(event.from, it->second, event.target,
+                                                  event.target_is_player);
+                            }
+                            potion_items_.erase(it);
+                        }
+                        break;
                     case ProjectileKind::ExperienceBottle:
                         // 3 + 0..4 + 0..4, from the wiki; not measured, and the
                         // game splits it into several orbs where this drops one.
@@ -949,6 +981,9 @@ ProjectileStats Projectiles::after_entity_tick(entity::EntityWorld& world,
         }
     }
     world_.events.events.clear();
+    // ── brewing ── a potion that vanished without breaking holds nothing
+    std::erase_if(potion_items_,
+                  [&](const auto& entry) { return world.find(entry.first) == entity::kNoEntity; });
 
     // Pickups: a stuck arrow or trident that a player walks over.
     for (const entity::EntityHandle handle : world.handles()) {

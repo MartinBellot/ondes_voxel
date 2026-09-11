@@ -312,6 +312,16 @@ bool EffectSession::on_consumed(std::string_view item, SurvivalSession& survival
     return handled;
 }
 
+// ── brewing ──
+void EffectSession::with_target(
+    SurvivalSession& survival, const EffectIo& io, const EffectBearer& bearer,
+    const std::function<void(gameplay::ActiveEffects&, gameplay::EffectTarget&)>& rule) {
+    PlayerTarget target{survival, attributes, io, bearer};
+    rule(effects, target);
+    sync(survival);
+    flush(survival, io, bearer);
+}
+
 void EffectSession::on_death() {
     effects.forget();
     attributes = gameplay::AttributeMap::player();

@@ -65,6 +65,11 @@ enum class SidedAccess : u8 {
     /// A chest with one refusal: a shulker box never holds another shulker box,
     /// which is what stops the recursion.
     ShulkerBox,
+    // ── brewing ──
+    /// Five slots: three bottles, the ingredient, the fuel. The ingredient
+    /// from above, bottles and blaze powder from the sides, and out through
+    /// the bottom — measured, 13 cells of `scripts/measure_brewing.py faces`.
+    BrewingStand,
 };
 
 /// One container block, described.

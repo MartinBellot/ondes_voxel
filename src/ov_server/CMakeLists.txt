@@ -9,6 +9,7 @@ ov_add_library(ov_server
         src/agriculture.cpp
         src/async_chunk_source.cpp
         src/block_container.cpp
+        src/brewing_session.cpp  # ── brewing ──
         src/item_transport.cpp
         src/generated_world.cpp
         src/generation_check.cpp

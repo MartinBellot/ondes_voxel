@@ -1,5 +1,6 @@
 #include "block_container.hpp"
 
+#include "ov/gameplay/brewing.hpp"  // ── brewing ──
 #include "ov/gameplay/redstone.hpp"
 #include "ov/nbt/binary.hpp"
 
@@ -44,6 +45,11 @@ constexpr ContainerSpec kBlastFurnace{
     gameplay::FurnaceKind::BlastFurnace};
 constexpr ContainerSpec kSmoker{"minecraft:smoker", 3,    {}, "Smoker", SidedAccess::Furnace,
                                 true,               gameplay::FurnaceKind::Smoker};
+// ── brewing ── Its screen is brewing_session's, which owns the two bars as
+// well as the five slots; it is a container here because a hopper feeds one
+// and a comparator reads one.
+constexpr ContainerSpec kBrewingStand{"minecraft:brewing_stand", 5, {}, "Brewing Stand",
+                                      SidedAccess::BrewingStand, true};
 
 /// The seventeen shulker boxes all share one block entity type, which is why
 /// `container_spec_for_entity` cannot simply be `container_spec_for_block` with
@@ -60,7 +66,7 @@ constexpr std::array<std::string_view, 17> kShulkerColours{
     "minecraft:black_shulker_box",
 };
 
-constexpr std::array<BlockSpec, 10> kBlocks{{
+constexpr std::array<BlockSpec, 11> kBlocks{{
     {"minecraft:chest", kChest},
     {"minecraft:trapped_chest", kTrappedChest},
     {"minecraft:barrel", kBarrel},
@@ -71,6 +77,7 @@ constexpr std::array<BlockSpec, 10> kBlocks{{
     {"minecraft:blast_furnace", kBlastFurnace},
     {"minecraft:smoker", kSmoker},
     {"minecraft:shulker_box", kShulker},
+    {"minecraft:brewing_stand", kBrewingStand},  // ── brewing ──
 }};
 
 /// Containers in 1.20.1 this server does not model, by name.
@@ -78,8 +85,8 @@ constexpr std::array<BlockSpec, 10> kBlocks{{
 /// The ender chest is here because it is not a block inventory at all — its
 /// contents belong to the player who opened it — and modelling it as twenty-
 /// seven slots on the block would give every player the same one.
-constexpr std::array<std::string_view, 6> kUnmodelled{
-    "minecraft:brewing_stand", "minecraft:ender_chest", "minecraft:lectern",
+constexpr std::array<std::string_view, 5> kUnmodelled{
+    "minecraft:ender_chest", "minecraft:lectern",
     "minecraft:chiseled_bookshelf", "minecraft:jukebox", "minecraft:crafter",
 };
 
@@ -292,6 +299,23 @@ bool ContainerBridge::can_take_from(i32 index, Direction face) const {
                 return index == kFurnaceOutput;
             }
             return false;
+        case SidedAccess::BrewingStand: {
+            // ── brewing ── Out through the bottom: the three bottles, and the
+            // ingredient slot only when it holds the glass bottle dragon's
+            // breath leaves. Measured (`measure_brewing.py faces`): a hopper
+            // below took an awkward potion and left the wart and the powder,
+            // and took a glass bottle out of the ingredient slot.
+            if (face != Direction::Down || index < 0 || index > 3) {
+                return false;
+            }
+            if (index < 3) {
+                return true;
+            }
+            const auto            items = inventory_->item_registry();
+            const net::ItemStack& held  = inventory_->stacks()[3];
+            return registries_ != nullptr && items && !held.empty() &&
+                   registries_->entry_of(*items, held.item_id) == "minecraft:glass_bottle";
+        }
     }
     return true;
 }
@@ -336,6 +360,34 @@ bool ContainerBridge::can_place_into(i32 index, const gameplay::SlotStack& stack
             // answer this project gives to a question it cannot answer is no.
             return book_ != nullptr &&
                    gameplay::burn_ticks(*book_, inventory_->spec().furnace, stack.item) > 0;
+        case SidedAccess::BrewingStand: {
+            // ── brewing ── Above: the ingredient slot, for an ingredient. The
+            // sides: an empty bottle slot for a bottle, the fuel slot for blaze
+            // powder. Below: the bottles and the ingredient. Measured
+            // (`measure_brewing.py faces`): from above, blaze powder, wart and
+            // redstone went to slot 3 and a potion and a glass bottle were
+            // refused; from the side, a potion and a glass bottle went to
+            // slot 0, blaze powder to slot 4 — and burnt at once, fuel 0 → 20
+            // — and wart and redstone were refused.
+            const auto items = inventory_->item_registry();
+            if (registries_ == nullptr || !items || index < 0 || index > 4) {
+                return false;
+            }
+            const std::string_view name = registries_->entry_of(*items, stack.item);
+            const bool             top  = face == Direction::Up;
+            const bool             side = face != Direction::Up && face != Direction::Down;
+            if (index == 3) {
+                return !side && gameplay::is_brewing_ingredient(name);
+            }
+            if (index == 4) {
+                return side && name == "minecraft:blaze_powder";
+            }
+            if (top) {
+                return false;
+            }
+            return inventory_->stacks()[static_cast<usize>(index)].empty() &&
+                   (gameplay::potion_form(name).has_value() || name == "minecraft:glass_bottle");
+        }
     }
     return true;
 }

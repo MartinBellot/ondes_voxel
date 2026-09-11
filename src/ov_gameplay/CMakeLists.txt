@@ -8,6 +8,7 @@ ov_add_library(ov_gameplay
     SOURCES
         src/attributes.cpp
         src/effects.cpp
+        src/brewing.cpp
         src/breaking.cpp
         src/combat.cpp
         src/collision.cpp
@@ -60,6 +61,7 @@ ov_add_test(test_ov_gameplay
     SOURCES
         tests/test_attributes.cpp
         tests/test_effects.cpp
+        tests/test_brewing.cpp
         tests/test_breaking.cpp
         tests/test_combat.cpp
         tests/test_entity_loot.cpp
