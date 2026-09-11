@@ -508,7 +508,20 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       pourtant justes. L'ancre jigsaw est le seul désaccord de fond, et il est
       présenté comme tel : milieu et coin donnent des agrégats identiques et
       des erreurs opposées)*
-- [ ] **Structures** : villages ×5 (plains, desert, savanna, taiga, snowy),
+- [~] **Structures**
+      *(**2026-09-11 — les structures à gabarit** : lecteur de gabarits NBT lus
+      à l'exécution dans le jar serveur (rien d'extrait ni de commité),
+      rotation, miroir et 8 processeurs. Pièces du jeu posées par notre code :
+      épaves **1 236/1 236** et 383/383 blocs, igloos **456/456** et 546/546,
+      ruines océaniques 92 %, portails en ruine 94-97 % ; graines de butin des
+      coffres 27/28 au bit près. Pièces tirées de la graine : **100/100 départs**
+      identiques au jeu. **Pas encore visibles en jeu** : le serveur ne branche
+      pas le pipeline de structures (`generated_world.cpp`), et la hauteur des
+      ruines, des portails et du trésor n'est pas réglée. Temples du désert et
+      de la jungle, cabane de sorcière : construits en code par le jeu,
+      refusés par nom. Jigsaw (villages, avant-postes, bastions…) : autre
+      mandat. Voir `docs/provenance/structures.md` §§ 12-19)* :
+      villages ×5 (plains, desert, savanna, taiga, snowy),
       avant-poste pillard, mine abandonnée (+ mesa), forteresse (stronghold),
       pyramide du désert, temple de la jungle, igloo, cabane de sorcière,
       monument marin, ruines océaniques (froides et chaudes), épave (+ échouée),
@@ -747,7 +760,17 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       lancé qui fait éclore un poussin. Restent les autres espèces (lapin,
       équidés, loup, chat), l'apprivoisement, et la persistance des mobs.
       Voir `docs/provenance/elevage.md`)*
-- [ ] **Enchantement** : table, coût XP, lapis, étagères, **39 enchantements**,
+- [~] **Enchantement**
+      *(**2026-09-11**, mesuré contre le vrai serveur : table **512/512 offres**
+      (56 graines, 0-15 étagères, 46 objets) et **57/57 enchantements appliqués**,
+      coût = rang du bouton + 1 niveaux et lapis ; occultation des étagères
+      272/272 cellules ; enclume **93/93** combinaisons et 37/37 durabilités,
+      dégradation 0,140 pour 12 % ; Protection 46/46 ; Solidité 0,530/0,324/0,253 ;
+      Raccommodage exact ; meule. Trois erreurs de documentation relevées, dont
+      l'archive du protocole qui masque à tort la propriété 3 de la table. Au
+      passage : `Set Creative Slot` gardait enfin le NBT des objets. Manquent
+      Épines, Loyauté, Canalisation, Semelles givrantes, pêche et Lien éternel,
+      faute de système hôte. Voir `docs/provenance/enchantement.md`)* : table, coût XP, lapis, étagères, **39 enchantements**,
       enclume (combinaison, réparation, renommage, coûts, « trop cher »), meule,
       mending, livres enchantés
 - [ ] **Alchimie** : support de brassage, blaze powder, verrue du Nether, tous
