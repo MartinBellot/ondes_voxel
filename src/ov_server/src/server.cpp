@@ -8589,6 +8589,30 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 }
 
                 for (auto& [key, player] : players) {
+                    // One challenge in flight at a time, as vanilla. The
+                    // version before this sent a fresh id every ten seconds
+                    // whether or not the last had been answered, and the
+                    // reply handler drops a connection whose id is not the
+                    // current one: any client more than ten seconds behind —
+                    // a loaded machine, a burst after a death — was cut off
+                    // for answering correctly, while a client that never
+                    // answered at all was never cut off. The protocol's rule
+                    // (763): no answer for thirty seconds is a timeout.
+                    if (player.awaiting_keep_alive) {  // ── keep-alive ──
+                        if (now_ms - player.last_keep_alive_sent_ms >= 30000 &&
+                            player.connection) {
+                            OV_LOG_WARN("{} did not answer a keep-alive in 30 s — timed out",
+                                        player.name);
+                            if (const auto framed = net::encode_packet(
+                                    net::clientbound::kDisconnect,
+                                    net::encode_component_packet(
+                                        R"({"translate":"disconnect.timeout"})"))) {
+                                player.connection->send(*framed);
+                            }
+                            player.connection->close();
+                        }
+                        continue;
+                    }
                     if (now_ms - player.last_keep_alive_sent_ms < 10000) {
                         continue;
                     }
