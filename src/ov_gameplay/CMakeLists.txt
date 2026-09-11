@@ -33,6 +33,7 @@ ov_add_library(ov_gameplay
         src/nether_mobs.cpp  # ── nether-2 ──
         src/mob_attack.cpp  # ── mobs-3 ──
         src/breeding.cpp
+        src/tame.cpp  # ── tame ──
         src/pathfinding.cpp
         src/goals.cpp
         src/spawning.cpp
