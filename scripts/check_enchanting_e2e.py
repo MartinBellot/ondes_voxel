@@ -486,7 +486,8 @@ def main() -> int:
             root = read_nbt(saved.read_bytes())[1]
             seed = root.get("XpSeed", ("int", None))[1]
             if seed is not None:
-                expected = struct.unpack(">h", struct.pack(">H", (seed & -16) & 0xFFFF))[0]
+                # Unmasked: the seed's low 16 bits, as the real server sends them.
+                expected = struct.unpack(">h", struct.pack(">H", seed & 0xFFFF))[0]
                 ok(f"XpSeed sauvé : {seed} ; propriété 3 attendue {expected}")
         shutil.rmtree(WORLD, ignore_errors=True)
 

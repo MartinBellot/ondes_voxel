@@ -18,6 +18,7 @@
 #include <cmath>
 #include <filesystem>
 #include <map>
+#include <span>
 #include <string>
 
 using namespace ov;
@@ -308,6 +309,27 @@ TEST_CASE("enchantments survive an NBT round trip", "[enchanting]") {
 
 // ── Parity with the real server ─────────────────────────────────────────────
 
+namespace {
+
+[[nodiscard]] std::string show(std::span<const i32> values) {
+    std::string out = "[";
+    for (usize i = 0; i < values.size(); ++i) {
+        out += (i ? "," : "") + std::to_string(values[i]);
+    }
+    return out + "]";
+}
+
+[[nodiscard]] std::string show(const EnchantmentList& list) {
+    std::string out = "{";
+    for (const EnchantmentLevel& e : list) {
+        out += std::string{enchantment_info(e.enchantment).name.substr(10)} + " " +
+               std::to_string(e.level) + ";";
+    }
+    return out + "}";
+}
+
+}  // namespace
+
 TEST_CASE("every table offer the real server made", "[enchanting][parity]") {
     const auto path = measured_file();
     if (!std::filesystem::exists(path)) {
@@ -317,32 +339,49 @@ TEST_CASE("every table offer the real server made", "[enchanting][parity]") {
     simdjson::dom::parser  parser;
     simdjson::dom::element document;
     REQUIRE(parser.load(path.string()).get(document) == simdjson::SUCCESS);
-    simdjson::dom::object table;
-    if (document["table"].get(table) != simdjson::SUCCESS ||
-        table["offers"].error() != simdjson::SUCCESS) {
+    simdjson::dom::array offers_json;
+    if (document["table"]["offers"].get(offers_json) != simdjson::SUCCESS) {
         WARN("enchanting.json has no table campaign");
         return;
     }
-    usize offers = 0;
-    usize same   = 0;
-    for (simdjson::dom::element offer : table["offers"].get_array()) {
-        const auto      seed    = static_cast<i32>(int64_t(offer["seed"]));
-        const auto      shelves = static_cast<i32>(int64_t(offer["shelves"]));
-        std::string     item{"minecraft:"};
-        item += std::string_view(offer["item"]);
+    usize       offers = 0;
+    usize       same   = 0;
+    usize       shown  = 0;
+    std::string differing;
+    for (simdjson::dom::element offer : offers_json) {
+        int64_t              seed64    = 0;
+        int64_t              shelves64 = 0;
+        std::string_view     item_name;
+        simdjson::dom::array props_json;
+        if (offer["seed"].get(seed64) != simdjson::SUCCESS ||
+            offer["shelves"].get(shelves64) != simdjson::SUCCESS ||
+            offer["item"].get(item_name) != simdjson::SUCCESS ||
+            offer["props"].get(props_json) != simdjson::SUCCESS) {
+            continue;
+        }
+        const auto  seed    = static_cast<i32>(seed64);
+        const auto  shelves = static_cast<i32>(shelves64);
+        std::string item{"minecraft:"};
+        item += item_name;
         std::array<i32, 10> props{};
         usize               k = 0;
-        for (simdjson::dom::element v : offer["props"].get_array()) {
-            props[k++] = static_cast<i32>(int64_t(v));
+        for (simdjson::dom::element v : props_json) {
+            int64_t value = 0;
+            if (k < props.size() && v.get(value) == simdjson::SUCCESS) {
+                props[k] = static_cast<i32>(value);
+            }
+            ++k;
         }
         TableOffers mine{};
         if (table_accepts(item, 1, false)) {
             mine = table_offers(seed, shelves, item);
         }
+        // Property 3 is the seed itself, unmasked; like every Container
+        // Property it travels as a short, so its low 16 bits are compared.
         const std::array<i32, 10> ours{mine.costs[0],
                                        mine.costs[1],
                                        mine.costs[2],
-                                       props[3],
+                                       static_cast<i16>(table_seed_property(seed)),
                                        mine.clue_enchantment[0],
                                        mine.clue_enchantment[1],
                                        mine.clue_enchantment[2],
@@ -350,16 +389,15 @@ TEST_CASE("every table offer the real server made", "[enchanting][parity]") {
                                        mine.clue_level[1],
                                        mine.clue_level[2]};
         ++offers;
-        // Property 3 is the seed with its low four bits cleared, and — like
-        // every Container Property — travels as a short: bits 4..15 survive.
-        const bool seed_ok = props[3] == static_cast<i16>(table_seed_property(seed));
-        if (ours == props && seed_ok) {
+        if (ours == props) {
             ++same;
-        } else {
-            UNSCOPED_INFO("seed " << seed << " shelves " << shelves << " " << item);
+        } else if (shown++ < 8) {
+            differing += "\n  seed " + std::to_string(seed) + " shelves " +
+                         std::to_string(shelves) + " " + item + "\n    vanilla " + show(props) +
+                         "\n    ours    " + show(ours);
         }
     }
-    INFO(same << " / " << offers << " offers identical");
+    INFO(same << " / " << offers << " offers identical; first differences:" << differing);
     REQUIRE(offers > 0);
     CHECK(same == offers);
 }
@@ -378,46 +416,75 @@ TEST_CASE("every enchantment a table button applied", "[enchanting][parity]") {
         WARN("enchanting.json has no table campaign");
         return;
     }
-    usize applied = 0;
-    usize same    = 0;
+    usize       applied = 0;
+    usize       same    = 0;
+    usize       charged = 0;
+    usize       shown   = 0;
+    std::string differing;
     for (simdjson::dom::element record : enchants) {
-        int64_t button = 0;
-        if (record["button"].get(button) != simdjson::SUCCESS) {
+        int64_t              button = 0;
+        int64_t              seed64 = 0;
+        std::string_view     item_name;
+        simdjson::dom::array props_json;
+        if (record["button"].get(button) != simdjson::SUCCESS ||
+            record["seed"].get(seed64) != simdjson::SUCCESS ||
+            record["item"].get(item_name) != simdjson::SUCCESS ||
+            record["props"].get(props_json) != simdjson::SUCCESS) {
             continue;
         }
-        const auto  seed = static_cast<i32>(int64_t(record["seed"]));
+        int64_t cost64 = 0;
+        if (props_json.at(static_cast<usize>(button)).get(cost64) != simdjson::SUCCESS) {
+            continue;
+        }
+        const auto  seed = static_cast<i32>(seed64);
         std::string item{"minecraft:"};
-        item += std::string_view(record["item"]);
-        const auto cost = static_cast<i32>(int64_t(record["props"].at(static_cast<usize>(button))));
+        item += item_name;
         const EnchantmentList mine =
-            table_enchantments(seed, static_cast<i32>(button), cost, item);
+            table_enchantments(seed, static_cast<i32>(button), static_cast<i32>(cost64), item);
 
-        EnchantmentList theirs;
+        EnchantmentList       theirs;
         simdjson::dom::object tag;
         if (record["result"]["tag"].get(tag) == simdjson::SUCCESS) {
             simdjson::dom::array list;
-            if (tag["Enchantments"].get(list) != simdjson::SUCCESS) {
-                (void)tag["StoredEnchantments"].get(list);
+            if (tag["Enchantments"].get(list) != simdjson::SUCCESS &&
+                tag["StoredEnchantments"].get(list) != simdjson::SUCCESS) {
+                continue;
             }
             for (simdjson::dom::element e : list) {
-                const auto id = enchantment_from_name(std::string_view(e["id"]));
+                std::string_view id_name;
+                int64_t          lvl = 0;
+                if (e["id"].get(id_name) != simdjson::SUCCESS ||
+                    e["lvl"].get(lvl) != simdjson::SUCCESS) {
+                    continue;
+                }
+                const auto id = enchantment_from_name(id_name);
                 REQUIRE(id.has_value());
-                theirs.push({*id, static_cast<i32>(int64_t(e["lvl"]))});
+                theirs.push({*id, static_cast<i32>(lvl)});
             }
         }
         ++applied;
         // Levels and lapis: the button's index plus one, not the cost shown.
-        const auto levels = int64_t(record["levels_before"]) - int64_t(record["levels_after"]);
-        CHECK(levels == button + 1);
-        CHECK(int64_t(record["lapis_left"]) == 64 - (button + 1));
+        int64_t before = 0;
+        int64_t after  = 0;
+        int64_t lapis  = 0;
+        if (record["levels_before"].get(before) == simdjson::SUCCESS &&
+            record["levels_after"].get(after) == simdjson::SUCCESS &&
+            record["lapis_left"].get(lapis) == simdjson::SUCCESS &&
+            before - after == button + 1 && lapis == 64 - (button + 1)) {
+            ++charged;
+        }
         if (mine == theirs) {
             ++same;
-        } else {
-            UNSCOPED_INFO("seed " << seed << " slot " << button << " " << item);
+        } else if (shown++ < 8) {
+            differing += "\n  seed " + std::to_string(seed) + " slot " + std::to_string(button) +
+                         " cost " + std::to_string(cost64) + " " + item + "\n    vanilla " +
+                         show(theirs) + "\n    ours    " + show(mine);
         }
     }
-    INFO(same << " / " << applied << " enchantments identical");
+    INFO(same << " / " << applied << " enchantments identical, " << charged << " / " << applied
+              << " charged index+1 levels and lapis; first differences:" << differing);
     REQUIRE(applied > 0);
+    CHECK(charged == applied);
     CHECK(same == applied);
 }
 

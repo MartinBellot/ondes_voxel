@@ -62,8 +62,9 @@ affiché. La graine suivante vient du générateur propre au joueur.
 
 `XpSeed` est porté par `PlayerRecord` (lu, écrit) : un joueur neuf a 0, comme chez vanilla.
 
-La propriété 3 est la graine `& 0xFFFFFFF0` — et, comme toute *Container Property*, elle voyage
-en **short** : seuls les bits 4 à 15 arrivent. Le test compare `(i16)(seed & -16)`.
+La propriété 3 est la graine **sans masque** — l'archive du protocole dit `& 0xFFFFFFF0`, le vrai
+serveur ne le fait pas (§ 5, piège n° 5) — et, comme toute *Container Property*, elle voyage en
+**short** : ce sont ses 16 bits bas qui arrivent. Le test compare `(i16)seed`.
 
 ### Les étagères
 
@@ -105,6 +106,27 @@ Résistance et avant les cœurs jaunes : `montant × (1 − min(EPF, 20)/25)`.
 `lockf /tmp/ov-vanilla.lock python3 scripts/measure_enchanting.py` contre
 `tools/vanilla/server.jar` (SHA-1 `84194a2f286ef7c14ed7ce0090dba59902951553`), puis
 `python3 scripts/check_enchanting.py` pour les chiffres et la table plate du test d'enclume.
+
+### La table — **512 / 512 offres identiques, 57 / 57 enchantements identiques**
+
+64 tours sur le vrai serveur ; à chaque tour, `XpSeed` lu par `/data get entity`, un nombre
+d'étagères (0 à 15, les 16 valeurs), et huit objets posés l'un après l'autre — **512 offres**,
+**56 graines**, **46 objets** (épées, outils, armures de chaque matériau, livre, arc, arbalète,
+trident, canne, cisailles, bouclier, élytres, et des objets que la table refuse : bâton, boussole,
+citrouille). 390 offres ont des coûts non nuls.
+
+Rejouées par `test_ov_gameplay [enchanting][parity]` : **les dix propriétés identiques pour les
+512** — les trois coûts, la graine, les trois indices d'enchantement et leurs trois niveaux. Même
+graine, mêmes étagères, même objet → mêmes offres, tirage pour tirage.
+
+À 57 de ces tours, un bouton a été pressé (20 en haut, 20 au milieu, 17 en bas) et la pile
+enchantée relue : **57 / 57 listes d'enchantements identiques** à celles que tire notre
+`table_enchantments` — dont 22 portent plusieurs enchantements, donc la boucle `(niveau+1)/50`, le
+filtre des incompatibilités et la division du niveau sont exercés. **57 / 57** ont prélevé
+exactement *l'indice du bouton plus un* en niveaux et en lapis, pas le coût affiché.
+
+Avant la correction de la propriété 3 (§ 5, piège n° 5) : 24 / 512 — alors que coûts et indices
+étaient déjà justes partout.
 
 ### La table sur notre propre serveur, contre le vrai
 
@@ -318,8 +340,12 @@ destination sont générés hors du thread de tick ; la commande suivante arrive
 **4. `gamemode creative` sur un joueur déjà créatif ne répond rien.** Une sonde qui attend la
 phrase attend pour rien — le banc est créatif par défaut.
 
-**5. La propriété 3 de la table est un short.** `seed & 0xFFFFFFF0` est ce que dit l'archive du
-protocole ; sur le fil, seuls les bits 4 à 15 arrivent, comme pour toute *Container Property*.
+**5. La propriété 3 de la table n'est pas masquée — l'archive du protocole se trompe.** L'archive
+écrit que la graine envoyée est `seed & 0xFFFFFFF0`. Mesuré sur 512 offres : le vrai serveur envoie
+**les 16 bits bas de la graine, tels quels** — −11468 pour la graine 1338299188 (`0x4FC4D334`), là
+où le masque donnerait −11472. Avec le masque, **24 offres sur 512** passaient (celles où la graine
+finissait par zéro, et les objets refusés) alors que les coûts et les indices étaient déjà justes
+partout ; sans lui, voir le § 3. Ce masque, s'il existe, est appliqué côté client.
 
 ---
 

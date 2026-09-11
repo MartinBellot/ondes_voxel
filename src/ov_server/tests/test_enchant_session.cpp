@@ -269,7 +269,7 @@ TEST_CASE("the table window: offers, the button, the seed", "[enchanting][window
         }
     }
     REQUIRE(seed_property.has_value());
-    CHECK(*seed_property == static_cast<i16>(fake.seed & -16));
+    CHECK(*seed_property == static_cast<i16>(fake.seed));  // unmasked: measured
     CHECK(enchant_stack_of(context, window->slots[0]).enchantments.size() >= 1);
     CHECK(window->offers.costs == std::array<i32, 3>{0, 0, 0});  // enchanted: no more offers
     (void)cost;

@@ -283,8 +283,11 @@ struct TableOffers {
 [[nodiscard]] EnchantmentList table_enchantments(i32 xp_seed, i32 slot, i32 cost,
                                                  std::string_view item);
 
-/// Property 3: the seed as the client is allowed to see it.
-[[nodiscard]] constexpr i32 table_seed_property(i32 xp_seed) noexcept { return xp_seed & -16; }
+/// Property 3: the seed as it goes on the wire — **unmasked**; the short the
+/// property travels as keeps its low 16 bits. Measured on 512 offers: vanilla
+/// sent -11468 for seed 1338299188 (0x4FC4D334), where the protocol archive's
+/// "seed & 0xFFFFFFF0" would give -11472.
+[[nodiscard]] constexpr i32 table_seed_property(i32 xp_seed) noexcept { return xp_seed; }
 
 // ── The anvil ───────────────────────────────────────────────────────────────
 
