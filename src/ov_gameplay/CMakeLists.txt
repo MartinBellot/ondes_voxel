@@ -32,6 +32,7 @@ ov_add_library(ov_gameplay
         src/mob_species.cpp
         src/nether_mobs.cpp  # ── nether-2 ──
         src/mob_attack.cpp  # ── mobs-3 ──
+        src/mob_body.cpp  # ── mobs-4 ──
         src/breeding.cpp
         src/pathfinding.cpp
         src/goals.cpp
