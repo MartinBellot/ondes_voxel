@@ -26,6 +26,7 @@
 #include "ov/protocol/chat.hpp"
 #include "ov/protocol/chat_types.hpp"
 #include "ov/protocol/blast.hpp"
+#include "ov/protocol/breaking.hpp"  // ── breaking ──
 #include "ov/protocol/client_play.hpp"
 #include "ov/protocol/sound.hpp"
 #include "ov/registry/block_states.hpp"
@@ -270,6 +271,25 @@ struct ClientEvents {
     std::vector<net::StopSound> stop_sounds;
     /// World Event (0x25). 2001 is a block someone else broke, with its state.
     std::vector<net::WorldEvent> world_events;
+
+    // ── breaking ──
+    /// Set Block Destroy Stage (0x07): another player's cracks, in arrival
+    /// order. The server never sends a player its own.
+    std::vector<net::BlockDestroyStage> destroy_stages;
+    /// Login (play)'s entity id — this player's own, which the Entity Effect
+    /// packets below are filtered by.
+    std::optional<i32> own_entity_id;
+    /// Entity Effect (0x6C) and Remove Entity Effect (0x3F) for this player:
+    /// Haste, Conduit Power and Mining Fatigue change how fast it digs, and the
+    /// client counts its own cracks.
+    struct OwnEffect {
+        /// The 1-based `minecraft:mob_effect` id.
+        i32 effect_id{0};
+        /// The amplifier, or -1 when the effect was removed.
+        i32 amplifier{-1};
+    };
+    std::vector<OwnEffect> own_effects;
+    // ── end breaking ──
     /// Explosion (0x1D).
     std::vector<net::Explosion> explosions;
     /// Take Item Entity (0x67).
@@ -299,7 +319,8 @@ struct ClientEvents {
                !commands && suggestions.empty() && sounds.empty() &&
                entity_sounds.empty() && stop_sounds.empty() && world_events.empty() &&
                explosions.empty() && pickups.empty() && !rain_level && !thunder_level &&
-               !death_message && !respawned && !hardcore;  // ── screens ──
+               !death_message && !respawned && !hardcore &&  // ── screens ──
+               destroy_stages.empty() && !own_entity_id && own_effects.empty();  // ── breaking ──
     }
     void clear();
 };
@@ -328,8 +349,13 @@ public:
     void send_position(const PlayerInput& input);
 
     /// Start, cancel or finish breaking the block at a position. The status
-    /// values are the protocol's own.
+    /// values are the protocol's own. ── breaking ── Each carries the next
+    /// sequence number, which the server echoes in Acknowledge Block Change.
     void send_dig(i32 x, i32 y, i32 z, i32 status, i32 face);
+
+    /// Swing Arm. Sent on every tick the arm swings, as vanilla's own client
+    /// does; the server turns it into an Entity Animation for the others.
+    void send_swing(bool off_hand = false);  // ── breaking ──
 
     /// Place whatever is held against a face of a block.
     void send_place(i32 x, i32 y, i32 z, i32 face, f32 cursor_x, f32 cursor_y, f32 cursor_z);

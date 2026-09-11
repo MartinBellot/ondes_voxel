@@ -12,6 +12,7 @@
 
 #define OV_LOG_CATEGORY "voxel"
 
+#include "breaking.hpp"  // ── breaking ──
 #include "entities.hpp"
 #include "interface.hpp"
 #include "menus.hpp"  // ── screens ──
@@ -119,6 +120,14 @@ struct Options {
     /// whether the world actually changed. The end-to-end check of
     /// client -> server -> client that no screenshot can make.
     bool dig{false};
+    // ── breaking ──
+    /// Hold a crack stage (0..9) on the aimed block, for a screenshot.
+    i32 crack_stage{-1};
+    /// Hold the attack button from frame `mine_at` for `mine_ticks` client
+    /// ticks, aimed wherever --stand-at points: the timed dig, end to end.
+    u32 mine_at{0};
+    u32 mine_ticks{0};
+    // ── end breaking ──
     /// What to hold, by registry name. Creative only: the client asks the
     /// server to put it in the hotbar. Without it the hand is empty and every
     /// placement is silently a no-op — which looks exactly like a broken
@@ -364,6 +373,15 @@ struct Options {
             options.username = value("--username=");
         } else if (argument == "--walk") {
             options.walk = true;
+        } else if (argument.starts_with("--crack=")) {  // ── breaking ──
+            options.crack_stage = std::atoi(value("--crack=").c_str());
+        } else if (argument.starts_with("--mine=")) {  // ── breaking ── FRAME,TICKS
+            const std::string mine  = value("--mine=");
+            const auto        comma = mine.find(',');
+            options.mine_at         = static_cast<u32>(std::atoi(mine.substr(0, comma).c_str()));
+            options.mine_ticks      = comma == std::string::npos
+                                          ? 0U
+                                          : static_cast<u32>(std::atoi(mine.substr(comma + 1).c_str()));
         } else if (argument == "--dig") {
             options.dig = true;
         } else if (argument.starts_with("--hold=")) {
@@ -1327,6 +1345,40 @@ int main(int argc, char** argv) {
     const u32 item_tint =
         blocks->biome_count() > 0 ? biome_colours->grass(0) : 0x91BD59U;
 
+    // ── breaking ── the timed dig, the cracks, the particles (breaking.hpp).
+    // The cracks are the ten destroy-stage textures, each its own image,
+    // multiplied over the blocks by a pass of their own.
+    demo::Breaking breaking(*blocks, registries, models, *atlas, item_tint, 0x6F76627265616BLL);
+    auto crumbling_renderer = client::EntityRenderer::create(
+        device, device.swapchain_format(), rhi::Format::Depth32Float, client::EntityPass::Crumbling);
+    std::array<std::optional<client::EntityTexture>, 10> crack_textures{};
+    if (!crumbling_renderer) {
+        OV_LOG_WARN("crumbling renderer: {} — no cracks will be drawn",
+                    rhi::to_string(crumbling_renderer.error()));
+    } else {
+        for (usize stage = 0; stage < crack_textures.size(); ++stage) {
+            const std::string name     = fmt::format("minecraft:block/destroy_stage_{}", stage);
+            const auto        location = ResourceLocation::parse(name);
+            if (!location) {
+                continue;
+            }
+            auto image = render::load_texture(source, *location);
+            if (!image) {
+                OV_LOG_WARN("crack texture {} missing", name);
+                continue;
+            }
+            if (auto uploaded = (*crumbling_renderer)->add_texture(*image, name)) {
+                crack_textures[stage] = *uploaded;
+            }
+        }
+    }
+    std::array<std::vector<render::EntityVertex>, 10> crack_vertices;
+    std::vector<render::EntityVertex>                 particle_vertices;
+    std::vector<std::array<Vec3d, 2>>                 outline_edges;
+    bool                                              attack_latch    = false;
+    u32                                               mine_ticks_done = 0;
+    // ── end breaking ──
+
     auto interface = demo::Interface::create(device, device.swapchain_format(), source,
                                              item_models, *atlas_image, atlas->width(),
                                              atlas->height(), registries, item_tint,
@@ -2076,6 +2128,7 @@ int main(int argc, char** argv) {
             // the first frame's decision on a default rather than on what the
             // server said.
             (*interface)->apply(events);
+            breaking.on_events(events);  // ── breaking ── others' cracks and bursts, own effects
             // ── screens ── death is Combat Death's arrival; Respawn ends it
             if (events.hardcore) {
                 hardcore = *events.hardcore;
@@ -2383,6 +2436,38 @@ int main(int argc, char** argv) {
                     client->send_abilities(false);
                 }
 
+                {  // ── breaking ── one tick of the dig, at the server's 20 Hz
+                    // The scripted hold begins with a press on the first tick
+                    // a block is aimed at, as a player's would: pressing at
+                    // nothing and finding the block while held starts the dig
+                    // a tick later and would measure the wrong count.
+                    const bool scripted = options.mine_ticks > 0 && rendered >= options.mine_at &&
+                                          mine_ticks_done < options.mine_ticks &&
+                                          (mine_ticks_done > 0 || aimed.has_value());
+                    demo::BreakingTick dig_tick;
+                    dig_tick.pressed = attack_latch || (scripted && mine_ticks_done == 0);
+                    dig_tick.held    = scripted || (input.attack_held && !ui_took_input &&
+                                                 !(*interface)->screen_open());
+                    dig_tick.aimed     = aimed;
+                    dig_tick.creative  = (*interface)->hud().creative;
+                    dig_tick.on_ground = player.on_ground;
+                    const f64  eye_y   = player.position.y + 1.62;
+                    const auto at_eye  = session->fluid_at(static_cast<i32>(std::floor(player.position.x)),
+                                                          static_cast<i32>(std::floor(eye_y)),
+                                                          static_cast<i32>(std::floor(player.position.z)));
+                    dig_tick.head_in_water = at_eye.fluid == gameplay::Fluid::Water &&
+                                             eye_y < std::floor(eye_y) + at_eye.height;
+                    dig_tick.inventory = &(*interface)->inventory();
+                    dig_tick.selected  = (*interface)->selected();
+                    breaking.tick(dig_tick,
+                                  [&](BlockPos p) { return session->block_at(p.x, p.y, p.z); },
+                                  *client, sound_director.get(), &world_view);
+                    attack_latch = false;
+                    if (scripted) {
+                        ++mine_ticks_done;
+                    }
+                }
+
                 netclient::PlayerInput report;
                 report.position  = player.position;
                 report.yaw       = camera.yaw_degrees;
@@ -2585,6 +2670,9 @@ int main(int argc, char** argv) {
                     return session->is_interaction_target(block.x, block.y, block.z);
                 });
             }
+            if (options.crack_stage >= 0 && aimed) {  // ── breaking ── a posed crack
+                breaking.force_stage(aimed->block, options.crack_stage);
+            }
 
             // Breaking and placing use exactly what the outline showed — and
             // only when no screen swallowed the click.
@@ -2593,16 +2681,10 @@ int main(int argc, char** argv) {
                 if (hit) {
                     const i32 face = static_cast<i32>(hit->face);
                     if (input.attack_pressed) {
-                        // Start and finish in the same tick: creative-style
-                        // instant breaking. The timed dig belongs with the
-                        // block-breaking progress the server already computes.
-                        const auto broken =  // ── sound ──
-                            session->block_at(hit->block.x, hit->block.y, hit->block.z);
-                        client->send_dig(hit->block.x, hit->block.y, hit->block.z, 0, face);
-                        client->send_dig(hit->block.x, hit->block.y, hit->block.z, 2, face);
-                        if (sound_director) {  // ── sound ──
-                            sound_director->broke(broken, hit->block);
-                        }
+                        // ── breaking ── The press is kept for the next client
+                        // tick, where Breaking::tick starts the timed dig, sends
+                        // its Player Actions and plays its sounds.
+                        attack_latch = true;
                     } else {
                         client->send_place(hit->block.x, hit->block.y, hit->block.z, face, 0.5F,
                                            0.5F, 0.5F);
@@ -2833,6 +2915,22 @@ int main(int argc, char** argv) {
                     }
                 }
             }
+            if (online && session) {  // ── breaking ── the particles, off the block atlas
+                const Vec3f bill_right = camera.right();
+                const Vec3f bill_ahead = camera.forward();
+                const Vec3f bill_up{bill_right.y * bill_ahead.z - bill_right.z * bill_ahead.y,
+                                    bill_right.z * bill_ahead.x - bill_right.x * bill_ahead.z,
+                                    bill_right.x * bill_ahead.y - bill_right.y * bill_ahead.x};
+                particle_vertices.clear();
+                breaking.build_particles(
+                    bill_right, bill_up,
+                    static_cast<f32>(std::clamp(tick_accumulator * 20.0, 0.0, 1.0)),
+                    [&](Vec3f at) { return entity_light_at(*session, lightmap, at); },
+                    particle_vertices);
+                if (!particle_vertices.empty()) {
+                    (void)(*entity_renderer)->submit(atlas_entity_texture, particle_vertices);
+                }
+            }
             (*entity_renderer)->draw(cmd, view_projection, camera.position,
                                      client::EntitySky{sky.fog_colour, sky.fog_start,
                                                         sky.fog_end});
@@ -2840,6 +2938,20 @@ int main(int argc, char** argv) {
                 std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() -
                                                        entity_record_start)
                     .count());
+        }
+
+        // ── breaking ── The cracks, over everything opaque they lie on.
+        if (online && session && crumbling_renderer) {
+            breaking.build_cracks([&](BlockPos p) { return session->block_at(p.x, p.y, p.z); },
+                                  crack_vertices);
+            (*crumbling_renderer)->begin();
+            for (usize stage = 0; stage < crack_vertices.size(); ++stage) {
+                if (crack_textures[stage] && !crack_vertices[stage].empty()) {
+                    (void)(*crumbling_renderer)->submit(*crack_textures[stage], crack_vertices[stage]);
+                }
+            }
+            (*crumbling_renderer)->draw(cmd, view_projection, camera.position,
+                                        client::EntitySky{sky.fog_colour, sky.fog_start, sky.fog_end});
         }
 
         // ── weather ── Rain and snow after everything opaque, in the same pass.
@@ -2899,11 +3011,21 @@ int main(int argc, char** argv) {
         // The two lines the game is played with. After the terrain, so the
         // outline blends over the face it surrounds rather than under it.
         if (aimed) {
-            (*overlay)->draw_block_outline(cmd, view_projection,
-                                           Vec3d{static_cast<f64>(camera.position.x),
-                                                 static_cast<f64>(camera.position.y),
-                                                 static_cast<f64>(camera.position.z)},
-                                           aimed->block.x, aimed->block.y, aimed->block.z);
+            outline_edges.clear();  // ── breaking ── along the block's shape
+            if (online && session) {
+                breaking.outline(aimed->block,
+                                 session->block_at(aimed->block.x, aimed->block.y, aimed->block.z),
+                                 outline_edges);
+            }
+            if (!outline_edges.empty()) {
+                (*overlay)->draw_shape_outline(cmd, view_projection, outline_edges);
+            } else {
+                (*overlay)->draw_block_outline(cmd, view_projection,
+                                               Vec3d{static_cast<f64>(camera.position.x),
+                                                     static_cast<f64>(camera.position.y),
+                                                     static_cast<f64>(camera.position.z)},
+                                               aimed->block.x, aimed->block.y, aimed->block.z);
+            }
         }
         // The line crosshair only when the HUD is off: the HUD draws vanilla's
         // own crosshair sprite, and two crosshairs is one too many.
@@ -3196,6 +3318,14 @@ int main(int argc, char** argv) {
             }
         }
         // ── end chat ──
+        {  // ── breaking ──
+            const auto& c = breaking.counters();
+            fmt::print("breaking: {} starts, {} aborts, {} finishes, {} broken, {} swings, {} hits, "
+                       "{} stages from others, {} broken by others, {} particles live, "
+                       "{} without a sprite\n",
+                       c.starts, c.aborts, c.finishes, c.broken, c.swings, c.hits, c.others_stages,
+                       c.others_broken, breaking.particles().count(), c.no_sprite);
+        }
         if (dig_sent) {
             const auto after = session->block_at(dig_target.x, dig_target.y, dig_target.z);
             fmt::print("dug ({}, {}, {}): {} -> {}  {}\n", dig_target.x, dig_target.y,
