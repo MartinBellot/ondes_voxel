@@ -159,6 +159,16 @@ public:
     /// cannot be removed.
     void remove_block_entity(usize x, i32 y, usize z);
 
+    // ── structures ──
+    /// The chunk's `structures` compound as the format stores it: `starts`,
+    /// the structures whose start chunk this is, and `References`, the start
+    /// chunks of every structure crossing it. Opaque here — the world layer
+    /// neither builds nor reads structures — and carried whole, so a chunk
+    /// read from a vanilla save keeps its starts when this server writes it
+    /// back. An empty tag means "none recorded".
+    [[nodiscard]] const nbt::Tag& structures() const noexcept { return structures_; }
+    void set_structures(nbt::Tag structures) { structures_ = std::move(structures); }
+
 private:
     [[nodiscard]] usize section_index_for_y(i32 y) const noexcept;
     [[nodiscard]] i32   scan_surface_down(usize x, usize z, i32 from_y) const noexcept;
@@ -191,6 +201,8 @@ private:
     /// Unordered: there are a handful per chunk, and keeping them sorted would
     /// cost more than the linear scan it saves.
     std::vector<BlockEntity> block_entities_;
+
+    nbt::Tag structures_;  // ── structures ──
 };
 
 }  // namespace ov::world

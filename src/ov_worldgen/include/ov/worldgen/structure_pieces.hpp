@@ -88,6 +88,11 @@ struct StructurePiece {
     /// first time it is placed; a piece read from a finished chunk of the
     /// game's already sits where the game put it.
     bool height_settled{false};
+    /// ── structures ── The template origin as generated, before the height
+    /// settled. The igloo's stored `TPY` is this one — the game moves the
+    /// igloo's box to the terrain and leaves its template position where the
+    /// start put it (read on the reference worlds: bottom `TPY` 54, box at 35).
+    BlockPos generated_origin;
 };
 
 struct StructureStart {

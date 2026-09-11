@@ -709,9 +709,7 @@ référence ; la mesure du coût de l'étage seul n'est pas faite.
 * **Les entités** des gabarits (villageois et zombie de l'igloo, noyés des ruines) ne sont pas
   créées : il n'y a pas d'entités dans le pipeline de génération.
 * **L'archéologie** (`capped`) et la **chute du gravier** (§ 16).
-* **Le serveur** n'attache pas encore la `StructureStage` : `generated_world.cpp` n'attache même pas
-  le placeur (`set_structures`) aujourd'hui ; le brancher demande le chemin du jar au démarrage, et
-  c'est un bloc de plus dans un fichier partagé, laissé à l'intégration.
+* ~~**Le serveur** n'attache pas encore la `StructureStage`~~ — fait le 2026-09-11, § 20.
 
 ## 19. Rejouer
 
@@ -723,6 +721,12 @@ cmake --build --preset macos-debug --target ov_structblocks test_ov_worldgen
 ./build/macos-debug/bin/ov_structblocks --level=b --world=run/reference-1234567890/world --seed=1234567890
 ./build/macos-debug/bin/ov_structblocks --level=c --world=run/reference-1234567890/world
 ./build/macos-debug/bin/test_ov_worldgen "[template],[pieces],[stage]"
+# § 20 — le chemin du serveur
+./build/macos-debug/bin/test_ov_worldgen "[nbt]"
+./build/macos-debug/bin/ov_gendet --seed=1234567890 --export=.scratch/ow/region --chunks=8,4,10,6
+OV_STRUCTURES=0 ./build/macos-debug/bin/ov_gendet --seed=1234567890 --export=.scratch/witness/region --chunks=8,4,10,6
+python3 scripts/measure_structures.py .scratch/ow/region run/reference-1234567890/world/region \
+    --witness=.scratch/witness/region
 ```
 
 Sources de cette partie : les gabarits et les JSON du jar serveur 1.20.1 (lus, jamais copiés) ; le
@@ -731,3 +735,147 @@ miroirs, intégrités ; `block_entities` : tables et graines de butin) ; la page
 minecraft.wiki pour les probabilités du vieillissement et des remplacements (15 % d'obsidienne
 pleureuse, 7 % de magma, 30 % d'or) et *Buried Treasure* pour la position (9, 9) et le coffre tourné
 vers l'est. Aucun code tiers, aucun code du jeu.
+
+## 20. Dans le serveur — `ov_dedicated` place ses structures (2026-09-11)
+
+Jusqu'ici tout ce document se mesurait **hors du serveur** : un monde généré par `ov_dedicated`
+(`scripts/lab.sh --seed=…`, ou le solo) ne contenait aucune structure, parce que
+`generated_world.cpp` n'attachait ni le placeur ni l'étage. C'est fait, dans les trois dimensions.
+
+### 20.1 Le branchement
+
+`src/ov_server/src/world_structures.{hpp,cpp}` ; `generated_world.cpp` n'en reçoit que des blocs
+courts marqués `// ── structures ──`.
+
+* **Partagé par dimension, chargé une fois** : les ensembles de structures, les tags de blocs, le
+  placeur (restreint aux biomes que la dimension produit — c'est ce qui garde les fossiles du Nether
+  hors de l'overworld, § 4) et le constructeur (les 98 gabarits lus dans le jar). Rien n'y est écrit
+  après le chargement ; toutes leurs requêtes sont `const`. Le jar est `OV_SERVER_JAR`, sinon
+  `tools/vanilla/server.jar` à côté de la racine des données ; absent, le monde se génère **sans
+  structures et le dit** (erreur au journal) plutôt que de refuser de démarrer.
+* **Un par pile de génération** : l'échantillonneur (il interroge le générateur de sa pile, dont les
+  nœuds de densité ont des caches `mutable` — piège 17) et l'étage (ses départs et ses mises à jour de
+  forme en attente). Aucun verrou.
+* **L'ordre de statut** : les départs sont décidés (`structure_starts`) avant tout bloc, sur le bruit
+  seul ; l'étage pose au statut `features` de chaque chunk, avant sa décoration, la part des pièces
+  qui tombe dans sa colonne — les pièces qui débordent sont posées par chacun des chunks qu'elles
+  traversent, lectures sur le 3 × 3 (§ 14). `structure_references` est calculé à la sortie du chunk
+  (ci-dessous).
+* **Un seul écrivain** : tout cela se passe dans `generate_square`, sur des chunks que personne ne voit
+  encore ; le thread de tick les publie ensuite (async_chunk_source.hpp, invariant 2).
+* **Déterminisme** : l'étage est vidé avec le pipeline au début et à la fin de chaque carré
+  (`StructureStage::clear`), donc les structures d'un carré, comme son terrain, ne dépendent que de la
+  graine et du carré (invariant 3). `ov_gendet` (série contre parallèle) le vérifie — § 20.4.
+
+### 20.2 Ce qui est refusé, par son nom
+
+Les refus portent désormais **le nom de la structure** (`minecraft:village_plains: jigsaw is not
+built here`), et le serveur les écrit une fois par pile au journal (`structures (overworld): not
+placed — …`). Refusés parce que non construits : villages, avant-postes, cités antiques, ruines des
+sentiers, bastions (jigsaw), forteresse, puits de mine, fort, monument, manoir, temples du désert et
+de la jungle, cabane de sorcière, cité de l'End.
+
+**Deux genres que le constructeur sait faire sont refusés aussi dans le serveur**
+(`StructureStage::refuse`), parce que ce qu'il en fait aujourd'hui n'est pas la structure du jeu mais
+une invention à une hauteur de remplacement : les **portails en ruine** (sans leur recherche de
+hauteur, § 15, ils seraient posés à y = 0) et le **trésor enfoui** (sans sa recherche vers le bas, son
+coffre flotterait à y = 90). Les outils de parité, eux, continuent de les poser pour les mesurer.
+
+Placés : igloo, épave (en mer et échouée), ruines océaniques (froides et chaudes — la grande ruine
+sans l'amas de petites, § 13), fossiles du Nether.
+
+### 20.3 `structures.starts` et `References` dans le chunk
+
+Un chunk porte désormais son composé `structures` (`world::Chunk::structures()`), écrit par
+`to_nbt` — toujours les deux listes, vides au besoin, comme vanilla — et **relu tel quel** par
+`from_nbt` : un chunk d'une sauvegarde vanilla que ce serveur réécrit garde les départs et références
+du jeu (avant, il les perdait).
+
+Le format est celui du jeu, lu sur les chunks des mondes de référence (`ov_worldgen/structure_nbt`) :
+départ `{id, ChunkX, ChunkZ, references: 0, Children}` ; pièce `{id, BB (tableau de 6 int), GD 0,
+O 2}` (`O −1` pour le trésor), plus `TPX/TPY/TPZ`, `Template` et `Rot` pour un gabarit —
+`Rotation` et `Mirror` pour le portail. Les booléens sont des **octets** (`isBeached`, `IsLarge`,
+les propriétés du portail), l'intégrité et la mousse des **flottants**. Une seule bizarrerie :
+**l'igloo garde dans `TPY` sa hauteur de génération** (fond 54, boîte à 35), le jeu ne déplaçant que
+sa boîte ; les autres stockent la hauteur réglée. `References` : un tableau de `long` par structure,
+`ChunkPos.asLong` (x dans les 32 bits bas) — `(-7, -10)` → −38 654 705 671, lu dans le monde de
+référence. Une structure est référencée par sa boîte, **élargie de 12 blocs** si elle adapte le
+terrain (`terrain_adaptation` ≠ `none` ; de ce qui est construit, le fossile du Nether — mesuré en
+§ 20.4) ; la recherche porte donc sur `kReach` + 1 chunks, dont les départs sont déjà en cache. Les
+références d'une structure refusée n'existent pas, puisque son départ n'existe pas.
+
+### 20.4 La mesure
+
+`ov_gendet --export=<dir> --dimension=… --chunks=x0,z0,x1,z1` génère par **le chemin du serveur**
+(`GeneratedWorld::generate_square`, étage attaché) et écrit les régions par `world::to_nbt` — ce que
+`ov_dedicated` écrirait, sans joueur. `scripts/measure_structures.py` compare aux régions du jeu :
+départs (présence, puis chaque champ **type compris**), `References` par chunk, et blocs dans les
+boîtes des pièces du jeu, avec en option un **témoin** exporté sous `OV_STRUCTURES=0`.
+
+Premier carré, graine 1234567890, chunks (8..11, 4..7) — l'épave échouée du chunk (9, 5) :
+
+| | |
+|---|---|
+| départs du jeu dans les chunks exportés | 1 — trouvé, **identique champ pour champ, types compris** |
+| `References` | 1 / 1 |
+| blocs dans la boîte de l'épave | 1 252 / 1 296 — **96,605 %** |
+
+**Les huit départs du jeu exportés** (graine 1234567890 : l'épave échouée ci-dessus, trois épaves,
+l'igloo, deux ruines froides et une chaude ; 30 chunks, 29 finis chez le jeu, onze carrés) :
+
+| | |
+|---|---|
+| départs trouvés (même nom, même chunk) | **8 / 8**, aucun de trop |
+| identiques champ pour champ, types compris | **5 / 8** — les quatre épaves et une ruine froide |
+| `References` (chunk, structure) | **20 / 20** |
+
+Les trois départs non identiques ne le sont que par la **hauteur** — ce que § 17 nommait déjà : les
+douze pièces de l'igloo de (3815, 2071) **un bloc trop bas** (y 34 contre 35 : le terrain au bloc
+près, pas la règle — l'igloo de `reference-1234567890` y tombe juste au niveau C) ; la ruine chaude
+de (9, −10) à 53 contre 49 ; la grande ruine froide de (3249, −4250) à 50 contre 31 — et **3 pièces
+contre 18** chez le jeu, l'amas de petites ruines n'étant pas fait (§ 13).
+
+Blocs dans les boîtes des pièces du jeu, et le **témoin** (le même terrain exporté sous
+`OV_STRUCTURES=0`) là où il a été fait :
+
+| structure | nous | témoin sans structures |
+|---|---:|---:|
+| épave échouée | 1 252 / 1 296 — **96,605 %** | 913 / 1 296 — 70,448 % |
+| épaves (3) | 3 204 / 3 357 — **95,442 %** | — |
+| ruine froide | 4 280 / 4 810 — 88,981 % | — |
+| ruine chaude | 453 / 588 — 77,041 % | — |
+| igloo | 581 / 928 — 62,608 % | 422 / 928 — 45,474 % |
+
+L'igloo perd ce qu'il perd par son bloc de hauteur : ses boîtes sont décalées d'un cran sur toute
+leur hauteur.
+
+**Nether** (graine 987654321, chunks 252..259 × 0..7, 64 chunks dont 56 finis chez le jeu) :
+**10 / 10 fossiles** trouvés et **identiques champ pour champ** ; blocs dans leurs boîtes 486 / 628 —
+77,389 % ; `References` **37 / 37** — après la marge d'adaptation du terrain ci-dessous ; 11 / 37
+avant.
+
+**La marge des structures qui adaptent le terrain.** Les références des fossiles du jeu débordaient
+d'un chunk autour de boîtes de quelques blocs. Le fossile est, de ce que nous construisons, le seul à
+déclarer `terrain_adaptation` (`beard_thin`) — villages, avant-postes, cité antique, ruines des
+sentiers et fort aussi. Mesuré sur les **84 départs de fossiles** des chunks du monde de référence
+du Nether qui ont passé `structure_references`, en élargissant la boîte de N blocs et en comparant
+les chunks prédits aux chunks qui listent le départ : N = 8 en manque 133, N = 11 en manque 47,
+**N = 12 n'en manque aucun**, N = 16 non plus mais en prédit 455 de trop. Retenu : 12
+(`kTerrainAdaptationMargin`). Il en reste de trop à N = 12 (247 sur ces 84 départs, dont des chunks
+finis que la boîte du fossile touche elle-même et que le jeu ne liste pas) : **non expliqué** ; dans
+le carré exporté l'accord est complet. Une référence de trop pointe un départ réel ; une
+manquante ferait perdre la structure à qui la cherche.
+
+**Déterminisme, étage attaché** : `ov_gendet --origin=2,1 --side=1 --workers=2` — le carré de
+l'épave échouée, en série et par deux fils : **0 cellule différente sur 1 572 864**.
+
+Tests : `test_ov_worldgen "[nbt]"` — noms et types des champs contre ceux relus dans les mondes de
+référence, `ChunkPos.asLong` sur une position lue, aller-retour `piece_to_nbt` → `piece_from_nbt`
+sur des départs tirés de la graine (igloo, épave échouée, ruine froide, trésor), un chunk qui garde
+ses structures à travers `to_nbt`/`from_nbt` ; `test_ov_server "[structures]"` — un départ posé à
+la main et traversant deux chunks : départ dans le chunk de départ seulement, référence dans chaque
+chunk traversé et nulle part ailleurs ; le trésor enfoui du jeu refusé par le serveur, par son nom.
+
+Coût, build debug : **133,7 s** pour un carré de 4 × 4 chunks (chargement compris) ; l'End,
+49,0 s pour quatre carrés.
+

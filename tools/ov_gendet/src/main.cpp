@@ -18,6 +18,10 @@ struct Options {
     ov::i32               origin_z{0};
     ov::i32               side{1};
     ov::usize             workers{4};
+    // ── structures ── --export mode
+    std::filesystem::path export_dir;
+    std::string           dimension{"overworld"};
+    ov::i32               chunks[4]{0, 0, 0, 0};
 };
 
 void usage() {
@@ -30,7 +34,11 @@ void usage() {
         "  --side=<n>         generation blocks per side (default: 1)\n"
         "  --workers=<n>      threads in the parallel arm (default: 4)\n"
         "\n"
-        "A generation block is 4x4 chunks, so --side=2 compares 64 chunks.\n");
+        "A generation block is 4x4 chunks, so --side=2 compares 64 chunks.\n"
+        "\n"
+        "  --export=<dir>             instead: generate and write region files there\n"
+        "  --dimension=<name>         overworld (default), nether or end\n"
+        "  --chunks=<x0>,<z0>,<x1>,<z1>  the chunks to export, inclusive\n");
 }
 
 }  // namespace
@@ -63,11 +71,38 @@ int main(int argc, char** argv) {
             options.origin_x = static_cast<ov::i32>(std::strtol(value.c_str(), nullptr, 10));
             options.origin_z =
                 static_cast<ov::i32>(std::strtol(value.c_str() + comma + 1, nullptr, 10));
+        } else if (arg.starts_with("--export=")) {
+            options.export_dir = std::string{arg.substr(9)};
+        } else if (arg.starts_with("--dimension=")) {
+            options.dimension = std::string{arg.substr(12)};
+        } else if (arg.starts_with("--chunks=")) {
+            const std::string value{arg.substr(9)};
+            const char*       cursor = value.c_str();
+            for (ov::i32& coordinate : options.chunks) {
+                char* end  = nullptr;
+                coordinate = static_cast<ov::i32>(std::strtol(cursor, &end, 10));
+                cursor     = *end == ',' ? end + 1 : end;
+            }
         } else {
             fmt::print("unknown argument '{}'\n", arg);
             usage();
             return 2;
         }
+    }
+
+    // ── structures ──
+    if (!options.export_dir.empty()) {
+        const auto written = ov::server::export_generated_chunks(
+            options.data, options.seed, options.dimension, options.chunks[0], options.chunks[1],
+            options.chunks[2], options.chunks[3], options.export_dir);
+        if (!written.loaded) {
+            fmt::print("the generator could not be loaded — nothing was written\n");
+            return 1;
+        }
+        fmt::print("seed {}  {}  squares {}  chunks {}  {:.1f} s  -> {}\n", options.seed,
+                   options.dimension, written.squares, written.chunks, written.seconds,
+                   options.export_dir.string());
+        return 0;
     }
 
     const auto report = ov::server::check_generation_determinism(

@@ -120,7 +120,20 @@ struct StructureDefinition {
     /// residual is the anchor rule and nothing else. See
     /// docs/provenance/structures.md § 5.
     bool anchor_at_corner{false};
+
+    /// ── structures ── `terrain_adaptation` is anything but `none` (the
+    /// villages, the outposts, the ancient city, the trail ruins, the
+    /// stronghold — and, of what is built here, the Nether fossil). The box
+    /// such a start is *referenced* by is 12 blocks wider than its pieces:
+    /// measured on the 84 finished fossil starts of reference-nether-987654321,
+    /// 12 is the only widening that misses none of the game's `References`
+    /// (11 misses 47). docs/provenance/structures.md § 20.3.
+    bool terrain_adaptation{false};
 };
+
+/// ── structures ── How much wider than its pieces a start with terrain
+/// adaptation is referenced by, in blocks.
+inline constexpr i32 kTerrainAdaptationMargin = 12;
 
 /// Biome tags, `tags/worldgen/biome/`, with `#other` references resolved.
 ///

@@ -32,7 +32,7 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`biomes-egalites.md`](provenance/biomes-egalites.md) | Le départage des égalités de climat : 100,000 % |
 | [`features.md`](provenance/features.md) | L'ensemencement de la décoration, et pourquoi `WorldgenRandom` n'est pas la source qu'il enveloppe |
 | [`pipeline-de-chunks.md`](provenance/pipeline-de-chunks.md) | La couche qui possède neuf chunks : 27,97 % des écritures franchissent une frontière |
-| [`structures.md`](provenance/structures.md) | Le placement des 19 `structure_set`, exact au chunk près — et le mineshaft comme oracle pur des réducteurs |
+| [`structures.md`](provenance/structures.md) | Le placement des 19 `structure_set`, exact au chunk près — et le mineshaft comme oracle pur des réducteurs ; § 20 : les structures posées par le serveur, `structures.starts` et `References` au format du jeu |
 | [`chunkmap.md`](provenance/chunkmap.md) | Tickets, pool de jobs, génération hors du thread de tick, déterminisme sous TSan |
 | **Jeu** | |
 | [`fluides.md`](provenance/fluides.md) | Écoulement, recherche du trou, mélanges : 3172/3172 positions |

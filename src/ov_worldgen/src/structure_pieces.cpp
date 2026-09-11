@@ -333,6 +333,7 @@ std::expected<StructureStart, std::string> StructureBuilder::generate(
             }
             piece.box = tpl->bounding_box(piece.origin, piece.mirror, piece.rotation, piece.pivot);
         }
+        piece.generated_origin = piece.origin;  // ── structures ──
         start.pieces.push_back(std::move(piece));
         return {};
     };
@@ -452,6 +453,7 @@ std::expected<StructureStart, std::string> StructureBuilder::generate(
             piece.origin = corner.offset(9, 0, 9);
             piece.box    = {piece.origin.x, piece.origin.y, piece.origin.z,
                             piece.origin.x, piece.origin.y, piece.origin.z};
+            piece.generated_origin = piece.origin;  // ── structures ──
             start.pieces.push_back(std::move(piece));
             break;
         }
@@ -631,7 +633,8 @@ std::expected<StructurePiece, std::string> StructureBuilder::piece_from_nbt(
         const nbt::Tag* tag = child.find(key);
         return tag != nullptr ? static_cast<i32>(tag->as_i64()) : 0;
     };
-    piece.origin = {int_of("TPX"), int_of("TPY"), int_of("TPZ")};
+    piece.origin           = {int_of("TPX"), int_of("TPY"), int_of("TPZ")};
+    piece.generated_origin = piece.origin;  // ── structures ── as stored
     const nbt::Tag* rotation =
         child.find(piece.kind == PieceKind::RuinedPortal ? "Rotation" : "Rot");
     if (rotation != nullptr) {

@@ -254,6 +254,16 @@ nbt::Document to_nbt(const Chunk& chunk, const ChunkCodecContext& context) {
         entities.list()->push_back(std::move(stored));
     }
     root.push_back(nbt::CompoundEntry{"block_entities", std::move(entities)});
+    // ── structures ── `starts` and `References`, always both, as vanilla
+    // writes them; empty when the chunk carries none.
+    if (chunk.structures().compound() != nullptr) {
+        root.push_back(nbt::CompoundEntry{"structures", chunk.structures()});
+    } else {
+        nbt::Tag structures = nbt::Tag::make_compound();
+        structures.compound()->push_back(nbt::CompoundEntry{"References", nbt::Tag::make_compound()});
+        structures.compound()->push_back(nbt::CompoundEntry{"starts", nbt::Tag::make_compound()});
+        root.push_back(nbt::CompoundEntry{"structures", std::move(structures)});
+    }
     // The two queues, filtered to this chunk and made relative to `game_time`.
     // Empty spans still write empty lists rather than nothing: vanilla omits
     // them, but a chunk this server wrote and then reloaded has to find the
@@ -389,6 +399,13 @@ std::optional<Chunk> from_nbt(const nbt::Document& document, const ChunkCodecCon
             }
             chunk.set_block_entity(std::move(entity));
         }
+    }
+
+    // ── structures ── Kept whole: a vanilla chunk written back by this server
+    // must not lose the starts and references the game recorded in it.
+    if (const nbt::Tag* structures = document.root.find("structures");
+        structures != nullptr && structures->compound() != nullptr) {
+        chunk.set_structures(*structures);
     }
 
     // Heightmaps are recomputed rather than trusted. They are derived data, a
