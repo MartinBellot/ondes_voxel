@@ -182,10 +182,11 @@ TEST_CASE("a corner with two solid sides is fully occluded", "[mesher]") {
         if (attributes.facing != Direction::Up) {
             continue;
         }
-        // 0.4: the two sides and the hidden diagonal at 0.2, the air in
-        // front of the face at 1.0, averaged.
+        // 0.6: the two sides at 0.2, and — the blocks above them being air —
+        // the diagonal still seen, and empty: the game's own value for an L
+        // of two single blocks.
         if (attributes.position.x > 0.9F && attributes.position.z > 0.9F) {
-            found_dark = found_dark || std::abs(attributes.occlusion - 0.4F) < 0.01F;
+            found_dark = found_dark || std::abs(attributes.occlusion - 0.6F) < 0.01F;
         }
         if (attributes.position.x < 0.1F && attributes.position.z < 0.1F) {
             found_open = found_open || attributes.occlusion == 1.0F;

@@ -10,8 +10,11 @@
 //
 // with two substitutions:
 //
-//   * a diagonal hidden behind two opaque sides is replaced by a side — which
-//     is what creases an inside corner instead of smoothing it;
+//   * a diagonal is hidden only when the blocks one step *beyond* both sides,
+//     along the face's normal, are opaque — an inside corner between two
+//     single blocks still sees its diagonal (0.6 with it empty, 0.4 with it
+//     full), a corner walled two high does not — and a hidden diagonal is
+//     replaced by the centre;
 //   * a block that carries no light at all (the inside of an opaque block)
 //     lends the centre's instead, so an occluder darkens a corner once, through
 //     its shade, and not a second time through the average.
@@ -41,9 +44,6 @@ inline constexpr f32 kOccluderShade = 0.2F;
 struct AoSample {
     /// 0.2 for a full-cube collision shape, 1.0 otherwise.
     f32 shade{1.0F};
-    /// Sight passes it. Only an opaque full block is not clear, and only two
-    /// of those, side by side, hide the diagonal between them.
-    bool clear{true};
     /// Stored light levels, 0..15.
     u8 sky{0};
     u8 block{0};
@@ -59,10 +59,17 @@ struct CornerLighting {
     u8 block_quarters{0};
 };
 
+/// `hidden_by`: when the blocks one step beyond both sides along the face's
+/// normal block sight, the sample that stands in for the diagonal; null when
+/// the diagonal is seen. Measured on the game's own AmbientOcclusionFace: an L
+/// of two single blocks keeps its diagonal, a room's corner does not, and the
+/// stand-in is the side *opposite* the corner along the face's first axis —
+/// a block put there took the room corner from 0.6 / 10.25 to 0.4 / 10.00
+/// (docs/provenance/rendu-parite.md).
 [[nodiscard]] constexpr CornerLighting smooth_corner(const AoSample& centre, const AoSample& side1,
-                                                     const AoSample& side2,
-                                                     const AoSample& diagonal) noexcept {
-    const AoSample& corner = (!side1.clear && !side2.clear) ? side1 : diagonal;
+                                                     const AoSample& side2, const AoSample& diagonal,
+                                                     const AoSample* hidden_by = nullptr) noexcept {
+    const AoSample& corner = hidden_by != nullptr ? *hidden_by : diagonal;
 
     // "No light at all" is the test, on both channels together: a dark cave
     // cell lends the centre's light exactly as a stone block does.

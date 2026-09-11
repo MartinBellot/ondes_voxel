@@ -75,6 +75,12 @@ public:
     /// it" look identical on screen.
     [[nodiscard]] bool any_light_stored() const noexcept { return light_seen_; }
 
+    /// The world position of a section-local one: what the position random
+    /// of a block's model alternatives is seeded from.
+    [[nodiscard]] Vec3i world_position(Vec3i local) const noexcept {
+        return Vec3i{origin_x_ + local.x, origin_y_ + local.y, origin_z_ + local.z};
+    }
+
 private:
     [[nodiscard]] const world::Chunk* chunk_for(i32 world_x, i32 world_z) const noexcept;
 

@@ -7,10 +7,14 @@ using namespace ov;
 using namespace ov::render;
 using Catch::Approx;
 
+// Every brightness below is one the real 1.20.1 client printed for the faces
+// of the render parity test platform (scripts/render_parity_scenes.txt, `ao`
+// lines; docs/provenance/rendu-parite.md § 3).
+
 namespace {
 
-constexpr AoSample kAir{1.0F, true, 15, 0};
-constexpr AoSample kStone{kOccluderShade, false, 0, 0};
+constexpr AoSample kAir{1.0F, 15, 0};
+constexpr AoSample kStone{kOccluderShade, 0, 0};
 
 }  // namespace
 
@@ -22,50 +26,58 @@ TEST_CASE("an open corner is at full brightness and full light", "[ao]") {
 }
 
 TEST_CASE("each occluder takes a fifth of the corner's brightness", "[ao]") {
-    // The mean of four shade brightnesses, 0.2 for a full cube: one occluder
-    // is 0.8, a side and the diagonal 0.6. The game's own AmbientOcclusionFace
-    // prints exactly these on the test platform of the render parity scenes.
+    // The floor beside the lone block: 0.8. Beside the wall's end, a side and
+    // the diagonal: 0.6.
     CHECK(smooth_corner(kAir, kStone, kAir, kAir).brightness == Approx(0.8F));
     CHECK(smooth_corner(kAir, kAir, kAir, kStone).brightness == Approx(0.8F));
     CHECK(smooth_corner(kAir, kStone, kAir, kStone).brightness == Approx(0.6F));
 }
 
-TEST_CASE("two opaque sides hide the diagonal: an inside corner is 0.4 either way", "[ao]") {
-    // Past two opaque sides the diagonal cannot be seen, so it is replaced by
-    // a side — and 0.4 whether it is air or stone, the crease of an inside
-    // corner. The old four-step table put this at 0.2, half the game's.
-    CHECK(smooth_corner(kAir, kStone, kStone, kAir).brightness == Approx(0.4F));
+TEST_CASE("an inside corner between single blocks still sees its diagonal", "[ao]") {
+    // The two L's of the platform, their tops open to the sky: 0.4 with the
+    // diagonal filled, 0.6 without. The old rule hid the diagonal behind any
+    // two opaque sides and gave 0.4 to both.
     CHECK(smooth_corner(kAir, kStone, kStone, kStone).brightness == Approx(0.4F));
+    CHECK(smooth_corner(kAir, kStone, kStone, kAir).brightness == Approx(0.6F));
 }
 
-TEST_CASE("a see-through full cube darkens but does not hide", "[ao]") {
-    // Glass fills its cube, so its shade brightness is 0.2 like stone's; but
-    // sight passes it, so two panes side by side still show the diagonal.
-    constexpr AoSample kGlass{kOccluderShade, true, 15, 0};
-    CHECK(smooth_corner(kAir, kGlass, kGlass, kAir).brightness == Approx(0.6F));
+TEST_CASE("a corner walled two high stands the opposite side in for its diagonal", "[ao]") {
+    // The corner of the deep room, walls five high. With the cell on the far
+    // side of the corner open, 0.6 and block light 10.25 although all three
+    // neighbours are deepslate; with a block put there, 0.4 and 10.00.
+    const AoSample centre{1.0F, 0, 10};
+    const AoSample open_far{1.0F, 0, 11};
+    const auto     open = smooth_corner(centre, kStone, kStone, kStone, &open_far);
+    CHECK(open.brightness == Approx(0.6F));
+    CHECK(open.block_quarters == 41);
+
+    const auto closed = smooth_corner(centre, kStone, kStone, kStone, &kStone);
+    CHECK(closed.brightness == Approx(0.4F));
+    CHECK(closed.block_quarters == 40);
 }
 
 TEST_CASE("light is the sum of four levels, in quarter levels", "[ao]") {
-    const AoSample centre{1.0F, true, 12, 3};
-    const AoSample side{1.0F, true, 11, 2};
-    const AoSample diagonal{1.0F, true, 10, 1};
+    const AoSample centre{1.0F, 12, 3};
+    const AoSample side{1.0F, 11, 2};
+    const AoSample diagonal{1.0F, 10, 1};
     const auto     corner = smooth_corner(centre, side, side, diagonal);
     CHECK(corner.sky_quarters == 12 + 11 + 11 + 10);
     CHECK(corner.block_quarters == 3 + 2 + 2 + 1);
 }
 
 TEST_CASE("a block with no light lends the centre's, so an occluder darkens once", "[ao]") {
-    // A solid block stores no light. Averaged in as zero it would darken the
-    // corner a second time, on top of its shade; the game counts the centre's
-    // light in its place — both channels, and only when both are zero.
-    const AoSample centre{1.0F, true, 12, 4};
-    const auto     corner = smooth_corner(centre, kStone, kAir, kAir);
-    CHECK(corner.sky_quarters == 12 + 12 + 15 + 15);
-    CHECK(corner.block_quarters == 4 + 4 + 0 + 0);
+    // The room: centre at block light 10, the walls at none. The game prints
+    // 10.25 for the corner by the wall (one side 11 beyond it) — sides that
+    // carry no light count as the centre.
+    const AoSample centre{1.0F, 0, 10};
+    const AoSample open_side{1.0F, 0, 11};
+    const auto     corner = smooth_corner(centre, kStone, open_side, kStone);
+    CHECK(corner.block_quarters == 10 + 10 + 11 + 10);
+    CHECK(corner.sky_quarters == 0);
 
     // Sky 0 with some block light is not "no light": it counts as it is.
-    const AoSample torchlit{1.0F, true, 0, 9};
-    const auto     lit = smooth_corner(centre, torchlit, kAir, kAir);
+    const AoSample torchlit{1.0F, 0, 9};
+    const auto     lit = smooth_corner(AoSample{1.0F, 12, 4}, torchlit, kAir, kAir);
     CHECK(lit.sky_quarters == 12 + 0 + 15 + 15);
     CHECK(lit.block_quarters == 4 + 9 + 0 + 0);
 }

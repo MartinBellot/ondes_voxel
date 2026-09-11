@@ -450,6 +450,110 @@ public final class RenderParityOracle {
         shot(name + ".png");
     }
 
+    /// Which of a block's weighted variants the game draws at each position:
+    /// the state's own position seed, and the texture coordinates of the
+    /// first quad of `face` from the model the game resolves with it — the
+    /// same random the chunk compiler seeds. Stone, dirt, grass, sand, tall
+    /// grass... all pick a rotation or a mirror per position, and a renderer
+    /// that picks another shows the right colours on the wrong texels.
+    ///   variants <x0> <y> <z0> <x1> <z1> <face>
+    static void variants(String[] p) throws Exception {
+        int x0 = Integer.parseInt(p[1]), y = Integer.parseInt(p[2]), z0 = Integer.parseInt(p[3]);
+        int x1 = Integer.parseInt(p[4]), z1 = Integer.parseInt(p[5]);
+        // `none` asks for the quads with no cull face: a plant's cross.
+        String face = p[6].toUpperCase(Locale.ROOT);
+        onRender(() -> {
+            Object level = get(mc, MC, "level");
+            Object dir = null;
+            for (Object d : cls("net.minecraft.core.Direction").getEnumConstants()) {
+                if (((Enum<?>) d).name().equals(face)) dir = d;
+            }
+            if (dir == null && !face.equals("NONE")) throw new IllegalArgumentException("face " + face);
+            Object dispatcher = call(mc, MC, "getBlockRenderer", NONE);
+            Object random = call(null, "net.minecraft.util.RandomSource", "create", new String[]{"long"}, 0L);
+            Constructor<?> posCtor = cls("net.minecraft.core.BlockPos").getConstructor(int.class, int.class, int.class);
+            String base = "net.minecraft.world.level.block.state.BlockBehaviour$BlockStateBase";
+            for (int x = x0; x <= x1; x++) {
+                for (int z = z0; z <= z1; z++) {
+                    Object pos = posCtor.newInstance(x, y, z);
+                    Object state = call(level, "net.minecraft.world.level.BlockGetter", "getBlockState",
+                                        new String[]{"net.minecraft.core.BlockPos"}, pos);
+                    long seed = (Long) call(state, base, "getSeed", new String[]{"net.minecraft.core.BlockPos"}, pos);
+                    Object model = call(dispatcher, "net.minecraft.client.renderer.block.BlockRenderDispatcher",
+                                        "getBlockModel",
+                                        new String[]{"net.minecraft.world.level.block.state.BlockState"}, state);
+                    call(random, "net.minecraft.util.RandomSource", "setSeed", new String[]{"long"}, seed);
+                    List<?> quads = (List<?>) call(model, "net.minecraft.client.resources.model.BakedModel",
+                                                   "getQuads",
+                                                   new String[]{"net.minecraft.world.level.block.state.BlockState",
+                                                                "net.minecraft.core.Direction",
+                                                                "net.minecraft.util.RandomSource"},
+                                                   state, dir, random);
+                    Object offset = call(state, base, "getOffset",
+                                         new String[]{"net.minecraft.world.level.BlockGetter",
+                                                      "net.minecraft.core.BlockPos"}, level, pos);
+                    StringBuilder b = new StringBuilder(String.format(Locale.ROOT,
+                        "variant %d %d %d %s seed %d offset %s quads %d", x, y, z, state, seed, vec(offset),
+                        quads.size()));
+                    if (!quads.isEmpty()) {
+                        int[] v = (int[]) call(quads.get(0), "net.minecraft.client.renderer.block.model.BakedQuad",
+                                               "getVertices", NONE);
+                        int stride = v.length / 4;
+                        for (int i = 0; i < 4; i++) {
+                            b.append(String.format(Locale.ROOT, " | %.4f %.4f %.4f uv %.6f %.6f",
+                                                   Float.intBitsToFloat(v[i * stride]),
+                                                   Float.intBitsToFloat(v[i * stride + 1]),
+                                                   Float.intBitsToFloat(v[i * stride + 2]),
+                                                   Float.intBitsToFloat(v[i * stride + 4]),
+                                                   Float.intBitsToFloat(v[i * stride + 5])));
+                        }
+                    }
+                    out.println(b);
+                }
+            }
+            return null;
+        });
+    }
+
+    /// Every block the game nudges off its centre, and how far: the default
+    /// state of each registered block that has an offset function, asked for
+    /// its offset at 512 positions, printed as the range on each axis. That is
+    /// the table ov_render's block_models.cpp keeps — nothing in the assets or
+    /// the data generator carries it.
+    static void offsets() throws Exception {
+        onRender(() -> {
+            Object level = get(mc, MC, "level");
+            Object registry = get(null, "net.minecraft.core.registries.BuiltInRegistries", "BLOCK");
+            String base = "net.minecraft.world.level.block.state.BlockBehaviour$BlockStateBase";
+            Constructor<?> posCtor = cls("net.minecraft.core.BlockPos").getConstructor(int.class, int.class, int.class);
+            int count = 0;
+            for (Object block : (Iterable<?>) registry) {
+                Object state = call(block, "net.minecraft.world.level.block.Block", "defaultBlockState", NONE);
+                if (!(Boolean) call(state, base, "hasOffsetFunction", NONE)) continue;
+                double[] lo = {9, 9, 9};
+                double[] hi = {-9, -9, -9};
+                for (int k = 0; k < 512; k++) {
+                    Object pos = posCtor.newInstance(k * 7919 - 2000000, 64, k * 104729 - 3000000);
+                    Object o = call(state, base, "getOffset",
+                                    new String[]{"net.minecraft.world.level.BlockGetter",
+                                                 "net.minecraft.core.BlockPos"}, level, pos);
+                    double[] v = {(Double) get(o, VEC3, "x"), (Double) get(o, VEC3, "y"), (Double) get(o, VEC3, "z")};
+                    for (int a = 0; a < 3; a++) {
+                        lo[a] = Math.min(lo[a], v[a]);
+                        hi[a] = Math.max(hi[a], v[a]);
+                    }
+                }
+                Object key = call(registry, "net.minecraft.core.Registry", "getKey",
+                                  new String[]{"java.lang.Object"}, block);
+                out.println(String.format(Locale.ROOT, "offsets %s x %.9f %.9f y %.9f %.9f z %.9f %.9f",
+                                          key, lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]));
+                count++;
+            }
+            out.println("offsets: " + count + " blocks with an offset function");
+            return null;
+        });
+    }
+
     static void sweep() throws Exception {
         long[] times = {6000, 11000, 12000, 12500, 12800, 13000, 13200, 13500, 14000, 18000, 23000, 23500};
         double[] gammas = {0.0, 0.5, 1.0};
@@ -522,6 +626,8 @@ public final class RenderParityOracle {
                     case "scene" -> scene(p);
                     case "sweep" -> sweep();
                     case "ao" -> ao(p);
+                    case "variants" -> variants(p);
+                    case "offsets" -> offsets();
                     default -> out.println("unknown directive: " + line);
                 }
             } catch (Throwable e) {

@@ -65,8 +65,7 @@ struct FacePlane {
 }
 
 [[nodiscard]] AoSample sample_at(const NeighbourhoodView& view, Vec3i at) {
-    return AoSample{view.ao_shade(at), !view.blocks_view(at), view.sky_light(at),
-                    view.block_light(at)};
+    return AoSample{view.ao_shade(at), view.sky_light(at), view.block_light(at)};
 }
 
 [[nodiscard]] u8 quarters(f32 value) {
@@ -180,13 +179,28 @@ void emit_block(const BakedModel& model, Vec3i block_position, const BlockRender
                     grid[static_cast<usize>((dt + 1) * 3 + (db + 1))] = sample_at(view, at);
                 }
             }
+            // The four blocks one step beyond each side, along the normal:
+            // whether they block sight decides if a corner sees its diagonal.
+            const Vec3i normal = direction_offset(quad.facing);
+            const auto  beyond = [&](Vec3i axis, i32 sign) {
+                return view.blocks_view(add(add(centre_at, scale(axis, sign)), normal));
+            };
+            const std::array<bool, 2> beyond_t{beyond(plane.tangent, -1), beyond(plane.tangent, 1)};
+            const std::array<bool, 2> beyond_b{beyond(plane.bitangent, -1),
+                                               beyond(plane.bitangent, 1)};
             constexpr std::array<std::array<i32, 2>, 4> kSigns{{{-1, -1}, {1, -1}, {1, 1}, {-1, 1}}};
             for (usize k = 0; k < 4; ++k) {
-                const i32 st = kSigns[k][0];
-                const i32 sb = kSigns[k][1];
+                const i32  st     = kSigns[k][0];
+                const i32  sb     = kSigns[k][1];
+                const bool hidden = beyond_t[static_cast<usize>((st + 1) / 2)] &&
+                                    beyond_b[static_cast<usize>((sb + 1) / 2)];
+                // A hidden diagonal is stood in for by the side opposite the
+                // corner along the first axis — measured, see smooth_corner.
+                const AoSample& opposite = grid[static_cast<usize>((-st + 1) * 3 + 1)];
                 corners[k] = smooth_corner(grid[4], grid[static_cast<usize>((st + 1) * 3 + 1)],
                                            grid[static_cast<usize>(3 + (sb + 1))],
-                                           grid[static_cast<usize>((st + 1) * 3 + (sb + 1))]);
+                                           grid[static_cast<usize>((st + 1) * 3 + (sb + 1))],
+                                           hidden ? &opposite : nullptr);
             }
         }
         const u8 flat_sky   = static_cast<u8>(view.sky_light(centre_at) * 4);
@@ -194,9 +208,10 @@ void emit_block(const BakedModel& model, Vec3i block_position, const BlockRender
 
         for (const auto& vertex : quad.vertices) {
             TerrainVertexAttributes attributes;
-            attributes.position = Vec3f{vertex.position.x + static_cast<f32>(block_position.x),
-                                        vertex.position.y + static_cast<f32>(block_position.y),
-                                        vertex.position.z + static_cast<f32>(block_position.z)};
+            attributes.position =
+                Vec3f{vertex.position.x + static_cast<f32>(block_position.x) + info.offset.x,
+                      vertex.position.y + static_cast<f32>(block_position.y) + info.offset.y,
+                      vertex.position.z + static_cast<f32>(block_position.z) + info.offset.z};
 
             // The quad's 0..16 sprite coordinate, resolved through the
             // sprite's rect into a normalised atlas one. v is downward in both,

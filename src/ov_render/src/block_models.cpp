@@ -78,6 +78,24 @@ struct AlphaClass {
 
 }  // namespace
 
+namespace {
+
+/// Which blocks the game nudges off their centre, and how. Nothing in the
+/// assets or the data generator says it; every entry is printed by the real
+/// client (the oracle's `offsets` directive walks every block and gives the
+/// range of BlockState.getOffset; docs/provenance/rendu-parite.md).
+struct OffsetEntry {
+    std::string_view name;
+    OffsetType       type;
+    f32              max_horizontal;
+};
+
+constexpr OffsetEntry kOffsets[] = {
+    {"minecraft:grass", OffsetType::XYZ, 0.25F},
+};
+
+}  // namespace
+
 TintChannel tint_channel_for(std::string_view block_name) noexcept {
     // Vanilla decides this in Java, block by block, so there is no file to read
     // it from. The list is the 1.20.1 blocks whose models declare a tintindex,
@@ -196,6 +214,12 @@ const BlockRender& BlockModelCache::resolve(registry::BlockStateId state) {
     const auto block = blocks.block_of(state);
     const auto name  = blocks.block_name(block);
     render.tint      = tint_channel_for(name);
+    for (const OffsetEntry& entry : kOffsets) {  // ── render-parity ──
+        if (entry.name == name) {
+            render.offset     = entry.type;
+            render.max_offset = entry.max_horizontal;
+        }
+    }
 
     if (blocks.is_air(block)) {
         const auto [it, _] = impl_->states.emplace(key, std::move(render));
@@ -239,14 +263,31 @@ const BlockRender& BlockModelCache::resolve(registry::BlockStateId state) {
     // Multipart yields one group per matching piece, and they all draw. A
     // fence is its post plus a side for each connection, and concatenating
     // them is what a fence *is*.
-    for (const auto& group : file->select(properties)) {
+    const auto groups = file->select(properties);
+    for (const auto& group : groups) {
         if (group.alternatives.empty()) {
             continue;
         }
-        // The first alternative. Vanilla picks among weighted ones by hashing
-        // the block position; until the mesher does that, taking the first
-        // costs variety and nothing else — a world of unrotated grass rather
-        // than a world of missing grass.
+        // ── render-parity ── a single group of weighted alternatives — the
+        // shape of every randomised blockstate in the game — keeps them all;
+        // the mesher picks one per position. (Multipart with weighted pieces
+        // would need a pick per piece; none of the terrain has it, and it
+        // still takes the first.)
+        if (groups.size() == 1 && group.alternatives.size() > 1) {
+            for (const auto& alternative : group.alternatives) {
+                const auto loaded = impl_->loader.load(alternative.model);
+                if (!loaded) {
+                    render.alternatives.clear();
+                    render.weights.clear();
+                    break;
+                }
+                render.alternatives.push_back(bake(**loaded, alternative));
+                render.weights.push_back(alternative.weight);
+                impl_->remember_sprites(render.alternatives.back());
+            }
+        }
+        // The first alternative is `model`, for everything that does not care
+        // where the block is.
         const auto& variant = group.alternatives.front();
         const auto  model   = impl_->loader.load(variant.model);
         if (!model) {

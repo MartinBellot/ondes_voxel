@@ -1,0 +1,5 @@
+# The oracle's offsets-only pass: every block the game nudges off its centre,
+# and by how much (render_parity_oracle.java, `offsets`). No scene, no capture.
+#   lockf /tmp/ov-vanilla.lock python3 scripts/measure_render_parity.py vanilla \
+#       --scenes=scripts/render_parity_offsets.txt --server=<release ov_dedicated>
+offsets

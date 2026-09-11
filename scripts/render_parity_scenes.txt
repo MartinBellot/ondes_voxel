@@ -41,6 +41,9 @@ cmd setblock 48043 -43 23 minecraft:torch
 cmd setblock 48049 -43 29 minecraft:torch
 cmd setblock 48046 -43 26 minecraft:deepslate
 cmd setblock 48046 -42 26 minecraft:deepslate
+# The room corner's open question: which sample replaces a diagonal hidden
+# behind two walls. A block on the far +X side of the corner cell tells it.
+cmd setblock 48042 -43 21 minecraft:deepslate
 # Two inside corners: an L with its diagonal filled, and one without.
 cmd setblock 48071 91 24 minecraft:stone
 cmd setblock 48072 91 24 minecraft:stone
@@ -66,6 +69,14 @@ ao 48074 91 24 north
 ao 48074 91 24 south
 ao 48074 91 24 east
 ao 48074 91 24 west
+# Which weighted variant the game draws where: the platform's stone top
+# (stone has four: plain and mirrored, each turned 0 or 180), and the plains
+# grass around the first scene (grass_block turns four ways).
+variants 48070 90 20 48080 30 up
+variants 48040 67 20 48052 32 up
+# The plants on the plains grass: no culled face, so `none`; with their
+# per-position horizontal offset.
+variants 48040 68 20 48052 32 none
 ao 48076 92 26 east
 ao 48070 90 20 down
 ao 48072 90 25 up
@@ -81,6 +92,10 @@ ao 48046 39 26 east
 ao 48041 38 21 up
 scene cave_deep     48042.5 -43 30.5 -135 20 6000
 ao 48043 -44 24 up
+ao 48041 -44 21 up
+ao 48041 -44 22 up
+ao 48041 -44 31 up
+ao 48051 -44 21 up
 ao 48047 -44 27 up
 scene plains_sunset 48046.5 68 26.5 90 -15 12700
 scene plains_night  48046.5 68 26.5 90 -80 18000

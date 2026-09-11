@@ -1,6 +1,7 @@
 #include "ov/render/chunk_mesher.hpp"
 
 #include "ov/render/ambient_occlusion.hpp"
+#include "ov/render/position_random.hpp"
 
 #include "ov/world/chunk_section.hpp"
 
@@ -292,8 +293,19 @@ SectionMeshStats mesh_section(const ChunkSectionView& view, BlockModelCache& mod
                 const u32 tint = render.tint == TintChannel::None
                                      ? 0xFFFFFFu
                                      : view.biome_colour(local, render.tint);
-                emit_block(render.model, local, BlockRenderInfo{render.layer, tint, render.fluid},
-                           atlas, view, out);
+                // ── render-parity ── the alternative the game draws here, and
+                // a plant's nudge off the centre.
+                const BakedModel* model = &render.model;
+                BlockRenderInfo   info{render.layer, tint, render.fluid};
+                if (!render.alternatives.empty() || render.offset != OffsetType::None) {
+                    const Vec3i world = view.world_position(local);
+                    if (!render.alternatives.empty()) {
+                        model = &render.alternatives[pick_weighted(
+                            position_seed(world.x, world.y, world.z), render.weights)];
+                    }
+                    info.offset = block_offset(world.x, world.z, render.offset, render.max_offset);
+                }
+                emit_block(*model, local, info, atlas, view, out);
                 const usize emitted = out.total_vertices() - before;
                 if (emitted > 0) {
                     ++stats.blocks_drawn;

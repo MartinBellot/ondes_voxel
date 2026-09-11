@@ -17,6 +17,7 @@
 #include "ov/render/atlas.hpp"
 #include "ov/render/baked_model.hpp"
 #include "ov/render/mesher.hpp"
+#include "ov/render/position_random.hpp"
 
 #include <memory>
 #include <string>
@@ -35,6 +36,19 @@ struct BlockRender {
     u16 fluid{0};
     /// False for air, and for a state whose model could not be resolved.
     bool drawable{false};
+    // ── render-parity ── a blockstate that lists weighted alternatives —
+    // stone plain and mirrored, grass turned four ways — keeps every one of
+    // them, baked, with its weight; `model` is the first. The mesher picks by
+    // the block's position (position_random.hpp), as the game does, so that a
+    // field of grass is turned the way the game turns it and not all one way.
+    std::vector<BakedModel> alternatives;
+    std::vector<i32>        weights;
+    /// Plants nudged off their block's centre per position
+    /// (position_random.hpp). From a table of measured blocks; None for the
+    /// rest, which is right for every full block and wrong, visibly, for any
+    /// plant the table does not name yet.
+    OffsetType offset{OffsetType::None};
+    f32        max_offset{0.25F};
 };
 
 class BlockModelCache {

@@ -310,10 +310,14 @@ def main():
     parser.add_argument("--binary", default=os.path.join(BUILD, "ov_voxel"),
                         help="l'ov_voxel à mesurer (une copie du binaire « avant », par exemple)")
     parser.add_argument("--server", default="", help="l'ov_dedicated à lancer (une build release)")
+    parser.add_argument("--scenes", default="",
+                        help="un autre fichier de directives (par ex. render_parity_offsets.txt)")
     args = parser.parse_args()
-    global SERVER
+    global SERVER, SCENES
     if args.server:
         SERVER = os.path.abspath(args.server)
+    if args.scenes:
+        SCENES = os.path.abspath(args.scenes)
     os.makedirs(OUT, exist_ok=True)
     if args.what == "perf":
         run_perf([os.path.abspath(b) for b in args.perf_binaries.split(",") if b], args.rounds,

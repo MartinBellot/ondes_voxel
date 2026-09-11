@@ -117,6 +117,9 @@ struct BlockRenderInfo {
     u32 tint_colour{0xFFFFFF};
     /// Non-zero when this block is a fluid, identifying which one.
     u16 fluid{0};
+    /// A plant's per-position nudge off its block's centre, in blocks. Moves
+    /// the geometry only: light and occlusion are still the block's.
+    Vec3f offset{};
 };
 
 /// Emit one block's baked model at `block_position`, in section-local
