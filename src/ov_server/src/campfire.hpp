@@ -13,8 +13,9 @@
 // is one vanilla reads, and back.
 //
 // Every recipe in 1.20.1's datapack cooks for 600 ticks; the time is read from
-// the recipe, never assumed. The `entity` campaign times a real campfire fed
-// by a player's click against it — see docs/provenance/feu.md.
+// the recipe, never assumed. Measured: a real campfire fed raw beef by a
+// player's click dropped the steak 600 ticks later (313 -> 913) —
+// docs/provenance/feu.md § 7.
 #pragma once
 
 #include "ov/gameplay/fire.hpp"

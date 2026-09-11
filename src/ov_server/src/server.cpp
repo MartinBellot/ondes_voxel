@@ -7167,7 +7167,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                             FirePlayerIo{
                                 .hurt =
                                     [&](gameplay::DamageKind kind, f32 amount) {
-                                        return who.survival.hurt(kind, amount, io, who.entity_id)
+                                        return who.survival
+                                            .hurt(kind, amount, io, who.entity_id,
+                                                  &fire_session->damage_window())
                                             .applied;
                                     },
                                 .flag =

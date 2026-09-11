@@ -261,9 +261,12 @@ struct FireDamage {
     f32 lava{0.0F};
 };
 
-/// The numbers the entity rules are made of: the wiki's (1 HP a second
-/// burning, 1 and 2 for fire and soul fire, 4 for lava, 8 s and 15 s), to be
-/// confirmed on cows by the `entity` campaign — see docs/provenance/feu.md.
+/// The numbers the entity rules are made of. Measured on cows of 200 health,
+/// read every tick (docs/provenance/feu.md § 6): a point at Fire = 200, 180,
+/// …; 1 and 2 per damage window in fire and soul fire; 4 in lava, the counter
+/// held at 300; 1 and 2 on the two campfires, never lit. The 8 s of a fire
+/// block is the wiki's: the bench's summoned cows started their counter at 0
+/// and never crossed the zero that lights them.
 struct EntityFireConstants {
     f32 on_fire_damage{1.0F};
     i32 on_fire_interval{20};
@@ -305,8 +308,9 @@ void set_on_fire(EntityFire& fire, i32 seconds) noexcept;
 ///
 /// `light` is the brighter of the dimmed sky and the block light at the eyes;
 /// `sky_darken` decides "day" (< 4). One draw of `next_float`, and only when
-/// the other conditions pass. The `entity` campaign times 32 zombies at noon
-/// and 32 at a darker hour against it.
+/// the other conditions pass. Measured: 32 zombies at noon lit after 21.5
+/// ticks on average (the rule: 25), 32 at darken 2 after 85.4 (68.5) —
+/// docs/provenance/feu.md § 6, and the KS comparison in test_fire.cpp.
 [[nodiscard]] bool sun_burns(i32 light, i32 sky_darken, bool sees_sky, bool wet,
                              FireRandom& random) noexcept;
 

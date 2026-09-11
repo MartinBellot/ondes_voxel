@@ -7,6 +7,8 @@
 // in docs/provenance/feu.md.
 #include "ov/gameplay/fire.hpp"
 
+#include "ov/gameplay/effects.hpp"
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
@@ -736,6 +738,141 @@ TEST_CASE("fire parity: a fire on stone in the rain, against 64 vanilla fires", 
                                    << c);
     CHECK(p > 0.01);
     CHECK(c > d);
+}
+
+TEST_CASE("fire parity: zombies in the sun, at two hours", "[fire][parity]") {
+    // scripts/measure_fire.py `entity`: 32 zombies summoned in open glass pens,
+    // the tick each first shows Fire > 0. At noon the light at their eyes is
+    // 15; at day time 12210 the sky is darkened by 2, and the light is 13.
+    const std::vector<i64> noon{1,  2,  3,  4,  4,  4,  6,  7,  7,  10, 10, 12, 15, 16, 16, 17,
+                                17, 18, 19, 21, 21, 22, 27, 31, 33, 34, 36, 41, 45, 48, 56, 86};
+    const std::vector<i64> dusk{2,  3,  8,   13,  17,  20,  25,  27,  28,  29,  38,
+                                43, 46, 49,  51,  55,  56,  56,  81,  91,  94,  95,
+                                104, 108, 110, 112, 145, 149, 152, 202, 295, 428};
+    const auto first_lit = [](i32 light, i32 darken, i64 seed) {
+        FireRandom random{seed};
+        for (i64 t = 1; t < 5000; ++t) {
+            if (sun_burns(light, darken, true, false, random)) {
+                return t;
+            }
+        }
+        return i64{5000};
+    };
+    std::vector<i64> ours_noon;
+    std::vector<i64> ours_dusk;
+    for (i64 seed = 1; seed <= 4000; ++seed) {
+        ours_noon.push_back(first_lit(15, 0, seed));
+        ours_dusk.push_back(first_lit(13, 2, seed + 100000));
+    }
+    const f64 d_noon = ks_distance(noon, ours_noon);
+    const f64 d_dusk = ks_distance(dusk, ours_dusk);
+    const f64 p_noon = ks_p(d_noon, noon.size(), ours_noon.size());
+    const f64 p_dusk = ks_p(d_dusk, dusk.size(), ours_dusk.size());
+    // The controls: each hour's zombies against the other hour's rule.
+    const f64 c_noon = ks_distance(noon, ours_dusk);
+    const f64 c_dusk = ks_distance(dusk, ours_noon);
+    WARN("zombies at noon: KS " << d_noon << " p " << p_noon << " (control, the dusk rule: KS "
+                                << c_noon << "); at darken 2: KS " << d_dusk << " p " << p_dusk
+                                << " (control, the noon rule: KS " << c_dusk << ")");
+    CHECK(p_noon > 0.01);
+    CHECK(p_dusk > 0.01);
+    CHECK(c_noon > d_noon);
+    CHECK(c_dusk > d_dusk);
+}
+
+namespace {
+
+/// One burning mob's ticks through the real damage window, as MobCombat runs
+/// them: the window first, then every hit the tick owes, in order. Returns
+/// the health lost after each tick.
+[[nodiscard]] std::vector<f32> burn_series(EntityFire fire, const FireContact& contact, int ticks,
+                                           bool resistant = false) {
+    HealthState health{.health = 200.0F, .max_health = 200.0F};
+    // The window of a hit inside the victim's own tick (effects.hpp): the
+    // server's FireSession::damage_window.
+    const DamageConstants window = effect_damage_constants(DamageConstants{});
+    std::vector<f32>      lost;
+    for (int t = 1; t <= ticks; ++t) {
+        tick_health(health, window);
+        const FireDamage owed = tick_entity_fire(fire, contact);
+        for (const auto& [kind, amount] : {std::pair{DamageKind::OnFire, owed.on_fire},
+                                           std::pair{DamageKind::Lava, owed.lava},
+                                           std::pair{DamageKind::InFire, owed.in_fire}}) {
+            if (amount > 0.0F && !(resistant && fire_resistance_blocks(kind))) {
+                (void)apply_damage(health, kind, amount, window);
+            }
+        }
+        lost.push_back(200.0F - health.health);
+    }
+    return lost;
+}
+
+}  // namespace
+
+TEST_CASE("fire parity: burning cows, tick by tick", "[fire][parity]") {
+    // scripts/measure_fire.py `entity`: cows of 200 health in 1x1 pens, their
+    // Fire and Health read every tick by the datapack. The cows were summoned
+    // with NBT, which loads Fire as 0 rather than a new entity's -1.
+    SECTION("burning in the open: a point at Fire 200, 180, ... — health 199 at tick 1, 198 at 21") {
+        const std::vector<f32> lost = burn_series(EntityFire{.remaining = 200}, {}, 41);
+        CHECK(lost[0] == 1.0F);
+        CHECK(lost[19] == 1.0F);
+        CHECK(lost[20] == 2.0F);
+        CHECK(lost[40] == 3.0F);
+    }
+    SECTION("in fire from a counter of 0: the counter sits at 1, a point every 10 ticks") {
+        EntityFire             fire{.remaining = 0};
+        const FireContact      in{.in_fire = true};
+        const std::vector<f32> lost = burn_series(fire, in, 41);
+        // vanilla: 199 at tick 1, 196 at tick 40, 195 at tick 41
+        CHECK(lost[0] == 1.0F);
+        CHECK(lost[39] == 4.0F);
+        CHECK(lost[40] == 5.0F);
+        (void)tick_entity_fire(fire, in);
+        CHECK(fire.remaining == 1);
+        (void)tick_entity_fire(fire, in);
+        CHECK(fire.remaining == 1);
+    }
+    SECTION("in soul fire: two points every 10 ticks — 190 at tick 41") {
+        const std::vector<f32> lost =
+            burn_series(EntityFire{.remaining = 0}, FireContact{.in_soul_fire = true}, 41);
+        CHECK(lost[0] == 2.0F);
+        CHECK(lost[40] == 10.0F);
+    }
+    SECTION("in lava: Fire held at 300, four points every 10 ticks") {
+        // vanilla (one tick late: the lava was set after the cow): 196 at its
+        // first tick in lava, 184 at 40, 180 at 42 — four every ten.
+        EntityFire             fire{.remaining = 0};
+        const std::vector<f32> lost = burn_series(fire, FireContact{.in_lava = true}, 41);
+        CHECK(lost[0] == 4.0F);
+        CHECK(lost[40] == 20.0F);
+        (void)tick_entity_fire(fire, FireContact{.in_lava = true});
+        CHECK(fire.remaining == 300);
+    }
+    SECTION("on a campfire: a point every 10, never lit, the counter at -1") {
+        EntityFire             fire{.remaining = 0};
+        const std::vector<f32> lost = burn_series(fire, FireContact{.campfire = 1}, 41);
+        CHECK(lost[0] == 1.0F);
+        CHECK(lost[40] == 5.0F);
+        (void)tick_entity_fire(fire, FireContact{.campfire = 1});
+        CHECK(fire.remaining == -1);
+        const std::vector<f32> soul = burn_series(EntityFire{.remaining = 0},
+                                                  FireContact{.campfire = 2}, 41);
+        CHECK(soul[40] == 10.0F);
+    }
+    SECTION("burning into water: out at once, and no point taken") {
+        EntityFire             fire{.remaining = 200};
+        const std::vector<f32> lost =
+            burn_series(fire, FireContact{.wet = true, .in_water = true}, 41);
+        CHECK(lost[40] == 0.0F);
+    }
+    SECTION("fire resistance: no damage, and the counter still falls") {
+        EntityFire             fire{.remaining = 200};
+        const std::vector<f32> lost = burn_series(fire, {}, 41, true);
+        CHECK(lost[40] == 0.0F);
+        (void)tick_entity_fire(fire, {});
+        CHECK(fire.remaining == 199);
+    }
 }
 
 TEST_CASE("fire parity: the burn odds, block by block", "[fire][parity]") {

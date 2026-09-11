@@ -34,11 +34,10 @@ Le code :
 | `scripts/check_fire_e2e.py` | notre serveur et un client sonde : `forest`, `player`, `zombie` |
 
 > **État.** Le code, les tests unitaires et le contrôle de bout en bout (§ 8) sont faits et
-> verts. La campagne `blocks` a tourné : les §§ 1 à 3 portent ses chiffres. Les campagnes
-> `rain`, `lava`, `entity` et `confirm` sont **en file sur le verrou partagé du JVM**
-> (`/tmp/ov-vanilla.lock`), derrière une dizaine de campagnes d'autres agents : les §§ 4 à 7
-> attendent leurs chiffres. Jusque-là, les nombres de ces parties sont ceux du wiki, et le code
-> le dit.
+> verts. Les cinq campagnes (`blocks`, `rain`, `lava`, `entity`, `confirm`) ont tourné sur le
+> vrai serveur : les §§ 1 à 7 portent leurs chiffres, et `test_fire.cpp` compare notre code à
+> chacun. Trois corrections sont venues de la mesure : la lave a deux random ticks par tirage,
+> l'établi prend feu de la lave, et un coup de feu se mesure contre la fenêtre des effets.
 
 ---
 
@@ -124,11 +123,21 @@ cesse d'être B. **0 objet au sol** à la fin : un bloc brûlé ne lâche rien.
 que notre code est la règle écrite. Le témoin « moitié des odds » est plus loin que la table pour
 les neuf sortes contre notre code, et rejeté pour huit sur neuf contre le modèle.
 
-⚠ **Question ouverte.** La table tient bloc par bloc au seuil corrigé pour neuf tests, mais les
-trois blocs à 60 brûlent ensemble à **0,30 ± 0,036** par tick de feu contre 0,20 attendu (48 B,
-2,8 écarts-types), et la bibliothèque à 0,12 contre 0,067. Chaque sorte était sur **sa propre
-rangée** : le bloc et la place sont confondus. La campagne `confirm` les remesure **entrelacées**
-position par position, 32 de chaque ; la table n'est pas changée sur seize échantillons.
+⚠ **Une question, tranchée par une seconde campagne.** Dans `blocks`, les trois blocs à 60
+brûlaient ensemble à **0,30 ± 0,036** par tick de feu contre 0,20 attendu (48 B, 2,8
+écarts-types), la bibliothèque à 0,12 contre 0,067. Chaque sorte y était sur **sa propre
+rangée** : le bloc et la place étaient confondus. La campagne `confirm` les a remesurés
+**entrelacés** position par position, 32 de chaque (4018 ticks, 0 objet au sol) :
+
+| B | table | moyenne | taux par tick de feu | table / 300 | KS contre la table (p) | témoin moitié (p) |
+|---|---|---|---|---|---|---|
+| planches de chêne | 20 | 640 | 0,054 | 0,067 | 0,29 | 0,050 |
+| laine blanche | 60 | 172 | **0,201** | 0,20 | 0,91 | 0,003 |
+| feuilles de chêne | 60 | 183 | **0,188** | 0,20 | 0,16 | 0,002 |
+| algues séchées | 60 | 145 | **0,239** | 0,20 | 0,40 | 0,0002 |
+| bibliothèque | 20 | 481 | **0,072** | 0,067 | 0,56 | 0,0004 |
+
+L'excès était la rangée, pas le bloc : **la table du wiki tient**, et elle n'a pas été changée.
 
 ### Allumer (« ignite odds »)
 
@@ -147,11 +156,20 @@ portée qui ait un voisin inflammable. Relevé : le tick où C devient feu.
 | foin | 60 | 16/16 | 0,088 |
 | **établi** | 0 | **0/16** | — (le feu ne le voit pas) |
 
-⚠ Les trois rangées à 5, qui devraient suivre une seule loi, **diffèrent entre elles** : la
-bûche (première allumée au tick 924 ; sous le modèle, P ≈ 1,6·10⁻⁴ pour les seize) contre le
-charbon (trois allumées avant le tick 102), KS entre les deux **p = 0,0019**. Leur réunion suit
-la table à p = 0,99. C'est le même confondement rangée/bloc que ci-dessus, et la même campagne
-`confirm` le lève.
+⚠ Dans `blocks`, les trois rangées à 5, qui devraient suivre une seule loi, **différaient entre
+elles** : la bûche (première allumée au tick 924 ; sous le modèle, P ≈ 1,6·10⁻⁴ pour les seize)
+contre le charbon (trois allumées avant le tick 102), KS entre les deux **p = 0,0019**, alors que
+leur réunion suivait la table à p = 0,99. Même confondement rangée/bloc ; `confirm` les a
+**entrelacés**, 32 de chaque :
+
+| F (odds 5) | allumés | moyenne | KS contre la table (p) |
+|---|---|---|---|
+| planches | 29/32 | 1291 | 0,52 |
+| bûche | 28/32 | 1406 | 0,51 |
+| charbon | 28/32 | 1392 | 0,35 |
+| ensemble (96) | 85/96 | | **0,45** — témoin odds 15 : **0,008** |
+
+Bûche contre charbon : **p = 0,80** (0,0019 avant). La différence était la place ; la table tient.
 
 ---
 
@@ -213,6 +231,94 @@ chose, et la lave est la seule à en allumer.
 `test_fire.cpp` rejoue les quatre géométries allumantes par `FireRules`, deux ticks par tirage, et
 exige d'être à moins de trois erreurs types du taux vanilla ; le témoin « un tick par tirage » doit
 en être à plus de six.
+
+---
+
+## 6. Ce qui brûle — mesuré
+
+Campagne `entity` : des vaches de 200 PV dans des enclos de verre d'un bloc, `Fire` et `Health`
+lus **chaque tick** par le datapack ; 32 zombies à midi puis 32 à une heure plus sombre ; le
+client sonde, en survie, debout dans un feu.
+
+### Les vaches
+
+| montage | vanilla | `tick_entity_fire` + la fenêtre |
+|---|---|---|
+| `Fire:200` à l'air libre | un point à `Fire` = 200, 180, … : **un tous les 20 ticks**, le premier au premier tick | identique |
+| dans un feu | un point **tous les 10 ticks** (199 au tick 1, 195 au tick 41) | identique |
+| dans un feu des âmes | **deux** points tous les 10 ticks (190 au tick 41) | identique |
+| dans la lave | **quatre** points tous les 10 ticks, `Fire` tenu à **300** (15 s) | identique |
+| sur un feu de camp / des âmes | 1 / 2 points tous les 10 ticks, **jamais allumée**, `Fire` à −1 | identique |
+| `Fire:200` dans l'eau | `Fire` = −1 au tick suivant et **aucun point** : l'eau vide le compteur *avant* le jet des dégâts | identique (à la pluie, au contraire, le point à 200 tombe d'abord, § 4) |
+| `Fire:200` et Résistance au feu | le compteur descend 199, 198…, la santé ne bouge pas | identique |
+
+`test_fire.cpp` (« burning cows, tick by tick ») rejoue chaque série à travers la vraie fenêtre
+d'invulnérabilité (`tick_health` puis `apply_damage`, l'ordre de `MobCombat`) et fige les points
+relevés.
+
+⚠ **La fenêtre d'un coup de feu est celle des effets, et le test l'a trouvé.** Avec la fenêtre de
+`survie.md` (un coup absorbé tant que le compteur vaut **10 ou plus**, mesuré par `/damage`
+depuis une fonction, avant le tick de la victime), notre vache dans le feu prenait un point aux
+ticks 1, 12, 23, 34 : **quatre** au tick 41, contre **cinq** chez vanilla (1, 11, 21, 31, 41). Un
+coup de feu tombe **dans** le tick de la victime, après que son compteur a bougé — la même phase
+que les dégâts périodiques d'un effet, qu'`effets.md` avait déjà mesurés avec une fenêtre
+« entrée à **plus de** dix » (`effect_damage_constants`). Le feu la réutilise :
+`FireSession::damage_window`, pour les mobs (`MobCombat::hurt`) comme pour les joueurs
+(`SurvivalSession::hurt(…, &window)`), et les séries mesurées tombent alors au point près.
+
+⚠ **Piège du banc.** Une vache dans un feu garde `Fire` = 1 et n'est jamais allumée pour 8 s.
+C'est `/summon` avec NBT, qui charge `Fire` à **0** et non au −1 d'une entité neuve (piège 32 du
+briefing) : à partir de 0, le +1 du feu ne passe jamais par 0, la condition d'allumage. Nos règles
+donnent exactement cette série à partir de 0 ; nos mobs, nés à −1, s'allument au premier tick
+dans un feu — ce que ferait un mob vanilla qui n'a pas été invoqué avec NBT (non mesuré).
+
+### Le soleil
+
+32 zombies en enclos ouverts, le premier tick où `Fire` > 0 :
+
+| heure | assombrissement | lumière aux yeux | allumés | moyenne | règle (`sun_burns`) |
+|---|---|---|---|---|---|
+| 6000 (midi) | 0 | 15 | 32 / 32 | **21,5** ticks | 1 chance sur 25 par tick → 25 |
+| 12210 | 2 | 13 | 32 / 32 | **85,4** ticks | 0,0146 par tick → 68,5 |
+
+`test_fire.cpp` compare les 32 + 32 temps à 4000 tirages de `sun_burns` : **p = 0,89** à midi
+(distance 0,10 ; la règle de l'autre heure, témoin, à 0,44) et **p = 0,53** à l'assombrissement
+2 (0,14 ; témoin 0,47). La formule
+(`f = l/15 / (4 − 3 l/15)`, un tirage `next_float() × 30 < (f − 0,4) × 2`, jour si
+l'assombrissement < 4) est celle de l'article « Zombie » et de la luminosité du wiki ; les deux
+heures la confirment en taux.
+
+### Le joueur — un écart nommé
+
+La sonde, debout dans un feu, lue par la console :
+
+| tick | `Fire` |
+|---|---|
+| 112 | −18 |
+| 115 | −12 |
+| 118 | −7 |
+| 121 | −1 |
+| **123** | **161** — allumé |
+| 126 → 146 | 163, 166, 168, 173, 175, 177, 180 |
+
+Deux choses que le modèle « un contact par tick » ne donne pas : la grâce de vingt a été épuisée
+en **une dizaine de ticks** (17 en 9 ticks), et, une fois allumé, le compteur **monte** d'environ
+0,8 par tick au lieu de tenir. Vanilla compte donc le contact d'un joueur **plus d'une fois par
+tick** — probablement une fois dans son tick et une fois par paquet de mouvement ; la sonde en
+envoyait un toutes les 50 ms. Un client immobile n'envoie qu'un paquet par seconde : sa grâce
+serait proche de vingt ticks. Notre serveur compte **une fois par tick** (grâce de 20 ticks,
+compteur tenu). C'est juste pour un joueur immobile, deux fois trop lent pour un joueur qui bouge ;
+le taux dépend du client, et il n'est pas modélisé. La santé, elle, tombe d'un point tous les 10
+ticks environ, comme les vaches.
+
+## 7. Le feu de camp — mesuré
+
+Le client sonde a posé un bœuf cru sur un feu de camp allumé par un vrai clic (Use Item On). Le
+datapack a vu le bloc prendre l'objet au tick **313** et le steak (`minecraft:cooked_beef`,
+1) apparaître au sol au tick **913** : **600 ticks**, le `cookingtime` de la recette
+`cooked_beef_from_campfire_cooking`, qui est aussi celui des huit autres recettes de feu de camp
+de 1.20.1. `Campfires` lit ce temps dans la recette ; `test_fire_session.cpp` fait tomber le steak
+au tick 600 exactement. Les dégâts de contact sont au § 6.
 
 ---
 

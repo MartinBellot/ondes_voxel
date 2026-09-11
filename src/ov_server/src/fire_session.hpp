@@ -33,6 +33,7 @@
 #include "world_ticks.hpp"
 
 #include "ov/entity/world.hpp"
+#include "ov/gameplay/effects.hpp"
 #include "ov/gameplay/fire.hpp"
 #include "ov/protocol/play.hpp"
 
@@ -142,6 +143,15 @@ public:
     /// The burning mobs still tracked. Instrumentation.
     [[nodiscard]] usize tracked() const noexcept { return mobs_.size(); }
 
+    /// The damage window a fire hit is measured against: entered at more than
+    /// ten, as an effect's periodic hit — both land inside the victim's own
+    /// tick, after its counter moved. Measured: a cow in fire loses a point at
+    /// ticks 1, 11, 21, 31, 41 (docs/provenance/feu.md § 6); the console-phase
+    /// window would space them eleven apart.
+    [[nodiscard]] const gameplay::DamageConstants& damage_window() const noexcept {
+        return damage_constants_;
+    }
+
 private:
     struct MobFire {
         gameplay::EntityFire fire{};
@@ -160,7 +170,8 @@ private:
 
     gameplay::FireRandom          random_{0x4649'5245'0000'0001LL};
     math::XoroshiroRandomSource   loot_random_{0x4649'5245'4C4F'4F54LL};
-    gameplay::DamageConstants     damage_constants_{};
+    gameplay::DamageConstants     damage_constants_{
+        gameplay::effect_damage_constants(gameplay::DamageConstants{})};
     gameplay::EntityFireConstants constants_{};
 
     /// The humid biomes, by index (`#minecraft:increased_fire_burnout`).
