@@ -14,6 +14,7 @@
 #include "ov/nbt/binary.hpp"
 #include "ov/world/chunk.hpp"
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -62,6 +63,10 @@ struct LevelSettings {
     /// `GameRules`, as vanilla stores it: every value a string. Empty is an
     /// empty compound, which vanilla reads as every rule at its default.
     std::vector<std::pair<std::string, std::string>> game_rules;
+
+    // ── dragon ── `DragonFight`, as read, or as the server's dragon fight last
+    // wrote it. Empty: the fixed compound of a world nobody took to the End.
+    std::optional<nbt::Tag> dragon_fight;
 };
 
 /// Read what a level.dat says about itself into `into`, leaving fields it does

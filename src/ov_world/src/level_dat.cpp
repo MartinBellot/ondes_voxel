@@ -158,12 +158,17 @@ nbt::Document make_level_dat(const LevelSettings& settings) {
     // itself — "key missing: DragonFight" — which is a far better error than
     // most, and worth the reminder that the game is the cheapest test oracle
     // available.
-    nbt::Tag dragon = nbt::Tag::make_compound();
-    put(dragon, "Gateways", nbt::Tag{nbt::Tag::IntArray{}});
-    put(dragon, "DragonKilled", nbt::Tag::make_bool(false));
-    put(dragon, "PreviouslyKilled", nbt::Tag::make_bool(false));
-    put(dragon, "NeedsStateScanning", nbt::Tag::make_bool(true));
-    put(data, "DragonFight", std::move(dragon));
+    // ── dragon ── the fight's own compound once there is one.
+    if (settings.dragon_fight && settings.dragon_fight->compound() != nullptr) {
+        put(data, "DragonFight", *settings.dragon_fight);
+    } else {
+        nbt::Tag dragon = nbt::Tag::make_compound();
+        put(dragon, "Gateways", nbt::Tag{nbt::Tag::IntArray{}});
+        put(dragon, "DragonKilled", nbt::Tag::make_bool(false));
+        put(dragon, "PreviouslyKilled", nbt::Tag::make_bool(false));
+        put(dragon, "NeedsStateScanning", nbt::Tag::make_bool(true));
+        put(data, "DragonFight", std::move(dragon));
+    }
 
     nbt::Tag rules = nbt::Tag::make_compound();
     for (const auto& [rule, value] : settings.game_rules) {
@@ -207,6 +212,11 @@ void read_level_settings(const nbt::Tag& data, LevelSettings& into) {
     flag("thundering", into.thundering);
     integer("Difficulty", into.difficulty);
     flag("DifficultyLocked", into.difficulty_locked);
+    // ── dragon ── kept whole: the dragon fight reads it (end_fight.hpp).
+    if (const nbt::Tag* fight = data.find("DragonFight");
+        fight != nullptr && fight->compound() != nullptr) {
+        into.dragon_fight = *fight;
+    }
     if (const nbt::Tag* worldgen = data.find("WorldGenSettings")) {
         if (const nbt::Tag* seed = worldgen->find("seed")) {
             into.seed = seed->as_i64();
