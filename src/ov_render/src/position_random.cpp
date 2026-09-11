@@ -36,7 +36,7 @@ i64 LegacyLcg::next_long() noexcept {
     return static_cast<i64>(static_cast<u64>(high) << 32) + low;
 }
 
-Vec3f block_offset(i32 x, i32 z, OffsetType type, f32 max_horizontal) noexcept {
+Vec3f block_offset(i32 x, i32 z, OffsetType type, f32 max_horizontal, f32 max_vertical) noexcept {
     if (type == OffsetType::None) {
         return Vec3f{};
     }
@@ -49,7 +49,8 @@ Vec3f block_offset(i32 x, i32 z, OffsetType type, f32 max_horizontal) noexcept {
     const f64 limit = static_cast<f64>(max_horizontal);
     const f64 dx    = std::clamp((nibble(0) - 0.5) * 0.5, -limit, limit);
     const f64 dz    = std::clamp((nibble(8) - 0.5) * 0.5, -limit, limit);
-    const f64 dy    = type == OffsetType::XYZ ? (nibble(4) - 1.0) * 0.2 : 0.0;
+    const f64 dy =
+        type == OffsetType::XYZ ? (nibble(4) - 1.0) * static_cast<f64>(max_vertical) : 0.0;
     return Vec3f{static_cast<f32>(dx), static_cast<f32>(dy), static_cast<f32>(dz)};
 }
 

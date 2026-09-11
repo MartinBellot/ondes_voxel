@@ -45,9 +45,10 @@ enum class OffsetType : u8 { None, XZ, XYZ };
 
 /// The nudge, in blocks: the position seed taken at y = 0, its low nibble for
 /// x and the third for z, each 0..15 mapped onto ±0.25 and held within
-/// `max_horizontal`; for XYZ the second nibble for y, mapped onto −0.2..0.
-/// The game's own offsets, printed by the oracle for 22 grass plants, are
-/// reproduced exactly (test_position_random.cpp).
-[[nodiscard]] Vec3f block_offset(i32 x, i32 z, OffsetType type, f32 max_horizontal) noexcept;
+/// `max_horizontal`; for XYZ the second nibble for y, mapped onto
+/// −max_vertical..0. The game's own offsets, printed by the oracle for 22
+/// grass plants, are reproduced exactly (test_position_random.cpp).
+[[nodiscard]] Vec3f block_offset(i32 x, i32 z, OffsetType type, f32 max_horizontal,
+                                 f32 max_vertical = 0.2F) noexcept;
 
 }  // namespace ov::render

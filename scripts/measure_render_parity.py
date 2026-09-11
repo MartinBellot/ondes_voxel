@@ -237,6 +237,10 @@ def run_ours(tag, only, extra, binary):
         command = [binary, "--connect=127.0.0.1:%d" % (PORT + 1),
                    "--username=OvOurs", "--width=%d" % WIDTH, "--height=%d" % HEIGHT,
                    "--radius=%d" % RENDER_DISTANCE, "--no-hud", "--no-sound",
+                   # The vanilla scenes hold no entity (regions copied without
+                   # their entities, no spawning); ours must not draw the body
+                   # a dropped earlier connection left standing on the spot.
+                   "--no-entities",
                    "--stand-at=%s,%s,%s,%s,%s" % (x, y, z, yaw, pitch),
                    "--chat-at=120", "--frame-ms=16",
                    "--frames=100000", "--settle-shot", "--settle-chunks=%d" % SETTLE_CHUNKS,
@@ -259,6 +263,15 @@ def run_ours(tag, only, extra, binary):
             # than asked") is a scene that was cut off, not a scene: retried.
             with open(log) as f:
                 short = "FEWER than asked" in f.read()
+            # A capture at another size than the window asked for (the OS
+            # gave the window another size) cannot be compared pixel for pixel.
+            if os.path.exists(ppm):
+                with open(ppm, "rb") as f:
+                    head = f.read(32).split()
+                if head[1:3] != [b"%d" % (WIDTH * 2), b"%d" % (HEIGHT * 2)]:
+                    print("notre client %-14s : capture %sx%s, pas %dx%d" %
+                          (name, head[1].decode(), head[2].decode(), WIDTH * 2, HEIGHT * 2))
+                    short = True
             if short and os.path.exists(ppm):
                 os.remove(ppm)
             if os.path.exists(ppm):

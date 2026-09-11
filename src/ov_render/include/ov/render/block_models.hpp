@@ -49,6 +49,7 @@ struct BlockRender {
     /// plant the table does not name yet.
     OffsetType offset{OffsetType::None};
     f32        max_offset{0.25F};
+    f32        max_vertical_offset{0.2F};
 };
 
 class BlockModelCache {

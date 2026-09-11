@@ -303,7 +303,8 @@ SectionMeshStats mesh_section(const ChunkSectionView& view, BlockModelCache& mod
                         model = &render.alternatives[pick_weighted(
                             position_seed(world.x, world.y, world.z), render.weights)];
                     }
-                    info.offset = block_offset(world.x, world.z, render.offset, render.max_offset);
+                    info.offset = block_offset(world.x, world.z, render.offset, render.max_offset,
+                                               render.max_vertical_offset);
                 }
                 emit_block(*model, local, info, atlas, view, out);
                 const usize emitted = out.total_vertices() - before;

@@ -88,10 +88,46 @@ struct OffsetEntry {
     std::string_view name;
     OffsetType       type;
     f32              max_horizontal;
+    f32              max_vertical;
 };
 
+// All 33 blocks of 1.20.1 with an offset function, and the range the game gave
+// each at 512 positions (render_parity_offsets.txt; facts in the provenance
+// document). Horizontal ±0.25 unless stated; vertical 0 for XZ.
 constexpr OffsetEntry kOffsets[] = {
-    {"minecraft:grass", OffsetType::XYZ, 0.25F},
+    {"minecraft:grass", OffsetType::XYZ, 0.25F, 0.2F},
+    {"minecraft:fern", OffsetType::XYZ, 0.25F, 0.2F},
+    {"minecraft:small_dripleaf", OffsetType::XYZ, 0.25F, 0.1F},
+    {"minecraft:pointed_dripstone", OffsetType::XZ, 0.125F, 0.0F},
+    {"minecraft:mangrove_propagule", OffsetType::XZ, 0.25F, 0.0F},
+    {"minecraft:tall_seagrass", OffsetType::XZ, 0.25F, 0.0F},
+    {"minecraft:dandelion", OffsetType::XZ, 0.25F, 0.0F},
+    {"minecraft:torchflower", OffsetType::XZ, 0.25F, 0.0F},
+    {"minecraft:poppy", OffsetType::XZ, 0.25F, 0.0F},
+    {"minecraft:blue_orchid", OffsetType::XZ, 0.25F, 0.0F},
+    {"minecraft:allium", OffsetType::XZ, 0.25F, 0.0F},
+    {"minecraft:azure_bluet", OffsetType::XZ, 0.25F, 0.0F},
+    {"minecraft:red_tulip", OffsetType::XZ, 0.25F, 0.0F},
+    {"minecraft:orange_tulip", OffsetType::XZ, 0.25F, 0.0F},
+    {"minecraft:white_tulip", OffsetType::XZ, 0.25F, 0.0F},
+    {"minecraft:pink_tulip", OffsetType::XZ, 0.25F, 0.0F},
+    {"minecraft:oxeye_daisy", OffsetType::XZ, 0.25F, 0.0F},
+    {"minecraft:cornflower", OffsetType::XZ, 0.25F, 0.0F},
+    {"minecraft:wither_rose", OffsetType::XZ, 0.25F, 0.0F},
+    {"minecraft:lily_of_the_valley", OffsetType::XZ, 0.25F, 0.0F},
+    {"minecraft:sunflower", OffsetType::XZ, 0.25F, 0.0F},
+    {"minecraft:lilac", OffsetType::XZ, 0.25F, 0.0F},
+    {"minecraft:rose_bush", OffsetType::XZ, 0.25F, 0.0F},
+    {"minecraft:peony", OffsetType::XZ, 0.25F, 0.0F},
+    {"minecraft:tall_grass", OffsetType::XZ, 0.25F, 0.0F},
+    {"minecraft:large_fern", OffsetType::XZ, 0.25F, 0.0F},
+    {"minecraft:pitcher_plant", OffsetType::XZ, 0.25F, 0.0F},
+    {"minecraft:bamboo_sapling", OffsetType::XZ, 0.25F, 0.0F},
+    {"minecraft:bamboo", OffsetType::XZ, 0.25F, 0.0F},
+    {"minecraft:warped_roots", OffsetType::XZ, 0.25F, 0.0F},
+    {"minecraft:nether_sprouts", OffsetType::XZ, 0.25F, 0.0F},
+    {"minecraft:crimson_roots", OffsetType::XZ, 0.25F, 0.0F},
+    {"minecraft:hanging_roots", OffsetType::XZ, 0.25F, 0.0F},
 };
 
 }  // namespace
@@ -216,8 +252,9 @@ const BlockRender& BlockModelCache::resolve(registry::BlockStateId state) {
     render.tint      = tint_channel_for(name);
     for (const OffsetEntry& entry : kOffsets) {  // ── render-parity ──
         if (entry.name == name) {
-            render.offset     = entry.type;
-            render.max_offset = entry.max_horizontal;
+            render.offset              = entry.type;
+            render.max_offset          = entry.max_horizontal;
+            render.max_vertical_offset = entry.max_vertical;
         }
     }
 

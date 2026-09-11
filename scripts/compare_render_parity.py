@@ -186,7 +186,12 @@ def main():
     parser.add_argument("--tag", default="before")
     parser.add_argument("--region", default="")
     parser.add_argument("--only", default="")
+    parser.add_argument("--vanilla", default="",
+                        help="un dossier de captures vanilla gardé (le suivant écrase le dossier)")
     args = parser.parse_args()
+    global VANILLA
+    if args.vanilla:
+        VANILLA = os.path.abspath(args.vanilla)
     region = tuple(map(int, args.region.split(","))) if args.region else None
     names = [n for n in scene_names() if not args.only or n in args.only.split(",")]
     vanilla = {}
