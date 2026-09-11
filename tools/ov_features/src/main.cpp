@@ -1211,6 +1211,15 @@ int main(int argc, char** argv) {
                         if (mark == 0) {
                             continue;
                         }
+                        // `snowy` only under a snow *layer*: a snow block or
+                        // powder snow above sets it too in the game, and the top
+                        // layer never places those — stripping them would count
+                        // flags our feature cannot put back. (The loop goes up,
+                        // so the block above is still the game's.)
+                        if (mark == kSnowy &&
+                            pack->block_of(level->block_at(wx, y + 1, wz)) != *snow) {
+                            continue;
+                        }
                         theirs[ReferenceLevel::pack(wx, y, wz)] = mark;
                         if (mark == kSnow) {
                             level->restore(wx, y, wz, registry::kAirState);
@@ -1244,7 +1253,12 @@ int main(int argc, char** argv) {
                     for (i32 x = 0; x < 16; ++x) {
                         const i32  wx    = base_x + x;
                         const i32  wz    = base_z + z;
-                        const u8   ours  = marks(level->block_at(wx, y, wz));
+                        u8 ours = marks(level->block_at(wx, y, wz));
+                        // The same rule on our side: `snowy` counts under a layer.
+                        if (ours == kSnowy &&
+                            pack->block_of(level->block_at(wx, y + 1, wz)) != *snow) {
+                            ours = 0;
+                        }
                         const auto found = theirs.find(ReferenceLevel::pack(wx, y, wz));
                         const u8   game  = found == theirs.end() ? 0 : found->second;
                         if (ours == 0 && game == 0) {
