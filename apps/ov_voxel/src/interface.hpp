@@ -31,6 +31,7 @@
 #include "ov/client/hud.hpp"
 #include "ov/client/item_view.hpp"
 #include "ov/client/saved_hotbars.hpp"
+#include "ov/client/subtitles.hpp"  // ── sound ──
 #include "ov/client/window.hpp"
 #include "ov/netclient/client.hpp"
 #include "ov/protocol/play.hpp"
@@ -203,6 +204,16 @@ public:
     [[nodiscard]] bool chat_open() const noexcept { return chat_.open(); }
     [[nodiscard]] ChatUi& chat() noexcept { return chat_; }
     // ── end chat ──
+
+    // ── sound ── the subtitles to draw over the HUD this frame, or none, and
+    // the ears their arrows point from. Not owned.
+    void set_subtitles(const client::SubtitleOverlay* subtitles, const audio::Listener& ears) {
+        subtitles_      = subtitles;
+        subtitle_ears_  = ears;
+    }
+    const client::SubtitleOverlay* subtitles_{nullptr};
+    audio::Listener                subtitle_ears_{};
+    // ── end sound ──
 
 private:
     Interface() = default;

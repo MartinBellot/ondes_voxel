@@ -24,6 +24,7 @@ ov_add_library(ov_client
         src/scene_target.cpp
         src/sky_renderer.cpp
         src/sound_director.cpp
+        src/subtitles.cpp
         src/terrain_renderer.cpp
         src/text_field.cpp
         src/window.cpp
@@ -53,6 +54,8 @@ ov_add_test(test_ov_client
         tests/test_menu_layouts.cpp
         tests/test_options_file.cpp
         tests/test_sound_director.cpp
+        tests/test_sound_director_music.cpp
+        tests/test_subtitles.cpp
         tests/test_block_particles.cpp  # ── breaking ──
     DEPS ov_client
     LABELS unit
