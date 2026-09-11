@@ -3,6 +3,7 @@
 #include "ov/worldgen/pipeline.hpp"
 
 #include "ov/base/log.hpp"
+#include "ov/worldgen/structure_stage.hpp"  // ── structures ──
 
 #include <algorithm>
 #include <string>
@@ -183,6 +184,7 @@ struct ChunkPipeline::Impl {
     /// `ChunkPipeline::set_structures`.
     const StructurePlacer*       placer{nullptr};
     const StructureWorldSampler* sampler{nullptr};
+    StructureStage*              structure_stage{nullptr};  // ── structures ──
 
     /// Node-based on purpose: `promote()` holds a reference to one entry while
     /// driving its neighbours, and `unordered_map` keeps references valid
@@ -288,7 +290,7 @@ struct ChunkPipeline::Impl {
     }
 
     void decorate(i32 chunk_x, i32 chunk_z, Entry& entry) {  // NOLINT(misc-no-recursion)
-        if (decorator == nullptr) {
+        if (decorator == nullptr && structure_stage == nullptr) {
             return;
         }
 
@@ -308,6 +310,27 @@ struct ChunkPipeline::Impl {
             }
         }
         level.install(chunk_x, chunk_z, &entry.chunk);
+
+        // ── structures ──
+        // The pieces crossing this chunk, before its features: a structure's
+        // generation step comes before the ores, the springs and the plants.
+        // (The lakes and the icebergs of steps 0-2 come after here; named in
+        // docs/provenance/structures.md § 14.)
+        if (structure_stage != nullptr) {
+            std::array<world::Chunk*, 9> around{};
+            for (i32 dz = -1; dz <= 1; ++dz) {
+                for (i32 dx = -1; dx <= 1; ++dx) {
+                    around[static_cast<usize>((dz + 1) * 3 + (dx + 1))] =
+                        &cache.at(key_of(chunk_x + dx, chunk_z + dz)).chunk;
+                }
+            }
+            structure_stage->place(around, chunk_x, chunk_z, sea_level);
+        }
+        if (decorator == nullptr) {
+            entry.chunk.recompute_heightmaps();
+            return;
+        }
+        // ── end structures ──
 
         (void)decorator->decorate(level, chunk_x, chunk_z, level_seed);
 
@@ -380,6 +403,11 @@ void ChunkPipeline::set_structures(const StructurePlacer*       placer,
 
 std::vector<std::string_view> ChunkPipeline::structure_starts(i32 chunk_x, i32 chunk_z) {
     return impl_->advance(chunk_x, chunk_z, ChunkStatus::StructureStarts).starts;
+}
+
+// ── structures ──
+void ChunkPipeline::set_structure_stage(StructureStage* stage) noexcept {
+    impl_->structure_stage = stage;
 }
 
 const PipelineStats& ChunkPipeline::stats() const noexcept { return impl_->stats; }
