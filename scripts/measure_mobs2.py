@@ -554,7 +554,11 @@ def run_flat(wanted: list[str], result: dict) -> None:
         server.batch(["gamerule doDaylightCycle false", "gamerule doWeatherCycle false",
                       "gamerule doMobSpawning false", "gamerule mobGriefing false",
                       "gamerule randomTickSpeed 0", "difficulty hard",
-                      "gamerule doImmediateRespawn true"], timeout=120)
+                      "gamerule doImmediateRespawn true",
+                      # Every counting campaign needs it. The first `drown` run
+                      # was in a world where only `slime` had ever created it:
+                      # every score read failed silently and nothing "converted".
+                      "scoreboard objectives add ovcount dummy"], timeout=120)
         probe = KeptAlive(PORT)
         time.sleep(2.0)
         server.batch(["forceload add -48 -48 48 48"], timeout=120)
