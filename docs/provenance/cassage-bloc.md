@@ -224,8 +224,8 @@ suffit pas). Deuxième passe (2026-09-11, `breaking_records.json`) :
 | pierre, pioche en bois | 28 | 24, 24 | 6, 6 | 23 (+5) · 24 · 6 | 23 · 24, 24 · 6 (aucun délai hérité : serveur neuf) |
 | planches, hache en bois | 35 | 31, 31 | 6, 6 | 30 (+5) · 31 · 6 | 30 · 31, 31 · 6 (aucun délai hérité) |
 | pierre, pioche en bois, Haste II | 22 | 18, 18 | 6, 6 | 17 (+5) · 18 · 6 | 17 · 18 (avant la correction de `poll` : 23 · 24, l'effet ne passait pas) |
-| pierre, créatif | — | un bloc tous les **6** ticks | — | 6 |
-| bloc de slime (instantané) | — | 6 puis **1** tick | — | 6 · 1 |
+| pierre, créatif | — | un bloc tous les **6** ticks | — | 6 | non mesuré de bout en bout (test : 6) |
+| bloc de slime (instantané) | — | 6 puis **1** tick | — | 6 · 1 | non mesuré de bout en bout (test : 6 · 1) |
 
 (ticks de temps mur, le tick du Start compté comme premier). **Tout concorde**,
 y compris trois faits qu'aucune documentation ne donne :
