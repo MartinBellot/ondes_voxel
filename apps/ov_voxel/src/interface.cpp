@@ -310,6 +310,9 @@ void Interface::refresh_operator_tab() {
 
 void Interface::apply(const netclient::ClientEvents& events) {
     chat_.apply(events, gui_->font(), language_);  // ── chat ──
+    for (const auto& packet : events.scoreboard) {  // ── scoreboard ──
+        std::visit([this](const auto& p) { scoreboard_view_.apply(p); }, packet);
+    }
     if (events.game_mode) {
         // 1 is creative. Creative hides the hearts, the haunches and the
         // experience bar, and it is the only thing that decides it.
@@ -1001,6 +1004,7 @@ void Interface::draw(rhi::CommandList& cmd, u32 framebuffer_width, u32 framebuff
 
     if (options_.hud) {
         client::draw_hud(*gui_, *items_, textures_, hud_);
+        scoreboard_view_.draw(*gui_, language_);  // ── scoreboard ── under the chat
     }
     chat_.draw(*gui_);  // ── chat ──  over the HUD, under any screen
 

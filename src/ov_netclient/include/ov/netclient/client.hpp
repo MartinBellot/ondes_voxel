@@ -28,6 +28,7 @@
 #include "ov/protocol/blast.hpp"
 #include "ov/protocol/breaking.hpp"  // ── breaking ──
 #include "ov/protocol/client_play.hpp"
+#include "ov/protocol/scoreboard_packets.hpp"  // ── scoreboard ──
 #include "ov/protocol/sound.hpp"
 #include "ov/registry/block_states.hpp"
 #include "ov/world/chunk.hpp"
@@ -37,6 +38,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <variant>
 #include <vector>
 
 namespace ov::netclient {
@@ -251,6 +253,13 @@ struct ClientEvents {
         bool                       reset{false};
     };
     std::vector<ChatEvent> chat;
+    /// ── scoreboard ── Display Objective, Update Objectives, Update Teams and
+    /// Update Score, decoded, in arrival order — an objective is created
+    /// before it is shown, and shown before its scores come.
+    using ScoreboardEvent =
+        std::variant<net::scoreboard::DisplayObjective, net::scoreboard::ObjectiveUpdate,
+                     net::scoreboard::TeamUpdate, net::scoreboard::ScoreUpdate>;
+    std::vector<ScoreboardEvent> scoreboard;
     /// The chat types of the registry codec, from Login (play).
     std::optional<std::vector<net::ChatDecoration>> chat_types;
     /// The Commands packet: every command this player may run.
@@ -322,7 +331,7 @@ struct ClientEvents {
     std::optional<i32> op_level;
 
     [[nodiscard]] bool empty() const noexcept {
-        return loaded.empty() && unloaded.empty() && changed.empty() && !teleport &&
+        return loaded.empty() && unloaded.empty() && scoreboard.empty() && changed.empty() && !teleport &&
                !time_of_day && !health && !experience && containers.empty() &&
                container_slots.empty() && !open_screen && !close_window && !game_mode &&
                !abilities && entities.empty() && chat.empty() && !chat_types &&
