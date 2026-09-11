@@ -56,14 +56,26 @@ void install_goals(GoalSelector& selector, const MobKind& kind, i32 look_type,
         selector.add(2, std::make_unique<AvoidSunGoal>(kind.speed(kind.avoid_sun)));
     }
     if (kind.hostile) {
-        selector.add(3, std::make_unique<MeleeAttackGoal>(kind.speed(kind.chase), 20, kind.hold_at));
+        // ── mobs-3 ── `kind.melee`: a swing in reach becomes a MobAttack.
+        selector.add(3, std::make_unique<MeleeAttackGoal>(kind.speed(kind.chase),
+                                                          kMeleeCooldownTicks, kind.hold_at,
+                                                          kind.melee));
         // Target selection holds only the Target control, so it runs alongside
         // whatever is moving the body. That separation is the whole reason
         // Target is a flag of its own.
         // 35 blocks: the measured `follow_range` of a zombie, and inside the
         // bracket the acquisition campaign put the real radius in — chases at
         // 32, does not at 40. See docs/provenance/mobs.md section 3.
-        selector.add(3, std::make_unique<NearestAttackableTargetGoal>(quarry_type, 35.0, true));
+        // ── mobs-3 ── priority 2, so a player seen takes the Target control
+        // from a villager being hunted (priority 3, no line of sight needed).
+        // The radius is the species' measured `follow_range`: 35 for a zombie
+        // (the bracket above), 16 for a creeper, a spider or a skeleton.
+        selector.add(2, std::make_unique<NearestAttackableTargetGoal>(quarry_type,
+                                                                      kind.follow_range, true));
+        if (kind.hunts_villagers) {
+            selector.add(3, std::make_unique<NearestAttackableTargetGoal>(
+                                kVillagerQuarry, kind.follow_range, false));
+        }
     }
     if (kind.breeds) {
         // ── husbandry ── Breed before tempt before following a parent, which
@@ -180,6 +192,10 @@ void Mob::tick(entity::EntityWorld& world, entity::EntityHandle self,
         goal_context.brain_of      = &mob_brain_of;
         // ── villagers ──
         goal_context.villagers = mob->villagers;
+        // ── mobs-3 ──
+        goal_context.quarries      = mob->quarries;
+        goal_context.attacks       = mob->attacks;
+        goal_context.villager_type = mob->villager_type;
         goals_.tick(goal_context);
 
         // Turn the brain's intent into velocity. The goals never touch

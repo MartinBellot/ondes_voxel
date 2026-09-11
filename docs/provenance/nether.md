@@ -138,6 +138,45 @@ un paramètre dont chaque moitié empire l'agrégat.
 sur un monde du jeu (`--portal-world=`) ou sur les paquets que le jeu a envoyés
 (`--portal-packets= --portal-unbuild=`, § 3.3).
 
+### 1.6 La mer de lave rendue — `aquifers_enabled` (2026-09-11)
+
+`nether-2.md` a vu la lave régresser : dans les chunks `carvers` du Nether de référence régénéré,
+les cellules sous y 32 étaient de la lave chez le jeu et de l'air chez nous, « alors que le code du
+carver n'a pas changé ». Il n'avait pas changé : la cause est ailleurs, et l'historique la date.
+`73946c9` (l'aquifère, dans l'étage de bruit et dans les carvers) **n'est pas un ancêtre** de
+`a1cd76b` (le Nether) : les deux ont été faits en parallèle, le 99,802 % de § 1.3 a été mesuré sans
+aquifère, et la fusion a branché l'aquifère de l'overworld partout — y compris dans le Nether.
+
+Or les réglages du Nether et de l'End disent `"aquifers_enabled": false`, et **rien ne lisait ce
+champ**. `ChunkGenerator::aquifer_active()` ne regardait que la présence des nœuds du routeur ; le
+routeur du Nether les a (constantes nulles), donc l'aquifère répondait, avec sa propre notion de
+niveau local, là où le jeu n'a que la règle globale : sous 32, le fluide par défaut, la lave. Le
+carver n'y est pour rien — sous y 31 il pose la lave lui-même ; c'est la mer de lave **de l'étage
+de bruit** que l'aquifère vidait.
+
+Correction : `NoiseRouter::aquifers_enabled()` lit le champ, `aquifer_active()` l'exige. Mesure,
+`ov_netherparity --world=run/reference-nether-987654321/world/DIM-1 --seed=987654321 --chunks=200
+--biome-chunks=0` (200 chunks `carvers`, 13 107 200 blocs, masques 158 / 158 au bit près) :
+
+| | avant | après |
+|---|---|---|
+| blocs identiques | 12 861 098 — 98,122 % | **13 061 328 — 99,650 %** |
+| lave du jeu retrouvée | 67 464 / 267 731 — 25,198 % | **267 694 / 267 731 — 99,986 %** |
+| solide / vide | 99,973 % | 99,973 % |
+
+Le solide/vide ne bouge pas, et c'est ce qu'il fallait : la correction ne change que *quel vide*.
+Le reste de l'écart (0,35 %) est ce que § 1.5 nommait déjà — des features des voisins écrites dans
+ces chunks (verrues, basalte, pierre noire) et la surface de la vallée des âmes.
+
+**L'overworld ne bouge pas** : ses réglages disent `true`, et l'oracle entier des aquifères
+(`ov_parity --aquifer --chunks=4000`, 1 775 chunks, `aquiferes.md` § 10) redonne après la correction
+**1 480 842 / 1 481 524 — 99,954 %**, le chiffre publié, à la cellule près.
+
+**L'End** a lui aussi `aquifers_enabled: false` et suit donc la même règle désormais. Il n'a pas été
+remesuré contre le jeu (aucun monde de référence de l'End sur le disque) ; la règle globale n'y
+remplit rien (niveau de la mer 0, plancher 0), et 64 chunks de l'île principale générés par le
+chemin du serveur (`ov_gendet --export --dimension=end`) ne contiennent **aucun** bloc de fluide.
+
 ---
 
 ## 2. Deux niveaux dans le serveur
@@ -388,3 +427,15 @@ attend ses chunks est abandonnée si le joueur quitte le portail avant leur arri
     dans la mauvaise dimension.
 11. **Une traversée qui attend ses chunks meurt en silence si le joueur sort du portail.** Elle
     est désormais journalisée (« waiting for the chunks … », « the crossing is dropped »).
+
+## Chunks relus depuis le disque : la forme de la dimension (2026-09-11)
+
+`world::from_nbt` construisait tout chunk relu depuis le disque **à la forme de l'Overworld**
+(−64..320, 24 sections), quelle que soit sa dimension. Un chunk du Nether ou de l'End sauvé puis
+relu après un redémarrage revenait donc avec 24 sections au lieu de 16 : envoyé tel quel à un
+client dans le Nether (qui en attend 16 pour une hauteur de 256) et réécrit avec `yPos −4`. Le
+contexte de décodage porte désormais la forme (`ChunkCodecContext::shape`, l'Overworld par
+défaut) et `NetherWorld::open` y met celle de sa dimension (0..256). Test :
+`test_chunk_roundtrip.cpp` — « a Nether chunk keeps its shape through the disk and the wire »
+(blocs en y 0, 100 et 255, relus puis ré-encodés et relus comme le ferait le client).
+Signalé par l'agent des structures, qui l'avait remarqué en lisant le code.

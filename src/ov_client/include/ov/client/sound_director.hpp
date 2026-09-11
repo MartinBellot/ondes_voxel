@@ -72,6 +72,9 @@ public:
     void walked(f64 horizontal, bool on_ground, registry::BlockStateId under, Vec3d feet);
     /// One tick of mining the block at `pos`. The hit plays every fourth.
     void mining(registry::BlockStateId state, BlockPos pos);
+    /// ── breaking ── One hit sound, now: the dig controller already counts
+    /// the fourth ticks (gameplay::DigController::tick's `hit_sound`).
+    void hit(registry::BlockStateId state, BlockPos pos);
     void broke(registry::BlockStateId state, BlockPos pos);
     void placed(registry::BlockStateId state, BlockPos pos);
     /// A landing that did `damage` points, onto `under`.

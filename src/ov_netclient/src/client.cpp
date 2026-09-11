@@ -9,6 +9,8 @@
 #include "ov/protocol/client_play.hpp"
 #include "ov/protocol/entity.hpp"
 #include "ov/protocol/entity_metadata.hpp"
+#include "ov/protocol/breaking.hpp"        // ── breaking ──
+#include "ov/protocol/effect_packets.hpp"  // ── breaking ──
 #include "ov/protocol/framing.hpp"
 #include "ov/protocol/play.hpp"
 #include "ov/protocol/survival.hpp"
@@ -76,7 +78,11 @@ void ClientEvents::clear() {
     entity_sounds.clear();
     stop_sounds.clear();
     world_events.clear();
+    destroy_stages.clear();  // ── breaking ──
+    own_entity_id.reset();
+    own_effects.clear();
     explosions.clear();
+    op_level.reset();  // ── allow-commands ──
     pickups.clear();
     death_message.reset();  // ── screens ──
     respawned = false;
@@ -111,6 +117,11 @@ struct Client::Impl {
     // ── chat ──  The salt of an unsigned message: nothing checks it offline,
     // and vanilla sends a random one, so a splitmix sequence stands in for it.
     u64 salt_state{0x9E3779B97F4A7C15ULL};
+
+    // ── breaking ── The Player Action sequence, and this player's entity id
+    // (network thread only: Login (play) writes it, the effect packets read it).
+    std::atomic<i32> sequence{0};
+    i32              own_entity_id{-1};
 
     void send_raw(i32 packet_id, std::span<const u8> body);
     void handle(i32 packet_id, std::span<const u8> body);
@@ -308,6 +319,12 @@ void Client::Impl::handle_play(i32 packet_id, std::span<const u8> body) {
                 inbox.rain_level = *value;
             } else if (*kind == 8) {
                 inbox.thunder_level = *value;
+            } else if (*kind == 3) {
+                // ── breaking ── Change Game Mode. /gamemode sends only this, so
+                // without it a client stays in the mode of its Login — and a
+                // survival player the client still takes for creative breaks a
+                // block every six ticks that the server never lets go.
+                inbox.game_mode = static_cast<u8>(*value);
             }
             break;
         }
@@ -348,7 +365,9 @@ void Client::Impl::handle_play(i32 packet_id, std::span<const u8> body) {
                 writer.write_u8(1);            // listed in the player list
                 send_raw(net::serverbound::kClientInformation, writer.data());
             }
+            own_entity_id = *entity_id;  // ── breaking ──
             const std::lock_guard lock(mutex);
+            inbox.own_entity_id = *entity_id;  // ── breaking ──
             inbox.game_mode = *mode;
             inbox.hardcore  = *hardcore != 0;  // ── screens ──
             inbox.player_entity_id = *entity_id;  // ── entity-models ──
@@ -648,6 +667,12 @@ void Client::Impl::handle_play(i32 packet_id, std::span<const u8> body) {
             change.id     = parsed->entity_id;
             change.status = parsed->status;
             const std::lock_guard lock(mutex);
+            // ── allow-commands ── This player's permission level rides the same
+            // packet: statuses 24 + level, level 0..4.
+            const int status = parsed->status;
+            if (parsed->entity_id == own_entity_id && status >= 24 && status <= 28) {
+                inbox.op_level = status - 24;
+            }
             inbox.entities.push_back(std::move(change));
             break;
         }
@@ -807,6 +832,48 @@ void Client::Impl::handle_play(i32 packet_id, std::span<const u8> body) {
             inbox.world_events.push_back(*event);
             break;
         }
+
+        // ── breaking ──
+        case net::clientbound::kSetBlockDestroyStage: {
+            const auto destroy = net::parse_block_destroy_stage(body);
+            if (!destroy) {
+                OV_LOG_WARN("malformed Set Block Destroy Stage ({} bytes)", body.size());
+                return;
+            }
+            const std::lock_guard lock(mutex);
+            inbox.destroy_stages.push_back(*destroy);
+            break;
+        }
+
+        case net::clientbound::kEntityEffect: {
+            const auto effect = net::decode_entity_effect(body);
+            if (!effect) {
+                OV_LOG_WARN("malformed Entity Effect ({} bytes)", body.size());
+                return;
+            }
+            if (effect->entity_id != own_entity_id) {
+                return;  // another entity's: nothing here draws it yet
+            }
+            const std::lock_guard lock(mutex);
+            inbox.own_effects.push_back(
+                ClientEvents::OwnEffect{effect->effect_id, static_cast<i32>(effect->amplifier)});
+            break;
+        }
+
+        case net::clientbound::kRemoveEntityEffect: {
+            const auto removed = net::decode_remove_entity_effect(body);
+            if (!removed) {
+                OV_LOG_WARN("malformed Remove Entity Effect ({} bytes)", body.size());
+                return;
+            }
+            if (removed->entity_id != own_entity_id) {
+                return;
+            }
+            const std::lock_guard lock(mutex);
+            inbox.own_effects.push_back(ClientEvents::OwnEffect{removed->effect_id, -1});
+            break;
+        }
+        // ── end breaking ──
 
         case net::clientbound::kExplosion: {
             auto explosion = net::parse_explosion(body);
@@ -1143,6 +1210,16 @@ void Client::poll(ClientEvents& out) {
     // ── screens ──
     out.death_message = std::move(impl_->inbox.death_message);
     out.respawned     = impl_->inbox.respawned;
+    // ── breaking ── handed out like the rest: left out, the others' cracks,
+    // this player's id and its Haste were read off the wire and thrown away —
+    // the timed digs of scripts/measure_breaking.py found it, Haste II
+    // counting 23 ticks where it should take 17.
+    out.destroy_stages.swap(impl_->inbox.destroy_stages);
+    out.own_effects.swap(impl_->inbox.own_effects);
+    out.own_entity_id = impl_->inbox.own_entity_id;
+    impl_->inbox.own_entity_id.reset();
+    out.op_level = impl_->inbox.op_level;  // ── allow-commands ──
+    impl_->inbox.op_level.reset();
     out.hardcore      = impl_->inbox.hardcore;
     impl_->inbox.death_message.reset();
     impl_->inbox.respawned = false;
@@ -1186,12 +1263,16 @@ void Client::send_position(const PlayerInput& input) {
 }
 
 void Client::send_dig(i32 x, i32 y, i32 z, i32 status, i32 face) {
-    io::ByteWriter writer;
-    net::write_varint(writer, status);
-    net::write_position(writer, net::WirePosition{x, y, z});
-    writer.write_u8(static_cast<u8>(face));
-    net::write_varint(writer, 0);  // sequence
-    impl_->send_raw(net::serverbound::kPlayerAction, writer.data());
+    // ── breaking ── The archive: "Incremented with each action".
+    const i32  sequence = impl_->sequence.fetch_add(1, std::memory_order_relaxed) + 1;
+    const auto body     = net::encode_player_action(status, net::WirePosition{x, y, z},
+                                                    static_cast<u8>(face), sequence);
+    impl_->send_raw(net::serverbound::kPlayerAction, body);
+}
+
+void Client::send_swing(bool off_hand) {  // ── breaking ──
+    const auto body = net::encode_swing_arm(off_hand ? net::Hand::Off : net::Hand::Main);
+    impl_->send_raw(net::serverbound::kSwingArm, body);
 }
 
 void Client::send_place(i32 x, i32 y, i32 z, i32 face, f32 cursor_x, f32 cursor_y, f32 cursor_z) {

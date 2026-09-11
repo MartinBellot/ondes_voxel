@@ -65,6 +65,10 @@ struct SavedWorld {
     i32  game_type{0};
     bool generated{false};
     i64  seed{0};
+    /// level.dat's allowCommands: the list's line says "Cheats".
+    bool allow_commands{false};  // ── allow-commands ──
+    /// Data.Version.Name ("1.20.1"): the line ends "Version: 1.20.1".
+    std::string version_name;
 };
 
 /// Every folder under `saves` with a level.dat that reads, newest first.
@@ -98,6 +102,8 @@ struct MenuAction {
     std::optional<i64>    seed;
     bool                  create{false};
     bool                  survival{true};
+    /// A new world's "Allow Cheats", for its level.dat. ── allow-commands ──
+    bool                  allow_commands{false};
     std::string           address;
 };
 
@@ -234,8 +240,10 @@ private:
     i32               create_tab_{0};
     client::TextField world_name_{32};
     client::TextField seed_field_{32};
-    bool              create_survival_{true};
-    bool              create_hardcore_{false};
+    // ── allow-commands ── the game mode and Allow Cheats, decided together as
+    // the vanilla screen decides them (menu_layouts.hpp).
+    client::CreateGameMode create_mode_{client::CreateGameMode::Survival};
+    client::AllowCheats    create_cheats_;
     bool              create_flat_{false};
     std::string       focus_;
 

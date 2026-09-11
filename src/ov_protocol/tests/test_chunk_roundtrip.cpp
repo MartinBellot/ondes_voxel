@@ -160,6 +160,55 @@ TEST_CASE("a chunk survives the wire unchanged", "[protocol][chunk]") {
     INFO(checked << " chunks, " << blocks_compared << " cells");
 }
 
+TEST_CASE("a Nether chunk keeps its shape through the disk and the wire",
+          "[protocol][chunk][nether]") {
+    // A chunk read back from disk was always built overworld-shaped: a saved
+    // Nether chunk came back with 24 sections instead of 16, was sent that way
+    // to a client that expects 16, and was written back with yPos -4.
+    using namespace ov::world;
+    const std::filesystem::path pack("data/vanilla/1.20.1/registry.ovpack");
+    if (!std::filesystem::exists(pack)) {
+        SKIP("registry.ovpack is absent; generate it first");
+    }
+    auto blocks = registry::BlockRegistry::load(pack);
+    REQUIRE(blocks.has_value());
+    const auto netherrack = blocks->find_block("minecraft:netherrack");
+    REQUIRE(netherrack.has_value());
+    const registry::BlockStateId state = blocks->default_state(*netherrack);
+
+    const WorldShape nether = WorldShape::nether();
+    const AirStates  air    = AirStates::from(*blocks);
+    Chunk            chunk{ChunkPos{3, -2}, nether, air, &*blocks};
+    chunk.set_block(0, 0, 0, state);      // the floor of the Nether
+    chunk.set_block(5, 100, 7, state);
+    chunk.set_block(15, 255, 15, state);  // and its ceiling
+
+    ChunkCodecContext context;
+    context.blocks = &*blocks;
+    context.air    = air;
+    std::vector<std::string_view> biome_names(blocks->biome_count());
+    for (u32 index = 0; index < blocks->biome_count(); ++index) {
+        biome_names[index] = blocks->biome_name(index);
+    }
+    context.biome_names = biome_names;
+    context.shape       = nether;
+
+    const nbt::Document document = to_nbt(chunk, context);
+    const auto          back     = from_nbt(document, context);
+    REQUIRE(back.has_value());
+    CHECK(back->shape().min_y == 0);
+    CHECK(back->shape().section_count() == 16);
+    CHECK(back->get_block(0, 0, 0) == state);
+    CHECK(back->get_block(5, 100, 7) == state);
+    CHECK(back->get_block(15, 255, 15) == state);
+
+    // And a client in the Nether reads what the server then sends.
+    const auto encoded = net::encode_chunk_data(*back);
+    const auto decoded = net::parse_chunk_data(encoded, nether, air, &*blocks);
+    REQUIRE(decoded.has_value());
+    CHECK(decoded->get_block(5, 100, 7) == state);
+}
+
 TEST_CASE("a truncated chunk packet is refused, not read past", "[protocol][chunk]") {
     // The payload comes off a socket. Every prefix of a valid packet must be
     // rejected rather than read as if the missing half were zeroes.

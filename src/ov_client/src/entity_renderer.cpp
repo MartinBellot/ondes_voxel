@@ -113,6 +113,19 @@ std::expected<std::unique_ptr<EntityRenderer>, rhi::RhiError> EntityRenderer::cr
         pipeline.depth_write     = false;
         pipeline.debug_name      = pass == EntityPass::Eyes ? "entity eyes" : "entity energy";
     }
+    if (pass == EntityPass::Crumbling) {  // ── breaking ──
+        pipeline.fragment_shader     = "crumbling.frag.spv";
+        pipeline.blend               = rhi::BlendMode::Multiply;
+        pipeline.depth_write         = false;
+        pipeline.depth_compare       = rhi::CompareOp::LessOrEqual;
+        pipeline.depth_bias_constant = -10.0F;
+        pipeline.depth_bias_slope    = -1.0F;
+        // The cracks keep the back-face culling they were measured with: the
+        // entity passes above dropped culling for the game's no-cull mobs, and
+        // a block's cracks are not one of them.
+        pipeline.cull_mode  = rhi::CullMode::Back;
+        pipeline.debug_name = "crumbling";
+    }
 
     auto created = device.create_graphics_pipeline(pipeline);
     if (!created) {
@@ -127,7 +140,8 @@ std::expected<std::unique_ptr<EntityRenderer>, rhi::RhiError> EntityRenderer::cr
                                                           rhi::Filter::Nearest,
                                                           rhi::MipFilter::Nearest,
                                                           pass == EntityPass::Translucent ||
-                                                                  pass == EntityPass::Energy
+                                                                  pass == EntityPass::Energy ||
+                                                                  pass == EntityPass::Crumbling
                                                               ? rhi::AddressMode::Repeat
                                                               : rhi::AddressMode::ClampToEdge,
                                                           1.0F,

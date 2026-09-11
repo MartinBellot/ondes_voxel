@@ -14,6 +14,7 @@
 #include "ov/protocol/entity.hpp"
 #include "ov/registry/registries.hpp"
 
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -25,7 +26,10 @@ inline constexpr u8 kSlimeSize = 16;
 
 class Slimes {
 public:
-    explicit Slimes(const registry::Registries& registries);
+    /// ── nether-2 ── `type` may name the magma cube, which sizes and splits
+    /// exactly as a slime does (minecraft.wiki "Magma Cube").
+    explicit Slimes(const registry::Registries& registries,
+                    std::string_view            type = "minecraft:slime");
 
     [[nodiscard]] bool owns(i32 type) const noexcept { return type == slime_type_ && type >= 0; }
 

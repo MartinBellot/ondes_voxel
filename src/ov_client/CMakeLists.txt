@@ -12,6 +12,7 @@ ov_add_library(ov_client
         src/creative_screen.cpp
         src/debug_overlay.cpp
         src/entity_renderer.cpp
+        src/block_particles.cpp  # ── breaking ──
         src/gui.cpp
         src/hud.cpp
         src/item_view.cpp
@@ -34,6 +35,7 @@ ov_add_library(ov_client
         ov_audio
         ov_netclient
         ov_registry
+        ov_gameplay  # ── breaking ── particles collide through CollisionWorld
     PRIVATE_DEPS
         glfw
 )
@@ -51,6 +53,7 @@ ov_add_test(test_ov_client
         tests/test_menu_layouts.cpp
         tests/test_options_file.cpp
         tests/test_sound_director.cpp
+        tests/test_block_particles.cpp  # ── breaking ──
     DEPS ov_client
     LABELS unit
 )
@@ -65,6 +68,7 @@ ov_add_shaders(ov_client_shaders
         shaders/entity.frag
         shaders/entity_additive.frag
         shaders/entity_translucent.frag
+        shaders/crumbling.frag
         shaders/gui.vert
         shaders/gui.frag
         shaders/overlay.vert

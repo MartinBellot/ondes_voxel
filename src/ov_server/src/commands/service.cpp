@@ -34,7 +34,22 @@ const std::vector<u8>& CommandService::commands_packet(i32 permission) const {
     return graphs_[static_cast<usize>(std::clamp(permission, 0, 4))];
 }
 
+i32 join_permission(bool integrated, bool allow_commands, bool is_host,
+                    std::optional<i32> ops_level) noexcept {
+    if (!integrated) {
+        return std::clamp(ops_level.value_or(0), 0, kPermissionOwner);
+    }
+    return is_host && allow_commands ? kPermissionOwner : 0;
+}
+
+i32 CommandService::permission_for(const PlayerRef& p) const {
+    const bool is_host = !config_.host_player.empty() && p.name == config_.host_player;
+    return join_permission(config_.integrated, allow_commands_, is_host,
+                           config_.integrated ? std::nullopt : ops_.level_of(p.uuid));
+}
+
 void CommandService::load_world(const world::LevelSettings& settings) {
+    allow_commands_ = settings.allow_commands;  // ── allow-commands ──
     world_.load(settings);
     default_mode_.store(world_.default_game_mode, std::memory_order_relaxed);
 }
@@ -131,7 +146,7 @@ CommandSource CommandService::source_for(const PlayerRef& p) const {
 }
 
 void CommandService::welcome(PlayerRef& p) {
-    const i32 level = config_.integrated ? kPermissionOwner : ops_.level_of(p.uuid).value_or(0);
+    const i32 level = permission_for(p);  // ── allow-commands ──
     *p.permission   = level;
     p.send(net::clientbound::kChangeDifficulty,
            net::encode_change_difficulty(world_.difficulty, world_.difficulty_locked));
@@ -293,7 +308,9 @@ void CommandService::success(const CommandSource& source, const Text& text, bool
             if (source.is_player() && p.entity_id == source.entity_id) {
                 continue;
             }
-            const bool op = config_.integrated || ops_.level_of(p.uuid).has_value();
+            // ── allow-commands ── in singleplayer, the host with cheats only.
+            const bool op = config_.integrated ? permission_for(p) > 0
+                                               : ops_.level_of(p.uuid).has_value();
             if (op) {
                 p.send(net::clientbound::kSystemChat, net::encode_system_chat(json, false));
             }

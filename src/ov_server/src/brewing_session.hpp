@@ -23,6 +23,7 @@
 #pragma once
 
 #include "effect_session.hpp"
+#include "entity_storage.hpp"  // ── persistence ──
 #include "survival_session.hpp"
 
 #include "ov/gameplay/brewing.hpp"
@@ -151,9 +152,30 @@ struct BrewingStats {
     usize applied{0};
 };
 
-class Brewing {
+class Brewing final : public LooseAdopter {
 public:
     explicit Brewing(const registry::Registries& registries);
+
+    // ── persistence: the lingering clouds, a LooseAdopter ───────────────────
+    //
+    // `minecraft:area_effect_cloud`: `Age`, `Duration`, `DurationOnUse`,
+    // `WaitTime`, `ReapplicationDelay` (ints), `Radius`, `RadiusOnUse`,
+    // `RadiusPerTick` (floats), `Particle`, `Potion` (strings), the custom
+    // `Effects`, `Color` when it came with one; measured on the real server.
+
+    /// Where a cloud read from disk gets its wire id and is announced. Not
+    /// owned; must outlive the last read.
+    void set_persistence_host(const PotionHost* host) noexcept { persistence_host_ = host; }
+
+    [[nodiscard]] bool owns_type(std::string_view type) const noexcept override {
+        return type == "minecraft:area_effect_cloud";
+    }
+    bool adopt_saved(const nbt::Tag& compound) override;
+    void positions(std::vector<Vec3d>& out) const override;
+    void save(std::vector<LooseEntity>& out) const override;
+    void release(const std::function<bool(ChunkPos)>& leaving, std::vector<LooseEntity>& out,
+                 std::vector<i32>& removed) override;
+    [[nodiscard]] usize clouds() const noexcept { return clouds_.size(); }
 
     // ── Stands: the tick thread, `chunk_mutex` held ─────────────────────────
 
@@ -216,8 +238,16 @@ private:
         /// Entity id → the age at which it may be affected again.
         std::unordered_map<i32, i32> victims;
         bool                         sent_waiting{true};
+        /// ── persistence ── The potion it came from, how many of `effects`
+        /// are that potion's own (the rest are custom), and the compound it
+        /// was read with (End when none) with its UUID.
+        gameplay::Potion potion{gameplay::Potion::Empty};
+        usize            own{0};
+        nbt::Tag         saved{};
+        net::Uuid        uuid{};
     };
 
+    [[nodiscard]] nbt::Tag cloud_nbt(const CloudEntity& cloud) const;
     void spawn_cloud(const PotionHost& host, Vec3d at, PotionContents contents);
     [[nodiscard]] std::string_view item_name(i32 id) const;
     [[nodiscard]] i32              item_id(std::string_view name) const;
@@ -231,6 +261,7 @@ private:
     std::unordered_map<u64, StandCache>       cache_;
     i64                                       indexed_at_{-1};
     std::vector<CloudEntity>                  clouds_;
+    const PotionHost*                         persistence_host_{nullptr};  // ── persistence ──
     std::vector<PotionPlayer>                 players_;
     BrewingStats                              stats_{};
 };

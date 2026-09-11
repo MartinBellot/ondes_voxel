@@ -10,9 +10,13 @@
 #include "ov/worldgen/density.hpp"
 #include "ov/worldgen/feature.hpp"
 #include "ov/worldgen/pipeline.hpp"
+#include "ov/worldgen/structure_stage.hpp"  // ── structures ──
 #include "ov/worldgen/surface_system.hpp"
+#include "world_structures.hpp"  // ── structures ──
 
+#include <cstdlib>
 #include <memory>
+#include <string>
 #include <optional>
 #include <unordered_map>
 #include <utility>
@@ -56,6 +60,10 @@ struct GeneratedWorld::Stack {
     std::optional<worldgen::ChunkGenerator> generator;
     std::optional<worldgen::ChunkPipeline>  pipeline;
 
+    /// ── structures ── This stack's sampler and structure stage, attached to
+    /// `pipeline`; null when the dimension has no structures to place.
+    std::unique_ptr<WorldStructures::StackStage> structures;
+
     /// ── nether ── The chunk's shape: the overworld's, or the Nether's 256.
     world::WorldShape shape{world::WorldShape::overworld()};
 
@@ -75,6 +83,11 @@ struct GeneratedWorld::Stack {
 
 struct GeneratedWorld::Impl {
     i64 seed{0};
+
+    /// ── structures ── Shared by every stack, so declared before them: the
+    /// stacks' stages borrow its placer and builder.
+    std::string                      settings;
+    std::unique_ptr<WorldStructures> structures;
 
     /// One per generating thread. `stacks[0]` belongs to whoever calls
     /// `generate` directly — the tick thread's fallback path.
@@ -177,6 +190,26 @@ std::unique_ptr<GeneratedWorld> GeneratedWorld::load(
         impl->stacks.push_back(std::move(stack));
     }
 
+    // ── structures ── Loaded once, a stage per stack. Without the jar the
+    // world still generates, and says loudly that it carries no structures.
+    impl->settings = std::string{settings};
+    if (const char* off = std::getenv("OV_STRUCTURES"); off != nullptr && std::string_view{off} == "0") {
+        OV_LOG_WARN("worldgen: OV_STRUCTURES=0; {} places no structure — an instrument", settings);
+    } else {
+        impl->structures = WorldStructures::load(data, WorldStructures::default_jar(data_root),
+                                                 blocks, impl->stacks.front()->biomes.biomes());
+        if (!impl->structures) {
+            OV_LOG_ERROR("worldgen: {} will carry no structures (see above)", settings);
+        }
+        for (auto& stack : impl->stacks) {
+            if (impl->structures) {
+                stack->structures =
+                    impl->structures->make_stage(*stack->generator, blocks, registries, seed);
+                stack->pipeline->set_structure_stage(stack->structures->stage.get());
+            }
+        }
+    }
+
     // The two numberings, reconciled by name rather than assumed equal.
     std::unordered_map<std::string_view, u16> by_name;
     for (usize i = 0; i < codec_biomes.size(); ++i) {
@@ -237,6 +270,9 @@ world::Chunk GeneratedWorld::generate(i32 chunk_x, i32 chunk_z) {
     // their features, so nothing can write into this chunk again and the
     // pipeline has no reason to keep it. The server's own cache owns it now.
     world::Chunk chunk = stack.pipeline->take(chunk_x, chunk_z);
+    if (stack.structures) {  // ── structures ──
+        stack.structures->record(chunk);
+    }
     to_codec_biomes(chunk);
 
     // Bound what the pipeline holds. Eight chunks is more than the two the
@@ -245,6 +281,10 @@ world::Chunk GeneratedWorld::generate(i32 chunk_x, i32 chunk_z) {
     // across the world drops a cache that was about to be useless anyway.
     constexpr i32 kKeep = 8;
     stack.pipeline->trim(chunk_x, chunk_z, kKeep);
+    if (stack.structures) {  // ── structures ──
+        stack.structures->stage->trim(chunk_x, chunk_z, kKeep + worldgen::StructureStage::kReach);
+        stack.structures->report(impl_->settings);
+    }
 
     return chunk;
 }
@@ -260,6 +300,9 @@ void GeneratedWorld::generate_square(usize stack_index, i32 origin_x, i32 origin
     // end — makes this square a pure function of the seed and its origin, which
     // is what lets N workers produce the world one worker would have.
     stack.pipeline->clear();
+    if (stack.structures) {  // ── structures ── cold, like the pipeline
+        stack.structures->stage->clear();
+    }
 
     // Two passes, and the order of the first one is part of the contract.
     // Promoting every chunk before taking any means no chunk is ever removed
@@ -275,12 +318,19 @@ void GeneratedWorld::generate_square(usize stack_index, i32 origin_x, i32 origin
             const i32    x     = origin_x + dx;
             const i32    z     = origin_z + dz;
             world::Chunk chunk = stack.pipeline->take(x, z);
+            if (stack.structures) {  // ── structures ──
+                stack.structures->record(chunk);
+            }
             to_codec_biomes(chunk);
             out.emplace_back(ChunkPos{x, z}, std::move(chunk));
         }
     }
 
     stack.pipeline->clear();
+    if (stack.structures) {  // ── structures ──
+        stack.structures->report(impl_->settings);
+        stack.structures->stage->clear();
+    }
 }
 
 i64 GeneratedWorld::seed() const noexcept { return impl_->seed; }

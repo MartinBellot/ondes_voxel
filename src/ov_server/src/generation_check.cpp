@@ -6,10 +6,15 @@
 #include "generated_world.hpp"
 #include "ov/base/log.hpp"
 #include "ov/registry/block_states.hpp"
+#include "ov/nbt/region_writer.hpp"
 #include "ov/registry/registries.hpp"
 #include "ov/world/chunk.hpp"
+#include "ov/world/chunk_storage.hpp"
+
+#include <fmt/format.h>
 
 #include <chrono>
+#include <map>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -178,6 +183,77 @@ GenerationCheck check_generation_determinism(const std::filesystem::path& data_r
         }
     }
 
+    return result;
+}
+
+// ── structures ──
+GenerationExport export_generated_chunks(const std::filesystem::path& data_root, i64 seed,
+                                         std::string_view settings, i32 min_chunk_x,
+                                         i32 min_chunk_z, i32 max_chunk_x, i32 max_chunk_z,
+                                         const std::filesystem::path& region_dir) {
+    GenerationExport result;
+    const auto       pack   = data_root / "vanilla" / "1.20.1" / "registry.ovpack";
+    auto             blocks = registry::BlockRegistry::load(pack);
+    auto             registries = registry::Registries::load(pack);
+    if (!blocks || !registries) {
+        OV_LOG_ERROR("export: cannot read {}", pack.string());
+        return result;
+    }
+    // The block registry's biome names as the codec's, as in the check above:
+    // the disk form is by name either way.
+    std::vector<std::string_view> biome_names;
+    for (u32 index = 0; index < blocks->biome_count(); ++index) {
+        biome_names.push_back(blocks->biome_name(index));
+    }
+    auto world =
+        GeneratedWorld::load(data_root, *blocks, *registries, biome_names, seed, 1, settings);
+    if (!world) {
+        OV_LOG_ERROR("export: the generator could not be built");
+        return result;
+    }
+    result.loaded = true;
+
+    world::ChunkCodecContext codec;
+    codec.blocks      = &*blocks;
+    codec.biome_names = biome_names;
+    codec.registries  = &*registries;
+    codec.air         = world::AirStates::from(*blocks);
+
+    std::error_code ignored;
+    std::filesystem::create_directories(region_dir, ignored);
+    const auto start = std::chrono::steady_clock::now();
+    std::map<std::pair<i32, i32>, std::vector<std::pair<ChunkPos, nbt::Document>>> by_region;
+    constexpr i32 kSide = AsyncChunkSource::kBlockChunks;
+    for (i32 bz = AsyncChunkSource::block_of(min_chunk_z);
+         bz <= AsyncChunkSource::block_of(max_chunk_z); ++bz) {
+        for (i32 bx = AsyncChunkSource::block_of(min_chunk_x);
+             bx <= AsyncChunkSource::block_of(max_chunk_x); ++bx) {
+            std::vector<std::pair<ChunkPos, world::Chunk>> produced;
+            world->generate_square(0, bx * kSide, bz * kSide, kSide, produced);
+            ++result.squares;
+            for (auto& [pos, chunk] : produced) {
+                if (pos.x < min_chunk_x || pos.x > max_chunk_x || pos.z < min_chunk_z ||
+                    pos.z > max_chunk_z) {
+                    continue;
+                }
+                by_region[{pos.x >> 5, pos.z >> 5}].emplace_back(pos, world::to_nbt(chunk, codec));
+                ++result.chunks;
+            }
+        }
+    }
+    for (auto& [region, documents] : by_region) {
+        const auto path =
+            region_dir / fmt::format("r.{}.{}.mca", region.first, region.second);
+        auto writer = nbt::RegionWriter::open_or_empty(path);
+        for (auto& [pos, document] : documents) {
+            writer.set_chunk(static_cast<u32>(pos.x & 31), static_cast<u32>(pos.z & 31),
+                             std::move(document), 0);
+        }
+        if (!writer.write(path)) {
+            OV_LOG_ERROR("export: could not write {}", path.string());
+        }
+    }
+    result.seconds = seconds_since(start);
     return result;
 }
 

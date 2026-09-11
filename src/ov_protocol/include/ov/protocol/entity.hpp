@@ -171,6 +171,10 @@ public:
     MetadataWriter& rotations_value(u8 index, f32 x, f32 y, f32 z);
     MetadataWriter& block_pos_value(u8 index, WirePosition position);
     MetadataWriter& optional_block_pos_value(u8 index, std::optional<WirePosition> position);
+    /// A particle with no options of its own (`dragon_breath`, `entity_effect`
+    /// in 1.20.1): its id in `minecraft:particle_type`. Measured on an
+    /// area effect cloud a dragon fireball left: index 11, type 17, id 8.
+    MetadataWriter& particle_value(u8 index, i32 particle);
     MetadataWriter& direction_value(u8 index, i32 direction);
     MetadataWriter& optional_uuid_value(u8 index, const std::optional<Uuid>& uuid);
     MetadataWriter& block_state_value(u8 index, i32 state);

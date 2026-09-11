@@ -61,6 +61,40 @@ struct KeyRow {
 /// buttons at the bottom. `tab` is 0 Game, 1 World, 2 More.
 [[nodiscard]] std::vector<Widget> create_world_layout(f32 width, f32 height, i32 tab);
 
+// ── allow-commands ──
+/// Create World's game mode, in the order its button cycles.
+enum class CreateGameMode : u8 { Survival, Hardcore, Creative };
+
+/// The game mode after one press of its button: Survival, Hardcore, Creative.
+[[nodiscard]] CreateGameMode next_game_mode(CreateGameMode mode) noexcept;
+
+/// Create World's "Allow Cheats", as the vanilla client decides it (measured,
+/// docs/provenance/commandes-solo.md § 1): until the player presses the
+/// button it follows the game mode — ON in Creative, OFF otherwise — and
+/// once pressed it keeps the player's value through every mode change. In
+/// Hardcore it reads OFF and the button is inactive, whatever was chosen, and
+/// the choice comes back with the next mode.
+struct AllowCheats {
+    /// The player's own value, once they pressed the button.
+    std::optional<bool> chosen;
+
+    [[nodiscard]] bool value(CreateGameMode mode) const noexcept {
+        if (mode == CreateGameMode::Hardcore) {
+            return false;
+        }
+        return chosen.value_or(mode == CreateGameMode::Creative);
+    }
+    [[nodiscard]] static bool active(CreateGameMode mode) noexcept {
+        return mode != CreateGameMode::Hardcore;
+    }
+    /// A press: the shown value flips, and becomes the player's.
+    void press(CreateGameMode mode) noexcept {
+        if (active(mode)) {
+            chosen = !value(mode);
+        }
+    }
+};
+
 /// Direct Connection: the address box, Join Server and Cancel.
 [[nodiscard]] std::vector<Widget> direct_connect_layout(f32 width, f32 height);
 

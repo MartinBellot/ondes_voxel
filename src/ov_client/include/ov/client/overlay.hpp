@@ -44,6 +44,12 @@ public:
     void draw_block_outline(rhi::CommandList& cmd, const render::Mat4& view_projection,
                             Vec3d camera, i32 x, i32 y, i32 z);
 
+    /// ── breaking ── Draw a block's outline as the edges of its shape, already
+    /// in world space (render::shape_edges, the boxes grown by the caller). The
+    /// same colour as the cube: black at 40 %.
+    void draw_shape_outline(rhi::CommandList& cmd, const render::Mat4& view_projection,
+                            std::span<const std::array<Vec3d, 2>> edges);
+
     /// Draw the crosshair, in the middle of the screen.
     void draw_crosshair(rhi::CommandList& cmd, u32 width, u32 height);
 

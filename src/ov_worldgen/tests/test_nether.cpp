@@ -143,6 +143,9 @@ TEST_CASE("the Nether generates the game's columns", "[worldgen][nether][parity]
     CHECK(router->legacy_random_source());
     CHECK(router->default_block() == "minecraft:netherrack");
     CHECK(router->default_fluid() == "minecraft:lava");
+    // ── carvers-3 ── The Nether has no aquifer: the lava sea fills every
+    // empty cell under y 32, carved or not.
+    CHECK_FALSE(router->aquifers_enabled());
     CHECK(router->sea_level() == 32);
     CHECK(router->height() == 128);
     auto biomes = BiomeSource::load(reports_root(), "nether");

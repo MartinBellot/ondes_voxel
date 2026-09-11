@@ -4,6 +4,7 @@
 
 #include "feature_json.hpp"
 #include "overworld_feature.hpp"
+#include "nether_feature.hpp"  // ── nether-2 ──
 
 #include "ov/base/log.hpp"
 #include "ov/worldgen/ore_feature.hpp"
@@ -683,6 +684,10 @@ std::expected<FeatureRef, FeatureError> parse_feature(
     // ── end ── end_spike, end_island, chorus_plant, end_gateway.
     if (is_end_feature(kind)) {
         return parse_end_feature(kind, config.value(), blocks);
+    }
+    // ── nether-2 ── the Nether's nine types, in nether_feature.cpp
+    if (auto claimed = parse_nether_feature(kind, config.value(), blocks, tags)) {
+        return std::move(*claimed);
     }
 
     // Everything else. Lakes, geodes, the nether's vegetation: each with its

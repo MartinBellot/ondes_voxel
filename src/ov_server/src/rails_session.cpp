@@ -3,9 +3,6 @@
 #include "ov/base/log.hpp"
 #include "ov/gameplay/redstone.hpp"
 #include "ov/io/byte_writer.hpp"
-#include "ov/nbt/binary.hpp"
-#include "ov/nbt/region.hpp"
-#include "ov/nbt/region_writer.hpp"
 #include "ov/protocol/entity.hpp"
 #include "ov/protocol/play.hpp"
 #include "ov/protocol/varint.hpp"
@@ -14,7 +11,7 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
+#include <iterator>
 #include <numbers>
 #include <utility>
 
@@ -36,9 +33,6 @@ constexpr u8 kDisplayBlock  = 11;  // VarInt, a block state id
 constexpr u8 kDisplayOffset = 12;  // VarInt
 constexpr u8 kCustomDisplay = 13;  // Boolean
 constexpr u8 kFurnaceFuel   = 14;  // Boolean, a furnace cart that burns
-
-/// 1.20.1's data version, as vanilla writes it into every chunk.
-constexpr i32 kDataVersion = 3465;
 
 [[nodiscard]] u64 mix(u64 z) noexcept {
     z += 0x9E3779B97F4A7C15ULL;
@@ -205,7 +199,7 @@ bool RailsSession::owns(i32 type) const noexcept {
 bool RailsSession::has_pending() const {
     const std::scoped_lock lock{pending_mutex_};
     return !pending_shapes_.empty() || !pending_carts_.empty() || !pending_touches_.empty() ||
-           !pending_inputs_.empty();
+           !pending_inputs_.empty() || !pending_restores_.empty();
 }
 
 i32 RailsSession::vehicle_of(i32 player_id) const {
@@ -468,7 +462,66 @@ void RailsSession::before_entity_tick(entity::EntityWorld& world, ServerLevel& l
         carts_now_.swap(pending_carts_);
         touches_now_.swap(pending_touches_);
         inputs_now_.swap(pending_inputs_);
+        restores_now_.swap(pending_restores_);
     }
+    // ── persistence ── the carts that came back with their riders
+    for (PendingRestore& restore : restores_now_) {
+        if (host.player_ready && !host.player_ready(restore.player_id)) {
+            if (++restore.waited < 1200) {
+                const std::scoped_lock lock{pending_mutex_};
+                pending_restores_.push_back(std::move(restore));
+            } else {
+                OV_LOG_WARN("minecart: player {} never arrived to ride the cart from their file "
+                            "— the cart is dropped",
+                            restore.player_id);
+            }
+            continue;
+        }
+        const nbt::Tag* entity = restore.root_vehicle.find("Entity");
+        if (entity == nullptr) {
+            continue;
+        }
+        const auto               uuid = uuid_of(*entity);
+        std::optional<net::Uuid> attach;
+        if (const nbt::Tag* ints = restore.root_vehicle.find("Attach")) {
+            nbt::Tag wrap = nbt::Tag::make_compound();
+            put(wrap, "UUID", *ints);
+            attach = uuid_of(wrap);
+        }
+        // The cart may be here already: a world saved with it in its chunk.
+        i32 cart_id = -1;
+        for (const auto& [id, cart] : carts_) {
+            const entity::EntityState* state = world.state(cart.handle);
+            if (state != nullptr && uuid && state->uuid == *uuid && cart.rider < 0) {
+                cart_id = id;
+                break;
+            }
+        }
+        if (cart_id < 0) {
+            const auto handle = adopt_saved(world, *entity);
+            if (!handle) {
+                OV_LOG_WARN("minecart: the vehicle in player {}'s file is not a cart this server "
+                            "runs — not put back",
+                            restore.player_id);
+                continue;
+            }
+            const entity::EntityState* state = world.state(*handle);
+            cart_id                          = state->network_id;
+            spawn_packets(world, *state, host.broadcast);
+        }
+        if (attach && uuid && *attach != *uuid) {
+            OV_LOG_WARN("minecart: player {} sat in an entity riding the cart, not in the cart — "
+                        "the cart is back, the player is not in it",
+                        restore.player_id);
+            continue;
+        }
+        const auto cart = carts_.find(cart_id);
+        if (cart != carts_.end() && !vehicle_of_.contains(restore.player_id)) {
+            mount(world, cart->second, cart_id, restore.player_id, host);
+            OV_LOG_INFO("minecart: player {} is back in their cart", restore.player_id);
+        }
+    }
+    restores_now_.clear();
     for (const PendingShape& shape : shapes_now_) {
         const registry::BlockStateId state = level.block_at(shape.pos);
         if (!rails_.is_rail(state)) {
@@ -711,135 +764,121 @@ nbt::Tag RailsSession::cart_nbt(const entity::EntityState&   state,
     return tag;
 }
 
-usize RailsSession::load(const std::filesystem::path& level_dir, entity::EntityWorld& world) {
-    const std::filesystem::path directory = level_dir / "entities";
-    std::error_code             error;
-    if (!std::filesystem::is_directory(directory, error)) {
-        return 0;
+std::optional<entity::EntityHandle> RailsSession::adopt_saved(entity::EntityWorld& world,
+                                                              const nbt::Tag&      compound) {
+    const nbt::Tag* id   = compound.find("id");
+    const auto      kind = id != nullptr ? gameplay::minecart_kind(id->as_string()) : std::nullopt;
+    if (!kind) {
+        return std::nullopt;
     }
-    usize carts = 0;
-    for (const auto& file : std::filesystem::directory_iterator(directory, error)) {
-        const std::string name = file.path().filename().string();
-        i32               rx   = 0;
-        i32               rz   = 0;
-        if (std::sscanf(name.c_str(), "r.%d.%d.mca", &rx, &rz) != 2) {
-            continue;
-        }
-        const auto region = nbt::RegionFile::open(file.path());
-        if (!region) {
-            OV_LOG_WARN("entities: {} does not open: {}", name, nbt::to_string(region.error()));
-            continue;
-        }
-        for (u32 lz = 0; lz < 32; ++lz) {
-            for (u32 lx = 0; lx < 32; ++lx) {
-                if (!region->has_chunk(lx, lz)) {
-                    continue;
-                }
-                const auto document = region->read_chunk(lx, lz);
-                if (!document) {
-                    continue;
-                }
-                const std::pair<i32, i32> chunk{rx * 32 + static_cast<i32>(lx),
-                                                rz * 32 + static_cast<i32>(lz)};
-                std::vector<nbt::Tag>& kept = kept_[chunk];
-                const nbt::Tag* entities = document->root.find("Entities");
-                if (entities == nullptr || entities->list() == nullptr) {
-                    continue;
-                }
-                for (const nbt::Tag& entity : *entities->list()) {
-                    const nbt::Tag* id = entity.find("id");
-                    const auto kind = id != nullptr ? gameplay::minecart_kind(id->as_string())
-                                                    : std::nullopt;
-                    if (!kind) {
-                        // A pig, a painting: not this server's to run, but
-                        // vanilla's to find again. Written back as it came.
-                        kept.push_back(entity);
-                        continue;
-                    }
-                    const Vec3d at{list_f64(entity, "Pos", 0, 0.0), list_f64(entity, "Pos", 1, 0.0),
-                                   list_f64(entity, "Pos", 2, 0.0)};
-                    const auto spawned =
-                        world.spawn(gameplay::minecart_type(*kind), at, uuid_of(entity).value_or(net::Uuid{}));
-                    if (!spawned) {
-                        kept.push_back(entity);
-                        continue;
-                    }
-                    entity::EntityState* state = world.mutable_state(*spawned);
-                    state->velocity = Vec3d{list_f64(entity, "Motion", 0, 0.0),
-                                            list_f64(entity, "Motion", 1, 0.0),
-                                            list_f64(entity, "Motion", 2, 0.0)};
-                    state->yaw   = static_cast<f32>(list_f64(entity, "Rotation", 0, 0.0));
-                    state->pitch = static_cast<f32>(list_f64(entity, "Rotation", 1, 0.0));
-                    if (const nbt::Tag* ground = entity.find("OnGround")) {
-                        state->on_ground = ground->as_bool(false);
-                    }
-                    state->broadcast_position = state->position;
-                    state->broadcast_valid    = true;
-                    adopt(world, *spawned, &entity);
-                    ++carts;
-                }
-            }
-        }
+    const Vec3d at{list_f64(compound, "Pos", 0, 0.0), list_f64(compound, "Pos", 1, 0.0),
+                   list_f64(compound, "Pos", 2, 0.0)};
+    const auto spawned =
+        world.spawn(gameplay::minecart_type(*kind), at, uuid_of(compound).value_or(net::Uuid{}));
+    if (!spawned) {
+        OV_LOG_WARN("minecart: a {} read from disk cannot be spawned: {}",
+                    gameplay::minecart_type(*kind), entity::to_string(spawned.error()));
+        return std::nullopt;
     }
-    return carts;
+    entity::EntityState* state = world.mutable_state(*spawned);
+    state->velocity            = Vec3d{list_f64(compound, "Motion", 0, 0.0),
+                                       list_f64(compound, "Motion", 1, 0.0),
+                                       list_f64(compound, "Motion", 2, 0.0)};
+    state->yaw                 = static_cast<f32>(list_f64(compound, "Rotation", 0, 0.0));
+    state->pitch               = static_cast<f32>(list_f64(compound, "Rotation", 1, 0.0));
+    if (const nbt::Tag* ground = compound.find("OnGround")) {
+        state->on_ground = ground->as_bool(false);
+    }
+    state->broadcast_position = state->position;
+    state->broadcast_valid    = true;
+    // Everything it was saved with — a `Passengers` list included: a mob
+    // riding a cart vanilla saved is carried inside it, not run.
+    adopt(world, *spawned, &compound);
+    return *spawned;
 }
 
-usize RailsSession::save(const std::filesystem::path& level_dir, entity::EntityWorld& world) const {
-    // Every chunk this session ever read or wrote is rewritten, so a cart
-    // that rolled away does not stay behind in the chunk it left.
-    std::map<std::pair<i32, i32>, std::vector<nbt::Tag>> chunks;
-    for (const auto& [chunk, kept] : kept_) {
-        chunks[chunk] = kept;
+std::optional<nbt::Tag> RailsSession::save_entity(entity::EntityWorld& world,
+                                                  entity::EntityHandle handle) const {
+    const entity::EntityState* state = world.state(handle);
+    const auto* logic = dynamic_cast<const gameplay::MinecartLogic*>(world.logic(handle));
+    if (state == nullptr || logic == nullptr || state->removed) {
+        return std::nullopt;
     }
-    for (const auto& chunk : written_) {
-        chunks.try_emplace(chunk);
-    }
-    usize count = 0;
-    for (const auto& [id, cart] : carts_) {
-        (void)id;
-        const entity::EntityState* state = world.state(cart.handle);
-        const auto* logic = dynamic_cast<const gameplay::MinecartLogic*>(world.logic(cart.handle));
-        if (state == nullptr || logic == nullptr || state->removed) {
-            continue;
-        }
-        const std::pair<i32, i32> chunk{static_cast<i32>(std::floor(state->position.x)) >> 4,
-                                        static_cast<i32>(std::floor(state->position.z)) >> 4};
-        chunks[chunk].push_back(cart_nbt(*state, logic->body()));
-        ++count;
-    }
-    if (chunks.empty()) {
-        return 0;
-    }
-    const std::filesystem::path directory = level_dir / "entities";
-    std::error_code             error;
-    std::filesystem::create_directories(directory, error);
+    return cart_nbt(*state, logic->body());
+}
 
-    std::map<std::pair<i32, i32>, std::vector<std::pair<i32, i32>>> by_region;
-    for (const auto& [chunk, entities] : chunks) {
-        (void)entities;
-        by_region[{chunk.first >> 5, chunk.second >> 5}].push_back(chunk);
+void RailsSession::release(entity::EntityWorld& world, entity::EntityHandle handle) {
+    const entity::EntityState* state = world.state(handle);
+    if (state == nullptr) {
+        return;
     }
-    for (const auto& [region, members] : by_region) {
-        const auto path   = directory / fmt::format("r.{}.{}.mca", region.first, region.second);
-        auto       writer = nbt::RegionWriter::open_or_empty(path);
-        for (const auto& chunk : members) {
-            nbt::Tag root = nbt::Tag::make_compound();
-            put(root, "DataVersion", nbt::Tag{i32{kDataVersion}});
-            put(root, "Position", nbt::Tag{nbt::Tag::IntArray{chunk.first, chunk.second}});
-            nbt::Tag list = nbt::Tag::make_list(nbt::TagType::Compound);
-            for (const nbt::Tag& entity : chunks[chunk]) {
-                (void)list.push(entity);
+    const auto it = carts_.find(state->network_id);
+    if (it == carts_.end()) {
+        return;
+    }
+    // A player rider keeps the chunks round them loaded, so a ridden cart
+    // should not be here; if one is, the rider is let go without a packet —
+    // the Remove Entities that follows takes the cart from every client.
+    if (it->second.rider >= 0) {
+        vehicle_of_.erase(it->second.rider);
+        controls_.erase(it->second.rider);
+    }
+    for (auto press = pressed_.begin(); press != pressed_.end();) {
+        press = press->second == state->network_id ? pressed_.erase(press) : std::next(press);
+    }
+    carts_.erase(it);
+}
+
+// ── persistence: RootVehicle ────────────────────────────────────────────────
+
+std::optional<TakenVehicle> RailsSession::take_vehicle(entity::EntityWorld& world, i32 player_id) {
+    {
+        // Left before their cart was put back: it goes back into the file.
+        const std::scoped_lock lock{pending_mutex_};
+        for (auto it = pending_restores_.begin(); it != pending_restores_.end(); ++it) {
+            if (it->player_id == player_id) {
+                TakenVehicle taken{std::move(it->root_vehicle), -1};
+                pending_restores_.erase(it);
+                return taken;
             }
-            put(root, "Entities", std::move(list));
-            writer.set_chunk(static_cast<u32>(chunk.first & 31), static_cast<u32>(chunk.second & 31),
-                             nbt::Document{"", std::move(root)}, 0);
-            written_.insert(chunk);
-        }
-        if (!writer.write(path)) {
-            OV_LOG_WARN("entities: could not write {}", path.string());
         }
     }
-    return count;
+    const auto vehicle = vehicle_of_.find(player_id);
+    if (vehicle == vehicle_of_.end()) {
+        return std::nullopt;
+    }
+    const i32  cart_id = vehicle->second;
+    const auto cart    = carts_.find(cart_id);
+    if (cart == carts_.end()) {
+        vehicle_of_.erase(vehicle);
+        return std::nullopt;
+    }
+    const entity::EntityState*     state = world.state(cart->second.handle);
+    const gameplay::MinecartLogic* logic = logic_of(world, cart->second.handle);
+    if (state == nullptr || logic == nullptr) {
+        return std::nullopt;
+    }
+    // The cart as it is saved, its rider not among its passengers: the
+    // player is the one holding it.
+    TakenVehicle taken;
+    taken.root_vehicle = nbt::Tag::make_compound();
+    put(taken.root_vehicle, "Attach", uuid_tag(state->uuid));
+    put(taken.root_vehicle, "Entity", cart_nbt(*state, logic->body()));
+    taken.cart_id = cart_id;
+    const entity::EntityHandle handle = cart->second.handle;
+    for (auto press = pressed_.begin(); press != pressed_.end();) {
+        press = press->second == cart_id ? pressed_.erase(press) : std::next(press);
+    }
+    carts_.erase(cart);
+    vehicle_of_.erase(player_id);
+    controls_.erase(player_id);
+    (void)world.remove(handle);
+    return taken;
+}
+
+void RailsSession::request_restore(i32 player_id, nbt::Tag root_vehicle) {
+    const std::scoped_lock lock{pending_mutex_};
+    pending_restores_.push_back(PendingRestore{player_id, std::move(root_vehicle), 0});
 }
 
 }  // namespace ov::server

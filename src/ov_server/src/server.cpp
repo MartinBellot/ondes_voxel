@@ -50,12 +50,14 @@
 #include "nether_travel.hpp"  // ── nether ──
 #include "end_fight.hpp"      // ── end ──
 #include "end_travel.hpp"     // ── end ──
+#include "ov/math/raycast.hpp"  // ── dragon ──
 #include "ov/gameplay/end_portal.hpp"  // ── end ──
 #include "player_inventory.hpp"
 #include "world_ticks.hpp"
 #include "tick_profile.hpp"  // ── perf ──
 #include "relight.hpp"       // ── perf ──
 #include "sounds.hpp"  // ── sound ──
+#include "destroy_stages.hpp"  // ── breaking ──
 #include "agriculture.hpp"  // ── agriculture ──
 #include "weather_session.hpp"  // ── weather ──
 #include "campfire.hpp"      // ── fire ──
@@ -87,8 +89,15 @@
 #include "brewing_session.hpp"  // ── brewing ──
 #include "husbandry.hpp"    // ── husbandry ──
 #include "slimes.hpp"       // ── mobs-2 ──
+#include "nether_mobs.hpp"  // ── nether-2 ──
 #include "drowning.hpp"     // ── mobs-2 ──
 #include "merchant_session.hpp"  // ── villagers ──
+#include "mob_attacks.hpp"       // ── mobs-3 ──
+#include "mob_despawn.hpp"       // ── mobs-3 ──
+#include "entity_storage.hpp"    // ── mobs-3 ──
+#include "zombie_villagers.hpp"  // ── mobs-3 ──
+#include "dimension_entities.hpp"  // ── persistence ──
+#include "ground_entities.hpp"     // ── persistence ── ItemEntity, GroundOrb
 
 #include <fmt/format.h>
 
@@ -127,6 +136,10 @@ using ov::server::SurvivalOutcome;
 using ov::server::SurvivalPlayer;
 using ov::server::SurvivalSession;
 using ov::server::EffectBearer;   // ── effects ──
+using ov::server::NetherMobHost;  // ── nether-2 ──
+using ov::server::NetherMobs;     // ── nether-2 ──
+using ov::server::NetherMobStats; // ── nether-2 ──
+using ov::server::NetherPlayer;   // ── nether-2 ──
 using ov::server::EffectIo;       // ── effects ──
 using ov::server::EffectSession;  // ── effects ──
 // ── combat and interaction ───────────────────────────────────────────
@@ -537,45 +550,8 @@ struct Superflat {
     return 0;
 }
 
-/// A stack lying on the ground, waiting to be walked into.
-///
-/// Kept in a flat list on the tick thread. There are a handful at a time, and
-/// an index would cost more than the scan it saves.
-struct ItemEntity {
-    i32            entity_id{0};
-    net::Uuid      uuid{};
-    /// ── nether ── The level it lies in: only players there see it and pick
-    /// it up. Items have no physics here, so nothing else needs to know.
-    DimensionId dimension{DimensionId::Overworld};
-    f64            x{0.0};
-    f64            y{0.0};
-    f64            z{0.0};
-    net::ItemStack stack{};
-    /// The tick it appeared, for the five minutes vanilla gives it.
-    i64 born{0};
-    /// Ticks before anyone may pick it up. Vanilla gives a dropped stack half a
-    /// second so the player who broke the block does not instantly re-absorb a
-    /// block they meant to place.
-    i32 pickup_delay{10};
-};
-
-/// One experience orb lying in the world.
-///
-/// Its own type rather than an ItemEntity with a special item: an orb carries a
-/// *value* and no stack, it is attracted to a player instead of waiting to be
-/// walked into, and two of them can become one. None of that is true of a
-/// dropped stack.
-struct GroundOrb {
-    i32 entity_id{0};
-    f64 x{0.0};
-    f64 y{0.0};
-    f64 z{0.0};
-    i32 value{1};
-    /// The tick it appeared, for the five minutes vanilla gives it.
-    i64 born{0};
-    /// Ticks before anyone may pick it up.
-    i32 delay{0};
-};
+// ── persistence ── `ItemEntity` and `GroundOrb` live in ground_entities.hpp,
+// with what writes them into entities/.
 
 struct Player {
     /// Held so the tick thread can send keep-alives without going through the
@@ -670,6 +646,8 @@ struct Player {
     i32  dig_y{0};
     i32  dig_z{0};
     i64  dig_started_tick{0};
+    /// ── breaking ── What the others were last told about this dig.
+    DestroyStageState destroy_stage;
 
     /// Health, hunger and experience, and the packets they owe this client.
     /// Everything about it lives in survival_session.{hpp,cpp}.
@@ -1240,6 +1218,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             command_config.integrated ? std::filesystem::path{} : std::filesystem::path{"ops.json"};
         command_config.lang_file = data_dir.parent_path() / "run" / "assets" / "assets" /
                                    "minecraft" / "lang" / "en_us.json";
+        // ── allow-commands ── Allow Cheats (level.dat) applies to the host.
+        command_config.host_player = options.host_player;
         command_config.max_players = options.max_players;
         command_config.motd        = options.motd;
         commands = std::make_unique<cmd::CommandService>(std::move(command_config));
@@ -1409,6 +1389,17 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                    codec_context, level_settings.seed, workers, std::move(hooks));
         return nether != nullptr;
     };
+    // ── nether-2 ── The Nether's mobs: a world of their own (nether_mobs.hpp).
+    // The host's fields are filled below, once what they call exists.
+    std::optional<NetherMobs> nether_mobs;
+    NetherMobHost             nether_mob_host;
+    if (nether_enabled && blocks && registries) {
+        nether_mobs.emplace(*registries, *blocks, mob_combat ? &*mob_combat : nullptr,
+                            loot_tables ? &*loot_tables : nullptr, biome_names,
+                            std::filesystem::path{OV_DATA_DIR} / "vanilla" / "1.20.1" / "generated",
+                            level_settings.seed);
+    }
+    // ── end nether-2 ──
     // ── end nether ──────────────────────────────────────────────────────────
 
     // ── end ─────────────────────────────────────────────────────────────────
@@ -1623,10 +1614,15 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     // once the world ticks exist.
     std::optional<RailsSession> rails_session;
     // ── end rails ──
+    // ── mobs-3 ── the mobs go into entities/ with every save; set once the
+    // storage's host exists, further down.
+    std::function<void()> mobs3_save_entities;
     const auto save_world = [&] {
         const std::scoped_lock lock{chunk_mutex};
-        if (rails_session && mobs) {  // ── rails ── the carts, into entities/
-            (void)rails_session->save(level_dir, *mobs);
+        // ── entities ── entities/ has one writer, the storage: mobs, and the
+        // carts it asks the rails session for (entity_storage.hpp).
+        if (mobs3_save_entities) {
+            mobs3_save_entities();
         }
         // ── nether ── DIM-1/region, with the Nether level's own ticks.
         if (nether) {
@@ -1861,14 +1857,106 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         broadcast_in(DimensionId::End, nullptr, id, payload);
     };
     end_fight_host.reserve_entity_ids = [&](i32 count) { return next_entity_id.fetch_add(count); };
-    if (end_rules && end_rules->valid() && registries) {
-        if (const auto types = registries->find("minecraft:entity_type")) {
-            const auto dragon  = registries->protocol_id(*types, "minecraft:ender_dragon");
-            const auto crystal = registries->protocol_id(*types, "minecraft:end_crystal");
-            if (dragon && crystal) {
-                end_fight.emplace(*end_rules, level_settings.seed, static_cast<i32>(*dragon),
-                                  static_cast<i32>(*crystal));
+    // ── dragon ── the End's players, what reaches each, the fight's save and
+    // its line of sight (end_fight.hpp, docs/provenance/dragon.md).
+    const auto end_player = [&](i32 id) -> Player* {
+        for (auto& [end_key, who] : players) {
+            if (who.entity_id == id && who.connection && who.dimension == DimensionId::End) {
+                return &who;
             }
+        }
+        return nullptr;
+    };
+    end_fight_host.players = [&](std::vector<EndFightPlayer>& out) {
+        for (const auto& [end_key, who] : players) {
+            if (who.connection && who.confirmed && who.dimension == DimensionId::End) {
+                out.push_back(EndFightPlayer{who.entity_id, Vec3d{who.x, who.y, who.z},
+                                             who.mortal(),
+                                             !who.survival.awaiting_respawn &&
+                                                 !who.survival.health.dead});
+            }
+        }
+    };
+    end_fight_host.send_to = [&](i32 id, i32 packet, std::span<const u8> payload) {
+        if (Player* who = end_player(id)) {
+            if (const auto framed = net::encode_packet(packet, payload)) {
+                who->connection->send(*framed);
+            }
+        }
+    };
+    end_fight_host.hurt_player = [&](i32 id, f32 amount, gameplay::DamageKind kind) {
+        Player* who = end_player(id);
+        if (who == nullptr || !who->mortal()) {
+            return false;
+        }
+        const SurvivalIo io{
+            .send =
+                [&](i32 packet, std::span<const u8> payload) {
+                    if (const auto framed = net::encode_packet(packet, payload)) {
+                        who->connection->send(*framed);
+                    }
+                },
+            .broadcast = [&](i32 packet, std::span<const u8> payload) {
+                broadcast_in(DimensionId::End, who->connection.get(), packet, payload);
+            }};
+        return static_cast<bool>(who->survival.hurt(kind, amount, io, who->entity_id).applied);
+    };
+    end_fight_host.award_experience = [&](i32 id, i32 value) {
+        if (Player* who = end_player(id)) {
+            who->survival.award_experience(value);
+        }
+    };
+    if (end_rules && end_rules->valid() && registries && blocks) {
+        if (const auto types = registries->find("minecraft:entity_type")) {
+            EndFightTypes fight_types;
+            const auto    type_of = [&](std::string_view name, i32& into) {
+                if (const auto id = registries->protocol_id(*types, name)) {
+                    into = static_cast<i32>(*id);
+                }
+            };
+            type_of("minecraft:ender_dragon", fight_types.dragon);
+            type_of("minecraft:end_crystal", fight_types.crystal);
+            type_of("minecraft:dragon_fireball", fight_types.fireball);
+            type_of("minecraft:area_effect_cloud", fight_types.cloud);
+            type_of("minecraft:experience_orb", fight_types.experience_orb);
+            if (const auto particles = registries->find("minecraft:particle_type")) {
+                if (const auto id = registries->protocol_id(*particles, "minecraft:dragon_breath")) {
+                    fight_types.breath_particle = static_cast<i32>(*id);
+                }
+            }
+            const auto tagged = [&](std::string_view name) {
+                std::vector<registry::BlockId> out;
+                if (const auto block_registry = registries->find("minecraft:block")) {
+                    if (const auto tag = registries->find_tag(*block_registry, name)) {
+                        for (const auto member : registries->tag_members(*tag)) {
+                            if (const auto block = blocks->find_block(
+                                    registries->entry_of(*block_registry, member))) {
+                                out.push_back(*block);
+                            }
+                        }
+                    }
+                }
+                return out;
+            };
+            end_fight.emplace(*end_rules, *blocks, level_settings.seed, fight_types,
+                              tagged("minecraft:dragon_immune"),
+                              tagged("minecraft:dragon_transparent"));
+            if (level_settings.dragon_fight) {
+                end_fight->load(*level_settings.dragon_fight);
+            }
+            level_settings.dragon_fight = end_fight->save();
+            end_fight->set_sight([&](Vec3d from, Vec3d to) {
+                const Vec3d along  = to - from;
+                const f64   length = along.length();
+                if (!end_level || length < 1e-6) {
+                    return true;
+                }
+                return !raycast_voxels(from, along, length, [&](BlockPos cell) {
+                            const registry::BlockStateId state = end_level->block_at(cell);
+                            return state != registry::kAirState &&
+                                   blocks->blocks_motion(blocks->block_of(state));
+                        }).has_value();
+            });
         }
     }
     // ── end end ──
@@ -2093,6 +2181,17 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     std::vector<gameplay::SlimeChild> slime_scratch;
     std::optional<Drowning>           drowning;  // zombies and husks under water
     std::vector<Drowning::Conversion> drowned_now;
+    // ── mobs-3: hostile swings, and the mobs they killed ──
+    std::optional<MobAttacks> mob_attacks;
+    std::vector<MobKill>      mob_kills;
+    MobRecords                mob_records;    // persistence, names, noActionTime
+    std::optional<MobDespawn> mob_despawn;
+    std::vector<Vec3d>        mobs3_players;  // every non-spectator, for despawn
+    std::optional<ZombieVillagers> zombie_villagers;  // the risen, and their cure
+    std::optional<EntityStorage>   entity_storage;    // entities/r.x.z.mca
+    std::vector<ChunkPos>          mobs3_to_load;
+    i64 mobs3_last_read{-10};  // ── persistence ── the tick of the last entities/ read
+    std::vector<i32>               mobs3_unloaded;  // mobs a chunk took to disk, to remove
     // ── villagers ──
     std::optional<Villagers> villagers;
 
@@ -2159,6 +2258,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // ── villagers: type, profession, level, sleep ──
         if (villagers && mobs) {
             villagers->spawn_metadata(*mobs, state, fields);
+        }
+        if (zombie_villagers) {  // ── mobs-3: a zombie villager's villager, and its cure ──
+            zombie_villagers->spawn_metadata(state, fields);
         }
         deliver(net::clientbound::kEntityMetadata,
                 net::encode_entity_metadata(state.network_id, fields.take()));
@@ -2665,15 +2767,11 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                             mob_combat ? &*mob_combat : nullptr);
         tnt_gravity->set_redstone(&world_ticks->redstone());
         world_ticks->set_extension(&*tnt_gravity);
-        // ── rails ── rails and carts; the carts a save left in entities/
+        // ── rails ── rails and carts; the carts come from entities/ through
+        // the entity storage, chunk by chunk (── entities ──, below)
         rails_session.emplace(*blocks, *registries);
         world_ticks->set_rails_extension(&*rails_session);
         rails_session->set_blasts(&tnt_gravity->blasts());
-        if (mobs) {
-            if (const usize loaded = rails_session->load(level_dir, *mobs); loaded > 0) {
-                OV_LOG_INFO("rails: {} minecarts read from entities/", loaded);
-            }
-        }
         // ── end rails ──
         // ── projectiles ──
         projectiles.emplace(*registries, *blocks, mob_combat ? &*mob_combat : nullptr);
@@ -2683,6 +2781,18 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         husbandry.emplace(*registries, *blocks);
         slimes.emplace(*registries);  // ── mobs-2 ──
         drowning.emplace(*registries);
+        mob_attacks.emplace(*registries, mob_combat ? &*mob_combat : nullptr);  // ── mobs-3 ──
+        mob_kills.reserve(16);                                                  // ── mobs-3 ──
+        mob_despawn.emplace(*registries);                                       // ── mobs-3 ──
+        mobs3_players.reserve(16);                                              // ── mobs-3 ──
+        zombie_villagers.emplace(*registries);                                  // ── mobs-3 ──
+        entity_storage.emplace(*registries, level_dir / "entities");            // ── mobs-3 ──
+        entity_storage->add_adopter(*rails_session);  // ── entities ── the carts
+        // ── persistence ── the TNT, the falling blocks, the projectiles, the
+        // clouds; the items and orbs further down, once their host exists
+        entity_storage->add_adopter(*tnt_gravity);
+        entity_storage->add_adopter(*projectiles);
+        entity_storage->add_loose(*brewing);
         // ── villagers ──
         villagers.emplace(*registries, *blocks);
         tick_broadcasts.reserve(4096);
@@ -3138,6 +3248,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             orb.z         = z;
             orb.value     = value;
             orb.born      = server_tick.load(std::memory_order_relaxed);
+            orb.dimension = who.dimension;  // ── persistence ──
             broadcast(nullptr, net::clientbound::kSpawnExperienceOrb,
                       net::encode_spawn_experience_orb(orb.entity_id, orb.x, orb.y, orb.z,
                                                        static_cast<i16>(orb.value)));
@@ -3507,6 +3618,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     // ── end effects ─────────────────────────────────────────────────────────
 
     // ── player data ─────────────────────────────────────────────────────────
+    /// ── persistence ── The `RootVehicle` of a player leaving in a cart, by
+    /// wire id, between the cart's taking and the file's writing.
+    std::unordered_map<i32, nbt::Tag> leaving_vehicles;
     /// A player's record as they stand, their own game mode included.
     const auto player_record_of = [&](const Player& who) {
         usize        overflow = 0;
@@ -3516,6 +3630,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             who.effects, &overflow);
         record.dimension = std::string{dimension_info(who.dimension).name};  // ── nether ──
         record.xp_seed = who.xp_seed;  // ── enchanting ──
+        if (const auto vehicle = leaving_vehicles.find(who.entity_id);  // ── persistence ──
+            vehicle != leaving_vehicles.end()) {
+            record.root_vehicle = vehicle->second;
+        }
         if (overflow > 0) {
             OV_LOG_WARN("{}: {} stacks from the crafting grid or the cursor found no free slot "
                         "and are not in the save",
@@ -3590,6 +3708,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     ///
     /// Caller holds players_mutex.
     const auto hurt_mob = [&](Player& attacker, i32 target_id, f32 damage, u8 looting) -> bool {
+        if (nether_mobs && NetherMobs::owns(target_id)) {  // ── nether-2 ── one of the Nether's
+            return nether_mobs->hurt(target_id, damage, attacker.entity_id, looting,
+                                     nether_mob_host);
+        }
         if (!mobs || !mob_combat) {
             return false;
         }
@@ -3715,10 +3837,13 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             // own arm swing, and the client does not draw it for itself.
             broadcast(nullptr, id, payload);
         };
+        io.broadcast_others = [&](i32 id, std::span<const u8> payload) {  // ── breaking ──
+            broadcast(who.connection.get(), id, payload);
+        };
         io.hurt_entity = [&](i32 entity_id, f32 damage, bool /*critical*/) {
             // ── end ── the dragon's parts and the crystals are the fight's
             if (end_fight && who.dimension == DimensionId::End &&
-                end_fight->hurt(entity_id, damage, end_fight_host)) {
+                end_fight->hurt(entity_id, damage, end_fight_host, who.entity_id, who.mortal())) {
                 return true;
             }
             return hurt_mob(who, entity_id, damage, held_weapon(who).looting);
@@ -3922,6 +4047,22 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             info.height   = 0.5F;
             out.push_back(std::move(info));
         }
+        // ── dragon ── the fight's entities: the dragon, crystals, fireballs,
+        // clouds, the End's orbs.
+        if (end_fight) {
+            std::vector<EndFightEntity> fight_entities;
+            end_fight->entities(fight_entities);
+            for (const EndFightEntity& entity : fight_entities) {
+                cmd::EntityInfo info;
+                info.id       = entity.id;
+                info.type     = std::string{entity.type};
+                info.uuid     = entity.uuid;
+                info.position = entity.position;
+                info.width    = entity.width;
+                info.height   = entity.height;
+                out.push_back(std::move(info));
+            }
+        }
     };
     command_host.broadcast = [&](i32 id, std::span<const u8> payload) {
         broadcast(nullptr, id, payload);
@@ -3991,6 +4132,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         return false;
     };
     command_host.kill_entity = [&](i32 id) -> bool {
+        // ── dragon ── /kill on the fight's own: no animation, no orbs (measured)
+        if (end_fight && end_fight->kill(id, end_fight_host)) {
+            return true;
+        }
         if (mobs && mob_combat) {
             if (const entity::EntityHandle handle = mobs->find(id); handle != entity::kNoEntity) {
                 entity::EntityState* state = mobs->mutable_state(handle);
@@ -4084,6 +4229,25 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         info.height   = state->height;
         return info;
     };
+    // ── nether-2 ── A player standing in the Nether summons into the Nether.
+    command_host.summon_by = [&](i32 source, std::string_view type,
+                                 Vec3d at) -> std::optional<cmd::EntityInfo> {
+        for (const auto& [key, who] : players) {
+            if (nether_mobs && who.entity_id == source && who.dimension == DimensionId::Nether) {
+                const auto id = nether_mobs->summon(type, at, nether_mob_host);
+                if (!id) {
+                    return std::nullopt;
+                }
+                cmd::EntityInfo info;
+                info.id       = *id;
+                info.type     = std::string{type};
+                info.position = at;
+                return info;
+            }
+        }
+        return command_host.summon(type, at);
+    };
+    // ── end nether-2 ──
     command_host.drop_item = [&](i32 id, const net::ItemStack& stack) {
         for (auto& [key, who] : players) {
             if (who.entity_id != id) {
@@ -4260,7 +4424,18 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                          *it->second.enchant, it->second.inventory);
                     it->second.enchant.reset();
                 }
+                // ── persistence ── the cart they sit in leaves with them
+                if (rails_session && mobs) {
+                    if (auto taken = rails_session->take_vehicle(*mobs, entity_id)) {
+                        leaving_vehicles[entity_id] = std::move(taken->root_vehicle);
+                        if (taken->cart_id >= 0) {
+                            broadcast(connection.get(), net::clientbound::kRemoveEntities,
+                                      net::encode_remove_entity(taken->cart_id));
+                        }
+                    }
+                }
                 leaving.emplace(uuid, it->second.name, player_record_of(it->second));  // ── player data ──
+                leaving_vehicles.erase(entity_id);  // ── persistence ──
                 players.erase(it);
                 // ── projectiles: a draw does not outlive its archer ──
                 if (projectiles) {
@@ -4727,11 +4902,19 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                             }
                         }
                     }
+                    // ── nether-2 ── and the Nether's, to a player who is there
+                    if (nether_mobs && player.dimension == DimensionId::Nether) {
+                        nether_mobs->send_all(send_packet);
+                    }
                     if (weather) {  // ── weather: who is asleep ──
                         weather->join_packets(send_packet);
                     }
 
                     players[connection.get()] = player;
+                }
+                // ── persistence ── the cart they left in comes back with them
+                if (stored && stored->record.root_vehicle && rails_session) {
+                    rails_session->request_restore(player.entity_id, *stored->record.root_vehicle);
                 }
                 // ── crafting and smelting ───────────────────────────────────
                 // Every recipe, once, after the join sequence — which is when
@@ -5026,6 +5209,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         // Player Command.
                         player.sneaking = interact->sneaking;
 
+                        // ── nether-2 ── a right-click on a Nether mob, for the tick
+                        if (nether_mobs && NetherMobs::owns(interact->entity_id) &&
+                            interact->kind == net::InteractKind::Interact) {
+                            nether_mobs->queue_interact(player.entity_id, interact->entity_id);
+                            return true;
+                        }
                         // ── villagers: a right-click on a villager, for the tick ──
                         if (villagers && interact->kind == net::InteractKind::Interact) {
                             villagers->queue_interact(player.entity_id, interact->entity_id,
@@ -5049,6 +5238,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                     registries->entry_of(*item_registry, touch_hand.item_id)};
                             }
                             rails_session->request_touch(std::move(touch));
+                        }
+                        // ── mobs-3: a golden apple offered to a zombie villager, for the tick ──
+                        if (zombie_villagers && interact->kind == net::InteractKind::Interact) {
+                            zombie_villagers->queue_interact(player.entity_id, interact->entity_id);
                         }
                         // ── husbandry: a right-click on an entity, for the tick ──
                         if (husbandry && interact->kind == net::InteractKind::Interact) {
@@ -5081,6 +5274,33 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         const auto use = net::parse_use_item(body);
                         if (!use) {
                             return false;
+                        }
+                        // ── dragon ── a glass bottle in one of the dragon's clouds
+                        // fills with its breath (the cloud loses half a block).
+                        if (end_fight && player.dimension == DimensionId::End && registries &&
+                            item_registry && use->hand == net::Hand::Main) {
+                            const usize     slot = 36 + static_cast<usize>(player.held_slot);
+                            net::ItemStack& held = player.inventory[slot];
+                            if (!held.empty() &&
+                                registries->entry_of(*item_registry, held.item_id) ==
+                                    "minecraft:glass_bottle" &&
+                                end_fight->take_breath(Vec3d{player.x, player.y, player.z})) {
+                                if (player.mortal()) {
+                                    held.count = static_cast<i8>(held.count - 1);
+                                    if (held.count <= 0) {
+                                        held = net::ItemStack{};
+                                    }
+                                    send_slot(player, slot);
+                                }
+                                (void)give_to_player(
+                                    player, net::ItemStack{registries->protocol_id(*item_registry,
+                                                                                   "minecraft:dragon_breath")
+                                                               .value_or(0),
+                                                           1,
+                                                           {}});
+                                acknowledge(connection, use->sequence);
+                                return true;
+                            }
                         }
                         // ── projectiles: a bow, a crossbow, a trident or a throw ──
                         if (projectiles && use->hand == net::Hand::Main &&
@@ -5284,6 +5504,45 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                             }
                         }
 
+                        // ── dragon ── An End crystal on obsidian or bedrock with
+                        // two free blocks above: the fight's (four round the
+                        // exit portal respawn the dragon). Outside the End it is
+                        // refused and named: this server's crystals live in the
+                        // dragon fight.
+                        if (end_fight && registries && item_registry && blocks && !eye_hand.empty() &&
+                            registries->entry_of(*item_registry, eye_hand.item_id) ==
+                                "minecraft:end_crystal") {
+                            const BlockPos on{place->position.x, place->position.y,
+                                              place->position.z};
+                            world::LevelWriter& here =
+                                player.dimension == DimensionId::End      ? end_player_level
+                                : player.dimension == DimensionId::Nether ? nether_player_level
+                                                                          : player_level;
+                            const std::string_view base =
+                                blocks->block_name(blocks->block_of(here.block_at(on)));
+                            const bool clear =
+                                here.block_at(BlockPos{on.x, on.y + 1, on.z}) == registry::kAirState &&
+                                here.block_at(BlockPos{on.x, on.y + 2, on.z}) == registry::kAirState;
+                            if ((base == "minecraft:obsidian" || base == "minecraft:bedrock") && clear) {
+                                if (player.dimension != DimensionId::End) {
+                                    OV_LOG_INFO("{} put an End crystal outside the End: refused, "
+                                                "this server's crystals live in the dragon fight",
+                                                player.name);
+                                    return true;
+                                }
+                                end_fight->place_crystal(on, end_fight_host);
+                                if (player.mortal()) {
+                                    const usize slot = 36 + static_cast<usize>(player.held_slot);
+                                    net::ItemStack& held = player.inventory[slot];
+                                    held.count           = static_cast<i8>(held.count - 1);
+                                    if (held.count <= 0) {
+                                        held = net::ItemStack{};
+                                    }
+                                    send_slot(player, slot);
+                                }
+                                return true;
+                            }
+                        }
                         // ── nether ── A right-click in the Nether: the block's
                         // and the item's own rules — doors, buckets, flint and
                         // steel — then a plain placement. Containers, signs,
@@ -6702,8 +6961,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         .broadcast = [&](i32 id, std::span<const u8> payload) {
                             broadcast(who.connection.get(), id, payload);
                         }};
-                    (void)who.survival.hurt(gameplay::DamageKind::Explosion, amount, io,
-                                            who.entity_id);
+                    // ── mobs-3 ── `explosion` scales with difficulty: `always`
+                    (void)who.survival.hurt(
+                        gameplay::DamageKind::Explosion,
+                        gameplay::scale_for_difficulty(
+                            amount, commands ? static_cast<gameplay::Difficulty>(
+                                                   commands->world().difficulty)
+                                             : gameplay::Difficulty::Normal),
+                        io, who.entity_id);
                 };
             }
             visit(view);
@@ -6835,6 +7100,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         stack.count   = static_cast<i8>(std::clamp(count, 1, 64));
         tnt_host.drop_item(at, stack);
     };
+    rails_host.player_ready = [&](i32 id) {  // ── persistence ── RootVehicle
+        const Player* who = projectile_player(id);
+        return who != nullptr && who->confirmed;
+    };
     rails_host.carry_rider = [&](i32 id, Vec3d seat) {
         Player* who = projectile_player(id);
         if (who == nullptr) {
@@ -6920,6 +7189,16 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     };
     projectile_host.potion_broke = [&](Vec3d at, const net::ItemStack& potion, i32 target,
                                        bool is_player) {
+        // ── mobs-3 ── a potion's Weakness reaches the zombie villagers round it
+        if (zombie_villagers && mobs) {
+            i32 weakness = 0;
+            for (const gameplay::PotionEffect& effect : potion_contents(potion).effects) {
+                if (effect.effect == gameplay::Effect::Weakness) {
+                    weakness = std::max(weakness, effect.duration);
+                }
+            }
+            zombie_villagers->on_splash(*mobs, at, weakness);
+        }
         if (brewing) {
             brewing->potion_broke(potion_host, at, potion, target, is_player);
         }
@@ -6939,6 +7218,37 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     const FireMobHost fire_mob_host{tnt_deliver, tnt_host.drop_item};
     // ── end fire ──
     const ProjectileDeliver projectile_deliver = tnt_deliver;
+    // ── mobs-3 ── what a hostile mob's swing reaches for (mob_attacks.hpp)
+    /// The entities despawn must never touch: their own modules remove them.
+    const std::function<bool(i32)> mobs3_transient = [&](i32 type) {
+        return (tnt_gravity && tnt_gravity->owns(type)) || (projectiles && projectiles->owns(type));
+    };
+    MobAttackHost mob_attack_host;
+    mob_attack_host.hurt_player  = projectile_host.hurt_player;
+    mob_attack_host.knock_player = [&](i32 id, Vec3d from) {
+        Player* who = projectile_player(id);
+        if (who == nullptr || !registries) {
+            return;
+        }
+        const WornArmour worn = worn_armour(
+            *registries, item_registry, std::span<const net::ItemStack>{who->inventory}.subspan(5, 4));
+        const Vec3d push = gameplay::apply_knockback(
+            Vec3d{}, who->on_ground, gameplay::kMobHitKnockback, from.x - who->x, from.z - who->z,
+            std::min(worn.knockback_resistance, 1.0F), gameplay::CombatConstants{});
+        if (const auto framed = net::encode_packet(
+                net::clientbound::kEntityVelocity,
+                net::encode_entity_velocity(who->entity_id, push.x, push.y, push.z));
+            framed && who->connection) {
+            who->connection->send(*framed);
+        }
+    };
+    mob_attack_host.give_effect = [&](i32 id, const gameplay::EffectInstance& effect) {
+        if (Player* who = projectile_player(id); who != nullptr) {
+            (void)who->effects.apply(effect, who->survival, effect_io_for(*who),
+                                     effect_bearer_for(*who));
+        }
+    };
+    // ── end mobs-3 ──
     // ── end projectiles ─────────────────────────────────────────────────────
 
     // ── husbandry ───────────────────────────────────────────────────────────
@@ -7018,8 +7328,237 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     };
     husbandry_host.drop_item = tnt_host.drop_item;
     husbandry_host.spawn_orb = projectile_host.spawn_orb;
+    // ── nether-2 ── What the Nether's mobs reach for. Caller holds
+    // players_mutex, and chunk_mutex for the block reads.
+    nether_mob_host.block_at = [&](BlockPos pos) -> registry::BlockStateId {
+        const world::Chunk* chunk =
+            chunk_if_resident_in(DimensionId::Nether, pos.x >> 4, pos.z >> 4);
+        return chunk == nullptr || pos.y < 0 || pos.y >= 256
+                   ? registry::kAirState
+                   : chunk->get_block(static_cast<usize>(pos.x & 15), pos.y,
+                                      static_cast<usize>(pos.z & 15));
+    };
+    nether_mob_host.loaded = [&](BlockPos pos) {
+        return chunk_if_resident_in(DimensionId::Nether, pos.x >> 4, pos.z >> 4) != nullptr;
+    };
+    nether_mob_host.ticking = [&](ChunkPos pos) { return nether && nether->chunks().is_ticking(pos); };
+    nether_mob_host.biome_at = [&](BlockPos pos) -> u16 {
+        const world::Chunk* chunk =
+            chunk_if_resident_in(DimensionId::Nether, pos.x >> 4, pos.z >> 4);
+        return chunk == nullptr || pos.y < 0 || pos.y >= 256
+                   ? u16{0}
+                   : chunk->get_biome(static_cast<usize>(pos.x & 15), pos.y,
+                                      static_cast<usize>(pos.z & 15));
+    };
+    nether_mob_host.block_light = [&](BlockPos pos) -> u8 {
+        const world::Chunk* chunk =
+            chunk_if_resident_in(DimensionId::Nether, pos.x >> 4, pos.z >> 4);
+        const world::ChunkSection* section = chunk == nullptr ? nullptr : chunk->section_for_y(pos.y);
+        return section == nullptr ? u8{0}
+                                  : section->block_light().get(world::section_index(
+                                        static_cast<usize>(pos.x & 15),
+                                        static_cast<usize>(pos.y & 15),
+                                        static_cast<usize>(pos.z & 15)));
+    };
+    nether_mob_host.players = [&](std::vector<NetherPlayer>& out) {
+        for (const auto& [key, who] : players) {
+            if (who.dimension != DimensionId::Nether || !who.connection) {
+                continue;
+            }
+            bool gold = false;
+            for (usize slot = 5; slot <= 8 && registries && item_registry; ++slot) {
+                gold = gold || registries->entry_of(*item_registry, who.inventory[slot].item_id)
+                                   .starts_with("minecraft:golden_");
+            }
+            out.push_back(NetherPlayer{who.entity_id, Vec3d{who.x, who.y, who.z}, !who.mortal(),
+                                       !who.survival.awaiting_respawn, gold});
+        }
+    };
+    nether_mob_host.broadcast = [&](i32 id, std::span<const u8> payload) {
+        broadcast_in(DimensionId::Nether, nullptr, id, payload);
+    };
+    nether_mob_host.drop_item = [&](Vec3d at, const net::ItemStack& stack) {
+        ItemEntity item;
+        item.entity_id = next_entity_id.fetch_add(1);
+        item.uuid      = uuid_for_entity(item.entity_id);
+        item.x         = at.x;
+        item.y         = at.y;
+        item.z         = at.z;
+        item.stack     = stack;
+        item.born      = server_tick.load(std::memory_order_relaxed);
+        item.dimension = DimensionId::Nether;
+        std::vector<ItemEntity> one;
+        one.push_back(std::move(item));
+        publish_items(one);
+    };
+    nether_mob_host.hurt_player = projectile_host.hurt_player;
+    nether_mob_host.take_held   = [&](i32 id, std::string_view item) {
+        for (auto& [key, who] : players) {
+            if (who.entity_id != id || held_name(who) != item) {
+                continue;
+            }
+            if (who.mortal()) {
+                consume_one_held(who);
+            }
+            return true;
+        }
+        return false;
+    };
+    nether_mob_host.send_to = [&](i32 id, i32 packet, std::span<const u8> payload) {
+        for (const auto& [key, who] : players) {
+            if (who.entity_id == id && who.connection) {
+                if (const auto framed = net::encode_packet(packet, payload)) {
+                    who.connection->send(*framed);
+                }
+            }
+        }
+    };
+    // ── end nether-2 ──
     // ── end husbandry ───────────────────────────────────────────────────────
 
+    // ── mobs-3 ── the zombie villagers' and the Anvil storage's reach: after
+    // the husbandry host, whose `create_mob` both use.
+    const auto mobs3_announce = [&](const entity::EntityState& state) {
+        mob_packets(state, [&](i32 id, std::span<const u8> payload) {
+            broadcast(nullptr, id, payload);
+        });
+    };
+    ZombieVillagerHost zombie_villager_host;
+    zombie_villager_host.create_mob = husbandry_host.create_mob;
+    zombie_villager_host.announce   = mobs3_announce;
+    zombie_villager_host.held       = [&](i32 id) -> std::string_view {
+        const Player* who = projectile_player(id);
+        return who != nullptr ? held_name(*who) : std::string_view{};
+    };
+    zombie_villager_host.creative = [&](i32 id) {
+        const Player* who = projectile_player(id);
+        return who != nullptr && who->game_mode == 1;
+    };
+    zombie_villager_host.consume_held = [&](i32 id) {
+        if (Player* who = projectile_player(id); who != nullptr) {
+            consume_one_held(*who);
+        }
+    };
+    zombie_villager_host.speeds_cure = [&](BlockPos pos) {
+        const world::Chunk* chunk = chunk_if_resident(pos.x >> 4, pos.z >> 4);
+        if (chunk == nullptr || !blocks || !world::WorldShape::overworld().contains_y(pos.y)) {
+            return false;
+        }
+        const std::string_view name = blocks->block_name(blocks->block_of(chunk->get_block(
+            static_cast<usize>(pos.x & 15), pos.y, static_cast<usize>(pos.z & 15))));
+        return name == "minecraft:iron_bars" || name.ends_with("_bed");
+    };
+    EntityStorageHost entity_storage_host;
+    entity_storage_host.attach = [&](entity::EntityHandle handle, std::string_view type) {
+        const entity::EntityState* state = mobs->state(handle);
+        if (const gameplay::MobKind* kind = gameplay::mob_kind(type); kind != nullptr && state) {
+            mobs->set_logic(handle, std::make_unique<gameplay::Mob>(
+                                        *kind, state->width, state->height, state->network_id,
+                                        mob_attacks ? mob_attacks->player_type()
+                                                    : gameplay::kNoQuarry));
+        } else {
+            mobs->set_logic(handle, std::make_unique<gameplay::FallingMob>());
+        }
+    };
+    entity_storage_host.announce   = mobs3_announce;
+    entity_storage_host.transient  = mobs3_transient;
+    entity_storage_host.slime_size = [&](i32 id) { return slimes ? slimes->size_of(id) : 1; };
+    entity_storage_host.set_slime_size = [&](entity::EntityState& state, i32 size) {
+        if (slimes) {
+            slimes->set_size(state, size);
+        }
+    };
+    entity_storage_host.creeper_powered = [&](i32 id) {
+        return tnt_gravity && tnt_gravity->creeper_powered(id);
+    };
+    entity_storage_host.charge_creeper = [&](i32 id) {
+        if (tnt_gravity) {
+            tnt_gravity->charge_creeper(id);
+        }
+    };
+    entity_storage_host.zombie_villager = [&](i32 id) -> gameplay::VillagerState* {
+        return zombie_villagers ? zombie_villagers->kept(id) : nullptr;
+    };
+    entity_storage_host.conversion_time = [&](i32 id) {
+        return zombie_villagers ? zombie_villagers->conversion_time(id) : -1;
+    };
+    entity_storage_host.set_conversion_time = [&](i32 id, i32 ticks) {
+        if (zombie_villagers) {
+            zombie_villagers->set_conversion_time(id, ticks);
+        }
+    };
+    // ── persistence ── The items and orbs of every level, the Nether's mobs,
+    // the End's dragon and crystals: each dimension through its own storage,
+    // the only writer of its own entities/ (ground_entities.hpp,
+    // dimension_entities.hpp).
+    GroundHost ground_host;
+    ground_host.now            = [&] { return server_tick.load(std::memory_order_relaxed); };
+    ground_host.next_entity_id = [&] { return next_entity_id.fetch_add(1); };
+    ground_host.uuid_for       = [&](i32 id) { return uuid_for_entity(id); };
+    ground_host.announce_item  = [&](const ItemEntity& item) {
+        broadcast_in(item.dimension, nullptr, net::clientbound::kSpawnEntity,
+                     net::encode_spawn_entity(item.entity_id, item.uuid, net::kItemEntityType,
+                                              item.x, item.y, item.z));
+        broadcast_in(item.dimension, nullptr, net::clientbound::kEntityMetadata,
+                     net::encode_item_metadata(item.entity_id, item.stack.item_id, item.stack.count));
+    };
+    ground_host.announce_orb = [&](const GroundOrb& orb) {
+        broadcast_in(orb.dimension, nullptr, net::clientbound::kSpawnExperienceOrb,
+                     net::encode_spawn_experience_orb(orb.entity_id, orb.x, orb.y, orb.z,
+                                                      static_cast<i16>(std::min(orb.value, 32767))));
+    };
+    std::optional<GroundEntities>    overworld_ground, nether_ground, end_ground;
+    std::optional<DimensionEntities> nether_entities, end_entities;
+    std::vector<ChunkPos>            persist_evicted;
+    std::vector<i32>                 persist_removed;
+    if (registries) {
+        overworld_ground.emplace(DimensionId::Overworld, *registries, ground_items, ground_orbs,
+                                 ground_host);
+        if (entity_storage) {
+            entity_storage->add_loose(*overworld_ground);
+        }
+        if (brewing) {
+            brewing->set_persistence_host(&potion_host);
+        }
+        if (projectiles) {
+            projectiles->set_owner_lookup([&](i32 id) -> std::optional<net::Uuid> {
+                const Player* who = projectile_player(id);
+                return who != nullptr ? std::optional<net::Uuid>{who->uuid} : std::nullopt;
+            });
+        }
+        if (nether_mobs) {
+            nether_ground.emplace(DimensionId::Nether, *registries, ground_items, ground_orbs,
+                                  ground_host);
+            nether_entities.emplace(*registries, level_dir / "DIM-1" / "entities",
+                                    &nether_mobs->world(), nether_mobs->storage_host(nether_mob_host));
+            nether_entities->storage().add_loose(*nether_ground);
+        }
+        if (end_fight) {
+            end_ground.emplace(DimensionId::End, *registries, ground_items, ground_orbs, ground_host);
+            end_entities.emplace(*registries, level_dir / "DIM1" / "entities", nullptr,
+                                 EntityStorageHost{});
+            end_entities->storage().add_loose(*end_fight);
+            end_entities->storage().add_loose(*end_ground);
+            end_fight->set_host(&end_fight_host);
+        }
+    }
+    mobs3_save_entities = [&] {
+        if (entity_storage && mobs) {
+            const EntityStorageStats saved =
+                entity_storage->save_all(*mobs, mob_records, entity_storage_host);
+            OV_LOG_INFO("entities: saved {} mobs across {} chunks", saved.entities, saved.chunks);
+        }
+        for (auto* level : {nether_entities ? &*nether_entities : nullptr,  // ── persistence ──
+                            end_entities ? &*end_entities : nullptr}) {
+            if (level != nullptr) {
+                const EntityStorageStats saved = level->save();
+                OV_LOG_INFO("entities: saved {} in {} across {} chunks", saved.entities,
+                            level->storage().directory().parent_path().filename().string(),
+                            saved.chunks);
+            }
+        }
+    };
+    // ── end mobs-3 ──
     // ── villagers ───────────────────────────────────────────────────────────
     // Runs on the tick thread with players_mutex held, as husbandry's host.
     VillagerHost villager_host;
@@ -7450,6 +7989,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                  net::encode_item_metadata(item.entity_id, item.stack.item_id, item.stack.count));
         }
 
+        if (to == DimensionId::Nether && nether_mobs) {  // ── nether-2 ── its mobs
+            nether_mobs->send_all(send);
+        }
         // What the client rebuilt from scratch: the inventory, the bars, the
         // effects. Health and experience are resent by forgetting what was
         // last sent.
@@ -7691,6 +8233,18 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 }
                 to_evict.push_back(pos);
             });
+            // ── mobs-3 ── the mobs of the chunks leaving go to entities/ first.
+            // Under the players' lock like every other change to the entity
+            // world; without it, nothing is evicted this round.
+            if (entity_storage && mobs && !to_evict.empty()) {
+                std::unique_lock mobs3_lock{players_mutex, std::try_to_lock};
+                if (mobs3_lock.owns_lock()) {
+                    (void)entity_storage->unload_chunks(to_evict, *mobs, mob_records,
+                                                        entity_storage_host, mobs3_unloaded);
+                } else {
+                    to_evict.clear();
+                }
+            }
             for (const ChunkPos pos : to_evict) {
                 (void)chunks.evict(pos);
             }
@@ -7749,6 +8303,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 state->uuid                = uuid_for_entity(state->network_id);
                 state->broadcast_position  = state->position;
                 state->broadcast_valid     = true;
+                mob_records.pin(state->network_id);  // ── mobs-3 ── a fixture: never despawned
                 // Behaviour, in the one component that carries it: a brain for
                 // a species we have goals for, and the bare falling floor for
                 // one we do not. Refused by name rather than given a plausible
@@ -8000,6 +8555,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     {
                         const std::scoped_lock fight_lock{chunk_mutex};
                         end_fight->tick(*end_level, end_fight_host);
+                    }
+                    // ── dragon ── level.dat's DragonFight follows the fight.
+                    if (clock.tick_count() % 20 == 0) {
+                        level_settings.dragon_fight = end_fight->save();
                     }
                     if (clock.tick_count() % 20 == 0) {
                         for (auto& [viewer_key, viewer] : players) {
@@ -8540,6 +9099,68 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         }
         // ── end mobs-2 ──
 
+        // ── mobs-3: the mobs of chunks that have just arrived, from entities/,
+        // and the Remove Entities of those an unload took to disk ──
+        // ── persistence ── every ten ticks *since the last read*: the clock
+        // swallows the ticks a slow server misses (piège 22), and a modulo it
+        // steps over never reads a chunk — measured, 16 iterations and no read
+        if (entity_storage && mobs && clock.tick_count() - mobs3_last_read >= 10) {
+            std::unique_lock mobs3_lock{players_mutex, std::try_to_lock};
+            if (mobs3_lock.owns_lock()) {
+                mobs3_last_read = clock.tick_count();  // ── persistence ──
+                const std::scoped_lock mobs3_chunks{chunk_mutex};
+                for (const i32 gone : mobs3_unloaded) {
+                    broadcast(nullptr, net::clientbound::kRemoveEntities,
+                              net::encode_remove_entity(gone));
+                    if (mob_combat) {
+                        mob_combat->forget(gone);
+                    }
+                }
+                mobs3_unloaded.clear();
+                mobs3_to_load.clear();
+                chunks.for_each([&](ChunkPos pos, const world::Chunk&) {
+                    if (!entity_storage->is_loaded(pos)) {
+                        mobs3_to_load.push_back(pos);
+                    }
+                });
+                usize read = 0;
+                for (const ChunkPos pos : mobs3_to_load) {
+                    read += entity_storage->load_chunk(pos, *mobs, mob_records, entity_storage_host)
+                                .entities;
+                }
+                if (!mobs3_to_load.empty()) {
+                    OV_LOG_DEBUG("entities: {} mobs read from {} new chunks", read,
+                                 mobs3_to_load.size());
+                }
+                // ── persistence ── the Nether's and the End's: what their levels
+                // evicted goes to disk and leaves, what is resident comes back
+                const auto persist_level = [&](DimensionEntities& level, NetherWorld& from,
+                                               DimensionId dimension) {
+                    persist_evicted.clear();
+                    persist_removed.clear();
+                    from.take_evicted(persist_evicted);
+                    level.unload(persist_evicted, persist_removed);
+                    if (dimension == DimensionId::Nether && nether_mobs) {
+                        nether_mobs->forget(persist_removed);
+                    }
+                    for (const i32 gone : persist_removed) {
+                        broadcast_in(dimension, nullptr, net::clientbound::kRemoveEntities,
+                                     net::encode_remove_entity(gone));
+                    }
+                    (void)level.load_resident(from.chunks());
+                };
+                if (nether_entities && nether) {
+                    persist_level(*nether_entities, *nether, DimensionId::Nether);
+                }
+                if (end_entities && end_world) {
+                    persist_level(*end_entities, *end_world, DimensionId::End);
+                    end_fight->set_arena_read(
+                        end_entities->is_loaded(ChunkPos{-1, -1}) && end_entities->is_loaded(ChunkPos{0, -1}) &&
+                        end_entities->is_loaded(ChunkPos{-1, 0}) && end_entities->is_loaded(ChunkPos{0, 0}));
+                }
+            }
+        }
+        // ── end mobs-3 ──
         // Mobs: gravity, collision, and only the movement that actually
         // happened. A delta packet when the move fits in one — six bytes rather
         // than twenty-eight — and a teleport when it does not.
@@ -8612,6 +9233,35 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 mob_level.registry = &*blocks;
 
                 gameplay::MobContext mob_context{&collisions, &mob_level, false};
+                // ── mobs-3: the players hostile mobs may hunt — alive, in survival
+                // or adventure, in the overworld; nobody on Peaceful ──
+                const auto mobs3_difficulty =
+                    commands ? static_cast<gameplay::Difficulty>(commands->world().difficulty)
+                             : gameplay::Difficulty::Normal;
+                mobs3_players.clear();
+                for (const auto& [mobs3_key, who] : players) {  // despawn measures from these
+                    if (who.connection && who.confirmed && who.game_mode != 3 &&
+                        !who.survival.awaiting_respawn && who.dimension == DimensionId::Overworld) {
+                        mobs3_players.push_back(Vec3d{who.x, who.y, who.z});
+                    }
+                }
+                if (mob_attacks) {
+                    mob_attacks->begin_tick();
+                    for (const auto& [mobs3_key, who] : players) {
+                        if (mobs3_difficulty != gameplay::Difficulty::Peaceful && who.connection &&
+                            who.confirmed && who.mortal() && !who.survival.awaiting_respawn &&
+                            !who.survival.health.dead && who.dimension == DimensionId::Overworld) {
+                            mob_attacks->quarries().push_back(
+                                gameplay::Quarry{.network_id = who.entity_id,
+                                                 .type       = mob_attacks->player_type(),
+                                                 .feet       = Vec3d{who.x, who.y, who.z}});
+                        }
+                    }
+                    mob_context.quarries      = mob_attacks->quarries();
+                    mob_context.attacks       = &mob_attacks->attacks();
+                    mob_context.villager_type = mob_attacks->villager_type();
+                }
+                // ── end mobs-3 ──
                 // ── tnt and gravity: what the drain and the network asked for ──
                 if (tnt_gravity) {
                     tnt_gravity->spawn_pending(*mobs, tnt_deliver);
@@ -8622,7 +9272,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 if (projectiles) {
                     projectiles->spawn_pending(*mobs, projectile_deliver);
                     projectiles->before_entity_tick(*mobs, projectile_host);
-                    projectiles->tick_skeletons(*mobs, collisions, 2, projectile_deliver);
+                    projectiles->tick_skeletons(*mobs, collisions,
+                                                static_cast<i32>(mobs3_difficulty),  // ── mobs-3 ──
+                                                projectile_deliver);
                 }
                 // ── villagers: clicks, screens and the time of day, before ──
                 if (villagers) {
@@ -8660,6 +9312,52 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 if (villagers) {
                     (void)villagers->after_entity_tick(*mobs, husbandry_deliver);
                 }
+                // ── mobs-3: the swings, finished; a mob they killed is told dead ──
+                if (mob_attacks) {
+                    mob_kills.clear();
+                    const i64 mobs3_game = commands ? commands->world().game_time
+                                                    : static_cast<i64>(clock.tick_count());
+                    const i64 mobs3_day = commands ? commands->world().day_time : 18000;
+                    const MobAttackStats swung =
+                        mob_attacks->resolve(*mobs, mobs3_difficulty, mobs3_game, mobs3_day,
+                                             mob_attack_host, tnt_deliver, mob_kills);
+                    for (const MobKill& kill : mob_kills) {
+                        // A villager a zombie killed may rise; otherwise it dies.
+                        if (!(zombie_villagers &&
+                              zombie_villagers->on_villager_killed(*mobs, kill, mobs3_difficulty,
+                                                                   zombie_villager_host))) {
+                            broadcast(nullptr, net::clientbound::kEntityEvent,
+                                      net::encode_entity_event(kill.victim, 3));
+                        }
+                    }
+                    if (swung.swings > 0) {
+                        OV_LOG_DEBUG("tick {}: {} mob swings, {} on players, {} landed, {} kills",
+                                     clock.tick_count(), swung.swings, swung.on_players,
+                                     swung.landed, swung.kills);
+                    }
+                }
+                // Despawn: every mob, every tick, against the nearest player.
+                for (const i32 gone : mobs->removed_ids()) {
+                    mob_records.forget(gone);
+                }
+                if (mob_despawn) {
+                    const DespawnStats gone = mob_despawn->tick(*mobs, mob_records, mobs3_players,
+                                                                mobs3_difficulty, mobs3_transient);
+                    if (gone.immediate + gone.random + gone.peaceful > 0) {
+                        OV_LOG_DEBUG("tick {}: despawned {} far, {} at random, {} peaceful",
+                                     clock.tick_count(), gone.immediate, gone.random,
+                                     gone.peaceful);
+                    }
+                }
+                if (zombie_villagers) {  // clicks, Weakness, cures
+                    const ZombieVillagerStats zv =
+                        zombie_villagers->tick(*mobs, zombie_villager_host, tnt_deliver);
+                    if (zv.cures_started + zv.cured > 0) {
+                        OV_LOG_INFO("zombie villagers: {} cures started, {} cured",
+                                    zv.cures_started, zv.cured);
+                    }
+                }
+                // ── end mobs-3 ──
                 // ── tnt and gravity: creepers, landings, explosions ──
                 if (tnt_gravity && level && world_ticks) {
                     tnt_gravity->tick_creepers(*mobs, mob_level, tnt_host, tnt_deliver);
@@ -8748,6 +9446,21 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 }
             }
         }
+        // ── nether-2 ── The Nether's mobs, under both locks as the overworld's.
+        if (nether_mobs && nether) {
+            std::unique_lock nether_mob_lock{players_mutex, std::try_to_lock};
+            if (nether_mob_lock.owns_lock()) {
+                const std::scoped_lock chunk_lock{chunk_mutex};
+                nether_mob_host.level      = nether_level ? &*nether_level : nullptr;
+                const NetherMobStats ticked = nether_mobs->tick(clock.tick_count(), nether_mob_host);
+                if (ticked.spawned + ticked.shots + ticked.barters + ticked.blasts > 0) {
+                    OV_LOG_DEBUG("nether tick {}: {} spawned, {} alive, {} shots, {} barters, "
+                                 "{} blasts", clock.tick_count(), ticked.spawned, ticked.alive,
+                                 ticked.shots, ticked.barters, ticked.blasts);
+                }
+            }
+        }
+        // ── end nether-2 ──
         // ── tnt and gravity: the craters and landings, sent and relit ──
         flush_tick_writes();
 
@@ -9073,6 +9786,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                             }
                         }
                     }
+                    // ── mobs-3 ── the worn armour's points, every tick: four lookups
+                    if (registries) {
+                        const WornArmour mobs3_worn = worn_armour(
+                            *registries, item_registry,
+                            std::span<const net::ItemStack>{who.inventory}.subspan(5, 4));
+                        who.survival.mitigation.armour    = mobs3_worn.armour;
+                        who.survival.mitigation.toughness = mobs3_worn.toughness;
+                    }
                     // ── fire ── the player's counter, before the survival tick
                     if (fire_session) {
                         gameplay::FireContact touching;
@@ -9263,6 +9984,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         item.z     = who.z;
                         item.stack = stack;
                         item.born  = clock.tick_count();
+                        item.dimension = who.dimension;  // ── persistence ──
                         death_drops.push_back(std::move(item));
                         stack = net::ItemStack{};
                     }
@@ -9277,6 +9999,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         dropped.z         = who.z;
                         dropped.value     = outcome.orbs[orb];
                         dropped.born      = clock.tick_count();
+                        dropped.dimension = who.dimension;  // ── persistence ──
                         // Half a second before the player who died can walk back
                         // into their own experience, the same grace a dropped
                         // stack gets.
@@ -9318,7 +10041,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         const gameplay::OrbState b{other.value,
                                                    static_cast<i32>(now - other.born),
                                                    other.delay};
-                        if (gameplay::orbs_can_merge(a, b, dx * dx + dy * dy + dz * dz)) {
+                        if (other.dimension == orb.dimension &&  // ── persistence ──
+                            gameplay::orbs_can_merge(a, b, dx * dx + dy * dy + dz * dz)) {
                             other.value += orb.value;
                             other.born = std::min(other.born, orb.born);
                             broadcast(nullptr, net::clientbound::kRemoveEntities,
@@ -9335,7 +10059,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     Player* taker  = nullptr;
                     f64     nearest = orb_rules.follow_range * orb_rules.follow_range;
                     for (auto& [orb_key, candidate] : players) {
-                        if (!candidate.confirmed || candidate.survival.awaiting_respawn) {
+                        if (!candidate.confirmed || candidate.survival.awaiting_respawn ||
+                            candidate.dimension != orb.dimension) {  // ── persistence ──
                             continue;
                         }
                         const f64 dx = candidate.x - orb.x;
@@ -9404,6 +10129,28 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // ── end survival ───────────────────────────────────────────────────
 
         perf->enter(TickPhase::Digs);  // ── perf ──
+        {  // ── breaking ── the cracks the others see (destroy_stages.hpp)
+            std::unique_lock stage_lock{players_mutex, std::try_to_lock};
+            if (stage_lock.owns_lock()) {
+                for (auto& [key, digger] : players) {
+                    const bool counting = digger.digging || digger.delayed_dig;
+                    const net::WirePosition where{digger.dig_x, digger.dig_y, digger.dig_z};
+                    // The start was recorded on the network thread a tick
+                    // early, so the elapsed count already holds vanilla's +1.
+                    const f32 count =
+                        counting ? dig_progress_for(digger, where) *
+                                       static_cast<f32>(clock.tick_count() - digger.dig_started_tick)
+                                 : 0.0F;
+                    if (const auto stage = next_destroy_stage(digger.destroy_stage, digger.entity_id,
+                                                              counting, where, count)) {
+                        sound_host.send_near(key, Vec3d{where.x + 0.5, where.y + 0.5, where.z + 0.5},
+                                             kDestroyStageRadius,
+                                             net::clientbound::kSetBlockDestroyStage,
+                                             net::encode_block_destroy_stage(*stage));
+                    }
+                }
+            }
+        }
         {  // ── commands: a delayed dig only ever starts in survival ──
             std::unique_lock dig_lock{players_mutex, std::try_to_lock};
             if (dig_lock.owns_lock()) {
@@ -9428,6 +10175,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         static_cast<f32>(clock.tick_count() - digger.dig_started_tick);
                     if (progress * elapsed >= 1.0F) {
                         digger.delayed_dig = false;
+                        forget_destroy_stage(digger.destroy_stage);  // ── breaking ── no -1 here
                         std::vector<ItemEntity> dropped;
                         drop_loot(digger, where, dropped);
                         registry::BlockStateId broken{};  // ── sound ──
@@ -9462,7 +10210,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             now - last_autosave >= std::chrono::seconds{30}) {
             last_autosave = now;
             save_online_players();  // ── player data ── before level.dat, for the host
-            save_world();
+            {
+                // ── persistence ── the ground items and the entity world are
+                // the players' lock's, as when /save-all runs
+                const std::scoped_lock persist_lock{players_mutex};
+                save_world();
+            }
         }
 
         perf->enter(TickPhase::ChunkSend);  // ── perf ──
@@ -9799,8 +10552,23 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         OV_LOG_INFO("allocations: {} ({} bytes), tick violations: {}", stats.allocations,
                     stats.bytes, stats.violations);
     }
+    // ── persistence ── as at a leave: a player sitting in a cart takes it with
+    // them into their file (RootVehicle), and the world is saved without it
+    {
+        const std::scoped_lock persist_lock{players_mutex};
+        for (const auto& [key, who] : players) {
+            if (rails_session && mobs && who.connection) {
+                if (auto taken = rails_session->take_vehicle(*mobs, who.entity_id)) {
+                    leaving_vehicles[who.entity_id] = std::move(taken->root_vehicle);
+                }
+            }
+        }
+    }
     save_online_players();  // ── player data ──
-    save_world();
+    {
+        const std::scoped_lock persist_lock{players_mutex};  // ── persistence ──
+        save_world();
+    }
 
     listener->stop();
     network_thread.join();

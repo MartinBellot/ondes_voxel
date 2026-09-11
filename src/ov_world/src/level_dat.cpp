@@ -86,7 +86,7 @@ nbt::Document make_level_dat(const LevelSettings& settings) {
     put(data, "Difficulty", nbt::Tag{settings.difficulty});
     put(data, "DifficultyLocked", nbt::Tag::make_bool(settings.difficulty_locked));
     put(data, "hardcore", nbt::Tag::make_bool(false));
-    put(data, "allowCommands", nbt::Tag::make_bool(true));
+    put(data, "allowCommands", nbt::Tag::make_bool(settings.allow_commands));  // ── allow-commands ──
 
     // Without this the game treats the world as freshly created and runs its
     // own spawn search, which for a saved world means moving the player.
@@ -158,12 +158,17 @@ nbt::Document make_level_dat(const LevelSettings& settings) {
     // itself — "key missing: DragonFight" — which is a far better error than
     // most, and worth the reminder that the game is the cheapest test oracle
     // available.
-    nbt::Tag dragon = nbt::Tag::make_compound();
-    put(dragon, "Gateways", nbt::Tag{nbt::Tag::IntArray{}});
-    put(dragon, "DragonKilled", nbt::Tag::make_bool(false));
-    put(dragon, "PreviouslyKilled", nbt::Tag::make_bool(false));
-    put(dragon, "NeedsStateScanning", nbt::Tag::make_bool(true));
-    put(data, "DragonFight", std::move(dragon));
+    // ── dragon ── the fight's own compound once there is one.
+    if (settings.dragon_fight && settings.dragon_fight->compound() != nullptr) {
+        put(data, "DragonFight", *settings.dragon_fight);
+    } else {
+        nbt::Tag dragon = nbt::Tag::make_compound();
+        put(dragon, "Gateways", nbt::Tag{nbt::Tag::IntArray{}});
+        put(dragon, "DragonKilled", nbt::Tag::make_bool(false));
+        put(dragon, "PreviouslyKilled", nbt::Tag::make_bool(false));
+        put(dragon, "NeedsStateScanning", nbt::Tag::make_bool(true));
+        put(data, "DragonFight", std::move(dragon));
+    }
 
     nbt::Tag rules = nbt::Tag::make_compound();
     for (const auto& [rule, value] : settings.game_rules) {
@@ -198,6 +203,14 @@ void read_level_settings(const nbt::Tag& data, LevelSettings& into) {
         into.spawn_angle = static_cast<f32>(angle->as_f64());
     }
     integer("GameType", into.game_type);
+    // ── allow-commands ── a level.dat without the key: cheats in creative,
+    // none otherwise — the rule the vanilla client's world list applies
+    // (measured, commandes-solo.md § 3).
+    if (const nbt::Tag* allow = data.find("allowCommands")) {
+        into.allow_commands = allow->as_bool();
+    } else {
+        into.allow_commands = into.game_type == 1;
+    }
     integer("Time", into.game_time);
     integer("DayTime", into.day_time);
     integer("clearWeatherTime", into.clear_weather_time);
@@ -207,6 +220,11 @@ void read_level_settings(const nbt::Tag& data, LevelSettings& into) {
     flag("thundering", into.thundering);
     integer("Difficulty", into.difficulty);
     flag("DifficultyLocked", into.difficulty_locked);
+    // ── dragon ── kept whole: the dragon fight reads it (end_fight.hpp).
+    if (const nbt::Tag* fight = data.find("DragonFight");
+        fight != nullptr && fight->compound() != nullptr) {
+        into.dragon_fight = *fight;
+    }
     if (const nbt::Tag* worldgen = data.find("WorldGenSettings")) {
         if (const nbt::Tag* seed = worldgen->find("seed")) {
             into.seed = seed->as_i64();

@@ -131,6 +131,16 @@ class Probe:
                 self.send(0x12, payload[:8])
             elif packet_id == 0x3C:  # synchronize position
                 x, y, z = struct.unpack_from(">ddd", payload, 0)
+                # A relative field (flags 0x01 x, 0x02 y, 0x04 z) is an offset
+                # from where the client is, as a real client applies it. Echoing
+                # the raw offset back as a position told the server "I am at
+                # (0, 5, 0)" after every `tp ~ ~5 ~` (2026-09-11).
+                flags = payload[32]
+                if self.position is not None:
+                    px, py, pz = self.position
+                    x = px + x if flags & 0x01 else x
+                    y = py + y if flags & 0x02 else y
+                    z = pz + z if flags & 0x04 else z
                 self.position = (x, y, z)
                 teleport_id, _ = read_varint(payload, 33)
                 self.send(0x00, varint(teleport_id))

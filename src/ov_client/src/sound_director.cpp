@@ -164,6 +164,10 @@ void SoundDirector::mining(registry::BlockStateId state, BlockPos pos) {
     if (mining_ticks_++ % 4 != 0) {
         return;
     }
+    hit(state, pos);
+}
+
+void SoundDirector::hit(registry::BlockStateId state, BlockPos pos) {  // ── breaking ──
     const auto sounds = sounds_of(state);
     if (!sounds || sounds->volume < 0.0F) {
         return;

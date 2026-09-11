@@ -155,6 +155,11 @@ std::expected<PipelineHandle, RhiError> Device::create_graphics_pipeline(
     // out of the block, and that is the winding this has to agree with.
     raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     raster.lineWidth = 1.0F;
+    if (desc.depth_bias_constant != 0.0F || desc.depth_bias_slope != 0.0F) {
+        raster.depthBiasEnable         = VK_TRUE;
+        raster.depthBiasConstantFactor = desc.depth_bias_constant;
+        raster.depthBiasSlopeFactor    = desc.depth_bias_slope;
+    }
 
     VkPipelineMultisampleStateCreateInfo multisample{};
     multisample.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
@@ -182,6 +187,14 @@ std::expected<PipelineHandle, RhiError> Device::create_graphics_pipeline(
         blend.blendEnable         = VK_TRUE;
         blend.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
         blend.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        blend.colorBlendOp        = VK_BLEND_OP_ADD;
+        blend.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        blend.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        blend.alphaBlendOp        = VK_BLEND_OP_ADD;
+    } else if (desc.blend == BlendMode::Multiply) {
+        blend.blendEnable         = VK_TRUE;
+        blend.srcColorBlendFactor = VK_BLEND_FACTOR_DST_COLOR;
+        blend.dstColorBlendFactor = VK_BLEND_FACTOR_SRC_COLOR;
         blend.colorBlendOp        = VK_BLEND_OP_ADD;
         blend.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
         blend.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;

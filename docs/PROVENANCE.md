@@ -32,7 +32,7 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`biomes-egalites.md`](provenance/biomes-egalites.md) | Le départage des égalités de climat : 100,000 % |
 | [`features.md`](provenance/features.md) | L'ensemencement de la décoration, et pourquoi `WorldgenRandom` n'est pas la source qu'il enveloppe |
 | [`pipeline-de-chunks.md`](provenance/pipeline-de-chunks.md) | La couche qui possède neuf chunks : 27,97 % des écritures franchissent une frontière |
-| [`structures.md`](provenance/structures.md) | Le placement des 19 `structure_set`, exact au chunk près — et le mineshaft comme oracle pur des réducteurs |
+| [`structures.md`](provenance/structures.md) | Le placement des 19 `structure_set`, exact au chunk près — et le mineshaft comme oracle pur des réducteurs ; § 20 : les structures posées par le serveur, `structures.starts` et `References` au format du jeu |
 | [`chunkmap.md`](provenance/chunkmap.md) | Tickets, pool de jobs, génération hors du thread de tick, déterminisme sous TSan |
 | **Jeu** | |
 | [`fluides.md`](provenance/fluides.md) | Écoulement, recherche du trou, mélanges : 3172/3172 positions |
@@ -49,12 +49,17 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`meteo-sommeil.md`](provenance/meteo-sommeil.md) | La pluie qui vient seule, la glace des océans gelés à 11 285/11 285, la foudre et les lits |
 | [`feu.md`](provenance/feu.md) | Le feu qui se propage, la lave qui allume deux fois par tirage, et une fenêtre de dégâts de 10 ticks et non 11 |
 | [`alchimie.md`](provenance/alchimie.md) | L'alambic et les 43 potions : 2709/2709 recettes, et l'éclaboussure qui part d'où était la fiole |
-| [`end.md`](provenance/end.md) | L'End à 100 % des biomes et 99,9996 % des blocs, son portail, et un dragon qui ne vole pas encore |
+| [`end.md`](provenance/end.md) | L'End à 100 % des biomes et 99,9996 % des blocs, son portail et son arène (le combat : `dragon.md`) |
+| [`commandes-solo.md`](provenance/commandes-solo.md) | « Autoriser les commandes » : la règle du bouton relevée sur le vrai client en onze étapes, `allowCommands` dans level.dat, et le niveau de l'hôte |
+| [`cassage-bloc.md`](provenance/cassage-bloc.md) | Casser un bloc dans notre client : fissures au pixel près, 151 ticks pour la pierre à la main comme le vrai client, et 64 éclats |
 | [`rails-wagonnets.md`](provenance/rails-wagonnets.md) | Les rails (Rail, Powered Rail, Minecart du wiki) : 1536/1536 formes, et 14 trajectoires de wagonnet à moins de 1e-9 du vrai serveur |
 | [`rendu-parite.md`](provenance/rendu-parite.md) | Le rendu mesuré contre le vrai client : 12 800/12 800 texels de lightmap, l'AO du jeu, et un sRGB caché qui délavait l'herbe |
 | [`villageois.md`](provenance/villageois.md) | Métiers, commerce et niveaux : 4298/4298 offres vanilla retrouvées, et l'ordre d'un `HashSet` Java qui se voit à l'écran |
+| [`dragon.md`](provenance/dragon.md) | Le combat contre l'Ender Dragon : phases, cristaux qui explosent (puissance 6), souffle, 12 000 points en 66 orbes, `DragonFight` aux clés du jeu, réinvocation en 604 ticks — mesurés contre le vrai serveur |
 | [`mobs-2.md`](provenance/mobs-2.md) | La loi de marche, l'apparition par biome, douze espèces, et les monstres qui n'apparaissaient jamais en surface la nuit |
+| [`mobs-3.md`](provenance/mobs-3.md) | Le coup des mobs hostiles (22/22 cellules difficulté × armure), le despawn mesuré, les mobs dans `entities/`, et le villageois zombie — et des zombies qui ne voyaient pas les joueurs |
 | [`nether.md`](provenance/nether.md) | Le Nether à 99,9 %, des portails là où le jeu les met, et le bruit de l'Overworld qui lisait ses octaves à l'envers |
+| [`nether-2.md`](provenance/nether-2.md) | Les features du Nether, ses fossiles à 185 départs sur 185, et ses mobs dans un monde à eux : troc, salves, boules de feu |
 | [`son.md`](provenance/son.md) | Les sons de 1003 blocs et 79 créatures, relevés sur le fil, et le client qui les joue |
 | [`elevage.md`](provenance/elevage.md) | Veaux, agneaux et poussins : reproduction à 59-62 ticks, couleurs héritées, et une vitesse de marche qui n'est pas l'attribut divisé par deux |
 | [`chat-client.md`](provenance/chat-client.md) | Le chat de notre client, mesuré sur le vrai client : un fondu de 10 s et non de 3, et des coupures de ligne identiques |
@@ -69,6 +74,7 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`interface.md`](provenance/interface.md) | Police, HUD, inventaire : 2414 glyphes validés glyphe par glyphe |
 | [`inventaire-creatif.md`](provenance/inventaire-creatif.md) | Les 14 onglets demandés au jar serveur, 1689 cases, et la géométrie comptée dans les pixels |
 | [`rendu-entites.md`](provenance/rendu-entites.md) | Les ~200 modèles d'entités lus du vrai client pendant qu'il tourne, textures par métadonnées, et chaque espèce mesurée contre lui — et la vache qui se tenait debout |
+| [`persistance-entites.md`](provenance/persistance-entites.md) | Objets, orbes, flèches, TNT, sable, nuages, mobs du Nether, dragon et cristaux, et le wagonnet du joueur : sauvés au type près mesuré sur le vrai serveur, un écrivain par dimension |
 
 ---
 

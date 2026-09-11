@@ -296,7 +296,14 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] Murets : `low`, `tall` et le poteau, relevés avec le bloc du dessus
 - [x] Durées de cassage et outils corrects : vérifiés tick pour tick sur 985 des 996 blocs
 - [x] Tables de butin, Silk Touch et Fortune : tirages comparés à ceux du vrai serveur
-- [x] Entités objet : les butins tombent au sol et se ramassent *(sans gravité ni sauvegarde)*
+- [x] Entités objet : les butins tombent au sol et se ramassent *(sans gravité)*
+      *(**2026-09-11 — persistance** : objets et orbes **sauvés** dans le chunk où ils sont,
+      par dimension (`Item`, `Age` court, `PickupDelay`, `Health` ; `Value` court, `Count`
+      entier — types relevés sur le vrai serveur), relus avec leur âge : ils partent au même
+      tick qu'avant. Avec eux : flèches plantées et ramassables, tridents, lancers en vol,
+      TNT amorcée (`Fuse`), sable qui tombe (`BlockState`, `Time`), nuages, mobs du Nether
+      (`DIM-1/entities`), dragon et cristaux (`DIM1/entities`), et le wagonnet du joueur
+      (`RootVehicle`). Voir `docs/provenance/persistance-entites.md`)*
 - [x] Conteneurs : ouverture, clic gauche et droit, hotbar
 - [x] Shift-clic : fusion jusqu'à la taille de pile réelle, mesurée item par item
 - [x] Glissés, touches numériques, lâcher d'objet, inventaire autoritatif en survie
@@ -485,7 +492,11 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       98,3 % des marques `PostProcessing` — ne sont livrés à aucune file, donc
       une cascade générée ne coule pas ; un tiers de la lave des carvers sous
       −56 est marqué par une règle inconnue ; coût ≈ ×2,5 en debug. Voir
-      `docs/provenance/aquiferes.md` § 10)*
+      `docs/provenance/aquiferes.md` § 10. **2026-09-11** : `aquifers_enabled`
+      des réglages enfin lu — l'aquifère tournait aussi dans le Nether et l'End,
+      qui n'en ont pas, et vidait la mer de lave du Nether : lave retrouvée
+      25,2 → **99,99 %**, Nether 98,12 → **99,65 %** sur 200 chunks `carvers`,
+      `docs/provenance/nether.md` § 1.6)*
 - [x] Minerais par couche, distributions triangulaires
       *(**99,509 % des positions au bloc près** en rejouant sur le terrain du
       jeu, et **82,406 % sur notre propre terrain généré de bout en bout** —
@@ -545,12 +556,16 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       épaves **1 236/1 236** et 383/383 blocs, igloos **456/456** et 546/546,
       ruines océaniques 92 %, portails en ruine 94-97 % ; graines de butin des
       coffres 27/28 au bit près. Pièces tirées de la graine : **100/100 départs**
-      identiques au jeu. **Pas encore visibles en jeu** : le serveur ne branche
-      pas le pipeline de structures (`generated_world.cpp`), et la hauteur des
-      ruines, des portails et du trésor n'est pas réglée. Temples du désert et
+      identiques au jeu. **2026-09-11 : posées par le serveur** (Overworld,
+      Nether, End) : étage attaché à chaque pile de génération, vidé avec le
+      carré (déterminisme), `structures.starts` et `References` écrits au
+      format du jeu — l'épave échouée du chunk (9, 5) identique champ pour
+      champ, types compris ; portails et trésor refusés par le serveur tant
+      que leur hauteur n'est pas réglée, tout refus nommé au journal
+      (`structures.md` § 20). Temples du désert et
       de la jungle, cabane de sorcière : construits en code par le jeu,
       refusés par nom. Jigsaw (villages, avant-postes, bastions…) : autre
-      mandat. Voir `docs/provenance/structures.md` §§ 12-19)* :
+      mandat. Voir `docs/provenance/structures.md` §§ 12-20)* :
       villages ×5 (plains, desert, savanna, taiga, snowy),
       avant-poste pillard, mine abandonnée (+ mesa), forteresse (stronghold),
       pyramide du désert, temple de la jungle, igloo, cabane de sorcière,
@@ -574,6 +589,20 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       **99,763 %** et le décalage de surface de ~2 blocs disparaît. Restent les
       mobs du Nether, 19 features et ses structures, et plusieurs gestes dans
       le Nether (conteneurs, TNT). Voir `docs/provenance/nether.md`)*
+      *(**2026-09-11 — nether-2** : les neuf types de feature du Nether
+      (pierre lumineuse **148/148**, basalte 10,8 → 94,8 %, forêts cramoisies
+      et biscornues aux trois quarts pour les tiges, à moitié pour les
+      chapeaux), le **fossile du Nether** tiré de la graine (**185/185** départs
+      identiques au jeu, gabarit, rotation et position), et les **mobs du
+      Nether** dans un monde d'entités à eux : apparition par les listes et les
+      règles du Nether, onze espèces aux vitesses mesurées (piglin 0,6, hoglin
+      0,4, strider 1,0 sur la lave et 0,66 froid…), troc des piglins (χ² 22,65
+      à 16 ddl contre la table chez le vrai serveur ; 120 ticks chez nous),
+      salves du blaze et charge du ghast mesurées, boules de feu qui allument et
+      explosent. De bout en bout **8/8**. Restent la forteresse (pièces en code)
+      et le bastion (jigsaw), les patchs de champignons, l'attache des
+      structures par le serveur, le corps à corps des mobs. Voir
+      `docs/provenance/nether-2.md`)*
 - [x] **End** : îles principales, îles extérieures, passerelles, portail de sortie
       *(**2026-09-11** : bruit `end_islands`, règle de biomes, `end_spike`,
       `end_island`, `chorus_plant`, `end_gateway`. Seed 1234567890 : biomes
@@ -648,10 +677,34 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       `0,98·s²·(0,6/f)³/(1−0,91·f)` : 19 espèces à 0,2 % près sur notre serveur.
       Composition par biome non mesurée sur notre serveur. Voir
       `docs/provenance/mobs-2.md`)*
-- [~] Despawn, persistance, cap de mobs par catégorie
+      *(**2026-09-11 — nether-2** : les règles du Nether — aucune porte de
+      lumière par catégorie, piglin, hoglin et piglin zombifié partout sauf sur
+      le bloc de verrue, ghast une tentative sur vingt, strider dans la lave
+      sous l'air, obscurité du Nether pour l'enderman et le squelette, rien sur
+      la bedrock, y tiré jusqu'au toit. Les `spawn_costs` (vallée des âmes,
+      forêt biscornue) et les `spawn_overrides` des forteresses ne sont pas
+      lus. Voir `docs/provenance/nether-2.md`)*
+- [x] Despawn, persistance, cap de mobs par catégorie
       *(les caps et la persistance sont là ; `decide_despawn` est écrit,
       testé et **appelé par personne** — les mobs s'accumulent jusqu'au cap et
       y restent)*
+      *(**2026-09-11 — mobs-3** : despawn **branché**, chaque mob chaque tick
+      contre le joueur le plus proche. Vanilla mesuré : immédiat au-delà de
+      128, rien sous 32, et entre les deux 600 ticks d'inactivité puis une
+      décroissance — ajustée à 600 et 1/850 sur 32 zombies, contre 600 et 1/800
+      appliqués ; **les vaches et les villageois ne partent jamais** et un
+      `CustomName` seul **n'épingle pas**. Les mobs sont **sauvés** dans
+      `entities/r.x.z.mca` au format 1.20.1 (lus au chargement d'un chunk,
+      écrits au déchargement et à chaque sauvegarde), champs non modélisés et
+      entités étrangères rendus intacts ; un zoo de 24 mobs écrit par le vrai
+      serveur relu par le nôtre (24/24 sur le fil), réécrit, et relu par le
+      vrai serveur (24/24). `NoAI` est rendu mais ignoré. Voir
+      `docs/provenance/mobs-3.md`)*
+      *(**2026-09-11 — persistance** : les mobs du **Nether** aussi, dans `DIM-1/entities`,
+      par un stockage à eux — main principale et taille du cube de magma relues ; le
+      **dragon** et les **cristaux** dans `DIM1/entities` : santé, phase et position
+      revenues, un cristal détruit ne revient pas, le combat ne redémarre plus. Voir
+      `docs/provenance/persistance-entites.md`)*
 - [ ] **Passifs (32)** : allay, axolotl, bat, camel, cat, chicken, cod, cow,
       donkey, fox, frog, glow_squid, horse, mooshroom, mule, ocelot, parrot,
       pig, pufferfish, rabbit, salmon, sheep, skeleton_horse, sniffer,
@@ -666,12 +719,19 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       vindicator, **warden**, witch, wither_skeleton, zoglin, zombie,
       zombie_villager
 - [ ] **Boss** : ender_dragon (phases, cristaux, combat complet), wither
-      *(**2026-09-11 — début du combat** : barre de boss (mêmes octets que le
-      jeu), cristaux qui soignent, parties du dragon qui le touchent, sa mort
-      qui ouvre le portail de sortie, pose l'œuf et une passerelle — en tests
-      unitaires. Le dragon **tourne en rond** : pas de vrai vol, pas de phase
-      `dying`, pas d'XP, pas de sauvegarde du combat, jamais tué de bout en
-      bout. Voir `docs/provenance/end.md`)*
+      *(**2026-09-11 — le combat contre l'Ender Dragon, côté serveur** : les
+      onze phases et leurs transitions documentées, les 24 nœuds, un vol ajusté
+      aux trajectoires du vrai serveur ; cristaux qui explosent (puissance 6),
+      −10 PV au dragon pour celui qui le soignait, strafe et boule de feu,
+      nuages de souffle (fiole), corps qui casse tout sauf `#dragon_immune`,
+      ailes et tête ; mort animée, **12 000 points** (500 ensuite) ;
+      `DragonFight` lu et écrit aux clés et types du jeu ; réinvocation par
+      quatre cristaux sur la chronologie mesurée (604 ticks). **Tué de bout en
+      bout** contre notre serveur à l'épée, sans commande. Restent : le
+      **rendu du dragon** dans notre client (aucun modèle : chantier à part), les
+      grandes embardées du vol (p90 du rayon 52 contre 78–84), la santé et la
+      position du dragon non sauvées, flèches et tridents qui ne le touchent pas ;
+      et le **wither**. Voir `docs/provenance/dragon.md`)*
 - [~] Projectiles
       *(**2026-09-10** : flèche, trident, boule de neige, œuf, perle, bouteille
       d'XP et potion jetable volent, se plantent et se ramassent ; arc,
@@ -858,6 +918,13 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       lit la nuit. Restent ragots et popularité, reproduction, golems, cloche,
       zombification et guérison (mesurées, non branchées), type selon le
       biome, persistance. Voir `docs/provenance/villageois.md`)*
+      *(**2026-09-11 — mobs-3** : **zombification branchée** (jamais en
+      facile, une fois sur deux en normal, toujours en difficile) — le
+      villageois zombie garde type, métier, niveau, XP et offres (indice 20) ;
+      **guérison** par pomme d'or sous Faiblesse (potion jetable), 3600 +
+      0..2400 ticks, accélérée par barreaux et lits, le même villageois au bout.
+      La remise de prix n'est pas faite : pas de réputation. Villageois
+      **sauvés** avec leurs offres. Voir `docs/provenance/mobs-3.md`)*
 - [ ] **Raids** : mauvais présage, vagues, capitaines pillards, ravageurs,
       récompense héros du village
 - [ ] **Structures interactives** : balise (pyramide, effets), conduit, table de
@@ -874,6 +941,13 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       il n'y a **pas** de Hurt Animation. Restent les sources de dégâts au
       corps à corps, projectile et feu, la réapparition au lit, l'armure, et
       l'XP de minage dont la sonde est intermittente)*
+      *(**2026-09-11 — mobs-3** : **les mobs hostiles frappent** — ils ne
+      visaient même pas le joueur, absent du monde des entités. Dégâts selon la
+      difficulté et **l'armure** (points et robustesse, avant Résistance et
+      Protection) : 22/22 cellules identiques au vrai serveur, puis 15/15 de
+      bout en bout sur le nôtre ; Faim du husk 140/280, Poison de l'araignée
+      venimeuse 140/300, flèche de stray Lenteur 600 ; la flèche de mob et
+      l'explosion suivent la difficulté. Voir `docs/provenance/mobs-3.md`)*
 - [~] **Combat et utilisation** : frapper, utiliser, manger, user un outil
       *(**jauge d'attaque 13 marches sur 13** et 5/5 pour une arme au
       refroidissement différent, `0,2 + 0,8·f²` ; dégâts et refroidissement de
@@ -978,6 +1052,13 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       particules**, entités d'affichage, cadres d'item, tableaux, bannières,
       cartes, texte et police, premier plan (main, blocs, armes), GUI 3D des
       items
+      *(**2026-09-11 — le cassage** : fissures des 10 étapes sur le vrai modèle
+      du bloc (couverture au pixel près contre le vrai client, 0,556 / 5,437 /
+      18,158 % aux étapes 0 / 4 / 9), fissures des autres joueurs, particules
+      de casse et de frappe (64 par bloc, texturées), sons, contour qui suit la
+      forme, calendrier local identique au tick près (pierre à la main 151).
+      Restent la main à la première personne et la prédiction locale du bloc
+      cassé. Voir `docs/provenance/cassage-bloc.md`)*
 - [ ] Audio : tous les événements sonores, musique adaptative par biome et
       dimension, disques, sous-titres
 - [ ] Resource packs empilables, i18n, options persistées, captures d'écran

@@ -150,7 +150,9 @@ private:
 }  // namespace
 
 TEST_CASE("every shipped species has a kind, and only those", "[gameplay][entity][logic]") {
-    CHECK(mob_kinds().size() == 20);  // ── mobs-2 ── eight of M2, twelve new
+    // ── mobs-2 ── eight of M2, twelve new; ── nether-2 ── nine Nether walkers;
+    // ── mobs-3 ── and the zombie villager
+    CHECK(mob_kinds().size() == 30);
     for (const MobKind& kind : mob_kinds()) {
         CHECK(mob_kind(kind.type_name) == &kind);
         // The two tables agree with each other: a species this module knows how

@@ -93,8 +93,9 @@ std::unique_ptr<NetherWorld> NetherWorld::open(
     world->region_dir_ = level_dir / std::string{info.region_dir};
     std::error_code ignored;
     std::filesystem::create_directories(world->region_dir_, ignored);
-    world->codec_     = codec;
-    world->hooks_     = std::move(hooks);
+    world->codec_       = codec;
+    world->codec_.shape = info.shape;  // a saved chunk comes back 0..256, not overworld-shaped
+    world->hooks_       = std::move(hooks);
     world->generated_ = GeneratedWorld::load(data_root, blocks, registries, codec_biomes, seed,
                                              workers + 1, settings);
     if (!world->generated_) {
@@ -217,6 +218,7 @@ void NetherWorld::tick(i64 tick_count) {
         for (const ChunkPos pos : to_evict_) {
             (void)chunks_.evict(pos);
         }
+        evicted_.insert(evicted_.end(), to_evict_.begin(), to_evict_.end());  // ── persistence ──
     }
 }
 

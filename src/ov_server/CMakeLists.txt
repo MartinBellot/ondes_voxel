@@ -17,6 +17,7 @@ ov_add_library(ov_server
         src/merchant_session.cpp
         src/natural_spawning.cpp
         src/nether_travel.cpp
+        src/nether_mobs.cpp  # ── nether-2 ──
         src/slimes.cpp
         src/drowning.cpp
         src/end_travel.cpp
@@ -24,11 +25,19 @@ ov_add_library(ov_server
         src/player_inventory.cpp
         src/server.cpp
         src/combat_session.cpp
+        src/destroy_stages.cpp  # ── breaking ──
         src/effect_session.cpp
         src/enchant_session.cpp
         src/fire_session.cpp
         src/campfire.cpp
         src/mob_combat.cpp
+        src/mob_attacks.cpp  # ── mobs-3 ──
+        src/mob_despawn.cpp  # ── mobs-3 ──
+        src/entity_storage.cpp  # ── mobs-3 ──
+        src/entity_nbt.cpp  # ── persistence ──
+        src/ground_entities.cpp  # ── persistence ──
+        src/dimension_entities.cpp  # ── persistence ──
+        src/zombie_villagers.cpp  # ── mobs-3 ──
         src/player_level.cpp
         src/player_data.cpp
         src/projectiles.cpp
@@ -41,6 +50,7 @@ ov_add_library(ov_server
         src/weather_session.cpp
         src/workbench.cpp
         src/world_ticks.cpp
+        src/world_structures.cpp  # ── structures ──
         # ── commands and chat ──
         src/commands/arguments.cpp
         src/commands/console.cpp
@@ -93,11 +103,16 @@ ov_add_test(test_ov_server
         tests/test_player_data.cpp
         tests/test_relight.cpp
         tests/test_sounds.cpp
+        tests/test_destroy_stages.cpp  # ── breaking ──
         tests/test_nether_travel.cpp
         tests/test_weather_session.cpp
         tests/test_tick_profile.cpp
         tests/test_end_fight.cpp
         tests/test_rails_session.cpp
+        tests/test_persistence.cpp  # ── persistence ──
+        tests/test_nether_mobs.cpp  # ── nether-2 ──
+        tests/test_mobs3_server.cpp  # ── mobs-3 ──
+        tests/test_world_structures.cpp  # ── structures ──
     DEPS ov_server
     LABELS unit
 )

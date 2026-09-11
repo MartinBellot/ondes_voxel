@@ -14,6 +14,7 @@
 #include "ov/nbt/binary.hpp"
 #include "ov/world/chunk.hpp"
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -42,6 +43,13 @@ struct LevelSettings {
     /// WorldGenSettings, so a world created with a seed is reopened with it —
     /// by this server and by vanilla.
     bool generated{false};
+    // ── allow-commands ──
+    /// `Data.allowCommands`: Create World's "Allow Cheats". In singleplayer
+    /// it decides the host's permission level — 4 with it, 0 without — and
+    /// the world list says "Cheats". A dedicated server ignores it. True by
+    /// default because a world this server creates for itself always wrote 1.
+    /// See docs/provenance/commandes-solo.md.
+    bool allow_commands{true};
 
     // ── The world's clocks, weather and rules ───────────────────────────────
     //
@@ -62,6 +70,10 @@ struct LevelSettings {
     /// `GameRules`, as vanilla stores it: every value a string. Empty is an
     /// empty compound, which vanilla reads as every rule at its default.
     std::vector<std::pair<std::string, std::string>> game_rules;
+
+    // ── dragon ── `DragonFight`, as read, or as the server's dragon fight last
+    // wrote it. Empty: the fixed compound of a world nobody took to the End.
+    std::optional<nbt::Tag> dragon_fight;
 };
 
 /// Read what a level.dat says about itself into `into`, leaving fields it does

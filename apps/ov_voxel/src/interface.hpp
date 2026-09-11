@@ -182,11 +182,20 @@ public:
         return window_slots_;
     }
 
+    /// ── breaking ── The player's own window 0, 46 slots: armour at 5..8, the
+    /// hotbar at 36..44. What is held and what the helmet carries decide how
+    /// fast this client counts its own cracks.
+    [[nodiscard]] const std::vector<net::ItemStack>& inventory() const noexcept {
+        return inventory_;
+    }
+
     void close(client::Window& window, netclient::Client& client);
 
     // ── screens ──
     /// The Video Settings screen's GUI Scale, applied at once. Zero is auto.
     void set_gui_scale(u32 scale) noexcept { options_.gui_scale = scale; }
+    /// ── allow-commands ── Controls' "Operator Items Tab" changed.
+    void set_operator_items_tab(bool on);
     // ── end screens ──
 
     // ── chat ──
@@ -287,6 +296,11 @@ private:
     i16 last_click_slot_{-1};
 
     f32 previous_health_{20.0F};
+    /// ── allow-commands ── the permission level Entity Event 24..28 gave this
+    /// player; the operator tab needs 2, and creative. Unset before any
+    /// arrived (no server): the tab is then what the option says.
+    std::optional<i32> op_level_;
+    void refresh_operator_tab();
 };
 
 }  // namespace ov::demo

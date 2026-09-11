@@ -127,6 +127,11 @@ COMMANDS: list[str] = [
     "tp @s 0.5 -60 0.5", "tp 10 -60 10", "tp @s ~ ~5 ~", "tp @s 0 -60 0 90 0", "tp @s ^ ^ ^1",
     "tp ovprobe ovprobe", "tp @s 0 -60 0 facing 10 -60 0", "teleport 0.5 -60 0.5", "tp @s ~ ~",
     "tp @s ^ ~ ~", "tp nobody 0 0 0", "tp @s 0 -60 0 foo", "tp @s 30000000 0 0",
+    # ── tp, rotation and facing (2026-09-11) ──
+    "tp @s ~ ~ ~ 0 70", "tp @s ~ ~ ~ ~10 ~-5", "tp @s ~1 ~ ~ ~ ~", "tp @s ~ ~ ~ 0",
+    "tp ~ ~ ~ 0 70", "teleport @s 0.5 -60 0.5 -90 -10", "tp @s ^1 ^ ^",
+    "tp @s 0.5 -60 0.5 facing entity @s eyes", "tp @s 0.5 -60 0.5 facing entity @s feet",
+    "tp @s 0.5 -60 0.5 facing ~ ~ ~5", "tp @s 0.5 -60 0.5 facing entity nobody",
     "tp @s 0.5 -60 0.5",
     # ── gamemode / defaultgamemode ──
     "gamemode survival", "gamemode survival ovprobe", "gamemode adventure @s",
@@ -435,8 +440,10 @@ def main() -> int:
     target = sys.argv[1] if len(sys.argv) > 1 else "vanilla"
     out_path = (Path(sys.argv[2]) if len(sys.argv) > 2
                 else NORMALIZED / f"commands_capture_{target}.json")
-    port = 25691 if target == "vanilla" else 25692
-    run_dir = ROOT / "run" / f"commands-{target}"
+    # Overridable so that parallel work can keep to its own ports and write its
+    # servers' worlds inside its own tree (run/ may be shared).
+    port = int(os.environ.get("OV_CAPTURE_PORT", 25691 if target == "vanilla" else 25692))
+    run_dir = Path(os.environ.get("OV_CAPTURE_RUN", ROOT / "run")) / f"commands-{target}"
     if target == "vanilla":
         if run_dir.exists():
             shutil.rmtree(run_dir)

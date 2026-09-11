@@ -5,7 +5,12 @@
 // engine the world-tick drain calls, a placed rail shaped among its
 // neighbours, carts spawned from an item, their packets, riding, breaking,
 // the detector rail a cart presses, the activator rail that throws a rider
-// off, and the carts written to and read back from `entities/r.x.z.mca`.
+// off, and a cart's compound in `entities/r.x.z.mca`.
+//
+// The files themselves are not this session's: `EntityStorage` is their one
+// reader and writer (entity_storage.hpp). The session is an `EntityAdopter`:
+// the storage hands it each cart it reads from a chunk, and asks it for each
+// live cart's compound when it writes one.
 //
 // Callbacks rather than a reference to the server, as for tnt_gravity.hpp:
 // this file must not know what a `Player` or a chunk map is.
@@ -17,6 +22,7 @@
 // only one that touches the entity world and writes the level.
 #pragma once
 
+#include "entity_storage.hpp"
 #include "world_ticks.hpp"
 
 #include "ov/entity/world.hpp"
@@ -59,6 +65,18 @@ struct RailsHost {
     std::function<void(i32 player_id, Vec3d at)> set_down;
     /// Take one of the held item (a furnace cart fed coal). Survival only.
     std::function<void(i32 player_id)> consume_held;
+    /// ── persistence ── Is this player in the world, their client told about
+    /// it? A vehicle from their file waits for it. Null: at once.
+    std::function<bool(i32 player_id)> player_ready;
+};
+
+/// ── persistence ── What a player leaving in a cart takes with them.
+struct TakenVehicle {
+    /// `RootVehicle`: {Attach: the cart's UUID, Entity: the cart's compound}.
+    nbt::Tag root_vehicle;
+    /// The cart's wire id, for the caller's Remove Entities; -1 when the
+    /// vehicle had not been put back in the world yet.
+    i32 cart_id{-1};
 };
 
 /// A right-click or a hit on a cart, asked for by the network thread.
@@ -92,7 +110,7 @@ struct RailsStats {
     usize shaped{0};
 };
 
-class RailsSession final : public BlockRuleExtension {
+class RailsSession final : public BlockRuleExtension, public EntityAdopter {
 public:
     RailsSession(const registry::BlockRegistry& blocks, const registry::Registries& registries);
 
@@ -119,8 +137,9 @@ public:
     void request_touch(CartTouch touch);
     void request_input(RiderInput input);
 
-    /// Is this entity type one of the seven carts?
-    [[nodiscard]] bool owns(i32 type) const noexcept;
+    /// Is this entity type one of the seven carts? (Any thread: the table is
+    /// set once, in the constructor.)
+    [[nodiscard]] bool owns(i32 type) const noexcept override;
 
     /// Is anything waiting for the tick?
     [[nodiscard]] bool has_pending() const;
@@ -153,14 +172,38 @@ public:
     /// A player left: they get off whatever they were riding.
     void forget_player(entity::EntityWorld& world, i32 player_id, const RailsHost& host);
 
-    // ── Persistence ─────────────────────────────────────────────────────────
+    // ── persistence: RootVehicle ────────────────────────────────────────────
+    //
+    // Measured on the real server: a player who leaves sitting in a minecart
+    // takes it with them — the cart is gone from the world (0 carts after the
+    // leave), their file has `RootVehicle` {Attach, Entity} — and it comes
+    // back with them, ridden (1 cart after the return, `RootVehicle` written
+    // again at the next save).
 
-    /// Read every cart of `level_dir/entities`, spawning them, and keep every
-    /// other entity of those chunks to write back untouched.
-    usize load(const std::filesystem::path& level_dir, entity::EntityWorld& world);
+    /// The player is leaving: the cart they ride leaves the world with them,
+    /// and its `RootVehicle`. Nullopt when they ride nothing. The caller holds
+    /// the entity world's lock and sends the Remove Entities.
+    [[nodiscard]] std::optional<TakenVehicle> take_vehicle(entity::EntityWorld& world,
+                                                           i32                  player_id);
 
-    /// Write every cart to `level_dir/entities`, beside what was kept.
-    usize save(const std::filesystem::path& level_dir, entity::EntityWorld& world) const;
+    /// A player whose file has a `RootVehicle` joined: the cart is put back
+    /// and the player in it on the tick, once `player_ready` says so.
+    /// Thread-safe.
+    void request_restore(i32 player_id, nbt::Tag root_vehicle);
+
+    // ── Persistence: EntityAdopter, called by EntityStorage ─────────────────
+
+    /// A cart read from a chunk: spawned where it was, with everything it was
+    /// saved with kept for its next save.
+    std::optional<entity::EntityHandle> adopt_saved(entity::EntityWorld& world,
+                                                    const nbt::Tag&      compound) override;
+
+    /// A live cart's compound (`cart_nbt`). Nullopt for one being removed.
+    [[nodiscard]] std::optional<nbt::Tag> save_entity(entity::EntityWorld& world,
+                                                      entity::EntityHandle handle) const override;
+
+    /// A cart leaves the world with its chunk: forgotten, and its rider with it.
+    void release(entity::EntityWorld& world, entity::EntityHandle handle) override;
 
     /// The NBT vanilla writes for one cart: id, Pos, Motion, Rotation, UUID,
     /// and each kind's own — Fuel and PushX/Z, TNTFuse, Enabled, Items,
@@ -226,12 +269,6 @@ private:
     /// Detector rails pressed this tick, and the cart on each.
     std::map<std::tuple<i32, i32, i32>, i32> pressed_;
 
-    /// What vanilla's chunks held besides carts, written back as they came.
-    std::map<std::pair<i32, i32>, std::vector<nbt::Tag>> kept_;
-    /// Every chunk a save has written carts into: rewritten by every later
-    /// save, so a cart that rolled away does not stay behind.
-    mutable std::set<std::pair<i32, i32>> written_;
-
     mutable std::mutex pending_mutex_;
     struct PendingShape {
         BlockPos pos{};
@@ -253,6 +290,16 @@ private:
     std::vector<RiderInput>   inputs_now_;
     /// Each rider's latest controls.
     std::unordered_map<i32, RiderInput> controls_;
+
+    /// ── persistence ── Vehicles waiting for their rider, and how many ticks
+    /// each has waited.
+    struct PendingRestore {
+        i32      player_id{0};
+        nbt::Tag root_vehicle;
+        i32      waited{0};
+    };
+    std::vector<PendingRestore> pending_restores_;  // behind pending_mutex_
+    std::vector<PendingRestore> restores_now_;      // the tick's
 
     i32 next_uuid_salt_{0};
 };

@@ -203,7 +203,7 @@ son paquet Commands, donc de `/help` et des suggestions du client) :
 | `spawnpoint` | 2 | point de réapparition personnel, **utilisé à la réapparition** |
 | `setworldspawn` | 2 | `level.dat` + Set Default Spawn ; point de réapparition par défaut |
 | `summon` | 2 | les types que `EntityWorld` sait mesurer, avec le même cerveau qu'une apparition naturelle |
-| `teleport` / `tp` | 2 | les sept formes, `~` et `^`, rotation, `facing` position et entité ; drapeaux relatifs de Synchronize Position comme vanilla |
+| `teleport` / `tp` | 2 | les sept formes, `~` et `^`, rotation, `facing` position et entité ; drapeaux relatifs de Synchronize Position comme vanilla ; `facing entity` résolu **avant** de déplacer, Look At de **forme entité** (§ 8) |
 | `tellraw` | 2 | composant relu et réécrit à la manière de vanilla, sélecteurs résolus |
 | `time` | 2 | set/add/query, day/noon/night/midnight ; horloge persistée |
 | `title` | 2 | title/subtitle/actionbar/times/clear/reset |
@@ -307,3 +307,64 @@ qu'ils avaient à dire :
 * **La console logue un `/say` avec `[Not Secure]`** comme un message de joueur.
 * Le mode de jeu par défaut du monde (créatif chez nous, survie chez vanilla) :
   un écart de montage, fixé dans la capture elle-même par `defaultgamemode`.
+
+---
+
+## 8. `/tp` avec rotation et `facing` (2026-09-11)
+
+Signalé : « notre serveur refuse `/tp @s ~ ~ ~ 0 70` (« Unknown or incomplete command ») ». **Notre
+moteur ne le refuse pas** : le test `tp takes a rotation…` le passe, avec les bons drapeaux, et
+l'arbre Commands envoyé à un opérateur est identique à celui du jar (§ 7, 34/34). « Unknown or
+incomplete command » est le message que le **client vanilla** affiche lui-même quand la commande
+n'est pas dans l'arbre qu'il a reçu — et l'arbre est élagué par niveau : un joueur non opérateur ne
+reçoit pas `teleport`. Le monde du laboratoire n'avait pas d'opérateur avant `bc6aa3a`
+(« operators in the lab ») ; c'est l'explication la plus probable, **non rejouée** avec le client
+graphique.
+
+Ce que la mesure, elle, a trouvé — cinq formes ajoutées au banc (`tp @s ~ ~ ~ 0 70`,
+`~ ~ ~ ~10 ~-5`, `~1 ~ ~ ~ ~`, `~ ~ ~ 0`, `tp ~ ~ ~ 0 70`, `teleport … -90 -10`, `^1 ^ ^`, `facing
+entity @s eyes|feet`, `facing ~ ~ ~5`, `facing entity nobody`) et une comparaison des paquets de
+position (`teleports:` dans `check_commands.py`) :
+
+* **Les drapeaux relatifs sont ceux du jeu.** `tp @s ~ ~ ~ 0 70` : position relative (0x07,
+  décalage nul), rotation absolue (0, 70) ; `~ ~ ~ ~10 ~-5` : 0x1F et (10, −5) ; sans rotation, la
+  rotation voyage relative et nulle (0x18). Lu sur les paquets du jar.
+* **`facing entity <cible>` envoie Look At sous sa forme entité** — la position, puis `true`, l'id
+  de l'entité et son ancre (`…01 01 01` pour les yeux). Nous envoyions la forme position.
+  `encode_look_at_entity` la produit maintenant.
+* **`facing entity nobody` ne téléporte personne.** Le jar répond l'erreur et ne bouge pas ; nous
+  téléportions d'abord et répondions l'erreur ensuite. La cible est maintenant résolue avant.
+* **La hauteur des yeux** dans Look At : **−58,37999999523163** pour y −60 dans les deux captures du
+  jar — la somme en double, la hauteur flottante 1,62 élargie. Un premier décodage fautif de
+  l'hexadécimal avait fait croire à un arrondi flottant ; mis en code, il a donné le seul écart de
+  paquet de la mesure (−58,380001 contre −58,380000) — retiré.
+
+**La mesure, sur une machine calme** (`capture_commands.py` vanilla puis ov, ports 25661/25662,
+`check_commands.py`) :
+
+| | |
+|---|---|
+| réponses | **274 / 282** identiques ; les **onze formes nouvelles** de `/tp` toutes identiques |
+| paquets de position des commandes `tp` (premier Synchronize Position, Look At) | **26 / 26** — 25 / 26 avant le retrait de l'arrondi flottant de la hauteur des yeux (ci-dessus) |
+| arbre Commands, `/help` restreint à nos commandes | 34 / 34, 34 / 34 |
+
+Les huit réponses différentes : cinq sont des **glissements de fenêtre** du jar (`time set day` →
+`noon` ; `tp nobody …`, `tp @s 0 -60 0 foo`, `tp @s 30000000 0 0` — vanilla répond « — » puis la
+fenêtre suivante porte la réponse précédente), trois sont connues d'avant ce mandat : le succès
+« Diamonds! » de `give` (§ 6), le nombre de mobs de `kill @e[type=!player,distance=..30]` (5 contre
+6 : l'apparition des mobs du monde plat) et `/help`, qui liste 79 commandes chez le jar.
+
+**Deux pièges du banc, payés ici :**
+
+* **La sonde renvoyait le décalage comme une position.** À chaque Synchronize Position, elle
+  confirmait et renvoyait Set Player Position avec les x, y, z **bruts** du paquet, drapeaux
+  ignorés : après un `tp ~ ~5 ~`, elle annonçait « je suis en (0, 5, 0) ». Vanilla refuse ce saut
+  (« moved too quickly », que `check_commands.py` filtre déjà) ; **notre serveur l'accepte** — il
+  n'a pas ce contrôle, écart nommé, hors de ce mandat — et la position du joueur côté serveur
+  devenait fausse (un `tp ovprobe ovprobe` qui renvoie (−1, 0, 0)). La sonde applique maintenant
+  les drapeaux, comme un vrai client.
+* **Une machine chargée décale les fenêtres.** Sous la charge d'autres calculs, les réponses de
+  vanilla arrivent une fenêtre de 0,7 s trop tard et la comparaison tombe à 194/282 sans que rien
+  n'ait changé. Vanilla renvoie aussi la position (absolue) environ une seconde après un `tp`
+  tant que la sonde ne l'a pas confirmée : seul le **premier** Synchronize Position d'une commande
+  est comparé.

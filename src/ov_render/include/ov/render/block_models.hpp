@@ -50,6 +50,11 @@ struct BlockRender {
     OffsetType offset{OffsetType::None};
     f32        max_offset{0.25F};
     f32        max_vertical_offset{0.2F};
+    /// ── breaking ── The sprite the break and hit particles take: the model's
+    /// `particle` texture, the first piece's for a multipart, the still
+    /// texture for a fluid. Empty when nothing declares one. Put in the atlas
+    /// with the others, since it is often no face's (a chest, a bed).
+    std::string particle_sprite;
 };
 
 class BlockModelCache {
