@@ -156,6 +156,12 @@ struct BlockModelCache::Impl {
             }
         }
     }
+
+    void remember_sprite(const std::string& sprite) {  // ── breaking ──
+        if (!sprite.empty() && sprite_seen.insert(sprite).second) {
+            sprite_names.push_back(sprite);
+        }
+    }
 };
 
 BlockModelCache::BlockModelCache(const AssetSource& source, const registry::BlockRegistry& blocks)
@@ -216,6 +222,8 @@ const BlockRender& BlockModelCache::resolve(registry::BlockStateId state) {
         render.tint     = is_water ? TintChannel::Water : TintChannel::None;
         render.fluid    = block.value() + 1u;
         render.drawable = true;
+        render.particle_sprite =  // ── breaking ──
+            is_water ? "minecraft:block/water_still" : "minecraft:block/lava_still";
         impl_->remember_sprites(render.model);
         const auto [it, _] = impl_->states.emplace(key, std::move(render));
         return it->second;
@@ -252,6 +260,9 @@ const BlockRender& BlockModelCache::resolve(registry::BlockStateId state) {
         if (!model) {
             continue;
         }
+        if (render.particle_sprite.empty()) {  // ── breaking ── the first piece's
+            render.particle_sprite = (*model)->particle_sprite;
+        }
         auto baked = bake(**model, variant);
         render.model.ambient_occlusion =
             render.model.quads.empty() ? baked.ambient_occlusion
@@ -266,6 +277,7 @@ const BlockRender& BlockModelCache::resolve(registry::BlockStateId state) {
         ++impl_->missing;
     }
     impl_->remember_sprites(render.model);
+    impl_->remember_sprite(render.particle_sprite);  // ── breaking ──
 
     const auto [it, _] = impl_->states.emplace(key, std::move(render));
     return it->second;

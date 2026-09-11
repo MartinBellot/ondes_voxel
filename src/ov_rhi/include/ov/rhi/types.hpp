@@ -153,6 +153,10 @@ enum class BlendMode : u8 {
     None,
     /// Source alpha over destination. The translucent layer.
     Alpha,
+    /// DST_COLOR, SRC_COLOR: twice the product of the two. The cracks over a
+    /// block being broken — mid grey changes nothing, dark darkens, light
+    /// brightens. Alpha is written through (ONE, ZERO).
+    Multiply,
 };
 
 enum class VertexInputRate : u8 { Vertex, Instance };
@@ -215,6 +219,12 @@ struct GraphicsPipelineDesc {
     CullMode          cull_mode{CullMode::Back};
     BlendMode         blend{BlendMode::None};
     PrimitiveTopology topology{PrimitiveTopology::TriangleList};
+
+    /// Polygon offset: depth pushed by `slope` times the triangle's depth
+    /// slope plus `constant` units. Both zero leaves it off. A decal drawn on
+    /// the very surface it covers — the cracks — needs it or it flickers.
+    f32 depth_bias_constant{0.0F};
+    f32 depth_bias_slope{0.0F};
 
     std::string_view debug_name;
 };

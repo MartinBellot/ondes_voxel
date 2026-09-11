@@ -74,7 +74,13 @@ struct EntitySky {
 /// and the snow's: the same vertices and push block, blended rather than cut
 /// out, drawn both sides, never writing depth, with a repeating sampler so a
 /// sheet's texture can scroll.
-enum class EntityPass : u8 { Cutout, Translucent };
+///
+/// ── breaking ── Crumbling is the cracks over a block being broken: the same
+/// vertices, multiplied onto what is drawn (BlendMode::Multiply), never writing
+/// depth, pulled towards the eye by vanilla's polygon offset (-1, -10) so they
+/// do not fight the face they lie on, and sampled with a repeating sampler —
+/// their texture coordinates come from the world position, not from a sprite.
+enum class EntityPass : u8 { Cutout, Translucent, Crumbling };
 
 class EntityRenderer {
 public:

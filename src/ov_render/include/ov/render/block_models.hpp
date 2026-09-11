@@ -35,6 +35,11 @@ struct BlockRender {
     u16 fluid{0};
     /// False for air, and for a state whose model could not be resolved.
     bool drawable{false};
+    /// ── breaking ── The sprite the break and hit particles take: the model's
+    /// `particle` texture, the first piece's for a multipart, the still
+    /// texture for a fluid. Empty when nothing declares one. Put in the atlas
+    /// with the others, since it is often no face's (a chest, a bed).
+    std::string particle_sprite;
 };
 
 class BlockModelCache {
