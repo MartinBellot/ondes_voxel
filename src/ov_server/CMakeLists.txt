@@ -13,6 +13,7 @@ ov_add_library(ov_server
         src/generated_world.cpp
         src/generation_check.cpp
         src/husbandry.cpp
+        src/merchant_session.cpp
         src/natural_spawning.cpp
         src/nether_travel.cpp
         src/player_inventory.cpp
@@ -77,6 +78,7 @@ ov_add_test(test_ov_server
         tests/test_agriculture.cpp
         tests/test_block_container.cpp
         tests/test_enchant_session.cpp
+        tests/test_merchant_session.cpp
         tests/test_player_inventory.cpp
         tests/test_player_level.cpp
         tests/test_player_data.cpp

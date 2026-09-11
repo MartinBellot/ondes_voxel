@@ -45,6 +45,11 @@ struct MobContext {
     std::span<const Tempter> tempters{};
     /// Births, eggs and eaten grass, for the caller to finish. Null is legal.
     std::vector<AnimalEvent>* animal_events{nullptr};
+
+    // ── villagers ──
+    /// The time of day and the hostile types. Null: villagers neither work,
+    /// sleep nor run from anything.
+    const VillagerWorld* villagers{nullptr};
 };
 
 /// Recover the context, or null if the caller did not provide one.
