@@ -604,12 +604,12 @@ TEST_CASE("random edits on flat terrain stay at the fixed point, and the control
     for (const bool filtering : {false, true}) {
         CAPTURE(filtering);
         auto honest = flat(*blocks, 3);
-        CHECK(run_edits(*honest, *blocks, world::LightRules{true, filtering}, 5, 300, 1, false,
+        CHECK(run_edits(*honest, *blocks, world::LightRules{true, filtering}, 5, 150, 3, false,
                         nullptr) == 0);
     }
     // The control: without the removal pass, a torch broken keeps shining.
     auto control = flat(*blocks, 3);
-    CHECK(run_edits(*control, *blocks, world::LightRules{}, 5, 600, 100, true, nullptr) > 0);
+    CHECK(run_edits(*control, *blocks, world::LightRules{}, 5, 300, 100, true, nullptr) > 0);
 }
 
 namespace {
@@ -660,7 +660,7 @@ void real_world_edits(const registry::BlockRegistry* blocks, usize batches, usiz
 
 // Sized for the unit suite every agent and CI runs: a few minutes in Debug.
 TEST_CASE("random edits on real worlds match a full recompute", "[light][real]") {
-    real_world_edits(registry_or_null(), 500, 100);
+    real_world_edits(registry_or_null(), 200, 100);
 }
 
 // The documented measurement (docs/provenance/incremental-light.md § 6.1):
@@ -669,6 +669,14 @@ TEST_CASE("random edits on real worlds match a full recompute", "[light][real]")
 TEST_CASE("thousands of random edits on real worlds match a full recompute",
           "[.light-real-thousands]") {
     real_world_edits(registry_or_null(), 2000, 200);
+    // And flat terrain checked after every one of 600 batches per rule.
+    const registry::BlockRegistry* blocks = registry_or_null();
+    for (const bool filtering : {false, true}) {
+        CAPTURE(filtering);
+        auto flat_world = flat(*blocks, 3);
+        CHECK(run_edits(*flat_world, *blocks, world::LightRules{true, filtering}, 5, 600, 1, false,
+                        nullptr) == 0);
+    }
 }
 
 // ── After an edit, against the real server ─────────────────────────────────

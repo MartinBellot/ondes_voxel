@@ -245,7 +245,8 @@ série à l'autre de la charge et ne sont pas attribués.
 - **Le superflat** garde son ancien calcul dans sa génération, refait ensuite par
   l'arrivée du chunk : du travail en double, sur un terrain trivial. `relight.cpp` reste
   aussi pour les bancs de `test_relight.cpp`, dont il est le « avant ».
-- **La mesure complète sur les vrais mondes** (2 000 lots par monde et par réglage, § 6.1)
-  prend plus de vingt minutes en Debug : elle est cachée derrière
-  `[.light-real-thousands]`, et la suite unitaire que tout le monde lance en fait 500,
-  comparés tous les 100.
+- **La mesure complète** du § 6.1 (2 000 lots par vrai monde et par réglage, 600 lots
+  sur terrain plat comparés à chacun) prend plus de vingt minutes en Debug : elle est
+  cachée derrière `[.light-real-thousands]`. La suite unitaire que tout le monde lance —
+  et que la CI lance — en garde une version courte : 200 lots par vrai monde comparés
+  tous les 100, 150 sur terrain plat comparés tous les 3, et les trois témoins.
