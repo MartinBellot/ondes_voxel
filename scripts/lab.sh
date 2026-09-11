@@ -98,9 +98,14 @@ fi
 [ -d "build/${PRESET}" ] || cmake --preset "$PRESET" >/dev/null || {
     echo "configure of preset $PRESET failed" >&2; exit 1
 }
-cmake --build --preset "$PRESET" --parallel 4 >/dev/null || {
-    echo "build failed" >&2; exit 1
+# Quiet when it works, and the actual errors when it does not — a bare "build
+# failed" left nothing to go on.
+BUILD_LOG=$(mktemp -t ov-lab-build)
+cmake --build --preset "$PRESET" --parallel 4 >"$BUILD_LOG" 2>&1 || {
+    grep -E "error|FAILED|conflict|<<<<<<<" "$BUILD_LOG" | head -30 >&2
+    echo "build failed (preset $PRESET) — full log: $BUILD_LOG" >&2; exit 1
 }
+rm -f "$BUILD_LOG"
 
 if [ -n "$SEED" ]; then
     if [ "$FRESH" = 1 ] && [ -d "$WORLD" ]; then

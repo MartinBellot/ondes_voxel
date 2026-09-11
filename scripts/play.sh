@@ -52,9 +52,12 @@ done
 # The client alone: the integrated server is linked into it, so ov_dedicated
 # and the test binaries are not needed to play.
 echo "  build  ov_voxel ($PRESET)…"
-cmake --build --preset "$PRESET" --target ov_voxel ov_assetimport --parallel 4 >/dev/null || {
-    echo "build failed — rerun with: cmake --build --preset $PRESET --target ov_voxel" >&2; exit 1
+BUILD_LOG=$(mktemp -t ov-play-build)
+cmake --build --preset "$PRESET" --target ov_voxel ov_assetimport --parallel 4 >"$BUILD_LOG" 2>&1 || {
+    grep -E "error|FAILED|conflict|<<<<<<<" "$BUILD_LOG" | head -30 >&2
+    echo "build failed (preset $PRESET) — full log: $BUILD_LOG" >&2; exit 1
 }
+rm -f "$BUILD_LOG"
 
 # Textures, sounds and fonts come from the user's own resource pack and client
 # jar, never from the repository (CLAUDE.md § 1). Imported once, into run/.
