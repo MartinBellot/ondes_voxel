@@ -259,6 +259,16 @@ std::vector<Widget> select_world_layout(f32 width, f32 height) {
     return out;
 }
 
+// ── allow-commands ──
+CreateGameMode next_game_mode(CreateGameMode mode) noexcept {
+    switch (mode) {
+        case CreateGameMode::Survival: return CreateGameMode::Hardcore;
+        case CreateGameMode::Hardcore: return CreateGameMode::Creative;
+        case CreateGameMode::Creative: return CreateGameMode::Survival;
+    }
+    return CreateGameMode::Survival;
+}
+
 std::vector<Widget> create_world_layout(f32 width, f32 height, i32 tab) {
     std::vector<Widget> out;
     static constexpr std::array<std::string_view, 3> kTabs{"createWorld.tab.game.title",
