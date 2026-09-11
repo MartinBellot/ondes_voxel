@@ -264,7 +264,9 @@ TEST_CASE("a lethal hit: the flight to the fountain, 200 ticks, 12000 experience
     }
     CHECK_FALSE(fight.dragon_alive());
     CHECK(fight.experience_dropped() == 12000);
-    CHECK(fight.orbs() > 0);
+    // Measured: ten lumps of 960 in six orbs each, and the 2400 on its own in
+    // six more — 66. Summed into one lump at the last tick, it made 60.
+    CHECK(fight.orbs() == 66);
     CHECK(level.name_at({portal.x + 1, portal.y, portal.z}) == "minecraft:end_portal");
     CHECK(level.name_at({portal.x, portal.y + 4, portal.z}) == "minecraft:dragon_egg");
 }

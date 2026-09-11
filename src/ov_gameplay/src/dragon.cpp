@@ -391,8 +391,8 @@ void Dragon::tick(const DragonSurroundings& world, math::LegacyRandomSource& ran
         position_.y += 0.1;
         velocity_ = Vec3d{};
         if (death_time_ == kDragonDeathAnimation) {
-            out.experience += static_cast<i32>(std::floor(static_cast<f32>(total) * 0.2F));
-            out.dead = true;
+            out.experience_last = static_cast<i32>(std::floor(static_cast<f32>(total) * 0.2F));
+            out.dead            = true;
         }
         return;
     }

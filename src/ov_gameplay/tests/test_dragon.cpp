@@ -137,12 +137,16 @@ TEST_CASE("a lethal hit in flight sends it to the portal to die", "[dragon]") {
             ++drops;
             drop_ticks.push_back(dragon.death_time());
         }
+        if (out.experience_last > 0) {
+            CHECK(out.experience_last == 2400);  // its own lump, split apart
+            experience += out.experience_last;
+        }
         dead = out.dead;
     }
     REQUIRE(dead);
     CHECK(dragon.death_time() == kDragonDeathAnimation);
     CHECK(experience == 12000);
-    // Ten drops of 960 from tick 155, every five; the last with 2400 more.
+    // Ten drops of 960 from tick 155, every five; the last tick adds 2400.
     CHECK(drops == 10);
     CHECK(drop_ticks.front() == 155);
     CHECK(drop_ticks.back() == 200);
@@ -161,7 +165,7 @@ TEST_CASE("a later dragon is worth 500", "[dragon]") {
     for (i32 i = 0; i < kDragonDeathAnimation; ++i) {
         DragonOutput out;
         dragon.tick(world, random, out);
-        experience += out.experience;
+        experience += out.experience + out.experience_last;
     }
     CHECK(experience == 500);
 }

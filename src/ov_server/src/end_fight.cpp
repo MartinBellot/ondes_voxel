@@ -803,6 +803,11 @@ void EndFight::tick_dragon(world::LevelWriter& level, const EndFightHost& host) 
         spawn_orbs(at, out.experience, host);
         experience_dropped_ += out.experience;
     }
+    if (out.experience_last > 0) {
+        // Split on its own, as the game splits it (66 orbs for 12 000).
+        spawn_orbs(at, out.experience_last, host);
+        experience_dropped_ += out.experience_last;
+    }
 
     // The crystal drawing on it heals it a point every ten ticks; another is
     // looked for one tick in ten, within 32 blocks of its box.
@@ -1442,7 +1447,10 @@ void EndFight::tick_respawn(world::LevelWriter& level, const EndFightHost& host)
         } else if (into % kRespawnPillarStep == kRespawnPillarBlast) {
             // The crystal there goes, the top of the pillar blows (destroying
             // what players left there), the pillar is rebuilt, a crystal
-            // appears — its beam on (0, 128, 0). All measured.
+            // appears — its beam on (0, 128, 0). All measured, and in that
+            // order: the blast comes out of an open pillar top (~1 950 cells in
+            // the game's packet). Blown after the rebuild, every ray starts
+            // inside the bedrock and the packet is empty — the first run did.
             for (usize i = 0; i < crystals_.size(); ++i) {
                 Crystal& c = crystals_[i];
                 if (c.alive && !c.placed && (c.position - crystal_at).length_squared() < 1.0) {
@@ -1451,8 +1459,20 @@ void EndFight::tick_respawn(world::LevelWriter& level, const EndFightHost& host)
                                    net::encode_remove_entity(c.entity_id));
                 }
             }
-            blasts_.push_back(PendingBlast{Vec3d{crystal_at.x, crystal_at.y - 1.0, crystal_at.z},
-                                           std::nullopt, kRespawnPillarPower, false});
+            const i32 r = spike.radius + 2;  // the cage's reach
+            for (i32 z = spike.centre_z - r; z <= spike.centre_z + r; ++z) {
+                for (i32 x = spike.centre_x - r; x <= spike.centre_x + r; ++x) {
+                    for (i32 y = std::max(66, spike.height - 4); y <= spike.height + 10; ++y) {
+                        if (level.block_at(BlockPos{x, y, z}) != registry::kAirState) {
+                            level.set_block(BlockPos{x, y, z}, registry::kAirState);
+                        }
+                    }
+                }
+            }
+            blast(level,
+                  PendingBlast{Vec3d{crystal_at.x, crystal_at.y - 1.0, crystal_at.z}, std::nullopt,
+                               kRespawnPillarPower, false},
+                  host);
             rebuild_spike(level, k);
             Crystal crystal;
             crystal.entity_id = host.reserve_entity_ids(1);

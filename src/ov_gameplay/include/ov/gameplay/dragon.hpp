@@ -156,6 +156,10 @@ struct DragonOutput {
     bool phase_changed{false};
     /// Experience to drop at the dragon's position this tick.
     i32 experience{0};
+    /// The last fifth, at tick 200: dropped as its own lump, split apart from
+    /// that tick's eighth (measured: 617 + 307 + 17 + 17 + 1 + 1 for the 960,
+    /// then 1237 + 617 + 307 + 149 + 73 + 17 for the 2400 — 66 orbs in all).
+    i32 experience_last{0};
     /// The death animation is over: remove the dragon, open the portal.
     bool dead{false};
 };
