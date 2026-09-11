@@ -97,6 +97,7 @@ ov_add_test(test_ov_server
         tests/test_weather_session.cpp
         tests/test_tick_profile.cpp
         tests/test_end_fight.cpp
+        tests/test_nether_mobs.cpp  # ── nether-2 ──
     DEPS ov_server
     LABELS unit
 )
