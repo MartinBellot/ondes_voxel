@@ -461,6 +461,12 @@ void Client::Impl::handle_play(i32 packet_id, std::span<const u8> body) {
                 inbox.rain_level = *value;
             } else if (*kind == 8) {
                 inbox.thunder_level = *value;
+            } else if (*kind == 3) {
+                // ── breaking ── Change Game Mode. /gamemode sends only this, so
+                // without it a client stays in the mode of its Login — and a
+                // survival player the client still takes for creative breaks a
+                // block every six ticks that the server never lets go.
+                inbox.game_mode = static_cast<u8>(*value);
             }
             break;
         }
