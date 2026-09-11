@@ -88,6 +88,10 @@
 #include "slimes.hpp"       // ── mobs-2 ──
 #include "drowning.hpp"     // ── mobs-2 ──
 #include "merchant_session.hpp"  // ── villagers ──
+#include "mob_attacks.hpp"       // ── mobs-3 ──
+#include "mob_despawn.hpp"       // ── mobs-3 ──
+#include "entity_storage.hpp"    // ── mobs-3 ──
+#include "zombie_villagers.hpp"  // ── mobs-3 ──
 
 #include <fmt/format.h>
 
@@ -1618,8 +1622,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     // ── end nether ──
 
     /// Write every changed chunk, grouped by region so each file opens once.
+    // ── mobs-3 ── the mobs go into entities/ with every save; set once the
+    // storage's host exists, further down.
+    std::function<void()> mobs3_save_entities;
     const auto save_world = [&] {
         const std::scoped_lock lock{chunk_mutex};
+        if (mobs3_save_entities) {  // ── mobs-3 ──
+            mobs3_save_entities();
+        }
         // ── nether ── DIM-1/region, with the Nether level's own ticks.
         if (nether) {
             std::vector<world::ScheduledTick> block_snapshot;
@@ -2085,6 +2095,16 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     std::vector<gameplay::SlimeChild> slime_scratch;
     std::optional<Drowning>           drowning;  // zombies and husks under water
     std::vector<Drowning::Conversion> drowned_now;
+    // ── mobs-3: hostile swings, and the mobs they killed ──
+    std::optional<MobAttacks> mob_attacks;
+    std::vector<MobKill>      mob_kills;
+    MobRecords                mob_records;    // persistence, names, noActionTime
+    std::optional<MobDespawn> mob_despawn;
+    std::vector<Vec3d>        mobs3_players;  // every non-spectator, for despawn
+    std::optional<ZombieVillagers> zombie_villagers;  // the risen, and their cure
+    std::optional<EntityStorage>   entity_storage;    // entities/r.x.z.mca
+    std::vector<ChunkPos>          mobs3_to_load;
+    std::vector<i32>               mobs3_unloaded;  // mobs a chunk took to disk, to remove
     // ── villagers ──
     std::optional<Villagers> villagers;
 
@@ -2144,6 +2164,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // ── villagers: type, profession, level, sleep ──
         if (villagers && mobs) {
             villagers->spawn_metadata(*mobs, state, fields);
+        }
+        if (zombie_villagers) {  // ── mobs-3: a zombie villager's villager, and its cure ──
+            zombie_villagers->spawn_metadata(state, fields);
         }
         deliver(net::clientbound::kEntityMetadata,
                 net::encode_entity_metadata(state.network_id, fields.take()));
@@ -2652,6 +2675,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         husbandry.emplace(*registries, *blocks);
         slimes.emplace(*registries);  // ── mobs-2 ──
         drowning.emplace(*registries);
+        mob_attacks.emplace(*registries, mob_combat ? &*mob_combat : nullptr);  // ── mobs-3 ──
+        mob_kills.reserve(16);                                                  // ── mobs-3 ──
+        mob_despawn.emplace(*registries);                                       // ── mobs-3 ──
+        mobs3_players.reserve(16);                                              // ── mobs-3 ──
+        zombie_villagers.emplace(*registries);                                  // ── mobs-3 ──
+        entity_storage.emplace(*registries, level_dir / "entities");            // ── mobs-3 ──
         // ── villagers ──
         villagers.emplace(*registries, *blocks);
         tick_broadcasts.reserve(4096);
@@ -4975,6 +5004,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                                       interact->hand.value_or(net::Hand::Main),
                                                       interact->sneaking);
                         }
+                        // ── mobs-3: a golden apple offered to a zombie villager, for the tick ──
+                        if (zombie_villagers && interact->kind == net::InteractKind::Interact) {
+                            zombie_villagers->queue_interact(player.entity_id, interact->entity_id);
+                        }
                         // ── husbandry: a right-click on an entity, for the tick ──
                         if (husbandry && interact->kind == net::InteractKind::Interact) {
                             husbandry->queue_interact(player.entity_id, interact->entity_id,
@@ -6591,8 +6624,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         .broadcast = [&](i32 id, std::span<const u8> payload) {
                             broadcast(who.connection.get(), id, payload);
                         }};
-                    (void)who.survival.hurt(gameplay::DamageKind::Explosion, amount, io,
-                                            who.entity_id);
+                    // ── mobs-3 ── `explosion` scales with difficulty: `always`
+                    (void)who.survival.hurt(
+                        gameplay::DamageKind::Explosion,
+                        gameplay::scale_for_difficulty(
+                            amount, commands ? static_cast<gameplay::Difficulty>(
+                                                   commands->world().difficulty)
+                                             : gameplay::Difficulty::Normal),
+                        io, who.entity_id);
                 };
             }
             visit(view);
@@ -6774,6 +6813,16 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     };
     projectile_host.potion_broke = [&](Vec3d at, const net::ItemStack& potion, i32 target,
                                        bool is_player) {
+        // ── mobs-3 ── a potion's Weakness reaches the zombie villagers round it
+        if (zombie_villagers && mobs) {
+            i32 weakness = 0;
+            for (const gameplay::PotionEffect& effect : potion_contents(potion).effects) {
+                if (effect.effect == gameplay::Effect::Weakness) {
+                    weakness = std::max(weakness, effect.duration);
+                }
+            }
+            zombie_villagers->on_splash(*mobs, at, weakness);
+        }
         if (brewing) {
             brewing->potion_broke(potion_host, at, potion, target, is_player);
         }
@@ -6793,6 +6842,37 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     const FireMobHost fire_mob_host{tnt_deliver, tnt_host.drop_item};
     // ── end fire ──
     const ProjectileDeliver projectile_deliver = tnt_deliver;
+    // ── mobs-3 ── what a hostile mob's swing reaches for (mob_attacks.hpp)
+    /// The entities despawn must never touch: their own modules remove them.
+    const std::function<bool(i32)> mobs3_transient = [&](i32 type) {
+        return (tnt_gravity && tnt_gravity->owns(type)) || (projectiles && projectiles->owns(type));
+    };
+    MobAttackHost mob_attack_host;
+    mob_attack_host.hurt_player  = projectile_host.hurt_player;
+    mob_attack_host.knock_player = [&](i32 id, Vec3d from) {
+        Player* who = projectile_player(id);
+        if (who == nullptr || !registries) {
+            return;
+        }
+        const WornArmour worn = worn_armour(
+            *registries, item_registry, std::span<const net::ItemStack>{who->inventory}.subspan(5, 4));
+        const Vec3d push = gameplay::apply_knockback(
+            Vec3d{}, who->on_ground, gameplay::kMobHitKnockback, from.x - who->x, from.z - who->z,
+            std::min(worn.knockback_resistance, 1.0F), gameplay::CombatConstants{});
+        if (const auto framed = net::encode_packet(
+                net::clientbound::kEntityVelocity,
+                net::encode_entity_velocity(who->entity_id, push.x, push.y, push.z));
+            framed && who->connection) {
+            who->connection->send(*framed);
+        }
+    };
+    mob_attack_host.give_effect = [&](i32 id, const gameplay::EffectInstance& effect) {
+        if (Player* who = projectile_player(id); who != nullptr) {
+            (void)who->effects.apply(effect, who->survival, effect_io_for(*who),
+                                     effect_bearer_for(*who));
+        }
+    };
+    // ── end mobs-3 ──
     // ── end projectiles ─────────────────────────────────────────────────────
 
     // ── husbandry ───────────────────────────────────────────────────────────
@@ -6874,6 +6954,85 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     husbandry_host.spawn_orb = projectile_host.spawn_orb;
     // ── end husbandry ───────────────────────────────────────────────────────
 
+    // ── mobs-3 ── the zombie villagers' and the Anvil storage's reach: after
+    // the husbandry host, whose `create_mob` both use.
+    const auto mobs3_announce = [&](const entity::EntityState& state) {
+        mob_packets(state, [&](i32 id, std::span<const u8> payload) {
+            broadcast(nullptr, id, payload);
+        });
+    };
+    ZombieVillagerHost zombie_villager_host;
+    zombie_villager_host.create_mob = husbandry_host.create_mob;
+    zombie_villager_host.announce   = mobs3_announce;
+    zombie_villager_host.held       = [&](i32 id) -> std::string_view {
+        const Player* who = projectile_player(id);
+        return who != nullptr ? held_name(*who) : std::string_view{};
+    };
+    zombie_villager_host.creative = [&](i32 id) {
+        const Player* who = projectile_player(id);
+        return who != nullptr && who->game_mode == 1;
+    };
+    zombie_villager_host.consume_held = [&](i32 id) {
+        if (Player* who = projectile_player(id); who != nullptr) {
+            consume_one_held(*who);
+        }
+    };
+    zombie_villager_host.speeds_cure = [&](BlockPos pos) {
+        const world::Chunk* chunk = chunk_if_resident(pos.x >> 4, pos.z >> 4);
+        if (chunk == nullptr || !blocks || !world::WorldShape::overworld().contains_y(pos.y)) {
+            return false;
+        }
+        const std::string_view name = blocks->block_name(blocks->block_of(chunk->get_block(
+            static_cast<usize>(pos.x & 15), pos.y, static_cast<usize>(pos.z & 15))));
+        return name == "minecraft:iron_bars" || name.ends_with("_bed");
+    };
+    EntityStorageHost entity_storage_host;
+    entity_storage_host.attach = [&](entity::EntityHandle handle, std::string_view type) {
+        const entity::EntityState* state = mobs->state(handle);
+        if (const gameplay::MobKind* kind = gameplay::mob_kind(type); kind != nullptr && state) {
+            mobs->set_logic(handle, std::make_unique<gameplay::Mob>(
+                                        *kind, state->width, state->height, state->network_id,
+                                        mob_attacks ? mob_attacks->player_type()
+                                                    : gameplay::kNoQuarry));
+        } else {
+            mobs->set_logic(handle, std::make_unique<gameplay::FallingMob>());
+        }
+    };
+    entity_storage_host.announce   = mobs3_announce;
+    entity_storage_host.transient  = mobs3_transient;
+    entity_storage_host.slime_size = [&](i32 id) { return slimes ? slimes->size_of(id) : 1; };
+    entity_storage_host.set_slime_size = [&](entity::EntityState& state, i32 size) {
+        if (slimes) {
+            slimes->set_size(state, size);
+        }
+    };
+    entity_storage_host.creeper_powered = [&](i32 id) {
+        return tnt_gravity && tnt_gravity->creeper_powered(id);
+    };
+    entity_storage_host.charge_creeper = [&](i32 id) {
+        if (tnt_gravity) {
+            tnt_gravity->charge_creeper(id);
+        }
+    };
+    entity_storage_host.zombie_villager = [&](i32 id) -> gameplay::VillagerState* {
+        return zombie_villagers ? zombie_villagers->kept(id) : nullptr;
+    };
+    entity_storage_host.conversion_time = [&](i32 id) {
+        return zombie_villagers ? zombie_villagers->conversion_time(id) : -1;
+    };
+    entity_storage_host.set_conversion_time = [&](i32 id, i32 ticks) {
+        if (zombie_villagers) {
+            zombie_villagers->set_conversion_time(id, ticks);
+        }
+    };
+    mobs3_save_entities = [&] {
+        if (entity_storage && mobs) {
+            const EntityStorageStats saved =
+                entity_storage->save_all(*mobs, mob_records, entity_storage_host);
+            OV_LOG_INFO("entities: saved {} mobs across {} chunks", saved.entities, saved.chunks);
+        }
+    };
+    // ── end mobs-3 ──
     // ── villagers ───────────────────────────────────────────────────────────
     // Runs on the tick thread with players_mutex held, as husbandry's host.
     VillagerHost villager_host;
@@ -7545,6 +7704,18 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 }
                 to_evict.push_back(pos);
             });
+            // ── mobs-3 ── the mobs of the chunks leaving go to entities/ first.
+            // Under the players' lock like every other change to the entity
+            // world; without it, nothing is evicted this round.
+            if (entity_storage && mobs && !to_evict.empty()) {
+                std::unique_lock mobs3_lock{players_mutex, std::try_to_lock};
+                if (mobs3_lock.owns_lock()) {
+                    (void)entity_storage->unload_chunks(to_evict, *mobs, mob_records,
+                                                        entity_storage_host, mobs3_unloaded);
+                } else {
+                    to_evict.clear();
+                }
+            }
             for (const ChunkPos pos : to_evict) {
                 (void)chunks.evict(pos);
             }
@@ -7603,6 +7774,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 state->uuid                = uuid_for_entity(state->network_id);
                 state->broadcast_position  = state->position;
                 state->broadcast_valid     = true;
+                mob_records.pin(state->network_id);  // ── mobs-3 ── a fixture: never despawned
                 // Behaviour, in the one component that carries it: a brain for
                 // a species we have goals for, and the bare falling floor for
                 // one we do not. Refused by name rather than given a plausible
@@ -8394,6 +8566,37 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         }
         // ── end mobs-2 ──
 
+        // ── mobs-3: the mobs of chunks that have just arrived, from entities/,
+        // and the Remove Entities of those an unload took to disk ──
+        if (entity_storage && mobs && clock.tick_count() % 10 == 0) {
+            std::unique_lock mobs3_lock{players_mutex, std::try_to_lock};
+            if (mobs3_lock.owns_lock()) {
+                const std::scoped_lock mobs3_chunks{chunk_mutex};
+                for (const i32 gone : mobs3_unloaded) {
+                    broadcast(nullptr, net::clientbound::kRemoveEntities,
+                              net::encode_remove_entity(gone));
+                    if (mob_combat) {
+                        mob_combat->forget(gone);
+                    }
+                }
+                mobs3_unloaded.clear();
+                mobs3_to_load.clear();
+                chunks.for_each([&](ChunkPos pos, const world::Chunk&) {
+                    if (!entity_storage->is_loaded(pos)) {
+                        mobs3_to_load.push_back(pos);
+                    }
+                });
+                usize read = 0;
+                for (const ChunkPos pos : mobs3_to_load) {
+                    read += entity_storage->load_chunk(pos, *mobs, mob_records, entity_storage_host)
+                                .entities;
+                }
+                if (read > 0) {
+                    OV_LOG_DEBUG("entities: {} mobs read from {} chunks", read, mobs3_to_load.size());
+                }
+            }
+        }
+        // ── end mobs-3 ──
         // Mobs: gravity, collision, and only the movement that actually
         // happened. A delta packet when the move fits in one — six bytes rather
         // than twenty-eight — and a teleport when it does not.
@@ -8465,6 +8668,35 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 mob_level.registry = &*blocks;
 
                 gameplay::MobContext mob_context{&collisions, &mob_level, false};
+                // ── mobs-3: the players hostile mobs may hunt — alive, in survival
+                // or adventure, in the overworld; nobody on Peaceful ──
+                const auto mobs3_difficulty =
+                    commands ? static_cast<gameplay::Difficulty>(commands->world().difficulty)
+                             : gameplay::Difficulty::Normal;
+                mobs3_players.clear();
+                for (const auto& [mobs3_key, who] : players) {  // despawn measures from these
+                    if (who.connection && who.confirmed && who.game_mode != 3 &&
+                        !who.survival.awaiting_respawn && who.dimension == DimensionId::Overworld) {
+                        mobs3_players.push_back(Vec3d{who.x, who.y, who.z});
+                    }
+                }
+                if (mob_attacks) {
+                    mob_attacks->begin_tick();
+                    for (const auto& [mobs3_key, who] : players) {
+                        if (mobs3_difficulty != gameplay::Difficulty::Peaceful && who.connection &&
+                            who.confirmed && who.mortal() && !who.survival.awaiting_respawn &&
+                            !who.survival.health.dead && who.dimension == DimensionId::Overworld) {
+                            mob_attacks->quarries().push_back(
+                                gameplay::Quarry{.network_id = who.entity_id,
+                                                 .type       = mob_attacks->player_type(),
+                                                 .feet       = Vec3d{who.x, who.y, who.z}});
+                        }
+                    }
+                    mob_context.quarries      = mob_attacks->quarries();
+                    mob_context.attacks       = &mob_attacks->attacks();
+                    mob_context.villager_type = mob_attacks->villager_type();
+                }
+                // ── end mobs-3 ──
                 // ── tnt and gravity: what the drain and the network asked for ──
                 if (tnt_gravity) {
                     tnt_gravity->spawn_pending(*mobs, tnt_deliver);
@@ -8475,7 +8707,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 if (projectiles) {
                     projectiles->spawn_pending(*mobs, projectile_deliver);
                     projectiles->before_entity_tick(*mobs, projectile_host);
-                    projectiles->tick_skeletons(*mobs, collisions, 2, projectile_deliver);
+                    projectiles->tick_skeletons(*mobs, collisions,
+                                                static_cast<i32>(mobs3_difficulty),  // ── mobs-3 ──
+                                                projectile_deliver);
                 }
                 // ── villagers: clicks, screens and the time of day, before ──
                 if (villagers) {
@@ -8505,6 +8739,52 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 if (villagers) {
                     (void)villagers->after_entity_tick(*mobs, husbandry_deliver);
                 }
+                // ── mobs-3: the swings, finished; a mob they killed is told dead ──
+                if (mob_attacks) {
+                    mob_kills.clear();
+                    const i64 mobs3_game = commands ? commands->world().game_time
+                                                    : static_cast<i64>(clock.tick_count());
+                    const i64 mobs3_day = commands ? commands->world().day_time : 18000;
+                    const MobAttackStats swung =
+                        mob_attacks->resolve(*mobs, mobs3_difficulty, mobs3_game, mobs3_day,
+                                             mob_attack_host, tnt_deliver, mob_kills);
+                    for (const MobKill& kill : mob_kills) {
+                        // A villager a zombie killed may rise; otherwise it dies.
+                        if (!(zombie_villagers &&
+                              zombie_villagers->on_villager_killed(*mobs, kill, mobs3_difficulty,
+                                                                   zombie_villager_host))) {
+                            broadcast(nullptr, net::clientbound::kEntityEvent,
+                                      net::encode_entity_event(kill.victim, 3));
+                        }
+                    }
+                    if (swung.swings > 0) {
+                        OV_LOG_DEBUG("tick {}: {} mob swings, {} on players, {} landed, {} kills",
+                                     clock.tick_count(), swung.swings, swung.on_players,
+                                     swung.landed, swung.kills);
+                    }
+                }
+                // Despawn: every mob, every tick, against the nearest player.
+                for (const i32 gone : mobs->removed_ids()) {
+                    mob_records.forget(gone);
+                }
+                if (mob_despawn) {
+                    const DespawnStats gone = mob_despawn->tick(*mobs, mob_records, mobs3_players,
+                                                                mobs3_difficulty, mobs3_transient);
+                    if (gone.immediate + gone.random + gone.peaceful > 0) {
+                        OV_LOG_DEBUG("tick {}: despawned {} far, {} at random, {} peaceful",
+                                     clock.tick_count(), gone.immediate, gone.random,
+                                     gone.peaceful);
+                    }
+                }
+                if (zombie_villagers) {  // clicks, Weakness, cures
+                    const ZombieVillagerStats zv =
+                        zombie_villagers->tick(*mobs, zombie_villager_host, tnt_deliver);
+                    if (zv.cures_started + zv.cured > 0) {
+                        OV_LOG_INFO("zombie villagers: {} cures started, {} cured",
+                                    zv.cures_started, zv.cured);
+                    }
+                }
+                // ── end mobs-3 ──
                 // ── tnt and gravity: creepers, landings, explosions ──
                 if (tnt_gravity && level && world_ticks) {
                     tnt_gravity->tick_creepers(*mobs, mob_level, tnt_host, tnt_deliver);
@@ -8917,6 +9197,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                                  worn, static_cast<gameplay::DamageKind>(kind))));
                             }
                         }
+                    }
+                    // ── mobs-3 ── the worn armour's points, every tick: four lookups
+                    if (registries) {
+                        const WornArmour mobs3_worn = worn_armour(
+                            *registries, item_registry,
+                            std::span<const net::ItemStack>{who.inventory}.subspan(5, 4));
+                        who.survival.mitigation.armour    = mobs3_worn.armour;
+                        who.survival.mitigation.toughness = mobs3_worn.toughness;
                     }
                     // ── fire ── the player's counter, before the survival tick
                     if (fire_session) {

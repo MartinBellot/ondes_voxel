@@ -120,6 +120,11 @@ public:
 
     // ── weather ── A creeper struck by lightning explodes at 6 from now on.
     void charge_creeper(i32 network_id) { creepers_[network_id].powered = true; }
+    /// ── mobs-3 ── Whether a creeper is charged, for the Anvil save.
+    [[nodiscard]] bool creeper_powered(i32 network_id) const {
+        const auto it = creepers_.find(network_id);
+        return it != creepers_.end() && it->second.powered;
+    }
 
     /// One tick of every creeper's countdown, against the nearest player.
     void tick_creepers(entity::EntityWorld& world, const world::LevelView& level,

@@ -8,6 +8,7 @@
 #include "ov/base/log.hpp"
 #include "ov/gameplay/combat.hpp"
 #include "ov/gameplay/entity_physics.hpp"
+#include "ov/gameplay/mob_attack.hpp"  // ── mobs-3 ──
 #include "ov/nbt/binary.hpp"
 #include "ov/nbt/tag.hpp"
 #include "ov/protocol/entity.hpp"
@@ -229,6 +230,20 @@ Projectiles::Projectiles(const registry::Registries& registries,
     spawning_.reserve(32);
     players_.reserve(16);
     doomed_.reserve(32);
+    // ── mobs-3 ── A stray's arrow carries Slowness 600 as a *custom* effect,
+    // which brewing's `arrow_effects` applies whole (a potion's own is ÷ 8).
+    if (const i32 tipped = item_id("minecraft:tipped_arrow"); tipped != 0) {
+        nbt::Document document;
+        document.root     = nbt::Tag::make_compound();
+        nbt::Tag effects  = nbt::Tag::make_list(nbt::TagType::Compound);
+        nbt::Tag slowness = nbt::Tag::make_compound();
+        (void)slowness.put("Id", nbt::Tag{static_cast<i32>(gameplay::Effect::Slowness)});
+        (void)slowness.put("Duration", nbt::Tag{i32{600}});
+        (void)slowness.put("Amplifier", nbt::Tag{i8{0}});
+        (void)effects.push(std::move(slowness));
+        (void)document.root.put("CustomPotionEffects", std::move(effects));
+        stray_arrow_ = net::ItemStack{tipped, 1, nbt::write(document)};
+    }
 }
 
 i32 Projectiles::item_id(std::string_view name) const {
@@ -679,6 +694,7 @@ void Projectiles::before_entity_tick(entity::EntityWorld& world, const Projectil
 void Projectiles::tick_skeletons(entity::EntityWorld& world,
                                  const gameplay::CollisionWorld& collisions, i32 difficulty,
                                  const ProjectileDeliver& deliver) {
+    difficulty_ = difficulty;  // ── mobs-3 ──
     if (skeleton_type_ < 0 || difficulty <= 0) {
         return;
     }
@@ -749,6 +765,9 @@ void Projectiles::tick_skeletons(entity::EntityWorld& world,
         shot.data.owner = state->network_id;
         // A mob's arrow is never picked up.
         shot.data.pickup = 0;
+        if (state->type == stray_type_) {  // ── mobs-3 ── the Slowness it carries
+            shot.item = stray_arrow_;
+        }
         shot.start       = Vec3d{eye.x, eye.y - static_cast<f64>(0.1F), eye.z};
         const Vec3d velocity =
             gameplay::skeleton_aim(shot.start, target->feet, 1.8, difficulty, random_);
@@ -860,11 +879,17 @@ ProjectileStats Projectiles::after_entity_tick(entity::EntityWorld& world,
                 gameplay::ProjectileData& data = logic->data();
                 bool                      landed = false;
                 if (event.target_is_player) {
-                    const f32 amount =
+                    f32 amount =
                         data.kind == ProjectileKind::Trident
                             ? gameplay::kTridentDamage
                             : static_cast<f32>(gameplay::arrow_damage(
                                   event.velocity, data.base_damage, data.critical, random_));
+                    // ── mobs-3 ── A mob's arrow on a player scales with the
+                    // difficulty (`arrow`: when_caused_by_living_non_player).
+                    if (!data.owner_is_player && data.owner != 0) {
+                        amount = gameplay::scale_for_difficulty(
+                            amount, static_cast<gameplay::Difficulty>(difficulty_));
+                    }
                     landed = host.hurt_player &&
                              host.hurt_player(event.target, amount,
                                               data.kind == ProjectileKind::Trident
