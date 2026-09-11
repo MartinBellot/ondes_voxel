@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+"""Les fours que personne ne regarde : l'oracle du vrai serveur 1.20.1.
+
+Deux campagnes, contre `tools/vanilla/server.jar` :
+
+* `ticks` — des fours posés par `/setblock` avec leur NBT, **sans aucun joueur
+  connecté** : aucune fenêtre ne peut être ouverte, donc tout ce qui avance est
+  le bloc-entité seul. Chaque pose et chaque lecture partent dans le même lot
+  qu'un `time query gametime` : le serveur exécute un lot dans un seul tick,
+  donc l'écart entre deux dates est un nombre exact de ticks du bloc-entité.
+  On relève, à plusieurs dates, `Items`, `BurnTime`, `CookTime`,
+  `CookTimeTotal` et `RecipesUsed`, tels que `data get block` les imprime —
+  types compris (`1599s` est un short).
+* `xp` — l'expérience de `RecipesUsed` à l'extraction : une sonde vide la case
+  de sortie au shift-clic et on lit `xp query … points`. Un cas entier (dix
+  lingots de fer, 10 × 0,7 = 7) et un cas fractionnaire répété (cinq pierres,
+  5 × 0,1 = 0,5 : 0 ou 1 point, tiré au sort).
+
+Sortie : `.scratch/furnaces.json`, et sur la sortie standard les cellules
+sous la forme que lit `src/ov_server/tests/test_furnace_entity.cpp`.
+
+Usage : python3 scripts/measure_furnaces.py [ticks|xp|all]
+"""
+from __future__ import annotations
+
+import json
+import re
+import struct
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from measure_crafting import Probe, Server as CraftServer  # noqa: E402
+from vanilla_miner import block_pos, varint  # noqa: E402
+
+ROOT = Path(__file__).resolve().parent.parent
+RUN = ROOT / ".scratch" / "measure-furnaces"
+OUT = ROOT / ".scratch" / "furnaces.json"
+PORT = 25614
+Y = -60
+
+# (bloc, [(case, objet, nombre)]) — chaque montage vise une règle.
+SETUPS: list[tuple[str, str, list[tuple[int, str, int]]]] = [
+    ("exact", "furnace", [(0, "iron_ore", 8), (1, "coal", 1)]),            # 8 × 200 = 1600
+    ("runs-out", "furnace", [(0, "iron_ore", 10), (1, "coal", 1)]),        # le 9e se refroidit
+    ("blast", "blast_furnace", [(0, "iron_ore", 10), (1, "coal", 1)]),     # 800 ticks, 100 par objet
+    ("smoker", "smoker", [(0, "potato", 10), (1, "coal", 1)]),
+    ("stick", "furnace", [(0, "cobblestone", 3), (1, "stick", 1)]),        # 100 ticks puis −2/tick
+    ("two-sticks", "furnace", [(0, "cobblestone", 3), (1, "stick", 2)]),   # 200 : le premier cuit
+    ("lava", "furnace", [(0, "sand", 20), (1, "lava_bucket", 1)]),         # le seau reste
+    ("blocked", "furnace", [(0, "iron_ore", 4), (1, "coal", 1), (2, "gold_ingot", 1)]),
+    ("nearly-full", "furnace", [(0, "iron_ore", 4), (1, "coal", 1), (2, "iron_ingot", 63)]),
+    ("smoker-refuses", "smoker", [(0, "iron_ore", 4), (1, "coal", 1)]),
+    ("blast-kelp", "blast_furnace", [(0, "raw_iron", 30), (1, "dried_kelp_block", 1)]),
+    ("no-fuel", "furnace", [(0, "iron_ore", 4)]),
+]
+
+# Dates de lecture, en secondes après la pose (le nombre exact de ticks est
+# relu, pas supposé).
+READS = [1.0, 7.5, 30.0, 60.0, 85.0, 125.0]
+
+TIME = re.compile(r"The time is (\d+)")
+DATA = re.compile(r"(-?\d+), (-?\d+), (-?\d+) has the following block data: (.*)$")
+
+
+def position(index: int) -> tuple[int, int, int]:
+    return (2 + 3 * index, Y, 2)
+
+
+def snbt_items(items: list[tuple[int, str, int]]) -> str:
+    return ",".join(f'{{Slot:{slot}b,id:"minecraft:{name}",Count:{count}b}}'
+                    for slot, name, count in items)
+
+
+def parse(data: str) -> dict:
+    """Ce que `data get block` imprime, découpé en champs — types compris."""
+    out: dict = {"raw": data}
+    for key in ("BurnTime", "CookTime", "CookTimeTotal"):
+        m = re.search(rf"\b{key}: (-?\d+)([bsL]?)", data)
+        out[key] = int(m.group(1)) if m else None
+        out[key + "_type"] = (m.group(2) or "i") if m else None
+    items = {}
+    for m in re.finditer(r'\{Slot: (\d+)b, id: "minecraft:([a-z_]+)", Count: (\d+)b\}', data):
+        items[int(m.group(1))] = (m.group(2), int(m.group(3)))
+    out["items"] = items
+    used = re.search(r"RecipesUsed: \{([^}]*)\}", data)
+    out["recipes_used"] = {}
+    if used and used.group(1).strip():
+        for m in re.finditer(r'"minecraft:([a-z_]+)": (-?\d+)', used.group(1)):
+            out["recipes_used"][m.group(1)] = int(m.group(2))
+    return out
+
+
+def gametime(lines: list[str]) -> int:
+    for line in lines:
+        m = TIME.search(line)
+        if m:
+            return int(m.group(1))
+    raise RuntimeError(f"no game time in {lines[-5:]}")
+
+
+def open_server() -> CraftServer:
+    server = CraftServer(RUN, port=PORT)
+    server.batch([
+        "gamerule doMobSpawning false", "gamerule randomTickSpeed 0",
+        "gamerule doDaylightCycle false", "gamerule doWeatherCycle false",
+        "gamerule sendCommandFeedback true", "difficulty peaceful", "time set noon",
+        "forceload add -16 -16 64 16",
+    ])
+    time.sleep(3.0)
+    return server
+
+
+def campaign_ticks(server: CraftServer) -> dict:
+    place = []
+    for index, (_, block, items) in enumerate(SETUPS):
+        x, y, z = position(index)
+        place.append(f"setblock {x} {y} {z} minecraft:{block}{{Items:[{snbt_items(items)}]}}")
+    placed_at = gametime(server.batch(place + ["time query gametime"]))
+    start = time.monotonic()
+    reads = []
+    for when in READS:
+        while time.monotonic() - start < when:
+            time.sleep(0.05)
+        commands = ["time query gametime"]
+        for index in range(len(SETUPS)):
+            x, y, z = position(index)
+            commands.append(f"data get block {x} {y} {z}")
+        lines = server.batch(commands)
+        now = gametime(lines)
+        states: dict[int, dict] = {}
+        for line in lines:
+            m = DATA.search(line)
+            if m:
+                x = int(m.group(1))
+                states[(x - 2) // 3] = parse(m.group(4))
+        reads.append({"dt": now - placed_at,
+                      "cells": {SETUPS[i][0]: states.get(i) for i in range(len(SETUPS))}})
+        print(f"dt={now - placed_at}: " + ", ".join(
+            f"{SETUPS[i][0]}={states[i]['items'].get(2)}" for i in sorted(states)), flush=True)
+    # Le bloc lui-même : `lit` doit suivre BurnTime.
+    lit_lines = server.batch([f"execute if block {position(i)[0]} {Y} 2 "
+                              f"minecraft:{SETUPS[i][1]}[lit=true] run say lit{i}"
+                              for i in range(len(SETUPS))])
+    lit = sorted(int(m.group(1)) for line in lit_lines for m in [re.search(r"lit(\d+)$", line)] if m)
+    return {"setups": [[n, b, it] for n, b, it in SETUPS], "reads": reads,
+            "lit_at_end": [SETUPS[i][0] for i in lit]}
+
+
+class XpProbe(Probe):
+    def open_block(self, pos: tuple[int, int, int], stand: tuple[float, float, float]) -> None:
+        self.window = None
+        for _ in range(8):
+            self.stand(*stand)
+            self.settle(0.3)
+            payload = (varint(0) + block_pos(*pos) + varint(1)
+                       + struct.pack(">fff", 0.5, 1.0, 0.5) + bytes([0]) + varint(0))
+            self.send(0x31, payload)
+            deadline = time.monotonic() + 2.0
+            while self.window is None and time.monotonic() < deadline:
+                self.settle(0.1)
+            if self.window is not None:
+                return
+        raise RuntimeError(f"le four en {pos} ne s'est pas ouvert")
+
+    def close(self) -> None:
+        if self.window is not None:
+            self.send(0x0C, bytes([self.window]))
+            self.window = None
+            self.settle(0.1)
+
+
+def points(server: CraftServer, name: str) -> int:
+    for line in server.batch([f"xp query {name} points"]):
+        m = re.search(r"has (\d+) experience points", line)
+        if m:
+            return int(m.group(1))
+    raise RuntimeError("xp query unanswered")
+
+
+def campaign_xp(server: CraftServer, trials: int = 40) -> dict:
+    probe = XpProbe(PORT, "Oven0")
+    for _ in range(40):
+        probe.settle(0.5)
+        if any("Oven0" in line for line in server.batch(["list"])):
+            break
+    pos = (4, Y, 8)
+    stand = (4.5, -59.0, 10.5)
+    server.batch(["gamemode survival Oven0", f"tp Oven0 {stand[0]} {stand[1]} {stand[2]}",
+                  f"setblock {pos[0]} {pos[1] - 1} {pos[2]} minecraft:stone"])
+    probe.settle(1.0)
+    results: dict = {"iron10": [], "stone5": [], "cleared": None, "hopper_keeps": None}
+
+    def one(output: str, count: int, recipe: str, used: int) -> int:
+        server.batch([f"xp set Oven0 0 points", f"xp set Oven0 0 levels",
+                      f'setblock {pos[0]} {pos[1]} {pos[2]} minecraft:furnace{{Items:[{{Slot:2b,'
+                      f'id:"minecraft:{output}",Count:{count}b}}],RecipesUsed:{{"minecraft:{recipe}":{used}}}}}'])
+        probe.settle(0.3)
+        probe.open_block(pos, stand)
+        probe.settle(0.2)
+        probe.click(2, 0, 1)            # shift-clic sur la sortie
+        probe.settle(1.5)               # laisser les orbes arriver jusqu'au joueur
+        probe.close()
+        probe.settle(0.5)
+        got = points(server, "Oven0")
+        for _ in range(3):
+            probe.settle(0.5)
+            got = max(got, points(server, "Oven0"))
+        server.batch(["kill @e[type=minecraft:experience_orb]",
+                      f"setblock {pos[0]} {pos[1]} {pos[2]} minecraft:air",
+                      "clear Oven0"])
+        return got
+
+    for _ in range(4):
+        results["iron10"].append(one("iron_ingot", 10, "iron_ingot_from_smelting_iron_ore", 10))
+    for _ in range(trials):
+        results["stone5"].append(one("stone", 5, "stone", 5))
+    print(f"iron10 → {results['iron10']}; stone5 → {sum(results['stone5'])}/{trials} gave 1",
+          flush=True)
+
+    # RecipesUsed vidé par l'extraction, et gardé si c'est un entonnoir qui vide.
+    server.batch([f'setblock {pos[0]} {pos[1]} {pos[2]} minecraft:furnace{{Items:[{{Slot:2b,'
+                  f'id:"minecraft:iron_ingot",Count:3b}}],RecipesUsed:{{"minecraft:iron_ingot_from_smelting_iron_ore":3}}}}'])
+    probe.open_block(pos, stand)
+    probe.click(2, 0, 1)
+    probe.settle(0.5)
+    probe.close()
+    after = [l for l in server.batch([f"data get block {pos[0]} {pos[1]} {pos[2]}"]) if "block data" in l]
+    results["cleared"] = after[0] if after else None
+    server.batch([f"setblock {pos[0]} {pos[1] - 1} {pos[2]} minecraft:hopper",
+                  f'setblock {pos[0]} {pos[1]} {pos[2]} minecraft:furnace{{Items:[{{Slot:2b,'
+                  f'id:"minecraft:iron_ingot",Count:3b}}],RecipesUsed:{{"minecraft:iron_ingot_from_smelting_iron_ore":3}}}}'])
+    time.sleep(3.0)
+    after = [l for l in server.batch([f"data get block {pos[0]} {pos[1]} {pos[2]}"]) if "block data" in l]
+    results["hopper_keeps"] = after[0] if after else None
+    probe.sock.close() if hasattr(probe, "sock") else None
+    return results
+
+
+def main() -> int:
+    phase = sys.argv[1] if len(sys.argv) > 1 else "all"
+    RUN.parent.mkdir(parents=True, exist_ok=True)
+    result: dict = json.loads(OUT.read_text()) if OUT.exists() else {}
+    server = open_server()
+    try:
+        if phase in ("ticks", "all"):
+            result["ticks"] = campaign_ticks(server)
+        if phase in ("xp", "all"):
+            result["xp"] = campaign_xp(server)
+    finally:
+        server.stop()
+    OUT.write_text(json.dumps(result, indent=1))
+    print(f"écrit {OUT}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

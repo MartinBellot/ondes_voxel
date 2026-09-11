@@ -29,6 +29,7 @@ ov_add_library(ov_server
         src/effect_session.cpp
         src/enchant_session.cpp
         src/fire_session.cpp
+        src/furnace_entity.cpp  # ── workstations ──
         src/campfire.cpp
         src/mob_combat.cpp
         src/mob_attacks.cpp  # ── mobs-3 ──

@@ -1,5 +1,7 @@
 #include "workbench.hpp"
 
+#include "furnace_entity.hpp"
+
 #include <algorithm>
 #include <array>
 
@@ -368,8 +370,8 @@ WorkbenchOutcome apply_click(const WorkbenchContext& context, Workbench& bench,
         }
         // The furnace hands over everything it has been holding, all at once —
         // which is why a furnace left running all night pays out in one go.
-        outcome.experience              = bench.furnace_state.stored_experience;
-        bench.furnace_state.stored_experience = 0.0F;
+        // The amount is its `RecipesUsed`, turned into points by the caller.
+        outcome.took_furnace_output = true;
         commit_furnace();
         return outcome;
     }
@@ -511,97 +513,25 @@ WorkbenchOutcome apply_click(const WorkbenchContext& context, Workbench& bench,
 
 // ── The furnace's block entity ──────────────────────────────────────────────
 
-namespace {
-
-[[nodiscard]] RecipeStack read_item(const WorkbenchContext& context, const nbt::Tag& entry) {
-    const nbt::Tag* id    = entry.find("id");
-    const nbt::Tag* count = entry.find("Count");
-    if (id == nullptr || count == nullptr || context.registries == nullptr) {
-        return {};
-    }
-    const auto item = context.registries->protocol_id(context.item_registry, id->as_string());
-    if (!item) {
-        return {};
-    }
-    return RecipeStack{*item, static_cast<i32>(count->as_i64())};
-}
-
-}  // namespace
-
 void load_furnace(const WorkbenchContext& context, const nbt::Tag& data, Workbench& bench) {
-    bench.furnace_slots = {};
-    // A furnace's `Items` list omits empty slots and is not indexed by slot, so
-    // its length says nothing: the `Slot` field of each entry is the only thing
-    // that says where a stack goes.
-    const nbt::Tag* items = data.find("Items");
-    if (items != nullptr && items->list() != nullptr) {
-        for (const nbt::Tag& entry : *items->list()) {
-            const nbt::Tag* slot = entry.find("Slot");
-            if (slot == nullptr) {
-                continue;
-            }
-            switch (slot->as_i64()) {
-                case 0:
-                    bench.furnace_slots.input = read_item(context, entry);
-                    break;
-                case 1:
-                    bench.furnace_slots.fuel = read_item(context, entry);
-                    break;
-                case 2:
-                    bench.furnace_slots.output = read_item(context, entry);
-                    break;
-                default:
-                    break;
-            }
-        }
+    if (context.registries == nullptr) {
+        return;
     }
-
-    bench.furnace_state.lit_time   = static_cast<i32>(data.find("BurnTime") != nullptr
-                                                          ? data.find("BurnTime")->as_i64()
-                                                          : 0);
-    bench.furnace_state.cook_time  = static_cast<i32>(
-        data.find("CookTime") != nullptr ? data.find("CookTime")->as_i64() : 0);
-    bench.furnace_state.cook_total = static_cast<i32>(
-        data.find("CookTimeTotal") != nullptr ? data.find("CookTimeTotal")->as_i64() : 0);
-    // Vanilla does not store what the burn started at, and recomputes it from
-    // what is left — so a furnace reloaded mid-burn shows a full flame there
-    // too. Matching that is cheaper than being subtly different.
-    bench.furnace_state.lit_duration = bench.furnace_state.lit_time;
-
-    const nbt::Tag* experience = data.find("ovExperience");
-    bench.furnace_state.stored_experience =
-        experience != nullptr ? static_cast<f32>(experience->as_f64()) : 0.0F;
+    // The block entity is the only copy of a furnace (furnace_entity.hpp):
+    // this is a view of it, re-read before every click and every refresh.
+    read_furnace_slots(*context.registries, context.item_registry, data, bench.furnace_slots);
+    read_furnace_counters(data, bench.furnace_state);
 }
 
 void store_furnace(const WorkbenchContext& context, nbt::Tag& data, const Workbench& bench) {
-    nbt::Tag items = nbt::Tag::make_list(nbt::TagType::Compound);
-    const std::array<const RecipeStack*, 3> slots{&bench.furnace_slots.input,
-                                                  &bench.furnace_slots.fuel,
-                                                  &bench.furnace_slots.output};
-    for (usize index = 0; index < slots.size(); ++index) {
-        if (slots[index]->empty() || context.registries == nullptr) {
-            continue;  // empty slots are omitted, not stored as air
-        }
-        const std::string_view name =
-            context.registries->entry_of(context.item_registry, slots[index]->item);
-        if (name.empty()) {
-            continue;
-        }
-        nbt::Tag entry = nbt::Tag::make_compound();
-        entry.put("Slot", nbt::Tag{static_cast<i8>(index)});
-        entry.put("id", nbt::Tag{std::string{name}});
-        entry.put("Count", nbt::Tag{static_cast<i8>(std::min(slots[index]->count, 127))});
-        (void)items.push(std::move(entry));
+    if (context.registries == nullptr) {
+        return;
     }
-    (void)data.put("Items", std::move(items));
-    (void)data.put("BurnTime", nbt::Tag{static_cast<i16>(bench.furnace_state.lit_time)});
-    (void)data.put("CookTime", nbt::Tag{static_cast<i16>(bench.furnace_state.cook_time)});
-    (void)data.put("CookTimeTotal", nbt::Tag{static_cast<i16>(bench.furnace_state.cook_total)});
-    // Vanilla keeps a per-recipe tally in `RecipesUsed` and turns it into
-    // experience when the output is taken. A single total is enough for what
-    // this server does with it, and the name is prefixed so that nothing
-    // mistakes it for a vanilla field.
-    (void)data.put("ovExperience", nbt::Tag{bench.furnace_state.stored_experience});
+    write_furnace_slots(*context.registries, context.item_registry, data, bench.furnace_slots);
+    write_furnace_counters(data, bench.furnace_state);
+    // What an earlier version of this server wrote instead of `RecipesUsed`.
+    // Nothing reads it; it goes, so that a save is vanilla's shape again.
+    (void)data.erase("ovExperience");
 }
 
 // ── The window, joined up ───────────────────────────────────────────────────
@@ -666,6 +596,9 @@ bool open_workbench(const WorkbenchContext& context, const WorkbenchHost& host, 
         if (data != nullptr) {
             load_furnace(context, *data, bench);
         }
+        if (host.note_furnace) {
+            host.note_furnace(x, y, z);
+        }
     }
 
     host.send(net::clientbound::kOpenScreen,
@@ -690,19 +623,36 @@ void handle_click(const WorkbenchContext& context, const WorkbenchHost& host, Wo
         return;
     }
 
+    // A furnace's state is the block entity's, which the furnace pass and the
+    // hoppers change between two clicks: the click lands on the latest.
+    nbt::Tag* furnace_data = furnace_of(bench.kind)
+                                 ? host.block_entity(bench.x, bench.y, bench.z)
+                                 : nullptr;
+    if (furnace_data != nullptr) {
+        load_furnace(context, *furnace_data, bench);
+    }
+
     const WorkbenchOutcome outcome = apply_click(context, bench, click, inventory, carried);
 
-    if (outcome.save_block_entity) {
-        if (nbt::Tag* data = host.block_entity(bench.x, bench.y, bench.z); data != nullptr) {
-            store_furnace(context, *data, bench);
-            host.mark_dirty(bench.x, bench.z);
+    if (outcome.save_block_entity && furnace_data != nullptr) {
+        store_furnace(context, *furnace_data, bench);
+        host.mark_dirty(bench.x, bench.z);
+        if (host.note_furnace) {
+            host.note_furnace(bench.x, bench.y, bench.z);
         }
     }
     for (const net::ItemStack& stack : outcome.overflow) {
         host.drop(stack);
     }
-    if (outcome.experience > 0.0F) {
-        host.award_experience(outcome.experience);
+    if (outcome.took_furnace_output && furnace_data != nullptr && context.book != nullptr) {
+        math::LegacyRandomSource fallback{0};
+        math::LegacyRandomSource& random = host.random != nullptr ? *host.random : fallback;
+        for (const i32 points : take_recipes_used_experience(*furnace_data, *context.book, random)) {
+            if (host.award_experience) {
+                host.award_experience(points);
+            }
+        }
+        host.mark_dirty(bench.x, bench.z);
     }
 
     resend(context, host, bench, inventory, carried, click.state_id + 1);
@@ -716,15 +666,18 @@ void tick_open_workbench(const WorkbenchContext& context, const WorkbenchHost& h
     if (!furnace_of(bench.kind)) {
         return;
     }
-    const gameplay::FurnaceTick step = tick_furnace(context, bench);
-    if (step.lit_changed) {
-        host.set_lit(bench.x, bench.y, bench.z, bench.furnace_state.lit());
+    const nbt::Tag* data = host.block_entity(bench.x, bench.y, bench.z);
+    if (data == nullptr) {
+        return;
     }
-    if (step.slots_changed) {
-        if (nbt::Tag* data = host.block_entity(bench.x, bench.y, bench.z); data != nullptr) {
-            store_furnace(context, *data, bench);
-            host.mark_dirty(bench.x, bench.z);
-        }
+    const gameplay::FurnaceSlots before = bench.furnace_slots;
+    load_furnace(context, *data, bench);
+    const auto same = [](const gameplay::RecipeStack& a, const gameplay::RecipeStack& b) {
+        return a.item == b.item && a.count == b.count;
+    };
+    if (!same(before.input, bench.furnace_slots.input) ||
+        !same(before.fuel, bench.furnace_slots.fuel) ||
+        !same(before.output, bench.furnace_slots.output)) {
         // The state id is not advanced here: the client is not waiting on an
         // acknowledgement, it is being told what changed on its own.
         resend(context, host, bench, inventory, {}, 0);
