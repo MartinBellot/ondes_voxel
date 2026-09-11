@@ -16,7 +16,7 @@ Le résultat court :
 |---|---|---|
 | os sur un loup, 150 loups | 150 apprivoisés en 435 essais (1/3 : 145 ± 10) | `next_int(3) == 0`, χ² géométrique p > 0,05, témoins 1/2 et 1/5 rejetés |
 | morue sur un chat, 150 chats | 150 en 447 (et saumon, 30 en 87) | 1/3 |
-| graines sur un perroquet, 60 perroquets | 60 en **781** (1/10 : 78 ± 8, z = −2,2) | 1/10 documenté — **écart nommé** (§ 3) |
+| graines sur un perroquet, 210 perroquets | 210 en 2134 (1/10 : z = −0,25 ; 1/13 rejeté, z = +3,7) | `next_int(10) == 0` |
 | loup apprivoisé | assis, santé 20 (6 → 20), max 8 → 20 | idem |
 | colère d'un loup frappé | 414 à 775 lus 1–2 ticks après (38 coups) ; la meute entière (4/4, 6 fois) | 400 + `next_int(381)`, meute à 16 blocs |
 | cheval apparu, 200 | santé 15..29 (moy. 21,9), vitesse 0,127..0,309 (σ 0,0389), saut 0,455..0,988 (σ 0,1016) | formules du wiki, moyennes à 2 σ |
@@ -91,13 +91,17 @@ Chaque animal reçoit un objet à la fois jusqu'aux cœurs ; chaque essai répon
 | chat | morue | 150 | 447 | 55 32 17 17 9 4 6 2 3 2 2 0 1 |
 | chat | saumon | 30 | 87 | 11 4 5 4 2 1 3 |
 | perroquet | graines de blé | 60 | 781 | de 1 à 48 essais, moyenne 13,0 |
+| perroquet, campagne refaite | graines de blé | 150 | 1353 | 9 19 15 14 13 12 5 7 5 5 3 5 4 5 5… (jusqu'à 43), moyenne 9,0 |
 
 `test_tame.cpp` passe les deux premiers histogrammes à un χ² contre une loi géométrique de 1/3
 (p > 0,05) **et** contre les témoins 1/2 et 1/5, rejetés à p < 10⁻³ : le test sait dire non.
 
-**Le perroquet ne tombe pas sur son 1/10 documenté** : 60 apprivoisés où 78,1 ± 8,4 étaient
-attendus (z = −2,2, p ≈ 0,03). Ce n'est ni franchement le 1/10 ni un 1/13 établi : la valeur
-documentée est gardée et l'écart est nommé, avec la campagne à relancer sur 150 perroquets.
+**Le perroquet a d'abord semblé tomber sous son 1/10 documenté** : 60 apprivoisés où 78,1 ± 8,4
+étaient attendus (z = −2,2, p ≈ 0,03). La campagne refaite sur 150 perroquets (`measure_tame.py
+parrot`) le tranche : 150 en 1353 essais (z = +1,33), soit **210 en 2134 à eux deux, 0,098 —
+z = −0,25 contre 1/10**. Le premier lot était un écart de hasard. Le témoin 1/13, qu'il semblait
+indiquer, est rejeté (z = +3,7 sur les deux lots ; χ² de l'histogramme refait 27,6 sur 14 degrés
+contre 12,0 pour 1/10).
 
 Ce que fait un essai réussi, relu par `data get` : `Owner` (la sonde), `Sitting: 1b`,
 `Health: 20.0f` pour un loup invoqué à 6 — l'apprivoisement **remet la santé au maximum**, qui
@@ -274,6 +278,16 @@ arrivent sur le fil avec leurs indices — chat 0x05, UUID de la sonde, variante
 fausse ; dromadaire sellé (0x04). `save-all`, et le monde réécrit par notre serveur est gardé pour
 `measure_tame.py zoo_back`.
 
+Et **le vrai serveur relit ce monde réécrit** (`measure_tame.py zoo_back`) : **les 15 mobs
+chargés, les 14 recherches (par type) retrouvent chacune tous les champs attendus** —
+propriétaire, assis, collier, variante `minecraft:calico`, confiance, `Variant: 515`, `Tame`,
+`Temper: 15`, selle, armure dorée, `Bred`, coffre et pomme de l'âne, force et tapis du lama, type
+de lapin, renard des neiges endormi, variante et propriétaire du perroquet, œuf de tortue, nectar,
+chèvre hurleuse à une corne, selle du dromadaire. L'aller-retour vanilla → nous → vanilla est
+fermé. Deux faux départs de la mesure elle-même, corrigés et gardés dans l'historique : sa mise en
+place tuait tout le zoo avant de le lire, et sa première recherche par position ne trouvait que
+les mobs assis, les autres ayant marché (§ 9, `NoAI`).
+
 ---
 
 ## 9. Ce qui n'est pas fait, ou pas mesuré
@@ -324,7 +338,5 @@ fausse ; dromadaire sellé (0x04). `save-all`, et le monde réécrit par notre s
 
 **Mesuré, et pas tout à fait conforme.**
 
-* **Le perroquet** : 60 apprivoisés en 781 essais, z = −2,2 contre le 1/10 documenté (§ 3). Une
-  campagne de 150 perroquets (`measure_tame.py parrot`) le tranchera.
 * **La santé d'un cheval apparu** : 22,13 sur 480 animaux pour 22,5 attendus (z ≈ −2,3, § 5.1).
 * **La force d'un lama** : ajustée sur la mesure, pas lue dans une règle (§ 5.1).
