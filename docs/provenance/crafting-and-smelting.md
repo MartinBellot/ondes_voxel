@@ -155,6 +155,35 @@ mesuré plutôt qu'un de moins.
 La progression perdue vaut deux ticks par tick éteint, ce qui empêche de cuire
 quoi que ce soit avec une poignée de bâtons donnés un par un.
 
+### Le four que personne ne regarde
+
+Un four est un bloc-entité tické : il cuit, que quelqu'un le regarde ou non.
+`src/ov_server/src/furnace_entity.cpp` fait tourner à chaque tick tous les fours
+des chunks chargés de l'overworld. Il passe par un index reconstruit une fois par
+seconde ; un four qu'on ouvre ou qu'on clique y entre aussitôt. Le NBT du
+bloc-entité est **la seule copie** du four : `Items`, `BurnTime`, `CookTime` et
+`CookTimeTotal` (des shorts, écrits sur place), plus `RecipesUsed`. L'écran d'un
+four ne fait plus rien tourner : il relit le bloc-entité avant chaque clic et à
+chaque rafraîchissement.
+
+Deux bugs de la version précédente, trouvés à la lecture et épinglés par
+`src/ov_server/tests/test_furnace_entity.cpp` :
+
+* la passe des fours non regardés n'écrivait les compteurs que quand une case
+  changeait. Elle relisait donc à chaque tick un `BurnTime` et un `CookTime`
+  périmés : un four fermé brûlait sans fin et ne finissait jamais un objet ;
+* l'écran allumait son four par `Chunk::set_block`, qui efface le bloc-entité
+  de la position écrite. Un four qui s'allumait pendant qu'on regardait son
+  écran perdait son minerai, son combustible et son expérience.
+  `relight_furnace_block` change la propriété `lit` en gardant le bloc-entité.
+
+L'expérience suit le format de vanilla : un compte par recette dans
+`RecipesUsed`. À l'extraction, chaque recette donne `nombre × expérience` en
+simple précision : la partie entière, plus un point avec une probabilité égale
+à la partie fractionnaire. Le tout est versé en orbes aux pieds du joueur.
+L'ancien champ `ovExperience`, propre à ce projet, est effacé à la première
+écriture.
+
 ---
 
 ## 5. L'oracle d'appariement — 2885 grilles, 2885 identiques
@@ -303,14 +332,8 @@ Nommé plutôt que caché :
   sont ci-dessus.
 * **Le placement automatique depuis le livre de recettes** (`Place Recipe`)
   n'est pas implémenté ; le déverrouillage l'est.
-* **Un four ne tourne que pendant que quelqu'un le regarde.** La file de ticks
-  de blocs arrivée avec les fluides (`ov_world/block_ticks.hpp`) porte des
-  positions, pas des bloc-entités ; brancher les fours dessus demande de leur
-  donner un état persistant côté monde, et c'est un chantier à part. En
-  attendant, un four que personne n'a ouvert ne cuit pas — dit ici plutôt que
-  découvert au retour.
-* **L'expérience** est accumulée et remise à zéro à la récupération, mais rien
-  ne la matérialise : les orbes appartiennent à un autre jalon.
+* **Seuls les fours de l'overworld tournent.** La passe des fours parcourt les
+  chunks de l'overworld ; un four du Nether ou de l'End ne cuit pas encore.
 * Le code de clic générique vit dans `src/ov_server/src/workbench.cpp`. Le
   chemin du coffre dans `server.cpp` devrait y être ramené une fois la vague de
   travail parallèle atterrie ; l'y ramener maintenant aurait rendu la fusion

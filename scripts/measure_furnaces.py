@@ -31,7 +31,8 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from measure_crafting import Probe, Server as CraftServer  # noqa: E402
+from measure_crafting import (  # noqa: E402
+    SB_CLOSE_CONTAINER, SB_USE_ITEM_ON, Probe, Server as CraftServer)
 from vanilla_miner import block_pos, varint  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -54,7 +55,18 @@ SETUPS: list[tuple[str, str, list[tuple[int, str, int]]]] = [
     ("smoker-refuses", "smoker", [(0, "iron_ore", 4), (1, "coal", 1)]),
     ("blast-kelp", "blast_furnace", [(0, "raw_iron", 30), (1, "dried_kelp_block", 1)]),
     ("no-fuel", "furnace", [(0, "iron_ore", 4)]),
+    # Le témoin : sans `CookTimeTotal` dans le NBT. La première campagne a posé
+    # tous ses fours ainsi et aucun n'a rien produit en 2500 ticks.
+    ("no-total", "furnace", [(0, "iron_ore", 8), (1, "coal", 1)]),
 ]
+
+# Posés sans `CookTimeTotal` : ce que `/setblock` laisse à 0 si on l'omet.
+NO_TOTAL = {"no-total"}
+
+
+def cook_total(block: str) -> int:
+    """Ce qu'un four remplit lui-même quand l'entrée arrive par une case."""
+    return 100 if block in ("blast_furnace", "smoker") else 200
 
 # Dates de lecture, en secondes après la pose (le nombre exact de ticks est
 # relu, pas supposé).
@@ -114,9 +126,10 @@ def open_server() -> CraftServer:
 
 def campaign_ticks(server: CraftServer) -> dict:
     place = []
-    for index, (_, block, items) in enumerate(SETUPS):
+    for index, (name, block, items) in enumerate(SETUPS):
         x, y, z = position(index)
-        place.append(f"setblock {x} {y} {z} minecraft:{block}{{Items:[{snbt_items(items)}]}}")
+        total = "" if name in NO_TOTAL else f",CookTimeTotal:{cook_total(block)}s"
+        place.append(f"setblock {x} {y} {z} minecraft:{block}{{Items:[{snbt_items(items)}]{total}}}")
     placed_at = gametime(server.batch(place + ["time query gametime"]))
     start = time.monotonic()
     reads = []
@@ -156,7 +169,7 @@ class XpProbe(Probe):
             self.settle(0.3)
             payload = (varint(0) + block_pos(*pos) + varint(1)
                        + struct.pack(">fff", 0.5, 1.0, 0.5) + bytes([0]) + varint(0))
-            self.send(0x31, payload)
+            self.send(SB_USE_ITEM_ON, payload)
             deadline = time.monotonic() + 2.0
             while self.window is None and time.monotonic() < deadline:
                 self.settle(0.1)
@@ -166,7 +179,7 @@ class XpProbe(Probe):
 
     def close(self) -> None:
         if self.window is not None:
-            self.send(0x0C, bytes([self.window]))
+            self.send(SB_CLOSE_CONTAINER, bytes([self.window]))
             self.window = None
             self.settle(0.1)
 
@@ -234,7 +247,7 @@ def campaign_xp(server: CraftServer, trials: int = 40) -> dict:
     time.sleep(3.0)
     after = [l for l in server.batch([f"data get block {pos[0]} {pos[1]} {pos[2]}"]) if "block data" in l]
     results["hopper_keeps"] = after[0] if after else None
-    probe.sock.close() if hasattr(probe, "sock") else None
+    probe.s.close()
     return results
 
 

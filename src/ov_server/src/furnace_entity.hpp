@@ -17,19 +17,19 @@
 // running float total, which neither vanilla nor its saves know.
 //
 // Measured against the real 1.20.1 server by `scripts/measure_furnaces.py`;
-// docs/provenance/postes-de-travail.md.
+// docs/provenance/crafting-and-smelting.md.
 #pragma once
 
 #include "ov/gameplay/smelting.hpp"
 #include "ov/math/block_pos.hpp"
 #include "ov/math/random.hpp"
 #include "ov/nbt/tag.hpp"
+#include "ov/registry/block_states.hpp"
 #include "ov/registry/registries.hpp"
 #include "ov/world/chunk.hpp"
 
 #include <functional>
 #include <optional>
-#include <span>
 #include <string_view>
 #include <vector>
 
@@ -83,12 +83,25 @@ struct FurnaceEntityTick {
                                                     const gameplay::RecipeBook& book,
                                                     gameplay::FurnaceKind kind, nbt::Tag& data);
 
-/// What the pass reaches outside itself for.
+/// Flip a furnace block's `lit` property, **keeping its block entity**.
+///
+/// `Chunk::set_block` drops the block entity at the position it writes — right
+/// for a new block, fatal for a property change: the version before this one
+/// lit a furnace through it while its screen was open, and the furnace lost
+/// its ore, its fuel and its experience on the tick it caught. Returns the new
+/// state, or nullopt when the block has no `lit` or already had that value.
+[[nodiscard]] std::optional<registry::BlockStateId> relight_furnace_block(
+    world::Chunk& chunk, const registry::BlockRegistry& blocks, BlockPos at, bool lit);
+
+/// What the pass reaches outside itself for. Built once, not per tick: a
+/// `std::function` holding a lambda with many captures allocates.
 struct FurnaceHost {
     /// The resident chunk at chunk coordinates, or nullptr.
     std::function<world::Chunk*(i32, i32)> chunk;
-    /// Flip the block's `lit` property **keeping its block entity**, and tell
-    /// everyone.
+    /// Every resident chunk, for the once-a-second index.
+    std::function<void(const std::function<void(ChunkPos, const world::Chunk&)>&)> for_each_chunk;
+    /// Flip the block's `lit` property **keeping its block entity**
+    /// (`relight_furnace_block`), and tell everyone.
     std::function<void(world::Chunk&, BlockPos, bool)> set_lit;
     std::function<void(i32, i32)> mark_dirty;
 };
@@ -111,7 +124,7 @@ public:
     /// A furnace is here; tick it from now on even before the next index.
     void note(BlockPos pos);
 
-    FurnaceStats tick(const FurnaceHost& host, std::span<const ChunkPos> loaded, i64 now);
+    FurnaceStats tick(const FurnaceHost& host, i64 now);
 
     [[nodiscard]] usize indexed() const noexcept { return index_.size(); }
 

@@ -37,6 +37,8 @@
 #include "ov/protocol/entity.hpp"
 #include "ov/registry/registries.hpp"
 // ── crafting and smelting ───────────────────────────────────────────────────
+#include "furnace_entity.hpp"  // ── workstations ──
+#include "ov/gameplay/experience.hpp"  // ── workstations ── split_into_orbs
 #include "workbench.hpp"
 #include "enchant_session.hpp"  // ── enchanting ──
 #include "commands/text.hpp"   // ── enchanting: hover names ──
@@ -990,6 +992,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             workbench_context.menu_registry = *menus;
         }
     }
+    // ── workstations ── Every furnace in a loaded chunk, ticked as a block
+    // entity whether anybody is looking or not (furnace_entity.hpp).
+    std::optional<FurnaceEntities> furnace_entities;
+    if (registries && recipe_book) {
+        furnace_entities.emplace(*registries, *recipe_book);
+    }
+    /// The draw that rounds a furnace's fractional experience at extraction.
+    math::LegacyRandomSource furnace_random{0x4f56'4655'524eLL};
 
     // ── enchanting ──
     EnchantContext enchant_context;
@@ -3131,53 +3141,44 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             const registry::BlockStateId state = block_at({x, y, z});
             return blocks->block_name(blocks->block_of(state));
         };
-        host.set_lit = [&](i32 x, i32 y, i32 z, bool lit) {
-            if (!blocks) {
-                return;
-            }
-            const registry::BlockStateId state = block_at({x, y, z});
-            const registry::BlockId      block = blocks->block_of(state);
-            // `lit` is a property, so the new state is the same block with one
-            // value changed — not a different block. Looking the block up by
-            // name would find `minecraft:furnace` either way and lose the
-            // facing the player placed it with.
-            const auto property = blocks->find_property(block, "lit");
-            if (!property) {
-                return;
-            }
-            const auto wanted = lit ? std::string_view{"true"} : std::string_view{"false"};
-            for (u16 index = 0; index < property->values.size(); ++index) {
-                if (property->values[index] != wanted) {
-                    continue;
-                }
-                const registry::BlockStateId next =
-                    blocks->with_property(state, *property, index);
-                // Written here rather than through set_block_and_broadcast,
-                // which takes chunk_mutex itself — and the caller already holds
-                // it. std::mutex is not recursive, so going through it would
-                // deadlock the tick thread the first time a furnace lit up.
-                chunk_at(x >> 4, z >> 4)
-                    .set_block(static_cast<usize>(x & 15), y, static_cast<usize>(z & 15), next);
-                dirty_chunks.insert(chunk_key(x >> 4, z >> 4));
-                const auto framed = net::encode_packet(
-                    net::clientbound::kBlockUpdate,
-                    net::encode_block_update({x, y, z}, static_cast<i32>(next.value())));
-                if (framed) {
+        // ── workstations ── No `set_lit` here any more: the screen ticks
+        // nothing, and the furnace pass flips `lit` through
+        // `relight_furnace_block`, which keeps the block entity. The version
+        // before this wrote `chunk.set_block` here and emptied a furnace that
+        // lit up while someone had its screen open.
+        host.mark_dirty = [&](i32 x, i32 z) { dirty_chunks.insert(chunk_key(x >> 4, z >> 4)); };
+        // Taking from a furnace's output turns its `RecipesUsed` into orbs at
+        // the player's feet: one award per recipe, split as vanilla splits it.
+        // Sent over `players` directly: the caller holds players_mutex.
+        host.award_experience = [&](i32 amount) {
+            std::array<i32, 64> values{};
+            const usize         count = gameplay::split_into_orbs(amount, values);
+            for (usize k = 0; k < count; ++k) {
+                GroundOrb orb;
+                orb.entity_id = next_entity_id.fetch_add(1);
+                orb.x         = who.x;
+                orb.y         = who.y;
+                orb.z         = who.z;
+                orb.value     = values[k];
+                orb.born      = server_tick.load(std::memory_order_relaxed);
+                if (const auto framed = net::encode_packet(
+                        net::clientbound::kSpawnExperienceOrb,
+                        net::encode_spawn_experience_orb(orb.entity_id, orb.x, orb.y, orb.z,
+                                                         static_cast<i16>(orb.value)))) {
                     for (auto& [other_key, other] : players) {
-                        if (other.connection) {
+                        if (other.connection && other.dimension == DimensionId::Overworld) {
                             other.connection->send(*framed);
                         }
                     }
                 }
-                return;
+                ground_orbs.push_back(orb);
             }
         };
-        host.mark_dirty = [&](i32 x, i32 z) { dirty_chunks.insert(chunk_key(x >> 4, z >> 4)); };
-        host.award_experience = [](f32) {
-            // Experience orbs are another agent's milestone. The furnace stops
-            // holding what it has handed over either way, so the amount is not
-            // lost twice — but nothing shows it yet, and saying so is better
-            // than a silent zero.
+        host.random       = &furnace_random;
+        host.note_furnace = [&](i32 x, i32 y, i32 z) {
+            if (furnace_entities) {
+                furnace_entities->note(BlockPos{x, y, z});
+            }
         };
         return host;
     };
@@ -6875,12 +6876,39 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     std::vector<ChunkPos>               spawn_ticking;
     std::array<i32, 8>                  spawn_live{};
 
-    /// Every furnace in a loaded chunk, rebuilt once a second. See the headless
-    /// furnace pass for why it is an index and not a scan.
-    std::vector<net::WirePosition> furnace_index;
-    /// The screen a headless furnace is ticked through. One, reused: building a
-    /// `Workbench` per furnace per tick would allocate inside the tick body.
-    Workbench headless_furnace;
+    // ── workstations ── What the furnace pass reaches for, built once: a
+    // `std::function` rebuilt every tick would allocate inside the tick body.
+    FurnaceHost furnace_host;
+    furnace_host.chunk = [&](i32 cx, i32 cz) { return chunk_if_resident(cx, cz); };
+    furnace_host.for_each_chunk =
+        [&](const std::function<void(ChunkPos, const world::Chunk&)>& visit) {
+            chunks.for_each(visit);
+        };
+    // `relight_furnace_block`, never `chunk.set_block`: the block entity — the
+    // furnace's ore, fuel and `RecipesUsed` — survives the flip. Sent over
+    // `players` directly: the tick holds players_mutex here.
+    furnace_host.set_lit = [&](world::Chunk& chunk, BlockPos at, bool lit) {
+        if (!blocks) {
+            return;
+        }
+        const auto next = relight_furnace_block(chunk, *blocks, at, lit);
+        if (!next) {
+            return;
+        }
+        dirty_chunks.insert(chunk_key(at.x >> 4, at.z >> 4));
+        if (const auto framed = net::encode_packet(
+                net::clientbound::kBlockUpdate,
+                net::encode_block_update(net::WirePosition{at.x, at.y, at.z},
+                                         static_cast<i32>(next->value())))) {
+            // Overworld players only: the pass walks the overworld's chunks.
+            for (auto& [other_key, other] : players) {
+                if (other.connection && other.dimension == DimensionId::Overworld) {
+                    other.connection->send(*framed);
+                }
+            }
+        }
+    };
+    furnace_host.mark_dirty = [&](i32 cx, i32 cz) { dirty_chunks.insert(chunk_key(cx, cz)); };
     u64                         chunks_published = 0;
     // ── loading ──
     i32        spawn_percent_seen = -1;
@@ -10320,12 +10348,20 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 }
 
                 perf->enter(TickPhase::Screens);  // ── perf ──
+                // ── workstations ── Every furnace in a loaded chunk cooks,
+                // watched or not: its block entity is its only copy
+                // (furnace_entity.hpp). Before the screens, so that an open
+                // screen shows the tick that just happened.
+                if (furnace_entities) {
+                    const std::scoped_lock chunk_lock{chunk_mutex};
+                    (void)furnace_entities->tick(furnace_host,
+                                                 static_cast<i64>(clock.tick_count()));
+                }
+
                 // ── crafting and smelting ───────────────────────────────────
-                // The screens someone has open. What runs a furnace **nobody**
-                // is watching is the pass below this one; this one exists
-                // separately because an open screen also owes its viewer four
-                // property packets and a resend, which a headless furnace does
-                // not.
+                // The screens someone has open. They tick nothing: a furnace
+                // screen re-reads the block entity the pass above has just
+                // ticked and owes its viewer the four bars and a resend.
                 for (auto& [key, player] : players) {
                     if (!player.bench || !player.connection) {
                         continue;
@@ -10338,147 +10374,6 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     const std::scoped_lock chunk_lock{chunk_mutex};
                     tick_open_workbench(workbench_context, workbench_host(player, send),
                                         *player.bench, player.inventory);
-                }
-
-                // ── Furnaces nobody is watching ─────────────────────────────
-                //
-                // A furnace is a **ticked block entity**: it cooks whether a
-                // player is standing there or not, and one left burning with
-                // eight ores in it finishes them while its owner is away. That
-                // is the whole reason a furnace is worth building.
-                //
-                // The index rather than a scan every tick: walking every block
-                // entity of every loaded chunk twenty times a second is a cost
-                // that grows with the world and buys nothing, because a smelt
-                // takes 200 ticks. It is rebuilt once a second, so a furnace
-                // placed now starts cooking at most a second later — stated,
-                // and invisible against a ten-second smelt.
-                if (clock.tick_count() % 20 == 0) {
-                    const std::scoped_lock chunk_lock{chunk_mutex};
-                    furnace_index.clear();
-                    chunks.for_each([&](ChunkPos pos, const world::Chunk& chunk) {
-                        for (const world::BlockEntity& entity : chunk.block_entities()) {
-                            const auto kind = workbench_of_block(entity.type);
-                            if (!kind || !furnace_of(*kind)) {
-                                continue;
-                            }
-                            // A block entity stores its position **local** to
-                            // the chunk; the index holds world coordinates,
-                            // because that is what the tick below looks blocks
-                            // up by. Mixing the two conventions puts every
-                            // furnace in a different chunk, silently.
-                            furnace_index.push_back(net::WirePosition{
-                                pos.x * 16 + static_cast<i32>(entity.x), entity.y,
-                                pos.z * 16 + static_cast<i32>(entity.z)});
-                        }
-                    });
-                }
-
-                if (!furnace_index.empty() && registries) {
-                    const std::scoped_lock chunk_lock{chunk_mutex};
-                    for (const net::WirePosition& where : furnace_index) {
-                        // Skip the ones a player has open. Those already tick
-                        // above, holding their own copy of the state, and
-                        // ticking the block entity underneath one would advance
-                        // the same furnace twice a tick and show its viewer a
-                        // bar that jumps.
-                        bool watched = false;
-                        for (const auto& [key, other] : players) {
-                            if (other.bench && other.bench->x == where.x &&
-                                other.bench->y == where.y && other.bench->z == where.z) {
-                                watched = true;
-                                break;
-                            }
-                        }
-                        if (watched) {
-                            continue;
-                        }
-
-                        world::Chunk* chunk = chunk_if_resident(where.x >> 4, where.z >> 4);
-                        if (chunk == nullptr) {
-                            continue;
-                        }
-                        world::BlockEntity* entity = chunk->block_entity_at(
-                            static_cast<usize>(where.x & 15), where.y,
-                            static_cast<usize>(where.z & 15));
-                        if (entity == nullptr) {
-                            continue;
-                        }
-                        const auto kind = workbench_of_block(entity->type);
-                        if (!kind || !furnace_of(*kind)) {
-                            // The block entity changed under the index. Not an
-                            // error: the index is a second old by design.
-                            continue;
-                        }
-
-                        // A scratch screen, reused. `Workbench` is what
-                        // `tick_furnace` reads and writes, and building one per
-                        // furnace per tick would allocate inside the tick.
-                        headless_furnace           = Workbench{};
-                        headless_furnace.kind      = *kind;
-                        headless_furnace.window_id = 0;
-                        headless_furnace.x         = where.x;
-                        headless_furnace.y         = where.y;
-                        headless_furnace.z         = where.z;
-                        load_furnace(workbench_context, entity->data, headless_furnace);
-
-                        // Nothing to do, and the common case by far: an empty
-                        // furnace with a cold fire. Checked before the tick so
-                        // that a world full of decorative furnaces costs a load
-                        // and a comparison.
-                        if (!headless_furnace.furnace_state.lit() &&
-                            headless_furnace.furnace_slots.input.empty()) {
-                            continue;
-                        }
-
-                        const gameplay::FurnaceTick step =
-                            tick_furnace(workbench_context, headless_furnace);
-                        if (step.slots_changed) {
-                            store_furnace(workbench_context, entity->data, headless_furnace);
-                            dirty_chunks.insert(chunk_key(where.x >> 4, where.z >> 4));
-                        }
-                        if (step.lit_changed && blocks) {
-                            // The `lit` property, not a different block: looking
-                            // `minecraft:furnace` up by name would find it
-                            // either way and lose the facing it was placed
-                            // with. Written straight into the chunk because
-                            // `chunk_mutex` is already held here and is not
-                            // recursive.
-                            const registry::BlockStateId state = block_at(where);
-                            const registry::BlockId      block = blocks->block_of(state);
-                            const auto property = blocks->find_property(block, "lit");
-                            if (!property) {
-                                continue;
-                            }
-                            const auto wanted = headless_furnace.furnace_state.lit()
-                                                    ? std::string_view{"true"}
-                                                    : std::string_view{"false"};
-                            for (u16 index = 0; index < property->values.size(); ++index) {
-                                if (property->values[index] != wanted) {
-                                    continue;
-                                }
-                                const registry::BlockStateId next =
-                                    blocks->with_property(state, *property, index);
-                                // `write_block`, never `chunk->set_block`: a
-                                // furnace that lights would otherwise lose its
-                                // block entity — its ore, its fuel and its
-                                // stored experience — on the tick it catches.
-                                write_block(*chunk, where.x, where.y, where.z, next);
-                                dirty_chunks.insert(chunk_key(where.x >> 4, where.z >> 4));
-                                if (const auto framed = net::encode_packet(
-                                        net::clientbound::kBlockUpdate,
-                                        net::encode_block_update(
-                                            where, static_cast<i32>(next.value())))) {
-                                    for (auto& [other_key, other] : players) {
-                                        if (other.connection) {
-                                            other.connection->send(*framed);
-                                        }
-                                    }
-                                }
-                                break;
-                            }
-                        }
-                    }
                 }
 
                 for (auto& [key, player] : players) {

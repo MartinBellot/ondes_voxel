@@ -251,8 +251,43 @@ void FurnaceEntities::note(BlockPos pos) {
     }
 }
 
-FurnaceStats FurnaceEntities::tick(const FurnaceHost& host, std::span<const ChunkPos> loaded,
-                                   i64 now) {
+std::optional<registry::BlockStateId> relight_furnace_block(world::Chunk&                  chunk,
+                                                            const registry::BlockRegistry& blocks,
+                                                            BlockPos at, bool lit) {
+    const auto                   local_x = static_cast<usize>(at.x & 15);
+    const auto                   local_z = static_cast<usize>(at.z & 15);
+    const registry::BlockStateId state   = chunk.get_block(local_x, at.y, local_z);
+    // `lit` is a property: the same block with one value changed, keeping the
+    // facing it was placed with.
+    const auto property = blocks.find_property(blocks.block_of(state), "lit");
+    if (!property) {
+        return std::nullopt;
+    }
+    const std::string_view wanted = lit ? "true" : "false";
+    for (u16 index = 0; index < property->values.size(); ++index) {
+        if (property->values[index] != wanted) {
+            continue;
+        }
+        const registry::BlockStateId next = blocks.with_property(state, *property, index);
+        if (next == state) {
+            return std::nullopt;
+        }
+        // Copied, not referenced: `set_block` erases the entry it points at.
+        std::optional<world::BlockEntity> kept;
+        if (const world::BlockEntity* existing = chunk.block_entity_at(local_x, at.y, local_z);
+            existing != nullptr) {
+            kept = *existing;
+        }
+        chunk.set_block(local_x, at.y, local_z, next);
+        if (kept) {
+            chunk.set_block_entity(std::move(*kept));
+        }
+        return next;
+    }
+    return std::nullopt;
+}
+
+FurnaceStats FurnaceEntities::tick(const FurnaceHost& host, i64 now) {
     FurnaceStats stats;
     if (!items_) {
         return stats;
@@ -260,18 +295,17 @@ FurnaceStats FurnaceEntities::tick(const FurnaceHost& host, std::span<const Chun
     if (indexed_at_ < 0 || now < indexed_at_ || now - indexed_at_ >= 20) {
         indexed_at_ = now;
         index_.clear();
-        for (const ChunkPos& pos : loaded) {
-            world::Chunk* chunk = host.chunk(pos.x, pos.z);
-            if (chunk == nullptr) {
-                continue;
-            }
-            for (const world::BlockEntity& entity : chunk->block_entities()) {
-                if (furnace_kind_of(entity.type)) {
-                    // Local to the chunk in storage, world coordinates here.
-                    index_.push_back(BlockPos{pos.x * 16 + static_cast<i32>(entity.x), entity.y,
-                                              pos.z * 16 + static_cast<i32>(entity.z)});
+        if (host.for_each_chunk) {
+            host.for_each_chunk([this](ChunkPos pos, const world::Chunk& chunk) {
+                for (const world::BlockEntity& entity : chunk.block_entities()) {
+                    if (furnace_kind_of(entity.type)) {
+                        // Local to the chunk in storage, world coordinates here.
+                        index_.push_back(BlockPos{pos.x * 16 + static_cast<i32>(entity.x),
+                                                  entity.y,
+                                                  pos.z * 16 + static_cast<i32>(entity.z)});
+                    }
                 }
-            }
+            });
         }
     }
 

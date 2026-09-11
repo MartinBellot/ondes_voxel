@@ -69,9 +69,9 @@ struct Workbench {
     /// The 3x3 grid of a crafting table. Empty for a furnace.
     std::array<net::ItemStack, 9> grid{};
 
-    /// The furnace's three slots and four counters. Loaded from the block
-    /// entity when the screen opens and written back on every change, so that
-    /// a second player looking at the same furnace sees the same thing.
+    /// The furnace's three slots and four counters: a view of the block
+    /// entity, which is the only copy (furnace_entity.hpp). Re-read before
+    /// every click and every refresh; written back only by a click.
     gameplay::FurnaceSlots furnace_slots{};
     gameplay::FurnaceState furnace_state{};
 
