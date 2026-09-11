@@ -182,11 +182,17 @@ SurvivalOutcome SurvivalSession::tick(const SurvivalPlayer& player, const Surviv
     // ten-tick boundary moves by one if this order is reversed.
     gameplay::tick_health(health, constants_damage);
 
-    if (health.dead || awaiting_respawn) {
+    // ── end ── Only a death already carried out stops here. A death dealt
+    // between two ticks — `/kill` hurts through the command path — used to be
+    // swallowed by this early return with `health.dead` set: no Combat Death,
+    // no `awaiting_respawn`, and the Client Command that followed respawned
+    // nobody (found by the End's death-and-return e2e). It now falls through,
+    // hurts nothing more, and reaches the death below on this pass.
+    if (awaiting_respawn) {
         return outcome;
     }
 
-    const bool mortal = takes_damage(player.game_mode);
+    const bool mortal = takes_damage(player.game_mode) && !health.dead;
 
     // ── Falling ─────────────────────────────────────────────────────────────
     //
@@ -311,7 +317,7 @@ bool SurvivalSession::perform_respawn(const SurvivalPlayer& player, const Surviv
         // metadata both — leaves the client showing the corpse's health bar
         // until something else happens to change it.
         respawn.data_kept       = 0;
-        respawn.death_dimension = std::string_view{"minecraft:overworld"};
+        respawn.death_dimension = std::string_view{death_dimension};  // ── end ──
         respawn.death_position  = net::WirePosition{static_cast<i32>(std::floor(player.x)),
                                                     static_cast<i32>(std::floor(player.y)),
                                                     static_cast<i32>(std::floor(player.z))};

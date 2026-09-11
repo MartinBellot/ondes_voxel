@@ -1,6 +1,7 @@
 #define OV_LOG_CATEGORY "worldgen"
 
 #include "ov/worldgen/density.hpp"
+#include "ov/worldgen/end.hpp"  // ── end ──
 #include "ov/worldgen/random_factory.hpp"
 
 #include "ov/base/log.hpp"
@@ -1116,6 +1117,11 @@ std::expected<DensityRef, DensityError> NoiseRouter::Impl::parse(Json node) {
     }
     if (kind == "blend_density") {
         return argument("argument");
+    }
+    // ── end ── The island noise is a node with no parameters: the algorithm
+    // is the node (end.hpp). Seeded from the world seed, legacy-style.
+    if (kind == "end_islands") {
+        return make_end_islands_density(seed);
     }
 
     OV_LOG_ERROR("worldgen: density function type '{}' is not implemented", kind);

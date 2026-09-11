@@ -68,7 +68,7 @@
     "M6": {
       "name": "Contenu complet",
       "status": "in_progress",
-      "done": 16,
+      "done": 17,
       "total": 80,
       "exit_criterion": "Une batterie world_test par sous-système ; parité statistique worldgen sur 1000 seeds ; matrice protocole à 100 %.",
       "blocked": [],

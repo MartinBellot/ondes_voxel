@@ -551,7 +551,15 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       **99,763 %** et le décalage de surface de ~2 blocs disparaît. Restent les
       mobs du Nether, 19 features et ses structures, et plusieurs gestes dans
       le Nether (conteneurs, TNT). Voir `docs/provenance/nether.md`)*
-- [ ] **End** : îles principales, îles extérieures, passerelles, portail de sortie
+- [x] **End** : îles principales, îles extérieures, passerelles, portail de sortie
+      *(**2026-09-11** : bruit `end_islands`, règle de biomes, `end_spike`,
+      `end_island`, `chorus_plant`, `end_gateway`. Seed 1234567890 : biomes
+      **3 880 960/3 880 960**, blocs **99,9996 %** sur 300 chunks, chunks finis
+      99,9888 %, piliers et cristaux 10/10, portail de sortie 20/20 cellules,
+      ordre des passerelles 20/20. Troisième niveau dans le serveur (`DIM1`),
+      portail de l'End ouvert au 12ᵉ œil, arrivée (100,5 ; 49 ; 0,5) mesurée.
+      Restent le chorus à 92 % et une passerelle en trop, et la sortie par le
+      portail non mesurée. Voir `docs/provenance/end.md`)*
 
 ### Entités et IA
 - [x] Physique d'entité : gravité, traînée, collision par la boîte mesurée
@@ -635,6 +643,12 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       vindicator, **warden**, witch, wither_skeleton, zoglin, zombie,
       zombie_villager
 - [ ] **Boss** : ender_dragon (phases, cristaux, combat complet), wither
+      *(**2026-09-11 — début du combat** : barre de boss (mêmes octets que le
+      jeu), cristaux qui soignent, parties du dragon qui le touchent, sa mort
+      qui ouvre le portail de sortie, pose l'œuf et une passerelle — en tests
+      unitaires. Le dragon **tourne en rond** : pas de vrai vol, pas de phase
+      `dying`, pas d'XP, pas de sauvegarde du combat, jamais tué de bout en
+      bout. Voir `docs/provenance/end.md`)*
 - [~] Projectiles
       *(**2026-09-10** : flèche, trident, boule de neige, œuf, perle, bouteille
       d'XP et potion jetable volent, se plantent et se ramassent ; arc,

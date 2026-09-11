@@ -59,10 +59,19 @@ TEST_CASE("stepping out walks the clock back four ticks at a time", "[nether]") 
     CHECK(timer.time == 0);
 }
 
-TEST_CASE("the server has two levels, and refuses the End by name", "[nether]") {
+TEST_CASE("the server has three levels, and refuses any other by name", "[nether]") {
     CHECK(dimension_by_name("minecraft:overworld") == DimensionId::Overworld);
     CHECK(dimension_by_name("minecraft:the_nether") == DimensionId::Nether);
-    CHECK_FALSE(dimension_by_name("minecraft:the_end").has_value());
+    // ── end ──
+    CHECK(dimension_by_name("minecraft:the_end") == DimensionId::End);
+    CHECK_FALSE(dimension_by_name("mydatapack:moon").has_value());
+    const DimensionInfo& end = dimension_info(DimensionId::End);
+    CHECK(end.type == "minecraft:the_end");
+    CHECK(end.shape.min_y == 0);
+    CHECK(end.shape.height == 256);
+    CHECK_FALSE(end.traits.ultrawarm);
+    CHECK_FALSE(end.traits.natural);
+    CHECK(end.region_dir == "DIM1/region");
     const DimensionInfo& nether = dimension_info(DimensionId::Nether);
     CHECK(nether.shape.min_y == 0);
     CHECK(nether.shape.height == 256);

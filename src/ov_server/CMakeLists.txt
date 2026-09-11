@@ -18,6 +18,8 @@ ov_add_library(ov_server
         src/nether_travel.cpp
         src/slimes.cpp
         src/drowning.cpp
+        src/end_travel.cpp
+        src/end_fight.cpp
         src/player_inventory.cpp
         src/server.cpp
         src/combat_session.cpp
@@ -91,6 +93,7 @@ ov_add_test(test_ov_server
         tests/test_nether_travel.cpp
         tests/test_weather_session.cpp
         tests/test_tick_profile.cpp
+        tests/test_end_fight.cpp
     DEPS ov_server
     LABELS unit
 )

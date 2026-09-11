@@ -110,7 +110,8 @@ TEST_CASE("the nether and the end have their own tables", "[worldgen][biome]") {
     // The nether is multi-noise like the overworld and has an exported table;
     // the end is not — it uses a fixed rule over the island noise, so there is
     // no file and asking for one must fail rather than return an empty table
-    // that would put one biome everywhere.
+    // that would put one biome everywhere. The rule itself is what "end" (the
+    // noise settings' name) loads: test_end.cpp.
     auto nether = BiomeSource::load(reports_root(), "nether");
     REQUIRE(nether.has_value());
     CHECK(nether->biome_count() == 5);

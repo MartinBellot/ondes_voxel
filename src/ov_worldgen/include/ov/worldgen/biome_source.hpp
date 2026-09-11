@@ -70,6 +70,15 @@ public:
     [[nodiscard]] static std::expected<BiomeSource, DensityError> load(
         const std::filesystem::path& data_root, std::string_view dimension);
 
+    /// ── end ── The End's source, which is not a table: `load(root, "end")`
+    /// returns it. Its five biomes are its entries, in the source's order;
+    /// `sample` runs the rule (end.hpp) and puts the answer's index in the
+    /// first coordinate, which `biome_at` reads back. Asking for "the_end"
+    /// still fails — there is no exported table by that name, and never an
+    /// empty one.
+    [[nodiscard]] static BiomeSource the_end();
+    [[nodiscard]] bool is_end_rule() const noexcept { return end_rule_; }
+
     /// The climate at a *quart* position — the 4x4x4 cell biomes are stored
     /// in, not a block position.
     [[nodiscard]] ClimatePoint sample(const NoiseRouter& router, i32 quart_x, i32 quart_y,
@@ -180,6 +189,8 @@ private:
     std::vector<Node>  nodes_;
     /// OV_BIOME_SCAN, read once at load rather than per query.
     bool scan_only_{false};
+    /// ── end ── The End's fixed rule rather than a table.
+    bool end_rule_{false};
     /// Index of the root in `nodes_`, or -1 when the table is empty.
     i32 root_{-1};
 };

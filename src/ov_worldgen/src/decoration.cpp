@@ -469,6 +469,7 @@ usize Decorator::decorate(FeatureLevel& level, i32 chunk_x, i32 chunk_z, i64 lev
             context.blocks       = impl_->blocks;
             context.feature_name = name;
             context.biomes       = &impl_->listed;
+            context.level_seed   = level_seed;  // ── end ──
 
             bool wrote = false;
             // The origin is the bottom corner of the chunk, floor included.

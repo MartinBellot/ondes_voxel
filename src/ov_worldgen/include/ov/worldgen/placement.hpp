@@ -308,6 +308,9 @@ struct FeatureContext {
     /// modifier needs it.
     std::string_view     feature_name;
     const BiomeFeatures* biomes{nullptr};
+    /// ── end ── The world seed. The End's spikes are a function of it alone
+    /// (`end_spikes`), not of the chunk's decoration seed.
+    i64 level_seed{0};
 };
 
 /// One stage of the pipeline.

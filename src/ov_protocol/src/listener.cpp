@@ -166,6 +166,8 @@ void AsioConnection::arm_timeout() {
         if (!ec) {
             // Fired rather than cancelled: the peer has said nothing for the
             // whole window.
+            OV_LOG_WARN("{}: nothing read for {} s, closing", self->peer_address(),
+                        kHandshakeTimeout.count());
             self->close();
         }
     });
@@ -191,7 +193,7 @@ void AsioConnection::read_more() {
                 if (packet.error() == FrameError::Incomplete) {
                     break;  // normal: wait for more bytes
                 }
-                OV_LOG_DEBUG("{}: {}", self->peer_address(), to_string(packet.error()));
+                OV_LOG_WARN("{}: {}, closing", self->peer_address(), to_string(packet.error()));
                 self->close();
                 return;
             }
@@ -199,6 +201,8 @@ void AsioConnection::read_more() {
             // A byte stream cannot be resynchronised once a packet has been
             // misread, so a handler that rejects one closes the connection.
             if (!self->listener_.dispatch(self, packet->id, packet->body)) {
+                OV_LOG_WARN("{}: packet 0x{:02X} ({} bytes) refused by its handler, closing",
+                            self->peer_address(), packet->id, packet->body.size());
                 self->close();
                 return;
             }

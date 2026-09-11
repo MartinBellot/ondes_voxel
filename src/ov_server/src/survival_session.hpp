@@ -122,6 +122,12 @@ public:
     /// Dead, waiting for the client to press the button.
     bool awaiting_respawn{false};
 
+    /// ── end ── The level the player died in, for the Respawn's death
+    /// location: the game names the End for a death in the End (measured),
+    /// where this used to say the overworld whatever the level. Set by the
+    /// server when a tick reports the death.
+    std::string death_dimension{"minecraft:overworld"};
+
     /// The last position used for the fall accumulator, and whether there is
     /// one yet.
     f64  last_y{0.0};
