@@ -427,3 +427,15 @@ attend ses chunks est abandonnée si le joueur quitte le portail avant leur arri
     dans la mauvaise dimension.
 11. **Une traversée qui attend ses chunks meurt en silence si le joueur sort du portail.** Elle
     est désormais journalisée (« waiting for the chunks … », « the crossing is dropped »).
+
+## Chunks relus depuis le disque : la forme de la dimension (2026-09-11)
+
+`world::from_nbt` construisait tout chunk relu depuis le disque **à la forme de l'Overworld**
+(−64..320, 24 sections), quelle que soit sa dimension. Un chunk du Nether ou de l'End sauvé puis
+relu après un redémarrage revenait donc avec 24 sections au lieu de 16 : envoyé tel quel à un
+client dans le Nether (qui en attend 16 pour une hauteur de 256) et réécrit avec `yPos −4`. Le
+contexte de décodage porte désormais la forme (`ChunkCodecContext::shape`, l'Overworld par
+défaut) et `NetherWorld::open` y met celle de sa dimension (0..256). Test :
+`test_chunk_roundtrip.cpp` — « a Nether chunk keeps its shape through the disk and the wire »
+(blocs en y 0, 100 et 255, relus puis ré-encodés et relus comme le ferait le client).
+Signalé par l'agent des structures, qui l'avait remarqué en lisant le code.

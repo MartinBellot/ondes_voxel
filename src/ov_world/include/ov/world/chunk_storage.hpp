@@ -65,6 +65,13 @@ struct ChunkCodecContext {
     /// chunk's game time**, which is what lets a chunk sit unloaded and resume
     /// where it left off.
     i64 game_time{0};
+
+    /// The shape of the dimension the chunk belongs to. A chunk read from disk
+    /// takes it from here: the Nether and the End are 0..256 in 16 sections,
+    /// and a Nether chunk read as overworld-shaped came back with 24 — which a
+    /// client in the Nether cannot parse, and which was written back so. Last,
+    /// so that the positional initialisers above it keep their meaning.
+    WorldShape shape{WorldShape::overworld()};
 };
 
 /// The DataVersion a chunk file declares, if it declares one.

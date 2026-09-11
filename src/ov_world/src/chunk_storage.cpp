@@ -291,7 +291,7 @@ std::optional<Chunk> from_nbt(const nbt::Document& document, const ChunkCodecCon
         return std::nullopt;
     }
 
-    const auto shape = WorldShape::overworld();
+    const WorldShape shape = context.shape;
     Chunk      chunk{ChunkPos{static_cast<i32>(x_pos->as_i64()), static_cast<i32>(z_pos->as_i64())},
                      shape, context.air, context.blocks};
 
