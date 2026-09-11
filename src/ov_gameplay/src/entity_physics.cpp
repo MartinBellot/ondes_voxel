@@ -112,14 +112,17 @@ entity::EntityState step_entity(const entity::EntityState&   state,
 
 f64 entity_friction(const entity::EntityState& state, const EntityMotionConstants& constants,
                     const CollisionWorld& world) {
+    // In float, as the game computes it: the measured per-tick ratio on stone
+    // is float(0.6F × 0.91F) = 0.546000063419, on ice float(0.98F × 0.91F).
+    const auto air_drag = static_cast<f32>(constants.air_drag);
     if (!state.on_ground) {
-        return constants.air_drag;
+        return static_cast<f64>(air_drag);
     }
-    const f64 slipperiness =
+    const f32 slipperiness =
         world.motion() != nullptr
-            ? static_cast<f64>(floor_friction(world, state.position, entity_box(state), true))
-            : constants.default_slipperiness;
-    return constants.air_drag * slipperiness;
+            ? floor_friction(world, state.position, entity_box(state), true)
+            : static_cast<f32>(constants.default_slipperiness);
+    return static_cast<f64>(slipperiness * air_drag);
 }
 
 f64 walk_floor_scale(const entity::EntityState& state, const EntityMotionConstants& constants,

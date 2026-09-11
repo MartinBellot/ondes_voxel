@@ -39,7 +39,11 @@ struct EntityMotionConstants {
     /// Together these two give a terminal speed of -g·d/(1-d) = -3.92 blocks a
     /// tick, which is the number a long fall converges on and the fastest speed
     /// observed in the measurement (-3.58 after forty samples, still climbing).
-    f64 vertical_drag{0.98};
+    ///
+    /// A float for a living thing — 0.98000001907…: an armor stand traced tick
+    /// by tick on the real server stores -0.0784000015 after one tick of fall,
+    /// -0.08 × 0.98F. A dropped item uses the exact 0.98 (see item_motion).
+    f64 vertical_drag{static_cast<f64>(0.98F)};
 
     /// Multiplies the horizontal velocity each tick while airborne.
     f64 air_drag{0.91};
@@ -92,6 +96,9 @@ struct EntityMotionConstants {
 [[nodiscard]] inline EntityMotionConstants item_motion() noexcept {
     EntityMotionConstants constants;
     constants.gravity = 0.04;
+    // Exactly 0.98 for an item: its traced fall stores -0.0392, with no float
+    // residue, where a living thing stores -0.0784000015.
+    constants.vertical_drag = 0.98;
     return constants;
 }
 

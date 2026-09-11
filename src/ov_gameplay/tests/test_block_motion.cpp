@@ -246,6 +246,142 @@ TEST_CASE("a cobweb scales each move and discards the velocity", "[gameplay][blo
     }
 }
 
+// ── Against the real server's trace ─────────────────────────────────────────
+//
+// The numbers below are Motion values an armor stand stored, tick after tick,
+// on a real 1.20.1 server (scripts/measure_block_motion.py). They are compared
+// to the last representable digit the game printed.
+
+TEST_CASE("bubble columns act once per block, as the traced armor stand shows",
+          "[gameplay][blocks][parity]") {
+    if (blocks() == nullptr) {
+        SKIP("no registry pack");
+    }
+    const BlockMotionTable table{*blocks()};
+    const auto             column = blocks()->find_block("minecraft:bubble_column").value();
+    const MotionConstants  constants;
+
+    struct Case {
+        const char*          drag;
+        const char*          bottom;
+        f64                  start;
+        std::array<f64, 8>   motion;
+    };
+    // The superflat's floor is at -61 in the trace and at 0 here: the column
+    // runs from 1 to 10 with air above, the stand starts at 3 (up) or 9 (down).
+    const std::array<Case, 2> cases{{
+        {"false", "minecraft:soul_sand", 3.0,
+         {0.0910000014, 0.2118000044, 0.3084400082, 0.3857520124, 0.4476016166, 0.4970813008,
+          0.5366650487, 0.5550000083}},
+        {"true", "minecraft:magma_block", 9.0,
+         {-0.0530000007, -0.1194000023, -0.1725200043, -0.2150160066, -0.2490128089,
+          -0.2690000039, -0.2450000036, -0.2450000036}},
+    }};
+    for (const Case& c : cases) {
+        const std::array<std::pair<std::string_view, std::string_view>, 1> drag{{{"drag", c.drag}}};
+        Scene scene{state(c.bottom)};
+        scene.placed[{0, 0, 0}] = state(c.bottom);
+        for (i32 y = 1; y <= 10; ++y) {
+            scene.placed[{0, y, 0}] = blocks()->state_for(column, drag).value();
+        }
+        const CollisionWorld world{*blocks(), &Scene::look_up, &scene, &table};
+
+        // The living water tick, by hand: move with the stored velocity, let
+        // every column block the box overlaps act, then drag and gravity.
+        Vec3d position{0.5, c.start, 0.5};
+        Vec3d velocity{};
+        for (usize tick = 0; tick < c.motion.size(); ++tick) {
+            position.y += velocity.y;
+            apply_inside_effects(world, AABB::from_entity(position, 0.5, 1.975), position, 0.5,
+                                 false, velocity, constants.effects);
+            velocity.y = velocity.y * constants.water_vertical_drag - constants.water_gravity;
+            INFO(c.drag << " tick " << tick);
+            CHECK(velocity.y == Catch::Approx(c.motion[tick]).margin(1e-10));
+        }
+    }
+}
+
+TEST_CASE("a mob keeps exactly float(f x 0.91F) of its speed per tick on the ground",
+          "[gameplay][blocks][parity]") {
+    if (blocks() == nullptr) {
+        SKIP("no registry pack");
+    }
+    const BlockMotionTable table{*blocks()};
+    // Traced ratios of successive on-ground Motion.x, armor stand launched at 0.8.
+    for (const auto& [floor, ratio] : std::initializer_list<std::pair<const char*, f64>>{
+             {"minecraft:stone", 0.546000063419},
+             {"minecraft:ice", 0.891800045967},
+             {"minecraft:packed_ice", 0.891800045967},
+             {"minecraft:blue_ice", 0.899990022182},
+             {"minecraft:soul_sand", 0.218400028622},
+             {"minecraft:honey_block", 0.218400028622},
+             {"minecraft:soul_soil", 0.546000063419}}) {
+        Scene                scene{state(floor)};
+        const CollisionWorld world{*blocks(), &Scene::look_up, &scene, &table};
+        entity::EntityState  mob;
+        mob.position = Vec3d{0.5, 0.0, 0.5};
+        mob.width    = 0.5F;
+        mob.height   = 1.975F;
+        // Settle first: soul sand's top is an eighth below the cell, honey's
+        // a sixteenth, and a mob hovering above them is in the air.
+        for (int tick = 0; tick < 5; ++tick) {
+            mob = step_entity(mob, EntityMotionConstants{}, world);
+        }
+        REQUIRE(mob.on_ground);
+        mob.velocity.x = 0.8;
+        const entity::EntityState next = step_entity(mob, EntityMotionConstants{}, world);
+        const entity::EntityState after = step_entity(next, EntityMotionConstants{}, world);
+        INFO(floor);
+        CHECK(after.velocity.x / next.velocity.x == Catch::Approx(ratio).margin(1e-11));
+    }
+}
+
+TEST_CASE("a mob on a ladder falls at 0.15F and climbs 0.1176 when walking into the wall",
+          "[gameplay][blocks][parity]") {
+    if (blocks() == nullptr) {
+        SKIP("no registry pack");
+    }
+    const BlockMotionTable table{*blocks()};
+    Scene                  scene{state("minecraft:stone")};
+    const std::array<std::pair<std::string_view, std::string_view>, 1> facing{
+        {{"facing", "west"}}};
+    const auto ladder =
+        blocks()->state_for(blocks()->find_block("minecraft:ladder").value(), facing).value();
+    for (i32 y = 0; y < 40; ++y) {
+        scene.placed[{1, y, 0}] = state("minecraft:stone");
+        scene.placed[{0, y, 0}] = ladder;
+    }
+    const CollisionWorld world{*blocks(), &Scene::look_up, &scene, &table};
+
+    entity::EntityState mob;
+    mob.position = Vec3d{0.5, 30.0, 0.5};
+    mob.width    = 0.5F;
+    mob.height   = 1.975F;
+    for (int tick = 0; tick < 5; ++tick) {
+        mob = step_entity(mob, EntityMotionConstants{}, world);
+    }
+    // Traced: dy = -0.150000006 every tick once the clamp is reached.
+    const f64 before = mob.position.y;
+    mob              = step_entity(mob, EntityMotionConstants{}, world);
+    CHECK(mob.position.y - before == Catch::Approx(-0.150000006).margin(1e-9));
+
+    // Pushed into the wall at 0.1 a tick, as the trace's `pushx` stand was:
+    // dy = 0.1176000023 = (0.2 - 0.08) x 0.98F, every tick.
+    entity::EntityState climber;
+    climber.position  = Vec3d{0.5, 0.0, 0.5};
+    climber.on_ground = true;
+    climber.width     = 0.5F;
+    climber.height    = 1.975F;
+    f64 dy            = 0.0;
+    for (int tick = 0; tick < 10; ++tick) {
+        climber.velocity.x = 0.1;
+        const f64 low      = climber.position.y;
+        climber            = step_entity(climber, EntityMotionConstants{}, world);
+        dy                 = climber.position.y - low;
+    }
+    CHECK(dy == Catch::Approx(0.1176000023).margin(1e-9));
+}
+
 TEST_CASE("a mob slides further on ice than on stone", "[gameplay][blocks]") {
     if (blocks() == nullptr) {
         SKIP("no registry pack");

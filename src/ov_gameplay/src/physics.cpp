@@ -136,8 +136,9 @@ FluidSample FluidWorld::sample(const Vec3d& position) const {
     next.velocity.x += push.x;
     next.velocity.z += push.z;
 
-    const AABB  box     = player_box(next.position);
-    const Vec3d allowed = world.slide(box, next.velocity);
+    const AABB  box      = player_box(next.position);
+    const Vec3d allowed  = world.slide(box, next.velocity);
+    const bool  hit_wall = allowed.x != next.velocity.x || allowed.z != next.velocity.z;
     next.position.x += allowed.x;
     next.position.y += allowed.y;
     next.position.z += allowed.z;
@@ -158,10 +159,8 @@ FluidSample FluidWorld::sample(const Vec3d& position) const {
     if (world.motion() != nullptr) {
         apply_inside_effects(world, player_box(next.position), next.position, 0.6,
                              next.on_ground, next.velocity, constants.effects);
-        if (allowed.x != push.x + state.velocity.x || allowed.z != push.z + state.velocity.z) {
-            if (on_climbable(world, next.position)) {
-                next.velocity.y = constants.effects.climb_speed;
-            }
+        if (hit_wall && on_climbable(world, next.position)) {
+            next.velocity.y = constants.effects.climb_speed;
         }
     }
 
@@ -273,7 +272,13 @@ MotionState step(const MotionState& state, const MoveInput& input, const MotionC
     const f64 slipperiness =
         blocky ? static_cast<f64>(floor_friction(world, state.position, start_box, state.on_ground))
                : constants.default_slipperiness;
-    const f64 friction = state.on_ground ? slipperiness * constants.air_drag : constants.air_drag;
+    // The product is taken in float, as the game does: an armor stand on stone
+    // keeps 0.546000063419 of its speed per tick — float(0.6F × 0.91F) — and
+    // not the 0.546000021696 of the same product in double.
+    const auto air_drag = static_cast<f32>(constants.air_drag);
+    const f64  friction = state.on_ground
+                              ? static_cast<f64>(static_cast<f32>(slipperiness) * air_drag)
+                              : static_cast<f64>(air_drag);
 
     // Jumping happens before anything else moves, and a sprinting jump also
     // gets a shove in the direction faced — which is what makes sprint-jumping

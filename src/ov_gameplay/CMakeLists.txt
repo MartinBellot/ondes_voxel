@@ -24,6 +24,7 @@ ov_add_library(ov_gameplay
         src/primed_tnt.cpp
         src/projectile.cpp
         src/fluid.cpp
+        src/fluid_push.cpp
         src/item_use.cpp
         src/nether_portal.cpp
         src/end_portal.cpp

@@ -282,13 +282,71 @@ def show(tag: str, rows: list[dict], limit: int = 40) -> None:
               f"m=({m[0]!r},{m[1]!r},{m[2]!r})")
 
 
+def f32(value: float) -> float:
+    """The double a Java float widens to — how the game's constants really read."""
+    import struct
+    return struct.unpack("f", struct.pack("f", value))[0]
+
+
+def distinct(values: list[float], digits: int = 12) -> list[float]:
+    return sorted({round(v, digits) for v in values})
+
+
+def ground_ratios(rows: list[dict]) -> list[float]:
+    """Motion.x(t+1) / Motion.x(t) over ticks spent on the ground, moving."""
+    out = []
+    for a, b in zip(rows, rows[1:]):
+        if a["g"] and b["g"] and abs(a["m"][0]) > 1e-3 and abs(b["m"][0]) > 1e-3:
+            out.append(b["m"][0] / a["m"][0])
+    return out
+
+
 def fit() -> int:
     meta, per = load()
-    wanted = sys.argv[2:] if len(sys.argv) > 2 else sorted(per)
-    for tag in wanted:
-        for key in per:
-            if key.startswith(tag):
-                show(key, per[key])
+    if len(sys.argv) > 2:
+        for tag in sys.argv[2:]:
+            for key in sorted(per):
+                if key.startswith(tag):
+                    show(key, per[key])
+        return 0
+
+    # ── Friction: the ratio of successive ground velocities. For a living
+    # thing it is friction × 0.91 (× the speed factor after the move); for an
+    # item friction × 0.98. Compared against the float and the double product,
+    # so the trace says which one the game computes.
+    print("== friction ==")
+    for tag in sorted(t for t in per if t.startswith("slide_")):
+        ratios = ground_ratios(per[tag])
+        if not ratios:
+            print(f"  {tag:28s} no ground ticks")
+            continue
+        living = tag.endswith("_stand")
+        base = 0.91 if living else 0.98
+        kept = distinct(ratios)
+        friction = [r / base for r in kept]
+        print(f"  {tag:28s} {len(ratios):3d} ticks  ratio {kept[:3]}  "
+              f"friction {[round(f, 9) for f in friction[:3]]}")
+        for name, value in (("0.6F", 0.6), ("0.98F", 0.98), ("0.989F", 0.989), ("0.8F", 0.8)):
+            for kind, product in (("float", f32(f32(value) * f32(base))),
+                                  ("double", f32(value) * base)):
+                if any(abs(r - product) < 1e-15 for r in kept):
+                    print(f"      = {name} x {base} in {kind}, exactly")
+
+    # ── Everything else is read as per-tick velocities: the ladder clamp and
+    # climb, the cobweb hold, the bubble-column steps, the current's push.
+    print("== vertical motion (first 30 ticks: dy, Motion.y) ==")
+    for prefix in ("climb_", "stuck_", "bubble_", "land_"):
+        for tag in sorted(t for t in per if t.startswith(prefix)):
+            rows = per[tag]
+            dys = [round(b["p"][1] - a["p"][1], 10) for a, b in zip(rows, rows[1:])][:30]
+            mys = [round(r["m"][1], 10) for r in rows[:30]]
+            print(f"  {tag}\n    dy {dys}\n    my {mys}")
+    print("== currents (Motion.x per tick, and its change) ==")
+    for tag in sorted(t for t in per if t.startswith("current_")):
+        rows = per[tag]
+        mx = [r["m"][0] for r in rows[:30]]
+        print(f"  {tag}\n    mx {[round(v, 10) for v in mx]}\n"
+              f"    dmx {[round(b - a, 10) for a, b in zip(mx, mx[1:])]}")
     return 0
 
 
