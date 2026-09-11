@@ -134,7 +134,9 @@ Ce que le chiffre global ne dit pas, nommé :
   `full` du jeu (`nether.md` § 1.5), et, dans ce monde de référence régénéré, les cellules que le
   carver a creusées sous y 32 sont de la lave chez le jeu et de l'air chez nous (97,875 % sur 200
   chunks `carvers`, contre 99,802 % mesuré par `nether.md` sur le monde d'alors ; le code du carver
-  n'a pas changé depuis). **Non élucidé**, et c'est à la vague des carvers qu'il revient.
+  n'a pas changé depuis). **Élucidé depuis** (`nether.md` § 1.6) : ce n'était pas le carver mais
+  l'aquifère de l'overworld, fusionné après la mesure du Nether et jamais coupé par
+  `aquifers_enabled: false` ; il laissait de l'air dans la mer de lave. Lave 25,198 % → 99,986 %.
 * **Les briques du Nether** (11 712) et les **briques de pierre noire polie** (886) : la forteresse
   et le bastion, non construits (§ 2).
 

@@ -664,6 +664,8 @@ struct NoiseRouter::Impl {
     /// Nether.
     std::string default_block{"minecraft:stone"};
     std::string default_fluid{"minecraft:water"};
+    /// ── carvers-3 ── `aquifers_enabled`; absent reads as the overworld's.
+    bool aquifers_enabled{true};
     /// The blended noise this router built, kept so a harness can read the
     /// selector stack on its own. Nothing in generation reads it; it is the
     /// handle `NoiseRouter::blended_noise()` hands out.
@@ -1160,6 +1162,10 @@ std::expected<NoiseRouter, DensityError> NoiseRouter::load(const std::filesystem
         if (document->at_key("default_fluid").at_key("Name").get(name) == simdjson::SUCCESS) {
             impl.default_fluid = std::string(name);
         }
+        bool aquifers = true;  // ── carvers-3 ──
+        if (document->at_key("aquifers_enabled").get(aquifers) == simdjson::SUCCESS) {
+            impl.aquifers_enabled = aquifers;
+        }
     }
 
     // Every noise the world uses is seeded from one factory forked from the
@@ -1268,6 +1274,10 @@ std::string_view NoiseRouter::default_block() const noexcept {
 }
 std::string_view NoiseRouter::default_fluid() const noexcept {
     return impl_->default_fluid;
+}
+
+bool NoiseRouter::aquifers_enabled() const noexcept {  // ── carvers-3 ──
+    return impl_->aquifers_enabled;
 }
 i32 NoiseRouter::min_y() const noexcept {
     return impl_->min_y;

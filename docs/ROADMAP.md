@@ -485,7 +485,11 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       98,3 % des marques `PostProcessing` — ne sont livrés à aucune file, donc
       une cascade générée ne coule pas ; un tiers de la lave des carvers sous
       −56 est marqué par une règle inconnue ; coût ≈ ×2,5 en debug. Voir
-      `docs/provenance/aquiferes.md` § 10)*
+      `docs/provenance/aquiferes.md` § 10. **2026-09-11** : `aquifers_enabled`
+      des réglages enfin lu — l'aquifère tournait aussi dans le Nether et l'End,
+      qui n'en ont pas, et vidait la mer de lave du Nether : lave retrouvée
+      25,2 → **99,99 %**, Nether 98,12 → **99,65 %** sur 200 chunks `carvers`,
+      `docs/provenance/nether.md` § 1.6)*
 - [x] Minerais par couche, distributions triangulaires
       *(**99,509 % des positions au bloc près** en rejouant sur le terrain du
       jeu, et **82,406 % sur notre propre terrain généré de bout en bout** —

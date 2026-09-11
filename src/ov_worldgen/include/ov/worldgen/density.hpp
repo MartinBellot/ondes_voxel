@@ -128,6 +128,14 @@ public:
     [[nodiscard]] std::string_view default_block() const noexcept;
     [[nodiscard]] std::string_view default_fluid() const noexcept;
 
+    /// ── carvers-3 ── The settings' `aquifers_enabled`: true in the overworld,
+    /// false in the Nether and the End, where the game uses no aquifer at all
+    /// and the global fluid rule alone fills every empty cell — the Nether's
+    /// lava sea under y 32. Nothing read it before, so the Nether ran the
+    /// overworld's aquifer on its constant-zero nodes and left air in cells
+    /// the game fills with lava (docs/provenance/nether.md § 1.6).
+    [[nodiscard]] bool aquifers_enabled() const noexcept;
+
     [[nodiscard]] i32 min_y() const noexcept;
     [[nodiscard]] i32 height() const noexcept;
     /// Cell size in blocks: horizontal and vertical. The terrain is sampled on
