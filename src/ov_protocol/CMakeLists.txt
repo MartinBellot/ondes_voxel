@@ -12,6 +12,7 @@ ov_add_library(ov_protocol
         src/client_play.cpp
         src/effect_packets.cpp
         src/entity.cpp
+        src/entity_metadata.cpp
         src/framing.cpp
         src/interaction.cpp
         src/listener.cpp
@@ -43,6 +44,7 @@ ov_add_test(test_ov_protocol
         tests/test_sound_packets.cpp
         tests/test_effect_packets.cpp
         tests/test_entities.cpp
+        tests/test_entity_metadata.cpp
         tests/test_entity_packets.cpp
         tests/test_framing.cpp
         tests/test_interaction.cpp
