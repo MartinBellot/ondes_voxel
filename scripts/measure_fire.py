@@ -381,6 +381,102 @@ def summarise_blocks(doc: dict) -> None:
         print(f"ignite {kind:18s} {len(lit):2d}/{len(cells)} lit, mean {sum(lit) / max(1, len(lit)):6.0f}")
 
 
+# ── confirm: the two questions `blocks` left open, interleaved ──────────────
+#
+# The `blocks` run put each kind in a row of its own, and two things came out
+# that sixteen samples a row could not settle:
+#
+#   * oak logs and coal blocks — both ignite odds 5 — differed from each other
+#     at p = 0.0019 while their pool fitted the table at p = 0.99;
+#   * wool, dried kelp and leaves (burn odds 60) burnt at 0.30 per fire tick
+#     against the table's 0.20, and the bookshelf (20) at about 0.12.
+#
+# Block and row were confounded in both. Here the kinds alternate position by
+# position, 32 of each, so any effect of place falls on all of them alike.
+
+IGNITE5_KINDS = ["oak_planks", "oak_log", "coal_block"]
+BURN_CONFIRM_KINDS = ["oak_planks", "white_wool", "oak_leaves", "dried_kelp_block", "bookshelf"]
+
+
+def measure_ignite5(ticks: int, replicas: int = 32) -> None:
+    build: list[str] = []
+    start_fn: list[str] = []
+    body: list[str] = []
+    names: list[str] = []
+    cells: dict[str, list[str]] = {k: [] for k in IGNITE5_KINDS}
+    burn_cells: dict[str, list[tuple[str, str]]] = {k: [] for k in BURN_CONFIRM_KINDS}
+    for n in range(replicas * len(BURN_CONFIRM_KINDS)):
+        kind = BURN_CONFIRM_KINDS[n % len(BURN_CONFIRM_KINDS)]
+        x, z = 4 * (n % 20), 40 + 4 * (n // 20)
+        build += [f"setblock {x} {GY} {z} minecraft:netherrack",
+                  f"setblock {x + 1} {GY} {z} minecraft:stone",
+                  f"setblock {x + 2} {FY} {z} minecraft:stone",
+                  f"setblock {x + 1} {FY + 1} {z} minecraft:stone",
+                  f"setblock {x + 1} {FY} {z - 1} minecraft:stone",
+                  f"setblock {x + 1} {FY} {z + 1} minecraft:stone",
+                  f"setblock {x + 1} {FY} {z} {placed(kind)}"]
+        start_fn.append(f"setblock {x} {FY} {z} minecraft:fire")
+        gone, fate = f"#cg{n}", f"#cf{n}"
+        names += [gone, fate]
+        start_fn += [f"scoreboard players set {gone} ov 0", f"scoreboard players set {fate} ov 0"]
+        body.append(first_time(gone, f"unless block {x + 1} {FY} {z} minecraft:{kind}"))
+        body.append(f"execute if score {gone} ov matches 1.. if score {fate} ov matches 0 "
+                    f"if block {x + 1} {FY} {z} minecraft:fire run scoreboard players set {fate} ov 1")
+        body.append(f"execute if score {gone} ov matches 1.. if score {fate} ov matches 0 "
+                    f"if block {x + 1} {FY} {z} minecraft:air run scoreboard players set {fate} ov 2")
+        burn_cells[kind].append((gone, fate))
+    for n in range(replicas * len(IGNITE5_KINDS)):
+        kind = IGNITE5_KINDS[n % len(IGNITE5_KINDS)]
+        x, z = 5 * (n % 16), 4 * (n // 16)
+        build += [f"setblock {x} {GY} {z} minecraft:netherrack",
+                  f"setblock {x + 2} {GY} {z} minecraft:stone",
+                  f"setblock {x + 3} {FY} {z} minecraft:stone",
+                  f"setblock {x + 2} {FY + 1} {z} minecraft:stone",
+                  f"setblock {x + 2} {FY} {z - 1} minecraft:stone",
+                  f"setblock {x + 2} {FY} {z + 1} minecraft:stone",
+                  f"setblock {x + 2} {FY} {z} minecraft:{kind}"]
+        start_fn.append(f"setblock {x} {FY} {z} minecraft:fire")
+        lit = f"#i{n}"
+        names.append(lit)
+        start_fn.append(f"scoreboard players set {lit} ov 0")
+        body.append(first_time(lit, f"if block {x + 1} {FY} {z} minecraft:fire"))
+        cells[kind].append(lit)
+    start_fn += ["execute store result score #t0 ov run time query gametime",
+                 "gamerule doFireTick true", "scoreboard players set #armed ov 1"]
+    names.append("#t0")
+    server = start("confirm", {"build": build, "start": start_fn, "body": body})
+    try:
+        server.batch(["function ovfire:build"])
+        time.sleep(2.0)
+        server.batch(["function ovfire:start"])
+        t_start = gametime(server)
+        wait_until(server, t_start + ticks)
+        server.batch(["gamerule doFireTick false", "scoreboard players set #armed ov 0",
+                      "execute store result score #items ov if entity @e[type=item]"])
+        names.append("#items")
+        values = scores(server, names)
+        t_end = gametime(server)
+    finally:
+        finish(server, "confirm")
+    t0 = values["#t0"]
+    doc = {"t0": t0, "ticks": t_end - t0, "items": values.get("#items"),
+           "ignite": {k: [(values[c] - t0) if values.get(c) else None for c in v]
+                      for k, v in cells.items()},
+           "burn": {k: [{"gone": (values[g] - t0) if values.get(g) else None,
+                         "fate": {0: None, 1: "fire", 2: "air"}[values.get(f, 0)]}
+                        for g, f in v]
+                    for k, v in burn_cells.items()}}
+    write("confirm", doc)
+    for kind, times in doc["ignite"].items():
+        lit = [t for t in times if t is not None]
+        print(f"confirm ignite {kind:16s} {len(lit):2d}/{len(times)} lit, "
+              f"mean {sum(lit) / max(1, len(lit)):6.0f}")
+    for kind, cells_ in doc["burn"].items():
+        gone = [c["gone"] for c in cells_ if c["gone"] is not None]
+        print(f"confirm burn   {kind:16s} {len(gone):2d}/{len(cells_)} gone, "
+              f"mean {sum(gone) / max(1, len(gone)):6.0f}")
+
+
 # ── rain ────────────────────────────────────────────────────────────────────
 
 def measure_rain(ticks: int) -> None:
@@ -886,6 +982,8 @@ def main() -> int:
     what = sys.argv[1]
     if what == "blocks":
         measure_blocks(int(sys.argv[2]) if len(sys.argv) > 2 else 4000)
+    elif what == "confirm":
+        measure_ignite5(int(sys.argv[2]) if len(sys.argv) > 2 else 4000)
     elif what == "rain":
         measure_rain(int(sys.argv[2]) if len(sys.argv) > 2 else 1500)
     elif what == "lava":

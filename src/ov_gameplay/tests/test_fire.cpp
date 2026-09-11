@@ -500,6 +500,232 @@ TEST_CASE("fire: the sun, by the draw", "[fire]") {
     }
 }
 
+// ── Parity with the vanilla bench ───────────────────────────────────────────
+//
+// The arrays below are scripts/measure_fire.py `blocks` on the real 1.20.1
+// server (data/vanilla/1.20.1/normalized/fire_blocks.json, 4051 ticks): the
+// tick each thing happened, counted from the tick every fire was set. Our code
+// runs the same rigs and the two samples are compared with a two-sample
+// Kolmogorov-Smirnov test, each against a control that must fit worse
+// (briefing, trap 14). The p-values are printed on every run.
+
+namespace {
+
+constexpr i64 kBenchTicks = 4051;
+constexpr i64 kNever      = kBenchTicks + 1;
+
+[[nodiscard]] f64 ks_distance(std::vector<i64> a, std::vector<i64> b) {
+    std::ranges::sort(a);
+    std::ranges::sort(b);
+    usize i = 0;
+    usize j = 0;
+    f64   d = 0.0;
+    while (i < a.size() && j < b.size()) {
+        const i64 value = std::min(a[i], b[j]);
+        while (i < a.size() && a[i] == value) {
+            ++i;
+        }
+        while (j < b.size() && b[j] == value) {
+            ++j;
+        }
+        d = std::max(d, std::abs(static_cast<f64>(i) / static_cast<f64>(a.size()) -
+                                 static_cast<f64>(j) / static_cast<f64>(b.size())));
+    }
+    return d;
+}
+
+[[nodiscard]] f64 ks_p(f64 d, usize n, usize m) {
+    const f64 en  = std::sqrt(static_cast<f64>(n * m) / static_cast<f64>(n + m));
+    const f64 lam = (en + 0.12 + 0.11 / en) * d;
+    f64       s   = 0.0;
+    for (int k = 1; k <= 100; ++k) {
+        s += 2.0 * ((k % 2 == 1) ? 1.0 : -1.0) * std::exp(-2.0 * k * k * lam * lam);
+    }
+    return std::clamp(s, 0.0, 1.0);
+}
+
+/// Vanilla's censored samples: -1 in the bench means "not by the end".
+[[nodiscard]] std::vector<i64> censored(std::initializer_list<i64> values) {
+    std::vector<i64> out;
+    for (const i64 v : values) {
+        out.push_back(v < 0 ? kNever : v);
+    }
+    return out;
+}
+
+/// Scaled in time, never beyond the bench's end: the control for a rate.
+[[nodiscard]] std::vector<i64> stretched(const std::vector<i64>& v, f64 factor) {
+    std::vector<i64> out;
+    for (const i64 t : v) {
+        out.push_back(t >= kNever ? kNever
+                                  : std::min(kNever, static_cast<i64>(static_cast<f64>(t) * factor)));
+    }
+    return out;
+}
+
+/// The `burn` rig: when B stops being B.
+[[nodiscard]] i64 burn_once(std::string_view kind, i64 seed) {
+    TestEnv    env;
+    FireRandom random{seed};
+    TickLevel  level;
+    level.put({0, -1, 0}, state_of("minecraft:netherrack"));
+    const BlockPos b{1, 0, 0};
+    const auto     block = state_of(kind);
+    level.put(b, block);
+    for (const BlockPos wall : {BlockPos{2, 0, 0}, BlockPos{1, 1, 0}, BlockPos{1, -1, 0},
+                                BlockPos{1, 0, -1}, BlockPos{1, 0, 1}}) {
+        level.put(wall, state_of("minecraft:stone"));
+    }
+    level.set_block(kFire, rules().state_for(level, kFire));
+    level.settle(random);
+    for (i64 t = 1; t <= kBenchTicks; ++t) {
+        level.advance(t, env, random);
+        if (blocks().block_of(level.block_at(b)) != blocks().block_of(block)) {
+            return t;
+        }
+    }
+    return kNever;
+}
+
+/// The `ignite` rig: when the empty cell between the fire and F catches.
+[[nodiscard]] i64 ignite_once(std::string_view kind, i64 seed) {
+    TestEnv    env;
+    FireRandom random{seed};
+    TickLevel  level;
+    level.put({0, -1, 0}, state_of("minecraft:netherrack"));
+    level.put({1, -1, 0}, state_of("minecraft:grass_block"));
+    const BlockPos c{1, 0, 0};
+    level.put({2, 0, 0}, state_of(kind));
+    for (const BlockPos wall : {BlockPos{3, 0, 0}, BlockPos{2, 1, 0}, BlockPos{2, -1, 0},
+                                BlockPos{2, 0, -1}, BlockPos{2, 0, 1}}) {
+        level.put(wall, state_of("minecraft:stone"));
+    }
+    level.set_block(kFire, rules().state_for(level, kFire));
+    level.settle(random);
+    for (i64 t = 1; t <= kBenchTicks; ++t) {
+        level.advance(t, env, random);
+        if (rules().is_fire(level.block_at(c))) {
+            return t;
+        }
+    }
+    return kNever;
+}
+
+}  // namespace
+
+TEST_CASE("fire parity: a fire on stone, against 64 vanilla fires", "[fire][parity]") {
+    const std::vector<i64> vanilla = censored(
+        {201, 213, 219, 234, 246, 247, 255, 267, 273, 273, 276, 276, 280, 284, 286, 287,
+         306, 309, 310, 310, 311, 314, 318, 320, 326, 335, 339, 342, 344, 344, 345, 349,
+         372, 378, 398, 404, 408, 411, 417, 419, 420, 427, 445, 468, 471, 474, 481, 492,
+         493, 495, 509, 523, 543, 556, 576, 582, 582, 639, 645, 703, 707, 733, 812, 869});
+    TestEnv          env;
+    std::vector<i64> ours;
+    std::vector<i64> dwell;
+    for (i64 seed = 1; seed <= 2000; ++seed) {
+        FireRandom random{seed};
+        TickLevel  level;
+        light_on(level, "minecraft:stone", random);
+        i64 reached4 = -1;
+        i64 t        = 0;
+        while (level.block_at(kFire) != registry::kAirState && t < kBenchTicks) {
+            ++t;
+            level.advance(t, env, random);
+            if (reached4 < 0 && rules().age_of(level.block_at(kFire)) == 4) {
+                reached4 = t;
+            }
+        }
+        ours.push_back(t);
+        if (reached4 >= 0) {
+            dwell.push_back(t - reached4);
+        }
+    }
+    // Vanilla: all sixteen logged fires sat at age 4 for exactly one interval
+    // (30..39 ticks) and went out at the next tick. So do ours, every one.
+    REQUIRE(!dwell.empty());
+    for (const i64 d : dwell) {
+        REQUIRE(d >= 30);
+        REQUIRE(d <= 39);
+    }
+    const f64 d       = ks_distance(vanilla, ours);
+    const f64 p       = ks_p(d, vanilla.size(), ours.size());
+    const f64 control = ks_distance(vanilla, stretched(ours, 1.25));
+    WARN("stone life: KS " << d << " p " << p << " (vanilla mean 409, n 64); control x1.25 KS "
+                           << control);
+    CHECK(p > 0.005);
+    CHECK(control > d);
+}
+
+TEST_CASE("fire parity: the burn odds, block by block", "[fire][parity]") {
+    struct Row {
+        std::string_view      kind;
+        std::vector<i64>      vanilla;
+    };
+    const std::vector<Row> rows{
+        {"minecraft:oak_planks", censored({34, 34, 104, 173, 178, 210, 241, 350, 392, 425, 843,
+                                           911, 1155, 1284, 1961, 1982})},
+        {"minecraft:oak_log", censored({-1, -1, -1, 168, 175, 190, 207, 1174, 1316, 1356, 1419,
+                                        2204, 2374, 2564, 2730, 3745})},
+        {"minecraft:white_wool", censored({31, 32, 34, 35, 37, 37, 67, 67, 69, 70, 72, 111, 137,
+                                           213, 220, 499})},
+        {"minecraft:oak_leaves", censored({30, 31, 32, 34, 65, 69, 99, 102, 103, 136, 139, 144,
+                                           146, 176, 315, 471})},
+        {"minecraft:bookshelf", censored({31, 37, 65, 73, 110, 141, 168, 172, 230, 374, 445, 494,
+                                          542, 547, 593, 629})},
+        {"minecraft:hay_block", censored({32, 34, 99, 127, 136, 143, 144, 315, 344, 348, 422,
+                                          484, 620, 1115, 1148, 1934})},
+        {"minecraft:coal_block", censored({-1, -1, 38, 171, 272, 957, 1008, 1037, 1163, 1438,
+                                           1496, 1859, 2032, 2893, 3396, 3948})},
+        {"minecraft:dried_kelp_block", censored({31, 31, 32, 33, 34, 35, 38, 38, 70, 72, 103, 212,
+                                                 214, 246, 249, 320})},
+        {"minecraft:oak_fence", censored({31, 69, 70, 103, 208, 212, 343, 384, 538, 758, 795,
+                                          814, 839, 1035, 1062, 1221})},
+    };
+    for (const Row& row : rows) {
+        std::vector<i64> ours;
+        for (i64 seed = 1; seed <= 1000; ++seed) {
+            ours.push_back(burn_once(row.kind, seed * 7919));
+        }
+        const f64 d       = ks_distance(row.vanilla, ours);
+        const f64 p       = ks_p(d, row.vanilla.size(), ours.size());
+        const f64 control = ks_distance(row.vanilla, stretched(ours, 2.0));
+        INFO(row.kind);
+        WARN(row.kind << ": KS " << d << " p " << p << "; control (half the odds) KS " << control);
+        // One threshold for nine tests: the table fits every row at p > 0.005.
+        // Wool (0.02) and dried kelp (0.06) sit lowest; the `confirm`
+        // campaign re-measures them interleaved — docs/provenance/feu.md § 3.
+        CHECK(p > 0.005);
+        CHECK(control > d);
+    }
+    // Stone never burns, in either server.
+    CHECK(burn_once("minecraft:stone", 1) == kNever);
+}
+
+TEST_CASE("fire parity: ignition beside the odds-5 blocks, pooled", "[fire][parity]") {
+    // Planks, logs and coal: ignite odds 5 each, 48 rigs together. The pool
+    // fits; the rows disagree with one another (docs/provenance/feu.md § 3).
+    const std::vector<i64> vanilla = censored(
+        {69,   130,  204,  466,  679,  805,  836,  898,  935,  999,  1450, 1616, 1667, 2801, 3046, 3111,
+         -1,   -1,   -1,   924,  940,  1145, 1383, 1479, 2126, 2131, 2239, 2456, 2812, 3280, 3584, 3849,
+         72,   73,   101,  167,  347,  356,  377,  400,  406,  452,  1045, 1218, 1543, 1745, 2430, 3461});
+    std::vector<i64> ours;
+    std::vector<i64> hay;
+    for (i64 seed = 1; seed <= 600; ++seed) {
+        ours.push_back(ignite_once("minecraft:oak_planks", seed * 104729));
+        hay.push_back(ignite_once("minecraft:hay_block", seed * 104729));
+    }
+    const f64 d       = ks_distance(vanilla, ours);
+    const f64 p       = ks_p(d, vanilla.size(), ours.size());
+    const f64 control = ks_distance(vanilla, hay);
+    WARN("ignite odds 5, pooled: KS " << d << " p " << p << "; control (odds 60) KS " << control);
+    CHECK(p > 0.05);
+    CHECK(control > d);
+    // A crafting table pulls no fire: 0 of 16 in vanilla, none here.
+    for (i64 seed = 1; seed <= 20; ++seed) {
+        CHECK(ignite_once("minecraft:crafting_table", seed) == kNever);
+    }
+}
+
 TEST_CASE("fire: a campfire cooks in 600 ticks and cools by two", "[fire]") {
     std::array<CampfireSlot, 4> slots{};
     slots[0] = CampfireSlot{.item = 1, .progress = 0, .total = 600};
