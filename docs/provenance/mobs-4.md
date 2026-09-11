@@ -179,13 +179,22 @@ Contre notre serveur, `scripts/check_hostile_e2e.py`, **4/4** :
   sous force et résistance au feu leur mélange 0xFFB000, l'araignée sous
   invisibilité sans particules **rien** (aucun effet visible).
 
-**L'aller-retour.** Après `save-all`, les fichiers `entities/` que nous avons
-réécrits portent `ActiveEffects` (et `Attributes`) pour les quatre mobs du zoo,
-lus octet par octet. La relecture par vanilla (`measure_hostile.py
-anvil_back`) est *en attente* : la première cherchait chaque mob à deux blocs
-de son point d'apparition, et le zoo avait marché — notre serveur ignore
-`NoAI` (`mobs-3.md` § 6). Elle prend maintenant tous les mobs marqués, où
-qu'ils soient.
+**L'aller-retour — mesuré.** Vanilla sauve un zoo sous effets, notre serveur le
+relit, le sert, le réécrit (`save-all`), et vanilla relit ce que nous avons
+écrit (`measure_hostile.py anvil_back`) :
+
+| mob | sauvé par vanilla | relu par vanilla dans notre réécriture |
+|---|---|---|
+| vache | régénération II, 39 956 | régénération II, 39 321 |
+| vache | vitesse I, 59 956 | vitesse I, 59 322 |
+| zombie | résistance au feu 49 956 + force infinie | résistance au feu 49 323 + force infinie |
+| araignée | invisibilité, 44 956 | invisibilité, 44 324 |
+
+Identifiants, amplificateurs et durée infinie intacts ; chaque durée finie a
+perdu ≈ 634 ticks, le temps que les effets ont couru chez nous entre les deux
+lectures. La première relecture cherchait chaque mob à deux blocs de son point
+d'apparition et n'en trouvait aucun : le zoo avait marché, notre serveur
+ignorant `NoAI` (`mobs-3.md` § 6). Elle prend maintenant tous les mobs marqués.
 
 ---
 
