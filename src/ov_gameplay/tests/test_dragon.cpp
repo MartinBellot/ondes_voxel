@@ -4,9 +4,12 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <map>
+#include <string>
 #include <vector>
 
 using namespace ov;
@@ -304,6 +307,87 @@ TEST_CASE("the holding pattern stays round the island and perches now and then",
     // (docs/provenance/dragon.md § 3); this only says it does not fly away.
     CHECK(widest < 140.0);
     CHECK(widest > 40.0);
+}
+
+// Not a check: the tool the flight constants were fitted with (hidden, run by
+// hand with `test_ov_gameplay "[.fit]"`). One hour of game time per candidate,
+// the holding pattern with ten crystals and the probe on the spawn platform, as
+// measured; prints the distributions docs/provenance/dragon.md § 2.3 compares.
+TEST_CASE("fit: the holding pattern's distributions per flight candidate", "[.fit]") {
+    struct Candidate {
+        f32 gain;
+        f32 turn;
+        f64 thrust;
+        f64 slowdown;
+    };
+    const std::array<Candidate, 6> candidates{{
+        {0.10F, 10.0F, 0.12, 1.0}, {0.07F, 10.0F, 0.13, 0.8}, {0.08F, 10.0F, 0.13, 1.0},
+        {0.10F, 10.0F, 0.13, 1.2}, {0.06F, 10.0F, 0.14, 1.0}, {0.08F, 12.0F, 0.14, 1.2},
+    }};
+    const std::array<DragonPlayer, 1> players{DragonPlayer{3, Vec3d{100.5, 49.0, 0.5}, 1.62}};
+    for (const Candidate& c : candidates) {
+        DragonFlight flight;
+        flight.turn_gain     = c.gain;
+        flight.turn          = c.turn;
+        flight.thrust        = c.thrust;
+        flight.drag          = 0.9;
+        flight.turn_slowdown = c.slowdown;
+        Dragon dragon{Vec3d{0.0, 128.0, 0.0}, 0.0F, 200.0F, false, flight};
+        dragon.graph().place([](i32, i32) { return 64; });
+        DragonSurroundings world;
+        world.crystals     = 10;
+        world.players      = players;
+        world.fountain_top = 67;
+        // Measured: the probe on the platform is out of the perched dragon's
+        // sight — it takes off rather than charge down to y 49 — and in plain
+        // view of the dragon in flight (its strafes fire). Low vantage points
+        // are hidden by the island's rim; high ones are not.
+        world.sees = [](Vec3d from, Vec3d) { return from.y > 70.0; };
+        math::LegacyRandomSource random{11};
+        std::vector<f64>         radius;
+        std::vector<f64>         height;
+        std::vector<f64>         speed;
+        std::vector<Vec3d>       track;
+        std::vector<bool>        holding;
+        std::array<i32, 11>      in_phase{};
+        for (i32 i = 0; i < 72000; ++i) {
+            DragonOutput out;
+            dragon.tick(world, random, out);
+            track.push_back(dragon.position());
+            holding.push_back(dragon.phase() == DragonPhase::HoldingPattern);
+            ++in_phase[static_cast<usize>(dragon.phase())];
+        }
+        std::printf("  ticks per phase:");
+        for (usize p = 0; p < in_phase.size(); ++p) {
+            if (in_phase[p] > 0) {
+                std::printf(" %s %d", std::string{dragon_phase_name(static_cast<DragonPhase>(p))}.c_str(),
+                            in_phase[p]);
+            }
+        }
+        std::printf("\n");
+        for (usize i = 0; i + 10 < track.size(); ++i) {
+            if (!holding[i]) {
+                continue;
+            }
+            const Vec3d p = track[i];
+            const Vec3d q = track[i + 10];
+            radius.push_back(std::sqrt(p.x * p.x + p.z * p.z));
+            height.push_back(p.y);
+            speed.push_back(std::sqrt((q.x - p.x) * (q.x - p.x) + (q.z - p.z) * (q.z - p.z)) / 10.0);
+        }
+        const auto pct = [](std::vector<f64> v, f64 q) {
+            std::ranges::sort(v);
+            return v.empty() ? 0.0 : v[static_cast<usize>(q * static_cast<f64>(v.size() - 1))];
+        };
+        std::printf("gain %.2f turn %.1f thrust %.2f slow %.1f | radius %.1f/%.1f/%.1f | height "
+                    "%.1f/%.1f/%.1f | speed %.2f/%.2f/%.2f | n %zu\n",
+                    static_cast<f64>(c.gain), static_cast<f64>(c.turn), c.thrust, c.slowdown,
+                    pct(radius, 0.1),
+                    pct(radius, 0.5), pct(radius, 0.9), pct(height, 0.1), pct(height, 0.5),
+                    pct(height, 0.9), pct(speed, 0.1), pct(speed, 0.5), pct(speed, 0.9),
+                    radius.size());
+    }
+    SUCCEED();
 }
 
 TEST_CASE("the wire yaw is the heading turned half round", "[dragon]") {

@@ -744,13 +744,19 @@ void Dragon::fly(const DragonSurroundings& /*world*/) {
 
     // Heading: towards the target, at most `turn` degrees a tick.
     const f32 wanted = bearing_to(*target_);
-    const f32 turn   = phase_ == DragonPhase::Landing ? flight_.turn_landing : flight_.turn;
     const f32 gap    = wrap_degrees(wanted - yaw_);
-    yaw_             = wrap_degrees(yaw_ + std::clamp(gap, -turn, turn));
+    const f32 step   = phase_ == DragonPhase::Landing
+                           ? std::clamp(gap, -flight_.turn_landing, flight_.turn_landing)
+                           : std::clamp(gap * flight_.turn_gain, -flight_.turn, flight_.turn);
+    yaw_ = wrap_degrees(yaw_ + step);
 
     // Forward: thrust along the heading, drag on what it had.
     const Vec3d ahead = forward_of(yaw_);
     f64         push  = flight_.thrust;
+    if (flight_.turn_slowdown > 0.0) {
+        const f64 left = static_cast<f64>(wrap_degrees(wanted - yaw_)) * kPi / 180.0;
+        push *= std::max(0.1, 1.0 - flight_.turn_slowdown * (1.0 - std::cos(left)));
+    }
     if (phase_ == DragonPhase::Landing) {
         // Slowing into the fountain: measured landing horizontal speed p10
         // 0.11, p50 0.44 — it spirals in, it does not overshoot.

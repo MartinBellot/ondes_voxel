@@ -182,13 +182,21 @@ enum class DragonHurtSource : u8 {
 /// (docs/provenance/dragon.md § 3), except where the documentation gives them.
 struct DragonFlight {
     /// Forward acceleration per tick, blocks per tick². With `drag` it sets
-    /// the cruising speed: 1.0 block a tick; measured holding pattern, 10-tick
-    /// windows: p50 0.89, p90 1.14.
-    f64 thrust{0.1};
+    /// the cruising speed: 1.2 blocks a tick on a straight, less in a turn
+    /// (`turn_slowdown`). Fitted (docs/provenance/dragon.md § 2.3): holding
+    /// speed p10 / p50 / p90 0.55 / 0.91 / 1.16 against the game's 0.49–0.50 /
+    /// 0.78–0.86 / 1.08–1.11.
+    f64 thrust{0.12};
     /// Horizontal velocity kept per tick.
     f64 drag{0.9};
+    /// The heading turns by this fraction of the angle to the target each
+    /// tick, at most `turn` degrees. Proportional, not a fixed rate: a fixed
+    /// rate gives a turning circle wider than the 10 blocks a target must be
+    /// reached within, and the dragon orbits its target for ever (found by the
+    /// fit, § 2.3). Measured turn rates: p50 1.2 to 2.7°, p90 7.6 to 10.6°.
+    f32 turn_gain{0.1F};
     /// The most the heading turns in one tick, in degrees.
-    f32 turn{5.0F};
+    f32 turn{10.0F};
     /// The most the vertical velocity changes in one tick (documented: 0.015
     /// landing, 0.03 charging and dying; the default is fitted: holding
     /// pattern vertical speed p10 −0.058, p90 0.055).
@@ -197,6 +205,11 @@ struct DragonFlight {
     f64 climb_fast{0.03};
     /// Vertical velocity kept per tick.
     f64 vertical_drag{0.9};
+    /// The thrust falls off with the angle between the heading and the target:
+    /// `push × (1 − turn_slowdown × (1 − cos gap)) `, never under a tenth. The
+    /// measured speed spreads from 0.5 to 1.1 a tick; a constant thrust keeps
+    /// it within 0.7 to 1.0.
+    f64 turn_slowdown{1.0};
     /// The landing turns faster (the documented "snap").
     f32 turn_landing{20.0F};
 };
