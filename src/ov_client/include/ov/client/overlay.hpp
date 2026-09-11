@@ -31,6 +31,11 @@ public:
     Overlay& operator=(const Overlay&) = delete;
     ~Overlay();
 
+    /// Start this frame's slice of the vertex ring. Call once a frame, after
+    /// `Device::begin_frame` and before any draw — whether or not anything is
+    /// drawn, because the slice is only ever emptied here.
+    void begin_frame();
+
     /// Draw the wireframe of one block. Recorded inside a render pass.
     ///
     /// The box is grown by a thousandth on every side, exactly as vanilla's is:
@@ -68,7 +73,6 @@ private:
     /// cost more than the draw.
     std::vector<rhi::BufferHandle> vertices_;
     std::vector<u32>               used_;
-    u32                            ring_{0};
     std::vector<f32>               scratch_;
 };
 
