@@ -59,6 +59,9 @@ private:
     void write_next();
     void arm_timeout();
     void finish();
+    /// Tell the listener once, on the connection's executor, whichever side
+    /// closed it.
+    void notify_closed();
 
     asio::ip::tcp::socket       socket_;
     AsioListener&               listener_;
@@ -67,7 +70,11 @@ private:
     FrameDecoder                decoder_;
     std::deque<std::vector<u8>> write_queue_;
     bool                        writing_{false};
-    bool                        closed_{false};
+    /// Set by close() — which the tick thread calls (a kick, a timeout) — and
+    /// read by send() on any thread: atomic.
+    std::atomic<bool>           closed_{false};
+    /// Only touched on the executor.
+    bool                        notified_{false};
     /// Read by send() on whichever thread calls it: a packet takes the
     /// threshold in force when it was sent, so Set Compression itself leaves
     /// uncompressed and everything after it compressed.
@@ -263,10 +270,9 @@ void AsioConnection::write_next() {
 }
 
 void AsioConnection::close() {
-    if (closed_) {
+    if (closed_.exchange(true)) {
         return;
     }
-    closed_ = true;
     asio::post(socket_.get_executor(), [self = shared_from_this()] {
         std::error_code ec;
         self->timer_.cancel();
@@ -274,17 +280,29 @@ void AsioConnection::close() {
         // closing outright can discard it.
         self->socket_.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
         self->socket_.close(ec);
+        // A close the server asked for (a kick, a timeout, a refused packet)
+        // is a disconnect too. Before this, only a peer that went away was
+        // reported: the read that follows a close lands in finish(), which
+        // saw closed_ already set and returned — and the server kept the
+        // player in its table, unsaved and counted against max-players.
+        self->notify_closed();
     });
 }
 
 void AsioConnection::finish() {
-    if (closed_) {
+    if (!closed_.exchange(true)) {
+        std::error_code ec;
+        timer_.cancel();
+        socket_.close(ec);
+    }
+    notify_closed();
+}
+
+void AsioConnection::notify_closed() {
+    if (notified_) {
         return;
     }
-    closed_ = true;
-    std::error_code ec;
-    timer_.cancel();
-    socket_.close(ec);
+    notified_ = true;
     listener_.connection_closed(shared_from_this());
 }
 

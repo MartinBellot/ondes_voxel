@@ -47,6 +47,7 @@ ov_add_test(test_ov_protocol
         tests/test_entities.cpp
         tests/test_entity_packets.cpp
         tests/test_framing.cpp
+        tests/test_listener.cpp
         tests/test_interaction.cpp
         tests/test_login.cpp
         tests/test_status.cpp
