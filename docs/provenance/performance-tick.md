@@ -693,6 +693,73 @@ remodelage, bruit de pas), et le compteur dit *quel thread*, pas *quel appel*. C
 lectures partagées sur une supposition serait exactement ce que ce dépôt refuse. Le pas
 suivant est au § 7 (point 7).
 
+### 5.5 Les paquets passent sur le thread de tick ; les verrous du monde deviennent des preuves
+
+Le § 5.4 laissait une cause nommée (§ 7, point 7) posée sur un défaut de structure (§ 7,
+point 5) : les gestionnaires de paquets tournaient sur le thread réseau et entraient dans le
+monde sous `chunk_mutex` et `players_mutex`. Tant que c'est le cas, une lecture lente dans un
+gestionnaire bloque le tick, et un tick lent bloque tous les paquets de tous les joueurs.
+Plutôt que de corriger chaque site, le correctif retire la cause :
+
+- **le thread réseau ne fait plus que découper des octets.** Chaque paquet *Play* décodé est
+  rangé dans une file (`src/ov_server/src/inbound_queue.{hpp,cpp}`) ; le thread de tick la
+  vide au début de chaque tour **et pendant qu'il attend le tick suivant** — un cassage
+  n'attend donc pas le prochain tick, il est traité dès que le tour en cours se termine ;
+- **`chunk_mutex` et `players_mutex` ne sont plus des mutex**
+  (`src/ov_server/src/tick_thread_lock.{hpp,cpp}`). `lock()` ne prend rien : il vérifie que
+  l'appelant est le thread de tick. En Debug, le premier accès d'un autre thread arrête le
+  processus en le nommant ; en Release, il est compté pour le rapport d'arrêt. Les ~150
+  `scoped_lock` restent en place — ils compilent toujours, et ce qu'ils affirment est
+  désormais vérifié au lieu d'être supposé ;
+- **un gestionnaire de paquet ne génère plus jamais de chunk.** Sur un monde généré, une
+  lecture de bloc dans un chunk absent rend de l'air, une écriture y est refusée, et les deux
+  sont comptées ; toute génération à la volée qui resterait est journalisée avec le paquet
+  qui l'a causée. C'est le point 7 du § 7, dans l'ordre qu'il donnait : attribuer, puis
+  appliquer le traitement du correctif 2 ;
+- l'entrée d'un joueur n'attend plus le chunk du spawn : elle le cherche une fois ;
+- un paquet refusé par son gestionnaire ferme proprement la connexion. Avant, le joueur
+  restait dans la table des joueurs jusqu'à la fin du processus.
+
+**Changement de comportement, dit** : un gestionnaire qui lit un bloc au-delà de la zone
+générée (la connexion d'une barrière posée au bord extrême, par exemple) y voit de l'air
+jusqu'à ce que le chunk arrive par les ouvriers.
+
+Mesure — **Debug**, graine 12345, 60 s demandées, 1 geste/s
+(`scripts/bench_play.py --world=seed:12345 --seconds=60 --edit-rate=1`). « — » : non relevé
+dans la série « avant ».
+
+| Debug, graine 12345, 1 geste/s | avant | **après** |
+|---|---|---|
+| cassage → `Block Update` p50 / p90 / p99 / max | 4,2 s / — / — / 16,2 s | **1,8 / 15,5 / 31,2 / 124 ms**, 0 perdu sur 26 |
+| pose → `Block Update` p50 / p99 / max | — | 4,0 / 43,7 / 110 ms, 0 perdue sur 26 |
+| pire tick | 18,19 s (`entities` : 18,18 s) | 557 ms (sauvegarde automatique : 533 ms) |
+| pire traitement d'un paquet | 18,15 s | 25,0 ms |
+| attente d'un paquet dans la file p50 / p99 / max | (la file n'existait pas) | 0,6 / 123 / 553 ms |
+| « can't keep up » | 4 | 1 |
+| générations synchrones : tick / autres threads | 3 / 2 | **0 / 0** |
+| charge médiane de la machine | 23,6 | **53,2** |
+
+Rapport d'arrêt de la série « après » : **1 229 paquets traités sur le thread de tick**
+(0 refusé), **0 verrou du monde pris hors du thread de tick**, 0 chunk généré pour un paquet,
+1 396 lectures et 0 écriture de chunks pas encore générés répondues sans générer. Le serveur
+Debug s'arrête au premier accès étranger : qu'il ait tourné jusqu'au bout est la même
+affirmation, faite par le programme.
+
+Lecture :
+
+- **Le cassage passe de plusieurs secondes à quelques millisecondes, sous une charge plus de
+  deux fois plus haute** (53,2 contre 23,6). La comparaison joue *contre* le correctif ;
+  aucune compilation de cet agent ne tournait pendant la série « après ».
+- **Le pire paquet n'attend plus un verrou, il attend un tour de boucle.** Le max de la file
+  (553 ms) tombe sur le tick de la sauvegarde automatique (533 ms) : la sauvegarde est encore
+  synchrone sur le tick (`ROADMAP.md`, « asynchrone via COW : à venir »).
+- **Ce qui reste des ticks lents est du calcul, pas de l'attente** : 152 ticks au-delà de
+  50 ms, où la phase la plus lourde est le rallumage dans 81 cas et les entités dans 66, les
+  deux à ~78 % de CPU. Plus aucune phase n'attend à 0 % de CPU.
+- **L'envoi de chunks n'apparaît plus** : 285 ms au total sur la série, 17 ms au pire,
+  phase la plus lourde dans **0** des 152 ticks lents — il pesait dans le § 5.3 parce qu'il
+  tenait les deux verrous, et les verrous n'excluent plus personne.
+
 ## 6. Côté client
 
 Le client (`ov_voxel`) imprimait déjà `cpu`, `rec` et `gpu` ; un `max` à 733 ms n'y disait
@@ -760,7 +827,9 @@ propositions, chacune adossée à une mesure de ce fichier.
      **sans une ligne au niveau INFO** (§ 2.1) — au minimum, le journaliser ;
    - l'unique thread réseau fait *toutes* les écritures de socket : tout ce qui le retient
      retient le monde entier. Tant que des paquets de jeu sont traités sur ce thread sous
-     les verrous du monde, c'est la prochaine source de latence.
+     les verrous du monde, c'est la prochaine source de latence. **Appliqué au § 5.5** : les
+     paquets de jeu sont traités sur le thread de tick, et le thread réseau ne fait plus
+     que lire et écrire des octets.
 6. **Le prochain correctif côté serveur : l'envoi des chunks.** Mesuré : il encode jusqu'à
    8 `Chunk Data` par joueur et par tick **en tenant `players_mutex` et `chunk_mutex`** ; en
    Debug il a porté l'attente du verrou joueurs côté réseau jusqu'à p99 754 ms (§ 3.2), et
@@ -779,7 +848,8 @@ propositions, chacune adossée à une mesure de ce fichier.
    compteur ; (2) **appliquer** au site nommé le traitement du correctif 2 : lecture des
    chunks résidents seulement, un chunk absent se lit comme de l'air et n'est jamais
    généré depuis un gestionnaire de paquet. La génération n'a qu'une place : les ouvriers,
-   à la demande d'un ticket.
+   à la demande d'un ticket. **Appliqué au § 5.5**, les deux pas, pour tous les
+   gestionnaires à la fois : 0 génération synchrone sur la série « après ».
 
 ### Note de méthode : le bruit que cet agent a ajouté
 
@@ -796,6 +866,7 @@ voici, série par série, si une compilation de cet agent tournait :
 | Debug « avant », graine 12345 (§ 4.3) | **oui** (construction Release « après ») |
 | Release « avant » puis « après » | non — lancées l'une après l'autre, sans compilation |
 | Debug « après » | non |
+| Debug « après », paquets sur le thread de tick, graine 12345 (§ 5.5) | non |
 
 La première série Debug à 1 geste/s avait une unité de charge de plus que la série
 « après » ne l'aura : une comparaison avec elle aurait joué **en faveur** du correctif
