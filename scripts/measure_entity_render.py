@@ -227,11 +227,21 @@ def setup_world(server):
     for x0 in strips:
         server.console("forceload add %d -32 %d 32" % (x0, min(x0 + 255, last_x)))
     time.sleep(8)
-    before = open(server.log_path).read().count("Successfully filled")
+    # A strip already glass (the same world, kept from a vanilla pass for our
+    # client's) answers "No blocks were filled": laid all the same.
+    def laid():
+        log = open(server.log_path).read()
+        return log.count("Successfully filled") + log.count("No blocks were filled")
+
+    before = laid()
     for x0 in strips:
         server.console("fill %d -48 -12 %d -48 20 minecraft:glass" % (x0, min(x0 + 255, last_x)))
-    time.sleep(3)
-    filled = open(server.log_path).read().count("Successfully filled") - before
+    # A loaded server answers the nine fills over several seconds (the second
+    # pass counted one of nine after three): wait for every answer.
+    deadline = time.time() + 30
+    while laid() - before < len(strips) and time.time() < deadline:
+        time.sleep(0.5)
+    filled = laid() - before
     print("toit de verre : %d bandes sur %d" % (filled, len(strips)))
     if filled != len(strips):
         raise SystemExit("le toit de verre n'est pas posé en entier — voir " + server.log_path)
@@ -309,8 +319,7 @@ def run_ours_scenes(server, binary, only):
             command = [binary, "--connect=127.0.0.1:%d" % PORT, "--username=OvOurs",
                        "--width=854", "--height=480", "--radius=%d" % VIEW_DISTANCE, "--no-hud",
                        "--no-sound", "--stand-at=%.2f,%.2f,%.2f,%.1f,%.2f" % (x, y, z, yaw, pitch),
-                       "--chat=/tp @s %.2f %.2f %.2f %.1f %.2f" % (x, y, z, yaw, pitch),
-                       "--chat-at=60", "--frame-ms=16", "--frames=100000", "--settle-shot",
+                       "--frame-ms=16", "--frames=100000", "--settle-shot",
                        "--settle-chunks=%d" % settle_chunks, "--screenshot=" + ppm]
             if variant:
                 command.append("--no-entities")
@@ -318,10 +327,24 @@ def run_ours_scenes(server, binary, only):
                 command.append("--entity-dump=" + os.path.join(OURS_OUT, scene.name + ".json"))
             log = os.path.join(OURS_OUT, scene.name + variant + ".log")
             with open(log, "w") as f:
+                # Put on its spot by the server's console once it has joined.
+                # Our client's own `/tp` goes out as a chat command, which this
+                # vanilla server refuses and disconnects it for ("Index 8 out
+                # of bounds for length 3", in its last-seen acknowledgement).
+                joins = open(server.log_path).read().count("OvOurs joined the game")
+                proc = subprocess.Popen(command, cwd=ROOT, stdout=f, stderr=subprocess.STDOUT)
+                deadline = time.time() + 90
+                while time.time() < deadline and proc.poll() is None:
+                    if open(server.log_path).read().count("OvOurs joined the game") > joins:
+                        time.sleep(1.0)
+                        server.console("tp OvOurs %.2f %.2f %.2f %.1f %.2f" % (x, y, z, yaw, pitch))
+                        break
+                    time.sleep(0.25)
                 try:
-                    code = subprocess.run(command, cwd=ROOT, stdout=f, stderr=subprocess.STDOUT,
-                                          timeout=240).returncode
+                    code = proc.wait(timeout=240)
                 except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
                     code = "délai"
             print("notre client %-22s : %s%s" % (scene.name + variant, code,
                                                   "" if os.path.exists(ppm) else " — PAS DE CAPTURE"))
