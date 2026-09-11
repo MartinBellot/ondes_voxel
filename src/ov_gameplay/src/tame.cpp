@@ -295,22 +295,26 @@ f64 offspring_stat(f64 a, f64 b, f64 min, f64 max, math::LegacyRandomSource& ran
 
 HorseStats offspring_stats(std::string_view child_type, const HorseStats& mother,
                            const HorseStats& father, math::LegacyRandomSource& random) noexcept {
-    const HorseRanges ranges = horse_ranges(child_type);
+    // Every stat comes from the parents, over the horse's natural ranges —
+    // for a mule too. Measured: twelve mules of a horse (0.22, 0.6) and a
+    // donkey (0.175, 0.5) walked at 0.178..0.234 and jumped 0.516..0.648,
+    // although a mule *spawned* is always 0.175 and 0.5.
+    (void)child_type;
+    const HorseRanges ranges = horse_ranges("minecraft:horse");
     HorseStats        child;
     child.max_health = offspring_stat(mother.max_health, father.max_health, ranges.health_min,
                                       ranges.health_max, random);
-    child.speed = ranges.speed_drawn
-                      ? offspring_stat(mother.speed, father.speed, ranges.speed_min,
-                                       ranges.speed_max, random)
-                      : ranges.fixed_speed;
-    child.jump = ranges.jump_drawn ? offspring_stat(mother.jump, father.jump, ranges.jump_min,
-                                                    ranges.jump_max, random)
-                                   : ranges.fixed_jump;
+    child.speed = offspring_stat(mother.speed, father.speed, ranges.speed_min, ranges.speed_max,
+                                 random);
+    child.jump = offspring_stat(mother.jump, father.jump, ranges.jump_min, ranges.jump_max, random);
     return child;
 }
 
 i32 draw_llama_strength(math::LegacyRandomSource& random) noexcept {
-    const i32 top = random.next_float() < 0.04F ? 5 : 3;
+    // Measured on 160 llamas and trader llamas: 1/2/3/4/5 = 40/53/56/5/6. The
+    // wiki's "1..5 one time in 25" gives 2.6 above 3 where 11 were seen; one
+    // time in six (0.17) is what the counts ask for — fitted, not a rule read.
+    const i32 top = random.next_float() < kLlamaWideStrength ? 5 : 3;
     return 1 + random.next_int(top);
 }
 

@@ -97,6 +97,7 @@ ov_add_test(test_ov_gameplay
         tests/test_nether_mobs.cpp  # ── nether-2 ──
         tests/test_mobs3.cpp  # ── mobs-3 ──
         tests/test_breeding.cpp
+        tests/test_tame.cpp  # ── tame ──
         tests/test_pathfinding.cpp
         tests/test_goals.cpp
         tests/test_spawning.cpp

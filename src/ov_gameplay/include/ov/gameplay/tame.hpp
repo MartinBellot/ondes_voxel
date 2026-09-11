@@ -154,7 +154,9 @@ struct HorseRanges {
                                          const HorseStats& father,
                                          math::LegacyRandomSource& random) noexcept;
 
-/// A llama's `Strength`: 1..3, or 1..5 one time in 25 (the wiki).
+/// A llama's `Strength`: 1..3, or 1..5 with this chance — fitted on 160
+/// measured llamas (11 above 3); the wiki's 1 in 25 gives 2.6.
+inline constexpr f32 kLlamaWideStrength = 0.17F;
 [[nodiscard]] i32 draw_llama_strength(math::LegacyRandomSource& random) noexcept;
 
 /// A fresh animal's state for its family: the stats, the variant, a goat's

@@ -61,6 +61,7 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`nether.md`](provenance/nether.md) | Le Nether à 99,9 %, des portails là où le jeu les met, et le bruit de l'Overworld qui lisait ses octaves à l'envers |
 | [`nether-2.md`](provenance/nether-2.md) | Les features du Nether, ses fossiles à 185 départs sur 185, et ses mobs dans un monde à eux : troc, salves, boules de feu |
 | [`son.md`](provenance/son.md) | Les sons de 1003 blocs et 79 créatures, relevés sur le fil, et le client qui les joue |
+| [`apprivoisement.md`](provenance/apprivoisement.md) | Loups, chats, perroquets, chevaux et lamas : apprivoisement à 1/3 (χ², témoins rejetés), colère 20–39 s, statistiques et poulains à la règle 1.20, tempérament +5, montures pilotées par `Move Vehicle` — et une force de lama que le wiki donne fausse |
 | [`elevage.md`](provenance/elevage.md) | Veaux, agneaux et poussins : reproduction à 59-62 ticks, couleurs héritées, et une vitesse de marche qui n'est pas l'attribut divisé par deux |
 | [`chat-client.md`](provenance/chat-client.md) | Le chat de notre client, mesuré sur le vrai client : un fondu de 10 s et non de 3, et des coupures de ligne identiques |
 | [`projectiles.md`](provenance/projectiles.md) | Flèches, tridents et lancers : un vol ajusté à 1,3·10⁻¹⁴, et l'ordre des opérations qui expliquait le résidu des flèches |

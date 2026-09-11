@@ -318,6 +318,15 @@ def campaign_tame(rig: Oracle) -> dict:
     return out
 
 
+def campaign_parrot(rig: Oracle) -> dict:
+    """The parrot again, on 150 birds: `tame` read 60 tamed in 781 tries,
+    z = -2.2 against the documented one in ten — this decides it."""
+    s = summarize(tame_series(rig, "parrot", "minecraft:wheat_seeds", 150,
+                              BASE + ",Variant:0", cap=150), 7)
+    print(f"  parrot: {s['tamed']}/{s['tries']} ({s['timeouts']} timeouts)", flush=True)
+    return s
+
+
 def campaign_ocelot(rig: Oracle) -> dict:
     """Ocelots trust only while their tempt goal runs: AI on, a glass box
     round the probe and the ocelot, cod in hand before the ocelot appears."""
@@ -696,17 +705,50 @@ def campaign_zoo(rig: Oracle) -> dict:
     return {"zoo": [m for m, _ in ZOO], "data_get": dump}
 
 
-CAMPAIGNS = {"meta": campaign_meta, "tame": campaign_tame, "ocelot": campaign_ocelot,
+OURS_ZOO = ROOT / ".scratch" / "tame-zoo-ours"
+
+
+def campaign_zoo_back(rig: Oracle) -> dict:
+    """Vanilla reads the zoo back from the world **our** server rewrote.
+
+    `check_tame_e2e.py zoo` loads the vanilla zoo into ov_dedicated, which
+    saves it through its own entities/ writer; this campaign runs on that
+    world (see `main`) and reads every zoo mob with `data get`.
+    """
+    rig.server.batch([f"tp {PROBE} 4.5 {Y} -12.0"], timeout=30)
+    time.sleep(3.0)
+    dump = {}
+    for i, (mob, _) in enumerate(ZOO):
+        x = 4.5 + (i % 6) * 3
+        z = -10.5 - (i // 6) * 3
+        lines = rig.ask([f"data get entity @e[tag=tamezoo,limit=1,sort=nearest,x={x},y={Y},"
+                         f"z={z},distance=..1.5]"])
+        dump[f"{i}:{mob}"] = value_of(lines[0])
+        print(f"  {mob}: {(dump[f'{i}:{mob}'] or 'ABSENT')[:160]}", flush=True)
+    count = rig.count("@e[tag=tamezoo]")
+    return {"zoo_count": count, "data_get": dump}
+
+
+CAMPAIGNS = {"meta": campaign_meta, "tame": campaign_tame, "parrot": campaign_parrot,
+             "ocelot": campaign_ocelot,
              "anger": campaign_anger, "wolf": campaign_wolf, "follow": campaign_follow,
              "spawn": campaign_spawn, "breed": campaign_breed, "temper": campaign_temper,
-             "zoo": campaign_zoo}
+             "zoo": campaign_zoo, "zoo_back": campaign_zoo_back}
 
 
 def main(argv: list[str]) -> int:
-    names = argv or list(CAMPAIGNS)
+    names = argv or [n for n in CAMPAIGNS if n != "zoo_back"]
     results = json.loads(OUT.read_text()) if OUT.exists() else {}
     if RUN.exists():
         shutil.rmtree(RUN)
+    if names == ["zoo_back"]:
+        # Vanilla on the world ov_dedicated rewrote, copied in as `world`.
+        if not OURS_ZOO.exists():
+            print(f"no {OURS_ZOO}: run check_tame_e2e.py zoo first")
+            return 1
+        RUN.mkdir(parents=True)
+        shutil.copytree(OURS_ZOO, RUN / "world")
+        (RUN / "world" / "session.lock").unlink(missing_ok=True)
     server = FlatServer(RUN, port=PORT)
     hand = None
     try:
