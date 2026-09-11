@@ -10,6 +10,7 @@ ov_add_library(ov_gameplay
         src/effects.cpp
         src/brewing.cpp
         src/breaking.cpp
+        src/dig_controller.cpp
         src/combat.cpp
         src/collision.cpp
         src/damage.cpp
@@ -63,6 +64,7 @@ ov_add_test(test_ov_gameplay
         tests/test_effects.cpp
         tests/test_brewing.cpp
         tests/test_breaking.cpp
+        tests/test_dig_controller.cpp
         tests/test_combat.cpp
         tests/test_entity_loot.cpp
         tests/test_collision.cpp
