@@ -255,7 +255,9 @@ le lit occupé et l'explosion dans le Nether sont dans la même campagne ; ses d
 ont été perdues au piège 2 et **la troisième attendait encore le verrou de la machine** à l'écriture
 de ce paragraphe. Nos réponses à ces cas sont fixées par `test_weather.cpp` (seuils du wiki,
 boîte des monstres, portée 3/2, verre et dalle qui n'étouffent pas) ; leur comparaison au vrai
-serveur est ce qui reste à relire dans `.scratch/weather-oracle.json` une fois la passe finie.
+serveur est ce qui reste à relire une fois la passe finie :
+`python3 scripts/analyse_weather.py` imprime, cas par cas, « couché ? », « téléportation
+confirmée ? » (une passe où ce champ est faux n'a rien mesuré) et les clés de traduction reçues.
 
 ---
 

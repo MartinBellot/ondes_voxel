@@ -167,6 +167,36 @@ if "lightning" in d:
     print("  farmland under glass:", dict(fc))
     print("  cauldrons in the rain:", dict(Counter(li["cauldrons"])))
 
+if "sleep" in d and "edges_clear" in d["sleep"]:
+    sl = d["sleep"]
+    print("== sleep (each case: slept?, teleport confirmed?, the keys the chat carried)")
+
+    def keys(chat):
+        out = []
+        for text, overlay in chat or []:
+            try:
+                key = json.loads(text).get("translate", "?")
+            except Exception:
+                key = "?"
+            out.append(key + (" [bar]" if overlay else ""))
+        return out
+
+    for group in ("edges_clear", "edges_rain", "edges_thunder", "too_far", "obstructed", "monsters"):
+        print(f"  {group}:")
+        for case, r in sl[group].items():
+            print(f"    {case:>22}: slept={r.get('slept')} confirmed={r.get('confirmed')} "
+                  f"{keys(r.get('chat'))}")
+    st = sl.get("sleep_through", {})
+    print(f"  sleep through: slept={st.get('slept')} daytime {st.get('daytime_before')} -> "
+          f"{st.get('daytime_after')}, weather after {st.get('weather_after')}")
+    print(f"    animations {st.get('animations')}, metadata {st.get('metadata', [])[:2]}")
+    for case in ("respawn_bed", "respawn_no_bed"):
+        r = sl.get(case, {})
+        print(f"  {case}: positions {r.get('positions')} game events "
+              f"{[e for e in r.get('game_events', []) if e[0] not in (7, 8)]}")
+    print(f"  occupied: {keys(sl.get('occupied', {}).get('chat'))}")
+    print(f"  nether: {sl.get('nether')}")
+
 if "strike" in d:
     st = d["strike"]
     print("== strike")
