@@ -69,6 +69,9 @@ ov_add_library(ov_server
         src/commands/suggestions.cpp
         src/commands/text.cpp
         src/commands/world_state.cpp
+        # ── scoreboard ──
+        src/scoreboard/scoreboard.cpp
+        src/commands/scoreboard_commands.cpp
     DEPS
         ov_base
         ov_gameplay
@@ -123,6 +126,16 @@ ov_add_test(test_ov_server
 ov_add_test(test_ov_commands
     SOURCES
         tests/test_commands.cpp
+    DEPS ov_server
+    LABELS unit
+)
+
+# ── scoreboard ──
+# The scoreboard model, its file and its packets, and /scoreboard, /team,
+# /trigger and /teammsg against the answers of the real server.
+ov_add_test(test_ov_scoreboard
+    SOURCES
+        tests/test_scoreboard.cpp
     DEPS ov_server
     LABELS unit
 )

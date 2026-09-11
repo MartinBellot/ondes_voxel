@@ -599,8 +599,16 @@ std::expected<Text, std::string> text_from_json(const JsonValue& json) {
     } else if (const JsonValue* selector = json.find("selector")) {
         out.kind = Text::Kind::Selector;
         out.text = json_text(*selector);
-    } else if (json.find("score") != nullptr) {
+    } else if (const JsonValue* score = json.find("score")) {
         out.kind = Text::Kind::Score;
+        // ── scoreboard ── kept for the resolution: the holder in `text`, the
+        // objective in `key` (fields a score component has no other use for).
+        if (const JsonValue* name = score->find("name")) {
+            out.text = json_text(*name);
+        }
+        if (const JsonValue* objective = score->find("objective")) {
+            out.key = json_text(*objective);
+        }
     } else if (const JsonValue* keybind = json.find("keybind")) {
         out.kind = Text::Kind::Keybind;
         out.text = json_text(*keybind);
