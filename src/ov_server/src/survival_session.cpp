@@ -210,8 +210,9 @@ SurvivalOutcome SurvivalSession::tick(const SurvivalPlayer& player, const Surviv
     pending_fall_damage = 0.0F;
 
     // ── Breath ──────────────────────────────────────────────────────────────
-    if (mortal && player.submerged && player.breathes_underwater) {
+    if (mortal && player.submerged && (player.breathes_underwater || player.respiration_saves)) {
         // ── effects: water breathing freezes the air, it does not refill it ──
+        // ── enchanting: and so does a tick Respiration saves ──
     } else if (mortal) {
         const f32 drown = gameplay::tick_air(health, player.submerged, constants_damage);
         if (drown > 0.0F) {

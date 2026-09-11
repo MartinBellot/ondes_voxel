@@ -26,6 +26,7 @@
 
 #include "ov/base/types.hpp"
 
+#include <array>
 #include <optional>
 #include <string_view>
 
@@ -280,6 +281,12 @@ struct DamageConstants {
 struct DamageMitigation {
     /// The Resistance amplifier, -1 for none.
     i32 resistance{-1};
+
+    /// ── enchanting ── the worn pieces' Enchantment Protection Factor against
+    /// each damage kind, already zero for the kinds that bypass enchantments
+    /// (see gameplay::total_epf). Applied after Resistance and before the
+    /// yellow hearts, as `amount * (1 - min(epf, 20) / 25)` — measured.
+    std::array<u8, kDamageKindCount> protection{};
 };
 
 /// A hit after Resistance.

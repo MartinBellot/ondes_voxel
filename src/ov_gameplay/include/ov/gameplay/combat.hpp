@@ -161,6 +161,12 @@ struct Weapon {
     /// attack immediately wears the weapon out by it, and a second lookup of
     /// the same stack is a second thing that can disagree with the first.
     u8 unbreaking{0};
+
+    /// ── enchanting ── Smite, Bane of Arthropods and Impaling against *this*
+    /// target: +2.5 per level when its mob group is theirs. Scaled by the
+    /// charge like Sharpness. Filled by the caller, the only one that knows
+    /// what is being hit (see gameplay::damage_bonus).
+    f32 target_bonus{0.0F};
 };
 
 /// Everything about the attacker that changes the outcome.

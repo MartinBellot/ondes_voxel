@@ -132,6 +132,8 @@ struct PlayerRecord {
     /// SurvivalSession. The file's `XpP` is a float and is derived.
     i32 xp_points{0};
     i32 xp_total{0};
+    /// ── enchanting ── the enchanting table's seed, `XpSeed`.
+    i32 xp_seed{0};
 
     // ── What they carry ─────────────────────────────────────────────────────
     /// In window numbering: 5..8 armour, 9..35 backpack, 36..44 hotbar, 45 off

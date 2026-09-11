@@ -156,9 +156,13 @@ CombatOutcome CombatSession::on_interact(const net::Interact& packet, const Comb
         return out;
     }
 
-    const gameplay::Weapon weapon =
+    gameplay::Weapon weapon =
         io.held_weapon ? io.held_weapon()
                        : gameplay::Weapon{io.held_item ? io.held_item() : std::string_view{}};
+    // ── enchanting ── the bonus that depends on what is being hit.
+    if (io.target_bonus) {
+        weapon.target_bonus = io.target_bonus(packet.entity_id);
+    }
 
     const gameplay::AttackOutcome resolved = gameplay::resolve_attack(weapon, attacker, constants);
     // The gauge resets on every attack that is *sent*, including one that

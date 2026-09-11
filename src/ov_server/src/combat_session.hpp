@@ -85,6 +85,9 @@ struct CombatIo {
     /// The enchantment levels on the held item. Read once per swing rather than
     /// stored, because the player can change hands between two of them.
     std::function<gameplay::Weapon()> held_weapon;
+
+    /// ── enchanting ── Smite, Bane and Impaling against one target.
+    std::function<f32(i32 entity_id)> target_bonus;
 };
 
 /// What the server must know about the player doing the hitting.
