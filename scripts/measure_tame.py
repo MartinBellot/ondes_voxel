@@ -717,16 +717,45 @@ def campaign_zoo_back(rig: Oracle) -> dict:
     """
     rig.server.batch([f"tp {PROBE} 4.5 {Y} -12.0"], timeout=30)
     time.sleep(3.0)
-    dump = {}
-    for i, (mob, _) in enumerate(ZOO):
-        x = 4.5 + (i % 6) * 3
-        z = -10.5 - (i // 6) * 3
-        lines = rig.ask([f"data get entity @e[tag=tamezoo,limit=1,sort=nearest,x={x},y={Y},"
-                         f"z={z},distance=..1.5]"])
-        dump[f"{i}:{mob}"] = value_of(lines[0])
-        print(f"  {mob}: {(dump[f'{i}:{mob}'] or 'ABSENT')[:160]}", flush=True)
+    # By type, not by the spot each was summoned at: ov_dedicated moved the
+    # standing ones while the world was loaded (only the sitting wolf, cat and
+    # parrot were still on their spots — the first run's positional lookup).
+    owner = "Owner: [I; 289470649, -236178987, -1494576147, 376949766]"
+    expected = {
+        "wolf": ("type=minecraft:wolf,nbt={Sitting:1b}", [owner, "Sitting: 1b", "CollarColor: 14b"]),
+        "cat": ("type=minecraft:cat", [owner, "Sitting: 1b", 'variant: "minecraft:calico"',
+                                       "CollarColor: 3b"]),
+        "ocelot": ("type=minecraft:ocelot", ["Trusting: 1b"]),
+        "horse": ("type=minecraft:horse", ["Variant: 515", "Tame: 1b", "Temper: 15", owner,
+                                           'SaddleItem: {id: "minecraft:saddle"',
+                                           'ArmorItem: {id: "minecraft:golden_horse_armor"',
+                                           "Bred: 1b"]),
+        "donkey": ("type=minecraft:donkey", ["Tame: 1b", "ChestedHorse: 1b",
+                                             'id: "minecraft:apple"']),
+        "mule": ("type=minecraft:mule", ["Tame: 1b"]),
+        "llama": ("type=minecraft:llama", ["Variant: 3", "Strength: 4", "Tame: 1b",
+                                           'DecorItem: {id: "minecraft:blue_carpet"']),
+        "rabbit": ("type=minecraft:rabbit", ["RabbitType: 3"]),
+        "fox": ("type=minecraft:fox", ['Type: "snow"', "Sleeping: 1b"]),
+        "parrot": ("type=minecraft:parrot", ["Variant: 2", owner, "Sitting: 1b"]),
+        "turtle": ("type=minecraft:turtle", ["HasEgg: 1b"]),
+        "bee": ("type=minecraft:bee", ["HasNectar: 1b"]),
+        "goat": ("type=minecraft:goat", ["IsScreamingGoat: 1b", "HasLeftHorn: 1b",
+                                         "HasRightHorn: 0b"]),
+        "camel": ("type=minecraft:camel", ['SaddleItem: {id: "minecraft:saddle"']),
+    }
+    dump, verdict = {}, {}
+    for mob, (selector, fields) in expected.items():
+        lines = rig.ask([f"data get entity @e[tag=tamezoo,{selector},limit=1]"])
+        text = value_of(lines[0])
+        dump[mob] = text
+        missing = [f for f in fields if text is None or f not in text]
+        verdict[mob] = "ok" if not missing else ("ABSENT" if text is None else f"missing {missing}")
+        print(f"  {mob}: {verdict[mob]}", flush=True)
     count = rig.count("@e[tag=tamezoo]")
-    return {"zoo_count": count, "data_get": dump}
+    ok = sum(1 for v in verdict.values() if v == "ok")
+    print(f"  {ok}/{len(expected)} read back with every field; {count} zoo mobs loaded", flush=True)
+    return {"zoo_count": count, "verdict": verdict, "data_get": dump}
 
 
 CAMPAIGNS = {"meta": campaign_meta, "tame": campaign_tame, "parrot": campaign_parrot,

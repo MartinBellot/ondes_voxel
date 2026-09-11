@@ -304,6 +304,11 @@ fausse ; dromadaire sellé (0x04). `save-all`, et le monde réécrit par notre s
   **la chèvre** ne charge pas et ne perd pas ses cornes ; **le renifleur** ne creuse pas.
   Tous vivent, se nourrissent, se reproduisent et gardent leur type ou leur drapeau à la sauvegarde.
 * **Le crachat du lama** (le projectile `llama_spit`) et les **caravanes** (la laisse) : non faits.
+* **`NoAI` n'est pas respecté par notre serveur**, pour aucun mob : le drapeau est relu et
+  réécrit tel quel, mais le cerveau tourne. Vu sur le zoo relu (§ 8.2) : pendant les 45 s où
+  `ov_dedicated` l'avait chargé, les mobs debout ont quitté leur place, et seuls le loup, le chat
+  et le perroquet assis y étaient encore. C'est un manque de tous les mobs, pas de
+  l'apprivoisement ; il n'est pas corrigé ici.
 
 **Non mesuré, et appliqué d'après la documentation.**
 
