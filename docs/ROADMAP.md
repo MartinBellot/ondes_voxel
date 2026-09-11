@@ -259,6 +259,17 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       lave, poussée de 0,04 vers le haut, seuil de 0,4 qui distingue une flaque
       d'une piscine. Les six vitesses publiées sont reproduites. Échelles,
       glace et slime restent)*
+      *(**2026-09-11** : une table par bloc, lue par le joueur **et** les mobs
+      — glissance par bloc porteur (glace 0,98, glace bleue 0,989, slime 0,8)
+      et poussée en (0,6/f)³, 9 grimpables + trappe sur échelle (borne 0,15,
+      montée 0,2, accroupi tenu), rebond du slime, glissade du miel, sable des
+      âmes, toile, baies, neige poudreuse. **Mesuré** sur le vrai serveur,
+      76/76 entités tracées tick par tick : la friction est un produit en
+      float (0,546 000 063 419 sur pierre = float(0,6F × 0,91F), le double
+      échoue à la 8e décimale), traînée verticale 0,98F pour le vivant et 0,98
+      pour l'objet, échelle 0,15F / 0,1176, toile ×0,05F, rebond du slime
+      ×1. Restent les règles propres au joueur (oracle client) et le décalage
+      d'un tick du pas des mobs. Voir `docs/provenance/physique-blocs.md`)*
 - [x] Gestion des joueurs, keep-alive, liste des joueurs
 - [x] Entités joueur : apparition, mouvement, rotation de tête, retrait
 - [x] `ov_netclient` + `ClientLevel` (réplique séparée)
@@ -851,6 +862,14 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       Nether ; le rayon de recherche du trou est exactement 5 ; l'eau qui coule
       ne waterlogue jamais. Restent les colonnes de bulles et la **magnitude**
       de la poussée, non mesurée — la direction l'est)*
+      *(**2026-09-11** : colonnes de bulles appliquées au joueur et aux mobs,
+      **une fois par bloc touché** — 16/16 vitesses d'un support d'armure
+      tracé reproduites (+0,06 / max 0,7, surface +0,1 ; −0,03 / min −0,3).
+      **Magnitude de la poussée mesurée** : 0,014 par tick, 0,011 200 000 2 =
+      0,014 × 0,8F au premier tick (`current_push`). Restent : la poussée
+      n'est encore appelée par personne, la lave n'est pas mesurée, et la
+      formation des colonnes au-dessus du sable des âmes et du magma n'est pas
+      faite)*
 - [~] **Fabrication et fonte** : recettes façonnées et informes, fours ×3,
       pierre de taille, forge, livre de recettes
       *(**1174 / 1174 recettes chargées**, 0 refusée, les 30 déclarées sans

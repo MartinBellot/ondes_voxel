@@ -36,6 +36,7 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`chunkmap.md`](provenance/chunkmap.md) | Tickets, pool de jobs, génération hors du thread de tick, déterminisme sous TSan |
 | **Jeu** | |
 | [`fluides.md`](provenance/fluides.md) | Écoulement, recherche du trou, mélanges : 3172/3172 positions |
+| [`physique-blocs.md`](provenance/physique-blocs.md) | Glace, échelles, slime, miel, toiles, colonnes de bulles, courants : une table, lue par le joueur et les mobs |
 | [`redstone.md`](provenance/redstone.md) | Le modèle de puissance, circuit par circuit, et 36 exceptions nommées à « cube plein » |
 | [`survie.md`](provenance/survie.md) | Vie, faim, expérience — et les dégâts de chute qui sont un `ceil` |
 | [`crafting-and-smelting.md`](provenance/crafting-and-smelting.md) | 1174 recettes, 2885 grilles, et trois tables de cuisson plutôt qu'un diviseur |
