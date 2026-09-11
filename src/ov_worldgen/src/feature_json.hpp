@@ -110,4 +110,10 @@ parse_inline_placed_feature(Json node, const registry::BlockRegistry& blocks,
     std::string_view kind, Json config, const registry::BlockRegistry& blocks,
     const BlockTags& tags, const FeatureResolver& resolve);
 
+/// ── end ── The End's four feature types, from end_features.cpp:
+/// `end_spike`, `end_island`, `chorus_plant` and `end_gateway`.
+[[nodiscard]] bool is_end_feature(std::string_view kind) noexcept;
+[[nodiscard]] std::expected<FeatureRef, FeatureError> parse_end_feature(
+    std::string_view kind, Json config, const registry::BlockRegistry& blocks);
+
 }  // namespace ov::worldgen

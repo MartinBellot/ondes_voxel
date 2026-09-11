@@ -3,6 +3,7 @@
 #include "ov/worldgen/biome_source.hpp"
 
 #include "ov/base/log.hpp"
+#include "ov/worldgen/end.hpp"  // ── end ──
 
 #include <simdjson.h>
 
@@ -55,6 +56,9 @@ namespace {
 
 std::expected<BiomeSource, DensityError> BiomeSource::load(const std::filesystem::path& data_root,
                                                            std::string_view dimension) {
+    if (dimension == "end") {  // ── end ── a rule, not a table
+        return the_end();
+    }
     const auto path = data_root / "reports" / "biome_parameters" / "minecraft" /
                       (std::string(dimension) + ".json");
     if (!std::filesystem::is_regular_file(path)) {
@@ -120,6 +124,19 @@ std::expected<BiomeSource, DensityError> BiomeSource::load(const std::filesystem
     return source;
 }
 
+// ── end ──
+BiomeSource BiomeSource::the_end() {
+    BiomeSource source;
+    for (const std::string_view name : kEndBiomes) {
+        Entry entry;
+        entry.biome = std::string(name);
+        source.entries_.push_back(std::move(entry));
+    }
+    source.end_rule_ = true;
+    OV_LOG_INFO("worldgen: the End's biome source, a fixed rule over {} biomes", kEndBiomes.size());
+    return source;
+}
+
 std::string_view BiomeSource::entry_biome(usize index) const {
     return index < entries_.size() ? std::string_view{entries_[index].biome} : std::string_view{};
 }
@@ -162,6 +179,12 @@ ClimatePoint BiomeSource::sample(const NoiseRouter& router, i32 quart_x, i32 qua
     // grid cell starts on. Sampling at the quart coordinate itself would
     // compress the whole world into a sixty-fourth of itself.
     const FunctionContext at{quart_x * 4, quart_y * 4, quart_z * 4};
+
+    if (end_rule_) {  // ── end ── the rule's answer, as an index
+        ClimatePoint point;
+        point.coordinates[0] = static_cast<i64>(end_biome_at(router, quart_x, quart_z));
+        return point;
+    }
 
     const auto read = [&](const char* name) {
         const DensityFunction* function = router.entry(name);
@@ -333,12 +356,22 @@ i32 BiomeSource::search(const ClimatePoint& climate, i32 start) const {
 }
 
 i32 BiomeSource::entry_at(const ClimatePoint& climate, BiomeSearchCache& cache) const {
+    if (end_rule_) {  // ── end ──
+        const i64 index = std::clamp<i64>(climate.coordinates[0], 0,
+                                          static_cast<i64>(entries_.size()) - 1);
+        cache.last = static_cast<i32>(index);
+        return static_cast<i32>(index);
+    }
     const i32 found = search(climate, cache.last);
     cache.last      = found;
     return found;
 }
 
 std::string_view BiomeSource::biome_at(const ClimatePoint& climate) const {
+    if (end_rule_) {  // ── end ──
+        BiomeSearchCache unused;
+        return entries_[static_cast<usize>(entry_at(climate, unused))].biome;
+    }
     const i32 found = search(climate, -1);
     return found < 0 ? std::string_view{}
                      : std::string_view{entries_[static_cast<usize>(found)].biome};

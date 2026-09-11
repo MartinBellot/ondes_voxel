@@ -15,6 +15,8 @@ ov_add_library(ov_worldgen
         src/chunk_generator.cpp
         src/decoration.cpp
         src/density.cpp
+        src/end_features.cpp
+        src/end_islands.cpp
         src/feature.cpp
         src/noise.cpp
         src/ore_feature.cpp
@@ -45,6 +47,7 @@ ov_add_test(test_ov_worldgen
         tests/test_carver.cpp
         tests/test_chunk_generator.cpp
         tests/test_density.cpp
+        tests/test_end.cpp
         tests/test_feature.cpp
         tests/test_nether.cpp
         tests/test_noise.cpp

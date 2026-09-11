@@ -671,8 +671,13 @@ std::expected<FeatureRef, FeatureError> parse_feature(
         return parse_vegetation_feature(kind, config.value(), blocks, tags, resolve);
     }
 
-    // Everything else. Lakes, geodes, the nether's vegetation, the end's
-    // islands: each with its own algorithm and its own draws. Refused by name,
+    // ── end ── end_spike, end_island, chorus_plant, end_gateway.
+    if (is_end_feature(kind)) {
+        return parse_end_feature(kind, config.value(), blocks);
+    }
+
+    // Everything else. Lakes, geodes, the nether's vegetation: each with its
+    // own algorithm and its own draws. Refused by name,
     // so that a world built on this framework is visibly missing them rather
     // than quietly containing an approximation of them.
     OV_LOG_ERROR("worldgen: feature type '{}' is not implemented", kind);
