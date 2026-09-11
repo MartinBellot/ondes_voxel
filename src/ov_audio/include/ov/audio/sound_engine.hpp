@@ -86,11 +86,24 @@ struct EngineDesc {
     bool keep_log{false};
 };
 
-/// Where the ears are. Only yaw matters for panning: vanilla hears in a
-/// horizontal plane, and a listener looking straight up does not swap ears.
+/// Where the ears are, and which way the head faces. Minecraft's angles: yaw 0
+/// faces +Z and 90 faces -X; pitch 90 looks straight down.
+///
+/// The pan is the source's component along the head's right-hand axis, the
+/// cross product of the look and up vectors. With no roll that axis is
+/// horizontal whatever the pitch, so looking up or down never swaps ears —
+/// which the tests prove rather than assume; the pitch is carried so that the
+/// basis is the whole head and not a horizontal shortcut.
 struct Listener {
     Vec3d position{};
     f32   yaw_degrees{0.0F};
+    f32   pitch_degrees{0.0F};
+};
+
+/// What one mono source sends to each ear.
+struct StereoGain {
+    f32 left{0.0F};
+    f32 right{0.0F};
 };
 
 struct PlayRequest {
