@@ -196,6 +196,10 @@ private:
     std::unordered_map<i32, i32> riding_;
     /// The tick being run, for the log.
     i64 now_{0};
+    /// The goals a ridden animal is running, for the debug log (reused: no
+    /// allocation once it has grown).
+    std::vector<std::string_view> running_;
+    std::string                   running_names_;
 };
 
 }  // namespace ov::server

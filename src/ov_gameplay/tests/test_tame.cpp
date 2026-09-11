@@ -237,14 +237,14 @@ TEST_CASE("tame: one try in three tames a wolf or a cat, as measured", "[tame][p
     CHECK(tame_kind("minecraft:parrot")->taming_odds == 10);
 }
 
-TEST_CASE("tame: the parrot's one in ten, and what the measure says of it", "[tame][parity]") {
-    // 60 parrots, 781 seeds: 13.0 tries a parrot where one in ten gives 10.
-    // Binomial: 60 tamed where 78.1 ± 8.4 were expected, z = -2.2 — kept at
-    // the documented 1/10 and named in apprivoisement.md § 3, with the rerun.
-    const f64 n = 781.0, k = 60.0, p = 0.1;
-    const f64 z = (k - n * p) / std::sqrt(n * p * (1.0 - p));
-    CHECK(z > -2.6);
-    CHECK(z < -1.8);
+TEST_CASE("tame: one try in ten tames a parrot, as 210 real ones", "[tame][parity]") {
+    // measure_tame.py `tame` then `parrot`: 60 parrots in 781 seeds (z = -2.2,
+    // it looked low), then 150 in 1353 (z = +1.33). Together 210 in 2134.
+    const auto z = [](f64 k, f64 n, f64 p) { return (k - n * p) / std::sqrt(n * p * (1.0 - p)); };
+    CHECK(std::abs(z(210.0, 2134.0, 0.1)) < 2.0);
+    // The control the first lot seemed to point at, one in thirteen, is refused.
+    CHECK(z(210.0, 2134.0, 1.0 / 13.0) > 3.0);
+    CHECK(tame_kind("minecraft:parrot")->taming_odds == 10);
 }
 
 // ── Anger [parity] ──────────────────────────────────────────────────────────

@@ -902,6 +902,19 @@ TamingStats Taming::after_entity_tick(entity::EntityWorld& world,
             continue;
         }
         const gameplay::TameState& tame = mob->brain().tame;
+        if (tick % 40 == 0) {
+            // Which goals hold the ridden animal, every two seconds: an untamed
+            // horse that never decides has something holding Move instead of
+            // its tantrum (seen on the e2e run at 506 ticks without a decision).
+            mob->goals().running(running_);
+            running_names_.clear();  // keeps its capacity: no allocation once grown
+            for (const std::string_view name : running_) {
+                running_names_ += name;
+                running_names_ += ' ';
+            }
+            OV_LOG_DEBUG("tame: tick {}: {} ridden {} ticks, temper {}, running [{}]", tick,
+                         type_name(state->type), tame.ridden_for, tame.temper, running_names_);
+        }
         if (gameplay::rider_controls(tame)) {
             if (const auto move = moves.find(player); move != moves.end()) {
                 // The rider's client simulates its mount and says where it is
