@@ -1248,7 +1248,9 @@ void CommandService::register_commands() {
             if (const nbt::Tag* tag = ctx.find<nbt::Tag>("nbt"); tag != nullptr && !tag->empty()) {
                 return std::unexpected{not_modelled("apply summon NBT")};
             }
-            const auto summoned = host_->summon(type, pos);
+            // ── nether-2 ── the source decides the level
+            const auto summoned = host_->summon_by ? host_->summon_by(src.entity_id, type, pos)
+                                                   : host_->summon(type, pos);
             if (!summoned) {
                 return std::unexpected{error("commands.summon.failed")};
             }

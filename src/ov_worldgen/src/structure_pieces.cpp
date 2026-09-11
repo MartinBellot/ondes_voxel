@@ -20,8 +20,16 @@ namespace ov::worldgen {
 namespace {
 
 /// The template families this file places. Loaded once, eagerly.
-constexpr std::array<std::string_view, 4> kFamilies{"igloo/", "shipwreck/", "underwater_ruin/",
-                                                    "ruined_portal/"};
+constexpr std::array<std::string_view, 5> kFamilies{"igloo/", "shipwreck/", "underwater_ruin/",
+                                                    "ruined_portal/",
+                                                    "nether_fossils/"};  // ── nether-2 ──
+
+/// ── nether-2 ── The Nether fossil's search: from a drawn height down to the
+/// sea level, the first air above something solid, in the base column.
+constexpr i32 kNetherSeaLevel     = 32;
+constexpr i32 kNetherFossilLowest = 32;   // `height`'s min_inclusive, absolute
+constexpr i32 kNetherFossilTop    = 125;  // below_top 2 of a 128-deep generator
+constexpr i32 kNetherFossils      = 14;
 
 // ── Template lists, in the game's order ─────────────────────────────────────
 //
@@ -143,6 +151,7 @@ std::string_view to_string(PieceKind kind) noexcept {
         case PieceKind::OceanRuin: return "ocean_ruin";
         case PieceKind::RuinedPortal: return "ruined_portal";
         case PieceKind::BuriedTreasure: return "buried_treasure";
+        case PieceKind::NetherFossil: return "nether_fossil";  // ── nether-2 ──
     }
     return "?";
 }
@@ -172,6 +181,10 @@ struct StructureBuilder::Impl {
 
     registry::BlockStateId chest_default{};
     registry::BlockStateId water_default{};
+
+    /// ── nether-2 ── `#has_structure/nether_fossil`: the biomes a fossil may
+    /// stand in, tested at the point its search found.
+    std::vector<std::string> fossil_biomes;
 
     [[nodiscard]] const StructureTemplate* find(std::string_view name) const {
         return library->find(name);
@@ -266,6 +279,12 @@ std::expected<StructureBuilder, TemplateError> StructureBuilder::load(
         builder.impl_->portal_setups.emplace("minecraft:" + stem, std::move(parsed));
     }
 
+    // ── nether-2 ── the fossil's biome tag, read like every other tag
+    if (auto biome_tags = BiomeTags::load(data_root)) {
+        for (const std::string_view biome : biome_tags->members("minecraft:has_structure/nether_fossil")) {
+            builder.impl_->fossil_biomes.emplace_back(biome);
+        }
+    }
     builder.impl_->blocks  = &blocks;
     builder.impl_->tags    = &tags;
     builder.impl_->library = std::move(*library);
@@ -295,7 +314,7 @@ const TemplateLibrary& StructureBuilder::templates() const noexcept {
 
 std::expected<StructureStart, std::string> StructureBuilder::generate(
     const StructureDefinition& definition, i64 level_seed, i32 chunk_x, i32 chunk_z,
-    const StructureWorldSampler* /*sampler*/) const {
+    const StructureWorldSampler* sampler) const {  // ── nether-2 ── the fossil reads it
     StructureStart start;
     start.structure = definition.name;
     start.chunk_x   = chunk_x;
@@ -495,6 +514,58 @@ std::expected<StructureStart, std::string> StructureBuilder::generate(
                 "spread are not implemented";
             break;
         }
+        case StructureKind::NetherFossil: {  // ── nether-2 ──
+            // A column of the chunk, a height between 32 and the generator's
+            // top less two, then down to the first air over something solid in
+            // the base column — the noise alone (minecraft.wiki "Nether
+            // Fossil"; the order of the draws is the one the game's 185 stored
+            // starts confirm, nether-2.md § 2.1).
+            if (sampler == nullptr) {
+                return std::unexpected(std::string{"nether fossil: no sampler for the base column"});
+            }
+            const i32 x = chunk_x * 16 + random.next_int(16);
+            const i32 z = chunk_z * 16 + random.next_int(16);
+            i32       y = kNetherFossilLowest +
+                  random.next_int(kNetherFossilTop - kNetherFossilLowest + 1);
+            const auto solid = [&](i32 at) -> std::optional<bool> {
+                return sampler->base_solid(x, at, z);
+            };
+            bool found = false;
+            while (y > kNetherSeaLevel) {
+                const auto here = solid(y);
+                --y;
+                const auto below = solid(y);
+                if (!here || !below) {
+                    return std::unexpected(
+                        std::string{"nether fossil: the sampler has no base column"});
+                }
+                // Air is the noise's empty above the lava sea; the floor is
+                // anything solid (netherrack, whose top face is sturdy).
+                if (!*here && y + 1 > kNetherSeaLevel - 1 && *below) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found || y <= kNetherSeaLevel) {
+                return std::unexpected(std::string{"nether fossil: no floor in the column"});
+            }
+            const std::string_view biome = sampler->biome_at(x, y, z);
+            if (std::ranges::find(impl_->fossil_biomes, biome) == impl_->fossil_biomes.end()) {
+                return std::unexpected(std::string{"nether fossil: not a fossil biome there"});
+            }
+            const Rotation rotation = random_rotation(random);
+            const i32      index    = random.next_int(kNetherFossils);
+            StructurePiece piece;
+            piece.kind           = PieceKind::NetherFossil;
+            piece.template_name  = "minecraft:nether_fossils/fossil_" + std::to_string(index + 1);
+            piece.rotation       = rotation;
+            piece.origin         = {x, y, z};
+            piece.height_settled = true;
+            if (auto added = add(std::move(piece)); !added) {
+                return std::unexpected(added.error());
+            }
+            break;
+        }
         default:
             return std::unexpected(std::string{to_string(definition.kind)} +
                                    ": not a structure this builder makes");
@@ -527,6 +598,8 @@ std::expected<StructurePiece, std::string> StructureBuilder::piece_from_nbt(
         piece.kind = PieceKind::RuinedPortal;
     } else if (kind == "minecraft:btp") {
         piece.kind = PieceKind::BuriedTreasure;
+    } else if (kind == "minecraft:nefos") {  // ── nether-2 ──
+        piece.kind = PieceKind::NetherFossil;
     } else {
         return std::unexpected("piece type " + std::string{kind} +
                                " is not one this builder makes");
@@ -614,7 +687,8 @@ std::expected<StructurePiece, std::string> StructureBuilder::piece_from_nbt(
             }
             break;
         }
-        case PieceKind::BuriedTreasure: break;
+        case PieceKind::BuriedTreasure:
+        case PieceKind::NetherFossil: break;  // ── nether-2 ──
     }
 
     // The stored origin keeps the placeholder height for the igloo while the
@@ -675,7 +749,8 @@ void StructureBuilder::settle_height(const StructureLevel& level, StructurePiece
             break;
         }
         case PieceKind::BuriedTreasure:
-        case PieceKind::RuinedPortal: break;
+        case PieceKind::RuinedPortal:
+        case PieceKind::NetherFossil: break;  // ── nether-2 ── settled by its search
     }
     piece.origin.y += dy;
     piece.box.move(0, dy, 0);
@@ -771,6 +846,8 @@ PiecePlaceResult StructureBuilder::place(StructureLevel& level, const StructureP
             break;
         }
         case PieceKind::BuriedTreasure: break;
+        // ── nether-2 ── the fossil's air and structure blocks are not written
+        case PieceKind::NetherFossil: settings.processors.push_back(impl_->structure_and_air); break;
     }
 
     // A beached ship settles on its lowest column minus a random 0 to 2, and
@@ -831,7 +908,8 @@ PiecePlaceResult StructureBuilder::place(StructureLevel& level, const StructureP
                 }
                 break;
             case PieceKind::RuinedPortal:
-            case PieceKind::BuriedTreasure: break;
+            case PieceKind::BuriedTreasure:
+            case PieceKind::NetherFossil: break;  // ── nether-2 ──
         }
         result.unknown_markers.push_back(marker.metadata);
     }

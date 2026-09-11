@@ -58,6 +58,15 @@ enum class SpawnRule : u8 {
     Slime,
     /// A floor from a block tag, and a raw light level above 8.
     Animal,
+    // ── nether-2 ── read only where `SpawnEnvironment::nether` is set.
+    /// Piglin, hoglin, zombified piglin: not on nether wart block, no light.
+    NetherFloor,
+    /// One attempt in twenty, then an ordinary floor.
+    Ghast,
+    /// No predicate at all (magma cube).
+    Anywhere,
+    /// In lava, with air above the lava column.
+    Strider,
 };
 
 /// The rule, and for an animal the tag naming its floor.

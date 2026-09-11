@@ -295,8 +295,10 @@ constexpr KindRow kKinds[] = {
      GenerationAnchor::SurfaceCentre, 0, false},
     {"minecraft:stronghold", StructureKind::Stronghold, GenerationAnchor::None, 0, false},
     {"minecraft:fortress", StructureKind::Fortress, GenerationAnchor::SurfaceCentre, 0, false},
-    {"minecraft:nether_fossil", StructureKind::NetherFossil, GenerationAnchor::SurfaceCentre, 0,
-     false},
+    // ── nether-2 ── No anchor: the fossil's biome is read at the point its own
+    // search finds (`StructureBuilder::generate`), which the grid cannot know —
+    // measured, 185 of 185 starts identical (nether-2.md § 2.1).
+    {"minecraft:nether_fossil", StructureKind::NetherFossil, GenerationAnchor::None, 0, false},
     {"minecraft:end_city", StructureKind::EndCity, GenerationAnchor::SurfaceCentre, 0, false},
     // The jigsaw structures' true anchor is the start template's own bounding
     // box, which this layer cannot compute yet. `corner` is the other simple

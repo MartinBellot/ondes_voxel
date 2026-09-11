@@ -3,9 +3,9 @@
 
 namespace ov::server {
 
-Slimes::Slimes(const registry::Registries& registries) {
+Slimes::Slimes(const registry::Registries& registries, std::string_view type) {
     if (const auto types = registries.find("minecraft:entity_type")) {
-        slime_type_ = registries.protocol_id(*types, "minecraft:slime").value_or(-1);
+        slime_type_ = registries.protocol_id(*types, type).value_or(-1);
     }
 }
 

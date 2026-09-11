@@ -110,6 +110,10 @@ struct CommandHost {
     /// A mob dies (animation and loot) or an item vanishes.
     std::function<bool(i32 entity)> kill_entity;
     std::function<std::optional<EntityInfo>(std::string_view type, Vec3d position)> summon;
+    /// ── nether-2 ── The same, knowing who asked (-1: the console), so that a
+    /// player standing in the Nether summons into the Nether. Empty: `summon`.
+    std::function<std::optional<EntityInfo>(i32 source, std::string_view type, Vec3d position)>
+        summon_by;
     std::function<void(i32 player, const net::ItemStack& stack)> drop_item;
     std::function<bool(i32 chunk_x, i32 chunk_z)> is_loaded;
     std::function<registry::BlockStateId(BlockPos)> block_at;

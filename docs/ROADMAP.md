@@ -574,6 +574,20 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       **99,763 %** et le décalage de surface de ~2 blocs disparaît. Restent les
       mobs du Nether, 19 features et ses structures, et plusieurs gestes dans
       le Nether (conteneurs, TNT). Voir `docs/provenance/nether.md`)*
+      *(**2026-09-11 — nether-2** : les neuf types de feature du Nether
+      (pierre lumineuse **148/148**, basalte 10,8 → 94,8 %, forêts cramoisies
+      et biscornues aux trois quarts pour les tiges, à moitié pour les
+      chapeaux), le **fossile du Nether** tiré de la graine (**185/185** départs
+      identiques au jeu, gabarit, rotation et position), et les **mobs du
+      Nether** dans un monde d'entités à eux : apparition par les listes et les
+      règles du Nether, onze espèces aux vitesses mesurées (piglin 0,6, hoglin
+      0,4, strider 1,0 sur la lave et 0,66 froid…), troc des piglins (χ² 22,65
+      à 16 ddl contre la table chez le vrai serveur ; 120 ticks chez nous),
+      salves du blaze et charge du ghast mesurées, boules de feu qui allument et
+      explosent. De bout en bout **8/8**. Restent la forteresse (pièces en code)
+      et le bastion (jigsaw), les patchs de champignons, l'attache des
+      structures par le serveur, le corps à corps des mobs. Voir
+      `docs/provenance/nether-2.md`)*
 - [x] **End** : îles principales, îles extérieures, passerelles, portail de sortie
       *(**2026-09-11** : bruit `end_islands`, règle de biomes, `end_spike`,
       `end_island`, `chorus_plant`, `end_gateway`. Seed 1234567890 : biomes
@@ -648,6 +662,13 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       `0,98·s²·(0,6/f)³/(1−0,91·f)` : 19 espèces à 0,2 % près sur notre serveur.
       Composition par biome non mesurée sur notre serveur. Voir
       `docs/provenance/mobs-2.md`)*
+      *(**2026-09-11 — nether-2** : les règles du Nether — aucune porte de
+      lumière par catégorie, piglin, hoglin et piglin zombifié partout sauf sur
+      le bloc de verrue, ghast une tentative sur vingt, strider dans la lave
+      sous l'air, obscurité du Nether pour l'enderman et le squelette, rien sur
+      la bedrock, y tiré jusqu'au toit. Les `spawn_costs` (vallée des âmes,
+      forêt biscornue) et les `spawn_overrides` des forteresses ne sont pas
+      lus. Voir `docs/provenance/nether-2.md`)*
 - [~] Despawn, persistance, cap de mobs par catégorie
       *(les caps et la persistance sont là ; `decide_despawn` est écrit,
       testé et **appelé par personne** — les mobs s'accumulent jusqu'au cap et

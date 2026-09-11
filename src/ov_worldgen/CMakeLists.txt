@@ -18,6 +18,7 @@ ov_add_library(ov_worldgen
         src/end_features.cpp
         src/end_islands.cpp
         src/feature.cpp
+        src/nether_feature.cpp  # ── nether-2 ──
         src/noise.cpp
         src/ore_feature.cpp
         # ── overworld features (features-2) ──
@@ -70,6 +71,7 @@ ov_add_test(test_ov_worldgen
         tests/test_end.cpp
         tests/test_feature.cpp
         tests/test_nether.cpp
+        tests/test_nether_feature.cpp  # ── nether-2 ──
         tests/test_noise.cpp
         tests/test_overworld_feature.cpp
         tests/test_pipeline.cpp

@@ -17,6 +17,7 @@ ov_add_library(ov_server
         src/merchant_session.cpp
         src/natural_spawning.cpp
         src/nether_travel.cpp
+        src/nether_mobs.cpp  # ── nether-2 ──
         src/slimes.cpp
         src/drowning.cpp
         src/end_travel.cpp
@@ -100,6 +101,7 @@ ov_add_test(test_ov_server
         tests/test_tick_profile.cpp
         tests/test_end_fight.cpp
         tests/test_rails_session.cpp
+        tests/test_nether_mobs.cpp  # ── nether-2 ──
     DEPS ov_server
     LABELS unit
 )

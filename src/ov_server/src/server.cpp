@@ -89,6 +89,7 @@
 #include "brewing_session.hpp"  // ── brewing ──
 #include "husbandry.hpp"    // ── husbandry ──
 #include "slimes.hpp"       // ── mobs-2 ──
+#include "nether_mobs.hpp"  // ── nether-2 ──
 #include "drowning.hpp"     // ── mobs-2 ──
 #include "merchant_session.hpp"  // ── villagers ──
 
@@ -129,6 +130,10 @@ using ov::server::SurvivalOutcome;
 using ov::server::SurvivalPlayer;
 using ov::server::SurvivalSession;
 using ov::server::EffectBearer;   // ── effects ──
+using ov::server::NetherMobHost;  // ── nether-2 ──
+using ov::server::NetherMobs;     // ── nether-2 ──
+using ov::server::NetherMobStats; // ── nether-2 ──
+using ov::server::NetherPlayer;   // ── nether-2 ──
 using ov::server::EffectIo;       // ── effects ──
 using ov::server::EffectSession;  // ── effects ──
 // ── combat and interaction ───────────────────────────────────────────
@@ -1413,6 +1418,17 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                    codec_context, level_settings.seed, workers, std::move(hooks));
         return nether != nullptr;
     };
+    // ── nether-2 ── The Nether's mobs: a world of their own (nether_mobs.hpp).
+    // The host's fields are filled below, once what they call exists.
+    std::optional<NetherMobs> nether_mobs;
+    NetherMobHost             nether_mob_host;
+    if (nether_enabled && blocks && registries) {
+        nether_mobs.emplace(*registries, *blocks, mob_combat ? &*mob_combat : nullptr,
+                            loot_tables ? &*loot_tables : nullptr, biome_names,
+                            std::filesystem::path{OV_DATA_DIR} / "vanilla" / "1.20.1" / "generated",
+                            level_settings.seed);
+    }
+    // ── end nether-2 ──
     // ── end nether ──────────────────────────────────────────────────────────
 
     // ── end ─────────────────────────────────────────────────────────────────
@@ -3686,6 +3702,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     ///
     /// Caller holds players_mutex.
     const auto hurt_mob = [&](Player& attacker, i32 target_id, f32 damage, u8 looting) -> bool {
+        if (nether_mobs && NetherMobs::owns(target_id)) {  // ── nether-2 ── one of the Nether's
+            return nether_mobs->hurt(target_id, damage, attacker.entity_id, looting,
+                                     nether_mob_host);
+        }
         if (!mobs || !mob_combat) {
             return false;
         }
@@ -4203,6 +4223,25 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         info.height   = state->height;
         return info;
     };
+    // ── nether-2 ── A player standing in the Nether summons into the Nether.
+    command_host.summon_by = [&](i32 source, std::string_view type,
+                                 Vec3d at) -> std::optional<cmd::EntityInfo> {
+        for (const auto& [key, who] : players) {
+            if (nether_mobs && who.entity_id == source && who.dimension == DimensionId::Nether) {
+                const auto id = nether_mobs->summon(type, at, nether_mob_host);
+                if (!id) {
+                    return std::nullopt;
+                }
+                cmd::EntityInfo info;
+                info.id       = *id;
+                info.type     = std::string{type};
+                info.position = at;
+                return info;
+            }
+        }
+        return command_host.summon(type, at);
+    };
+    // ── end nether-2 ──
     command_host.drop_item = [&](i32 id, const net::ItemStack& stack) {
         for (auto& [key, who] : players) {
             if (who.entity_id != id) {
@@ -4846,6 +4885,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                             }
                         }
                     }
+                    // ── nether-2 ── and the Nether's, to a player who is there
+                    if (nether_mobs && player.dimension == DimensionId::Nether) {
+                        nether_mobs->send_all(send_packet);
+                    }
                     if (weather) {  // ── weather: who is asleep ──
                         weather->join_packets(send_packet);
                     }
@@ -5145,6 +5188,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         // Player Command.
                         player.sneaking = interact->sneaking;
 
+                        // ── nether-2 ── a right-click on a Nether mob, for the tick
+                        if (nether_mobs && NetherMobs::owns(interact->entity_id) &&
+                            interact->kind == net::InteractKind::Interact) {
+                            nether_mobs->queue_interact(player.entity_id, interact->entity_id);
+                            return true;
+                        }
                         // ── villagers: a right-click on a villager, for the tick ──
                         if (villagers && interact->kind == net::InteractKind::Interact) {
                             villagers->queue_interact(player.entity_id, interact->entity_id,
@@ -7203,6 +7252,92 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     };
     husbandry_host.drop_item = tnt_host.drop_item;
     husbandry_host.spawn_orb = projectile_host.spawn_orb;
+    // ── nether-2 ── What the Nether's mobs reach for. Caller holds
+    // players_mutex, and chunk_mutex for the block reads.
+    nether_mob_host.block_at = [&](BlockPos pos) -> registry::BlockStateId {
+        const world::Chunk* chunk =
+            chunk_if_resident_in(DimensionId::Nether, pos.x >> 4, pos.z >> 4);
+        return chunk == nullptr || pos.y < 0 || pos.y >= 256
+                   ? registry::kAirState
+                   : chunk->get_block(static_cast<usize>(pos.x & 15), pos.y,
+                                      static_cast<usize>(pos.z & 15));
+    };
+    nether_mob_host.loaded = [&](BlockPos pos) {
+        return chunk_if_resident_in(DimensionId::Nether, pos.x >> 4, pos.z >> 4) != nullptr;
+    };
+    nether_mob_host.ticking = [&](ChunkPos pos) { return nether && nether->chunks().is_ticking(pos); };
+    nether_mob_host.biome_at = [&](BlockPos pos) -> u16 {
+        const world::Chunk* chunk =
+            chunk_if_resident_in(DimensionId::Nether, pos.x >> 4, pos.z >> 4);
+        return chunk == nullptr || pos.y < 0 || pos.y >= 256
+                   ? u16{0}
+                   : chunk->get_biome(static_cast<usize>(pos.x & 15), pos.y,
+                                      static_cast<usize>(pos.z & 15));
+    };
+    nether_mob_host.block_light = [&](BlockPos pos) -> u8 {
+        const world::Chunk* chunk =
+            chunk_if_resident_in(DimensionId::Nether, pos.x >> 4, pos.z >> 4);
+        const world::ChunkSection* section = chunk == nullptr ? nullptr : chunk->section_for_y(pos.y);
+        return section == nullptr ? u8{0}
+                                  : section->block_light().get(world::section_index(
+                                        static_cast<usize>(pos.x & 15),
+                                        static_cast<usize>(pos.y & 15),
+                                        static_cast<usize>(pos.z & 15)));
+    };
+    nether_mob_host.players = [&](std::vector<NetherPlayer>& out) {
+        for (const auto& [key, who] : players) {
+            if (who.dimension != DimensionId::Nether || !who.connection) {
+                continue;
+            }
+            bool gold = false;
+            for (usize slot = 5; slot <= 8 && registries && item_registry; ++slot) {
+                gold = gold || registries->entry_of(*item_registry, who.inventory[slot].item_id)
+                                   .starts_with("minecraft:golden_");
+            }
+            out.push_back(NetherPlayer{who.entity_id, Vec3d{who.x, who.y, who.z}, !who.mortal(),
+                                       !who.survival.awaiting_respawn, gold});
+        }
+    };
+    nether_mob_host.broadcast = [&](i32 id, std::span<const u8> payload) {
+        broadcast_in(DimensionId::Nether, nullptr, id, payload);
+    };
+    nether_mob_host.drop_item = [&](Vec3d at, const net::ItemStack& stack) {
+        ItemEntity item;
+        item.entity_id = next_entity_id.fetch_add(1);
+        item.uuid      = uuid_for_entity(item.entity_id);
+        item.x         = at.x;
+        item.y         = at.y;
+        item.z         = at.z;
+        item.stack     = stack;
+        item.born      = server_tick.load(std::memory_order_relaxed);
+        item.dimension = DimensionId::Nether;
+        std::vector<ItemEntity> one;
+        one.push_back(std::move(item));
+        publish_items(one);
+    };
+    nether_mob_host.hurt_player = projectile_host.hurt_player;
+    nether_mob_host.take_held   = [&](i32 id, std::string_view item) {
+        for (auto& [key, who] : players) {
+            if (who.entity_id != id || held_name(who) != item) {
+                continue;
+            }
+            if (who.mortal()) {
+                consume_one_held(who);
+            }
+            return true;
+        }
+        return false;
+    };
+    nether_mob_host.send_to = [&](i32 id, i32 packet, std::span<const u8> payload) {
+        for (const auto& [key, who] : players) {
+            if (who.entity_id == id && who.connection) {
+                if (const auto framed = net::encode_packet(packet, payload)) {
+                    who.connection->send(*framed);
+                }
+            }
+        }
+    };
+    // ── end nether-2 ──
     // ── end husbandry ───────────────────────────────────────────────────────
 
     // ── villagers ───────────────────────────────────────────────────────────
@@ -7635,6 +7770,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                  net::encode_item_metadata(item.entity_id, item.stack.item_id, item.stack.count));
         }
 
+        if (to == DimensionId::Nether && nether_mobs) {  // ── nether-2 ── its mobs
+            nether_mobs->send_all(send);
+        }
         // What the client rebuilt from scratch: the inventory, the bars, the
         // effects. Health and experience are resent by forgetting what was
         // last sent.
@@ -8937,6 +9075,21 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 }
             }
         }
+        // ── nether-2 ── The Nether's mobs, under both locks as the overworld's.
+        if (nether_mobs && nether) {
+            std::unique_lock nether_mob_lock{players_mutex, std::try_to_lock};
+            if (nether_mob_lock.owns_lock()) {
+                const std::scoped_lock chunk_lock{chunk_mutex};
+                nether_mob_host.level      = nether_level ? &*nether_level : nullptr;
+                const NetherMobStats ticked = nether_mobs->tick(clock.tick_count(), nether_mob_host);
+                if (ticked.spawned + ticked.shots + ticked.barters + ticked.blasts > 0) {
+                    OV_LOG_DEBUG("nether tick {}: {} spawned, {} alive, {} shots, {} barters, "
+                                 "{} blasts", clock.tick_count(), ticked.spawned, ticked.alive,
+                                 ticked.shots, ticked.barters, ticked.blasts);
+                }
+            }
+        }
+        // ── end nether-2 ──
         // ── tnt and gravity: the craters and landings, sent and relit ──
         flush_tick_writes();
 
