@@ -38,6 +38,19 @@ constexpr DimensionInfo kNether{
     "DIM-1/region",
 };
 
+// ── end ── No portal is ever built there by a search (`portal_top` and
+// `search_radius` are the Nether portal's questions, and the End has none).
+constexpr DimensionInfo kEnd{
+    "minecraft:the_end",
+    "minecraft:the_end",
+    world::WorldShape::the_end(),
+    world::DimensionTraits{false, false},
+    1.0,
+    255,
+    0,
+    "DIM1/region",
+};
+
 [[nodiscard]] std::filesystem::path region_file(const std::filesystem::path& directory, i32 cx,
                                                 i32 cz) {
     return directory / fmt::format("r.{}.{}.mca", cx >> 5, cz >> 5);
@@ -46,6 +59,9 @@ constexpr DimensionInfo kNether{
 }  // namespace
 
 const DimensionInfo& dimension_info(DimensionId id) noexcept {
+    if (id == DimensionId::End) {  // ── end ──
+        return kEnd;
+    }
     return id == DimensionId::Nether ? kNether : kOverworld;
 }
 
@@ -56,6 +72,9 @@ std::optional<DimensionId> dimension_by_name(std::string_view name) noexcept {
     if (name == kNether.name) {
         return DimensionId::Nether;
     }
+    if (name == kEnd.name) {  // ── end ──
+        return DimensionId::End;
+    }
     return std::nullopt;
 }
 
@@ -65,29 +84,33 @@ std::unique_ptr<NetherWorld> NetherWorld::open(
     const std::filesystem::path& level_dir, const std::filesystem::path& data_root,
     const registry::BlockRegistry& blocks, const registry::Registries& registries,
     std::span<const std::string_view> codec_biomes, world::ChunkCodecContext codec, i64 seed,
-    usize workers, Hooks hooks) {
+    usize workers, Hooks hooks, DimensionId dimension) {
     std::unique_ptr<NetherWorld> world{new NetherWorld()};
-    world->region_dir_ = level_dir / std::string{kNether.region_dir};
+    // ── end ── The level's own settings and region directory.
+    const DimensionInfo&   info     = dimension_info(dimension);
+    const std::string_view settings = dimension == DimensionId::End ? "end" : "nether";
+    world->dimension_               = dimension;
+    world->region_dir_ = level_dir / std::string{info.region_dir};
     std::error_code ignored;
     std::filesystem::create_directories(world->region_dir_, ignored);
     world->codec_     = codec;
     world->hooks_     = std::move(hooks);
     world->generated_ = GeneratedWorld::load(data_root, blocks, registries, codec_biomes, seed,
-                                             workers + 1, "nether");
+                                             workers + 1, settings);
     if (!world->generated_) {
-        OV_LOG_ERROR("nether: the generator could not be built; the Nether is unavailable");
+        OV_LOG_ERROR("{}: the generator could not be built; the level is unavailable", info.name);
         return nullptr;
     }
     world->source_ = std::make_unique<AsyncChunkSource>(*world->generated_, workers);
-    OV_LOG_INFO("nether: regions in {}, {} generation workers", world->region_dir_.string(),
-                workers);
+    OV_LOG_INFO("{}: regions in {}, {} generation workers", info.name,
+                world->region_dir_.string(), workers);
     return world;
 }
 
 NetherWorld::~NetherWorld() = default;
 
 DimensionView NetherWorld::view() noexcept {
-    return DimensionView{&chunks_, &dirty_, &read_only_, kNether.shape};
+    return DimensionView{&chunks_, &dirty_, &read_only_, dimension_info(dimension_).shape};
 }
 
 world::Chunk* NetherWorld::resident(i32 cx, i32 cz) { return chunks_.find(ChunkPos{cx, cz}); }

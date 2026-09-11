@@ -692,5 +692,27 @@ int main(int argc, char** argv) {
                    matched ? "= a spike's (x + 0.5, height + 1, z + 0.5)" : "matches no spike");
     }
     fmt::print("  {} / {} at a spike's top\n", crystals_right, crystals.size());
+
+    // ── The column at the origin ─────────────────────────────────────────────
+    //
+    // Where the dragon fight builds the exit portal: the top of the column at
+    // (0, 0). The game's reference End never started a fight, so its column is
+    // terrain — the same question asked of both.
+    {
+        const world::Chunk& ours = pipeline.promote(0, 0, worldgen::ChunkStatus::Full);
+        const i32 our_top =
+            ours.heightmap(world::HeightmapType::MotionBlockingNoLeaves).first_free(0, 0);
+        i32 game_top = -1;
+        for (i32 y = kHeight - 1; y >= 0; --y) {
+            const std::string name = game_block(0, y, 0);
+            if (!name.starts_with("minecraft:air") && !name.starts_with("?")) {
+                game_top = y + 1;
+                break;
+            }
+        }
+        fmt::print("\ncolumn (0, 0): first free block ours {}, game {} — the exit portal's ring "
+                   "one below\n",
+                   our_top, game_top);
+    }
     return 0;
 }

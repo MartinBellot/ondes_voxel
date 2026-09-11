@@ -49,7 +49,9 @@
 
 namespace ov::server {
 
-enum class DimensionId : u8 { Overworld = 0, Nether = 1 };
+/// ── end ── The End is the third: `End`, `DIM1/region`, the same storage as
+/// the Nether's (`NetherWorld` opened for it), its own rules in end_travel.hpp.
+enum class DimensionId : u8 { Overworld = 0, Nether = 1, End = 2 };
 
 struct DimensionInfo {
     std::string_view       name;      ///< `minecraft:the_nether`: the level's key
@@ -101,11 +103,15 @@ public:
     /// Build the Nether's generator (`stacks` worldgen stacks) and open its
     /// regions under `level_dir / DIM-1 / region`. Null with the reason logged
     /// when the generator cannot be built.
+    ///
+    /// ── end ── `dimension` opens the same storage for another level: the End
+    /// is `NetherWorld::open(..., DimensionId::End)` — the "end" noise
+    /// settings, `DIM1/region`, a 256-block chunk.
     [[nodiscard]] static std::unique_ptr<NetherWorld> open(
         const std::filesystem::path& level_dir, const std::filesystem::path& data_root,
         const registry::BlockRegistry& blocks, const registry::Registries& registries,
         std::span<const std::string_view> codec_biomes, world::ChunkCodecContext codec, i64 seed,
-        usize workers, Hooks hooks);
+        usize workers, Hooks hooks, DimensionId dimension = DimensionId::Nether);
 
     NetherWorld(const NetherWorld&)            = delete;
     NetherWorld& operator=(const NetherWorld&) = delete;
@@ -143,6 +149,7 @@ private:
     NetherWorld() = default;
 
     std::filesystem::path             region_dir_;
+    DimensionId                       dimension_{DimensionId::Nether};  // ── end ──
     world::ChunkCodecContext          codec_{};
     Hooks                             hooks_;
     std::unique_ptr<GeneratedWorld>   generated_;

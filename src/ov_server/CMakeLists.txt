@@ -15,6 +15,8 @@ ov_add_library(ov_server
         src/husbandry.cpp
         src/natural_spawning.cpp
         src/nether_travel.cpp
+        src/end_travel.cpp
+        src/end_fight.cpp
         src/player_inventory.cpp
         src/server.cpp
         src/combat_session.cpp
@@ -77,6 +79,7 @@ ov_add_test(test_ov_server
         tests/test_player_data.cpp
         tests/test_sounds.cpp
         tests/test_nether_travel.cpp
+        tests/test_end_fight.cpp
     DEPS ov_server
     LABELS unit
 )

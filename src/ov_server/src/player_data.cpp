@@ -18,6 +18,7 @@ namespace {
 
 constexpr std::string_view kOverworld = "minecraft:overworld";
 constexpr std::string_view kTheNether = "minecraft:the_nether";  // ── nether ──
+constexpr std::string_view kTheEnd    = "minecraft:the_end";     // ── end ──
 
 /// `Motion` of a player standing still on the ground: one tick of gravity
 /// through the drag, stored as a float promoted to double. Measured — the
@@ -360,17 +361,17 @@ std::expected<LoadedPlayer, PlayerDataError> read_player(const nbt::Tag& root,
                             expected_uuid->to_string())));
         }
     }
-    // ── nether ── The overworld and the Nether are both levels of this server;
-    // the End and any datapack dimension are not, and a player standing in one
-    // is still refused rather than moved.
+    // ── nether ── The overworld, the Nether and the End (── end ──) are the
+    // levels of this server; a datapack dimension is not, and a player
+    // standing in one is still refused rather than moved.
     const nbt::Tag* dimension = root.find("Dimension");
     if (dimension != nullptr && dimension->as_string() != kOverworld &&
-        dimension->as_string() != kTheNether) {
+        dimension->as_string() != kTheNether && dimension->as_string() != kTheEnd) {
         return std::unexpected(refuse(
             PlayerDataErrorKind::UnsupportedDimension,
-            fmt::format("{} stands in {}, and this server has only {} and {}. Refusing the player "
-                        "rather than moving them",
-                        where, dimension->as_string(), kOverworld, kTheNether)));
+            fmt::format("{} stands in {}, and this server has only {}, {} and {}. Refusing the "
+                        "player rather than moving them",
+                        where, dimension->as_string(), kOverworld, kTheNether, kTheEnd)));
     }
 
     LoadedPlayer  out;

@@ -60,7 +60,8 @@ struct GeneratedWorld::Stack {
     world::WorldShape shape{world::WorldShape::overworld()};
 
     Stack(i64 world_seed, worldgen::NoiseRouter&& r, worldgen::BiomeSource&& b,
-          worldgen::SurfaceSystem&& s, worldgen::FeatureRegistry&& f, bool nether)
+          worldgen::SurfaceSystem&& s, worldgen::FeatureRegistry&& f, bool nether,
+          bool end = false)
         : router(std::move(r)),
           biomes(std::move(b)),
           surface(std::move(s)),
@@ -68,7 +69,8 @@ struct GeneratedWorld::Stack {
           carving{router.min_y(), router.height()},
           carvers{nether ? worldgen::CarverStage::nether(world_seed)
                          : worldgen::CarverStage{world_seed, carving}},
-          shape{nether ? world::WorldShape::nether() : world::WorldShape::overworld()} {}
+          shape{nether ? world::WorldShape::nether()
+                       : (end ? world::WorldShape::the_end() : world::WorldShape::overworld())} {}
 };
 
 struct GeneratedWorld::Impl {
@@ -117,7 +119,8 @@ namespace {
 
     auto stack = std::make_unique<GeneratedWorld::Stack>(seed, std::move(*router),
                                                          std::move(*biomes), std::move(*surface),
-                                                         std::move(*features), name == "nether");
+                                                         std::move(*features), name == "nether",
+                                                         name == "end");
 
     // From `stack->features` and `stack->biomes`, not from the locals that were
     // just moved out of them: see the comment on Stack::decorator.
@@ -130,6 +133,11 @@ namespace {
 
     stack->generator.emplace(stack->router, stack->biomes, blocks);
     stack->generator->set_surface_system(&stack->surface);
+    // ── end ── The End's biomes list no carver: nothing is cut there.
+    if (name == "end") {
+        stack->pipeline.emplace(*stack->generator, &*stack->decorator, blocks, stack->shape, seed);
+        return stack;
+    }
     if (auto attached = stack->generator->set_carvers(&stack->carvers, registries); !attached) {
         // Refused rather than carried on without: carving without the tag
         // leaves a crust of dirt over every cave, and a world that looks nearly

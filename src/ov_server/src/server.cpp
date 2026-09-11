@@ -45,6 +45,9 @@
 #include "natural_spawning.hpp"
 #include "player_data.hpp"  // ── player data ──
 #include "nether_travel.hpp"  // ── nether ──
+#include "end_fight.hpp"      // ── end ──
+#include "end_travel.hpp"     // ── end ──
+#include "ov/gameplay/end_portal.hpp"  // ── end ──
 #include "player_inventory.hpp"
 #include "world_ticks.hpp"
 #include "sounds.hpp"  // ── sound ──
@@ -1154,6 +1157,13 @@ struct Player {
     bool crossing{false};
     i32  crossing_ticks{0};
     // ── end nether ──
+    // ── end ── An End portal took the player, and the crossing waits for the
+    // platform's chunks; or the exit portal did, and the credits are rolling
+    // until the client asks to respawn.
+    bool end_crossing{false};
+    i32  end_crossing_ticks{0};
+    bool won_game{false};
+    bool seen_credits{false};
 };
 
 /// Where a player was when they last left.
@@ -1763,6 +1773,60 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     };
     // ── end nether ──────────────────────────────────────────────────────────
 
+    // ── end ─────────────────────────────────────────────────────────────────
+    // The End: the Nether's storage opened for it (`DIM1/region`, the "end"
+    // settings), built on first need like the Nether. `OV_END=0` turns it off.
+    // The crossing and the rules are in end_travel.hpp / end_portal.hpp.
+    std::unique_ptr<NetherWorld>             end_world;
+    std::optional<ServerLevel>               end_level;
+    std::optional<gameplay::EndPortalRules>  end_rules;
+    if (blocks) {
+        end_rules.emplace(*blocks);
+    }
+    const bool end_enabled = [] {
+        const char* setting = std::getenv("OV_END");
+        return setting == nullptr || std::string_view{setting} != "0";
+    }();
+    /// Caller holds chunk_mutex.
+    const auto end_ready = [&]() -> bool {
+        if (end_world) {
+            return true;
+        }
+        if (!end_enabled || !blocks || !registries || !world_available) {
+            return false;
+        }
+        NetherWorld::Hooks hooks;
+        hooks.relight_loaded    = [&](world::Chunk& chunk) { relight_blocks(chunk, *blocks); };
+        hooks.relight_generated = [&](world::Chunk& chunk) { relight_blocks(chunk, *blocks); };
+        hooks.ticks_loaded      = [&](const nbt::Document& document) {
+            if (!end_level) {
+                return;
+            }
+            const i64 now = server_tick.load(std::memory_order_relaxed);
+            if (const nbt::Tag* pending = document.root.find("block_ticks")) {
+                (void)world::ticks_from_nbt(*pending, now, end_level->queue(world::TickQueue::Block));
+            }
+            if (const nbt::Tag* pending = document.root.find("fluid_ticks")) {
+                (void)world::ticks_from_nbt(*pending, now, end_level->queue(world::TickQueue::Fluid));
+            }
+        };
+        // Two: an End chunk is cheap (no carver, four features), and every
+        // stack is built on the tick thread — five of them held it for
+        // seconds in Debug on a loaded machine.
+        const usize workers = 2;
+        end_world = NetherWorld::open(level_dir, data_dir, *blocks, *registries, biome_names,
+                                      codec_context, level_settings.seed, workers, std::move(hooks),
+                                      DimensionId::End);
+        return end_world != nullptr;
+    };
+    /// The storage of a level that is not the overworld, or null.
+    const auto other_world = [&](DimensionId dimension) -> NetherWorld* {
+        return dimension == DimensionId::End ? end_world.get()
+                                             : (dimension == DimensionId::Nether ? nether.get()
+                                                                                 : nullptr);
+    };
+    // ── end end ─────────────────────────────────────────────────────────────
+
     /// Fetch a chunk: from memory, then from disk, then generated.
     ///
     /// Disk before the generator, so a saved chunk always wins. The other order
@@ -1886,6 +1950,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         if (dimension == DimensionId::Nether && nether) {
             return nether->view();
         }
+        if (dimension == DimensionId::End && end_world) {  // ── end ──
+            return end_world->view();
+        }
         return DimensionView{&chunks, &dirty_chunks, &read_only_chunks,
                              world::WorldShape::overworld()};
     };
@@ -1893,12 +1960,16 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         if (dimension == DimensionId::Nether && nether_ready()) {
             return nether->chunk_at(cx, cz);
         }
+        if (dimension == DimensionId::End && end_ready()) {  // ── end ──
+            return end_world->chunk_at(cx, cz);
+        }
         return chunk_at(cx, cz);
     };
     const auto chunk_if_resident_in = [&](DimensionId dimension, i32 cx,
                                           i32 cz) -> world::Chunk* {
-        if (dimension == DimensionId::Nether) {
-            return nether ? nether->resident(cx, cz) : nullptr;
+        if (dimension != DimensionId::Overworld) {  // ── end ── the Nether's or the End's
+            NetherWorld* other = other_world(dimension);
+            return other != nullptr ? other->resident(cx, cz) : nullptr;
         }
         return chunk_if_resident(cx, cz);
     };
@@ -1917,6 +1988,17 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             }
             (void)nether->save(server_tick.load(std::memory_order_relaxed), block_snapshot,
                                fluid_snapshot);
+        }
+        // ── end ── DIM1/region, with the End level's own ticks.
+        if (end_world) {
+            std::vector<world::ScheduledTick> block_snapshot;
+            std::vector<world::ScheduledTick> fluid_snapshot;
+            if (end_level) {
+                block_snapshot = end_level->queue(world::TickQueue::Block).snapshot();
+                fluid_snapshot = end_level->queue(world::TickQueue::Fluid).snapshot();
+            }
+            (void)end_world->save(server_tick.load(std::memory_order_relaxed), block_snapshot,
+                                  fluid_snapshot);
         }
         if (dirty_chunks.empty()) {
             // ── commands: level.dat still, when only the rules changed ──
@@ -2118,6 +2200,28 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         }
     };
     // ── end nether ──
+
+    // ── end ── The dragon fight (end_fight.hpp): built with the End's rules,
+    // started by the first arrival, heard by the End's players. Touched only
+    // with `players_mutex` held — by the tick's End section and by a hit.
+    std::optional<EndFight>  end_fight;
+    std::unordered_set<i32>  end_fight_viewers;
+    EndFightHost             end_fight_host;
+    end_fight_host.broadcast = [&](i32 id, std::span<const u8> payload) {
+        broadcast_in(DimensionId::End, nullptr, id, payload);
+    };
+    end_fight_host.reserve_entity_ids = [&](i32 count) { return next_entity_id.fetch_add(count); };
+    if (end_rules && end_rules->valid() && registries) {
+        if (const auto types = registries->find("minecraft:entity_type")) {
+            const auto dragon  = registries->protocol_id(*types, "minecraft:ender_dragon");
+            const auto crystal = registries->protocol_id(*types, "minecraft:end_crystal");
+            if (dragon && crystal) {
+                end_fight.emplace(*end_rules, level_settings.seed, static_cast<i32>(*dragon),
+                                  static_cast<i32>(*crystal));
+            }
+        }
+    }
+    // ── end end ──
 
     // ── sound ── what the server makes heard, and to whom (sounds.hpp). Built
     // before every packet handler below, which all capture it. `send_near` is
@@ -2458,13 +2562,15 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     };
     // ── nether ── The Nether's own queue: its level settles it.
     std::vector<net::WirePosition> nether_notifications;
+    std::vector<net::WirePosition> end_notifications;  // ── end ──
     const auto notify_change_in = [&](DimensionId dimension, net::WirePosition where) {
         if (dimension == DimensionId::Overworld) {
             notify_change(where);
             return;
         }
         const std::scoped_lock lock{notification_mutex};
-        nether_notifications.push_back(where);
+        (dimension == DimensionId::End ? end_notifications : nether_notifications)
+            .push_back(where);  // ── end ──
     };
 
     /// Write a block and everything the world needs around it, **with the lock
@@ -2521,14 +2627,16 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
 
     // ── nether ── A write into the Nether: the same bookkeeping on its map,
     // block light only (it has no sky), and relit with the rest of its chunk.
+    // ── end ── `dimension` makes it the End's too: the same storage type.
     const auto apply_block_change_in_nether = [&](net::WirePosition      position,
-                                                  registry::BlockStateId state) {
+                                                  registry::BlockStateId state,
+                                                  DimensionId dimension = DimensionId::Nether) {
         const i32     chunk_x = position.x >> 4;
         const i32     chunk_z = position.z >> 4;
-        world::Chunk& chunk   = chunk_at_in(DimensionId::Nether, chunk_x, chunk_z);
+        world::Chunk& chunk   = chunk_at_in(dimension, chunk_x, chunk_z);
         write_block(chunk, position.x, position.y, position.z, state);
-        if (nether) {
-            nether->mark_dirty(chunk_x, chunk_z);
+        if (NetherWorld* other = other_world(dimension)) {
+            other->mark_dirty(chunk_x, chunk_z);
         }
     };
     const auto apply_block_change = [&](net::WirePosition position, registry::BlockStateId state,
@@ -2567,23 +2675,25 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
 
     // ── nether ── A player's write into the Nether: the block, its chunk's
     // block light, the players there, and the Nether's own rules queue.
-    const auto set_block_in_nether = [&](net::WirePosition position, registry::BlockStateId state) {
-        if (!world::WorldShape::nether().contains_y(position.y)) {
+    // ── end ── and the End's, with `dimension`.
+    const auto set_block_in_nether = [&](net::WirePosition position, registry::BlockStateId state,
+                                         DimensionId dimension = DimensionId::Nether) {
+        if (!dimension_info(dimension).shape.contains_y(position.y)) {
             return;
         }
         {
             const std::scoped_lock lock{chunk_mutex};
-            apply_block_change_in_nether(position, state);
+            apply_block_change_in_nether(position, state, dimension);
             if (blocks) {
                 if (world::Chunk* chunk =
-                        chunk_if_resident_in(DimensionId::Nether, position.x >> 4, position.z >> 4)) {
+                        chunk_if_resident_in(dimension, position.x >> 4, position.z >> 4)) {
                     relight_blocks(*chunk, *blocks);
                 }
             }
         }
-        broadcast_in(DimensionId::Nether, nullptr, net::clientbound::kBlockUpdate,
+        broadcast_in(dimension, nullptr, net::clientbound::kBlockUpdate,
                      net::encode_block_update(position, static_cast<i32>(state.value())));
-        notify_change_in(DimensionId::Nether, position);
+        notify_change_in(dimension, position);
     };
     const auto set_block_and_broadcast = [&](net::WirePosition      position,
                                              registry::BlockStateId state) {
@@ -2669,8 +2779,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     const auto set_block_connected_in = [&](DimensionId dimension, net::WirePosition position,
                                             registry::BlockStateId state) {
         const auto write = [&](net::WirePosition at, registry::BlockStateId what) {
-            if (dimension == DimensionId::Nether) {
-                set_block_in_nether(at, what);
+            if (dimension != DimensionId::Overworld) {  // ── end ── the Nether or the End
+                set_block_in_nether(at, what, dimension);
             } else {
                 set_block_and_broadcast(at, what);
             }
@@ -2763,6 +2873,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     std::vector<net::WirePosition>                            transport_touched;
     // ── nether ── What the Nether level's drain wrote, sent once it is done.
     std::vector<std::pair<net::WirePosition, registry::BlockStateId>> nether_tick_broadcasts;
+    std::vector<std::pair<net::WirePosition, registry::BlockStateId>> end_tick_broadcasts;  // ── end ──
 
     if (blocks && registries) {
         LevelHooks hooks;
@@ -2859,6 +2970,30 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             world_ticks->attach_portals(&*portal_rules);
         }
         // ── end nether ──
+        // ── end ── The End's level: the same engines over its chunks. No
+        // container there answers a comparator yet, as in the Nether.
+        LevelHooks end_hooks;
+        end_hooks.block_at = [&](BlockPos pos) -> registry::BlockStateId {
+            const world::Chunk* chunk =
+                chunk_if_resident_in(DimensionId::End, pos.x >> 4, pos.z >> 4);
+            return chunk == nullptr ? registry::kAirState
+                                    : chunk->get_block(static_cast<usize>(pos.x & 15), pos.y,
+                                                       static_cast<usize>(pos.z & 15));
+        };
+        end_hooks.is_loaded = [&](BlockPos pos) {
+            return chunk_if_resident_in(DimensionId::End, pos.x >> 4, pos.z >> 4) != nullptr;
+        };
+        end_hooks.set_block = [&](BlockPos pos, registry::BlockStateId state) {
+            const net::WirePosition where{pos.x, pos.y, pos.z};
+            apply_block_change_in_nether(where, state, DimensionId::End);
+            end_tick_broadcasts.emplace_back(where, state);
+        };
+        end_hooks.container_signal = [](BlockPos) -> i32 { return -1; };
+        end_level.emplace(*blocks, std::move(end_hooks));
+        end_level->set_dimension(dimension_info(DimensionId::End).shape,
+                                 dimension_info(DimensionId::End).traits);
+        end_tick_broadcasts.reserve(1024);
+        // ── end end ──
         // ── tnt and gravity ──
         tnt_gravity.emplace(*blocks, *registries, loot_tables ? &*loot_tables : nullptr,
                             mob_combat ? &*mob_combat : nullptr);
@@ -3034,31 +3169,35 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     };
 
     // ── nether ── The same for the Nether level's drain: block light only.
-    const auto flush_nether_tick_writes = [&] {
-        if (nether_tick_broadcasts.empty()) {
+    // ── end ── And for the End's: its own writes, its own players.
+    const auto flush_nether_tick_writes =
+        [&](std::vector<std::pair<net::WirePosition, registry::BlockStateId>>& writes,
+            DimensionId dimension) {
+        if (writes.empty()) {
             return;
         }
-        if (blocks && nether) {
+        if (blocks && other_world(dimension) != nullptr) {
             const std::scoped_lock lock{chunk_mutex};
             std::unordered_set<i64> relit;
-            for (const auto& [where, state] : nether_tick_broadcasts) {
+            for (const auto& [where, state] : writes) {
                 const i64 key = chunk_key(where.x >> 4, where.z >> 4);
                 if (!relit.insert(key).second) {
                     continue;
                 }
-                if (world::Chunk* chunk = nether->resident(where.x >> 4, where.z >> 4)) {
+                if (world::Chunk* chunk =
+                        other_world(dimension)->resident(where.x >> 4, where.z >> 4)) {
                     relight_blocks(*chunk, *blocks);
                 }
             }
         }
         const std::unique_lock lock{players_mutex, std::try_to_lock};
         if (lock.owns_lock()) {
-            for (const auto& [where, state] : nether_tick_broadcasts) {
-                broadcast_in(DimensionId::Nether, nullptr, net::clientbound::kBlockUpdate,
+            for (const auto& [where, state] : writes) {
+                broadcast_in(dimension, nullptr, net::clientbound::kBlockUpdate,
                              net::encode_block_update(where, static_cast<i32>(state.value())));
             }
         }
-        nether_tick_broadcasts.clear();
+        writes.clear();
     };
 
     // ── crafting and smelting ───────────────────────────────────────────────
@@ -3261,6 +3400,42 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     nether_player_level.set_dimension(dimension_info(DimensionId::Nether).shape,
                                       dimension_info(DimensionId::Nether).traits);
     // ── end nether ──
+    // ── end ── The same for a right-click in the End.
+    PlayerLevel end_player_level{[&] {
+        PlayerLevelHooks hooks;
+        hooks.blocks   = blocks ? &*blocks : nullptr;
+        hooks.block_at = [&](BlockPos pos) -> registry::BlockStateId {
+            const std::scoped_lock chunk_lock{chunk_mutex};
+            return block_at_in(DimensionId::End, {pos.x, pos.y, pos.z});
+        };
+        hooks.is_loaded = [&](BlockPos pos) {
+            const std::scoped_lock chunk_lock{chunk_mutex};
+            return chunk_if_resident_in(DimensionId::End, pos.x >> 4, pos.z >> 4) != nullptr;
+        };
+        hooks.set_block = [&](BlockPos pos, registry::BlockStateId state) {
+            set_block_in_nether({pos.x, pos.y, pos.z}, state, DimensionId::End);
+        };
+        hooks.schedule_tick = [&](BlockPos pos, std::string_view what, i64 delay,
+                                  world::TickQueue queue, world::TickPriority priority) {
+            if (end_level) {
+                const std::scoped_lock chunk_lock{chunk_mutex};
+                end_level->schedule_tick(pos, what, delay, queue, priority);
+            }
+        };
+        hooks.has_scheduled_tick = [&](BlockPos pos, std::string_view what,
+                                       world::TickQueue queue) {
+            if (!end_level) {
+                return false;
+            }
+            const std::scoped_lock chunk_lock{chunk_mutex};
+            return end_level->has_scheduled_tick(pos, what, queue);
+        };
+        hooks.game_time = [&] { return server_tick.load(std::memory_order_relaxed); };
+        return hooks;
+    }()};
+    end_player_level.set_dimension(dimension_info(DimensionId::End).shape,
+                                   dimension_info(DimensionId::End).traits);
+    // ── end end ──
 
     /// The registry name of what a player is holding, empty for a bare hand.
     const auto held_name = [&](const Player& who) -> std::string_view {
@@ -3361,6 +3536,33 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         }
         send_slot(who, slot);
     };
+
+    // ── end ── An eye went into a frame: consumed outside creative, the
+    // frame's event (1503) for the level, and — when the ring opened — the
+    // portal's (1038), which every player hears. Caller holds players_mutex.
+    const auto end_eye_used = [&](Player& who, const net::UseItemOn& place,
+                                  const gameplay::EyeOutcome& eye) {
+        if (who.game_mode != 1) {
+            consume_one_held(who);
+        }
+        broadcast_in(who.dimension, nullptr, net::clientbound::kWorldEvent,
+                     net::encode_world_event(kWorldEventEyePlaced, place.position, 0, false));
+        if (eye.result == gameplay::EyeUse::Activated) {
+            const net::WirePosition centre{eye.portal_centre.x, eye.portal_centre.y,
+                                           eye.portal_centre.z};
+            broadcast_all(nullptr, net::clientbound::kWorldEvent,
+                          net::encode_world_event(kWorldEventEndPortalOpened, centre, 0, true));
+            registry::BlockStateId there{};
+            {
+                const std::scoped_lock chunk_lock{chunk_mutex};
+                there = block_at_in(who.dimension, centre);
+            }
+            OV_LOG_INFO("{} completed an End portal at ({}, {}, {}): {}", who.name, centre.x,
+                        centre.y, centre.z,
+                        blocks ? blocks->block_name(blocks->block_of(there)) : "?");
+        }
+    };
+    // ── end end ──
 
     // ── effects ─────────────────────────────────────────────────────────────
     /// The two sinks an effect packet goes to, for one player.
@@ -3585,6 +3787,11 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             broadcast(nullptr, id, payload);
         };
         io.hurt_entity = [&](i32 entity_id, f32 damage, bool /*critical*/) {
+            // ── end ── the dragon's parts and the crystals are the fight's
+            if (end_fight && who.dimension == DimensionId::End &&
+                end_fight->hurt(entity_id, damage, end_fight_host)) {
+                return true;
+            }
             return hurt_mob(who, entity_id, damage, held_weapon(who).looting);
         };
         io.entity_position = [&](i32 entity_id) -> std::optional<Vec3d> {
@@ -4121,6 +4328,11 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                                        static_cast<u64>(entity_id));
                         nether->chunks().refresh(changes);
                     }
+                    if (end_world) {  // ── end ──
+                        end_world->chunks().remove_ticket(world::TicketType::Player,
+                                                          static_cast<u64>(entity_id));
+                        end_world->chunks().refresh(changes);
+                    }
                 }
 
                 // After the erase, so the leaving player is not sent their own
@@ -4438,6 +4650,24 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         return true;
                     }
                     player.dimension = DimensionId::Nether;
+                }
+                // ── end ── The same for a player saved in the End.
+                if (stored && stored->record.dimension == dimension_info(DimensionId::End).name) {
+                    bool ready = false;
+                    {
+                        const std::scoped_lock end_lock{chunk_mutex};
+                        ready = end_ready();
+                    }
+                    if (!ready) {
+                        OV_LOG_ERROR("refusing {}: saved in the End, which is unavailable",
+                                     login->name);
+                        send_packet(net::clientbound::kDisconnect,
+                                    net::encode_play_disconnect(
+                                        "{\"text\":\"Ondes VOXEL — you are in the End, and this "
+                                        "server has it turned off.\"}"));
+                        return true;
+                    }
+                    player.dimension = DimensionId::End;
                 }
                 join.dimension_type = dimension_info(player.dimension).type;
                 join.dimension_name = dimension_info(player.dimension).name;
@@ -5007,16 +5237,41 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         }
                         acknowledge(connection, place->sequence);
 
+                        // ── end ── An eye of ender on an End portal frame: in
+                        // it goes, and a ring it completes opens the portal
+                        // (end_portal.hpp). Any level: the rules read the one
+                        // the player is in.
+                        const net::ItemStack& eye_hand =
+                            player.inventory[36 + static_cast<usize>(player.held_slot)];
+                        if (end_rules && registries && item_registry && !eye_hand.empty() &&
+                            registries->entry_of(*item_registry, eye_hand.item_id) ==
+                                "minecraft:ender_eye") {
+                            world::LevelWriter& here =
+                                player.dimension == DimensionId::End      ? end_player_level
+                                : player.dimension == DimensionId::Nether ? nether_player_level
+                                                                          : player_level;
+                            const auto eye = end_rules->use_eye(
+                                here, BlockPos{place->position.x, place->position.y,
+                                               place->position.z});
+                            if (eye.result != gameplay::EyeUse::Pass) {
+                                end_eye_used(player, *place, eye);
+                                return true;
+                            }
+                        }
+
                         // ── nether ── A right-click in the Nether: the block's
                         // and the item's own rules — doors, buckets, flint and
                         // steel — then a plain placement. Containers, signs,
                         // crafting screens, planting and TNT stay overworld-only
                         // for now, named in docs/provenance/nether.md.
-                        if (player.dimension == DimensionId::Nether) {
+                        // ── end ── The End takes the same path.
+                        if (player.dimension != DimensionId::Overworld) {
                             if (item_use) {
                                 const CombatOutcome used = player.combat.on_use_item_on(
                                     *place, combat_view(player), combat_io(player),
-                                    nether_player_level, *item_use);
+                                    player.dimension == DimensionId::End ? end_player_level
+                                                                         : nether_player_level,
+                                    *item_use);
                                 if (used.spawn_primed_tnt) {
                                     OV_LOG_WARN("TNT lit in the Nether is not primed: the entity "
                                                 "engine lives in the overworld");
@@ -5045,7 +5300,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                                       static_cast<f64>(target.z) + 1.0}};
                                 for (const auto& [occupant_key, occupant] : players) {
                                     blocked = blocked ||
-                                              (occupant.dimension == DimensionId::Nether &&
+                                              (occupant.dimension == player.dimension &&  // ── end ──
                                                cell.intersects(gameplay::player_box(
                                                    Vec3d{occupant.x, occupant.y, occupant.z})));
                                 }
@@ -5054,14 +5309,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                 registry::BlockStateId there{0};
                                 {
                                     const std::scoped_lock chunk_lock{chunk_mutex};
-                                    there = block_at_in(DimensionId::Nether, target);
+                                    there = block_at_in(player.dimension, target);  // ── end ──
                                 }
                                 send_packet(net::clientbound::kBlockUpdate,
                                             net::encode_block_update(
                                                 target, static_cast<i32>(there.value())));
                                 return true;
                             }
-                            set_block_connected_in(DimensionId::Nether, target, placed);
+                            set_block_connected_in(player.dimension, target, placed);  // ── end ──
                             return true;
                         }
                         // ── end nether ──
@@ -6548,6 +6803,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         return region && region->has_chunk(static_cast<u32>(cx & 31), static_cast<u32>(cz & 31));
     };
 
+    // ── end ── Defined below `travel`, which calls it.
+    std::function<void(Player&, DimensionId, DimensionId, Vec3d, f32, u8)> arrive_in;
+
     /// Cross: find or build the portal at the other end, and move the player
     /// there — Respawn, position, chunks, and who can see whom.
     ///
@@ -6674,7 +6932,20 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // from here, which holds `players_mutex` that the flush try-locks (a
         // `try_lock` by the owner is undefined). The traveller is sent the
         // chunks themselves below, portal included.
+        arrive_in(who, from, to, arrival, yaw, 3);  // ── end ── shared with the End
+        return true;
+    };
 
+    // ── end nether ──────────────────────────────────────────────────────────
+    //
+    // Unchanged from here to the end of `arrive_in`: the second half of
+    // `travel`, lifted out so that the End's crossings share it.
+    // ── end ──
+    /// Put a player into `to` at `arrival`: Respawn (`data_kept`), position,
+    /// chunks from nothing, and who sees whom. Caller holds players_mutex.
+    arrive_in = [&](Player& who, DimensionId from, DimensionId to, Vec3d arrival, f32 yaw,
+                    u8 data_kept) {
+        const DimensionInfo& to_info = dimension_info(to);
         // Gone from the old level, for everyone there.
         broadcast_in(from, who.connection.get(), net::clientbound::kRemoveEntities,
                      net::encode_remove_entity(who.entity_id));
@@ -6696,7 +6967,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         respawn.game_mode          = who.game_mode;
         respawn.previous_game_mode = -1;
         // A crossing keeps everything: attributes and metadata both.
-        respawn.data_kept       = 3;
+        respawn.data_kept       = data_kept;  // ── end ──
         respawn.portal_cooldown = who.portal.cooldown;
         send(net::clientbound::kRespawn, net::encode_respawn(respawn));
         send(net::clientbound::kPlayerAbilities, cmd::CommandService::abilities_for(who.game_mode));
@@ -6752,9 +7023,96 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
 
         OV_LOG_INFO("{} crossed into {} at ({:.3f}, {:.3f}, {:.3f})", who.name, to_info.name,
                     who.x, who.y, who.z);
-        return true;
     };
     // ── end nether ──────────────────────────────────────────────────────────
+
+    // ── end ─────────────────────────────────────────────────────────────────
+    // Into the End through a portal, and out through the exit portal.
+    // The rules are end_portal.hpp's; the arrival is end_travel.hpp's.
+
+    /// Into the End: the platform's chunks (asked of the workers through a
+    /// `Transient` ticket, as for a Nether crossing), the platform rebuilt,
+    /// the arrival. False while the chunks are on their way. Caller holds
+    /// players_mutex.
+    const auto enter_end = [&](Player& who) -> bool {
+        const DimensionId from = who.dimension;
+        {
+            const std::scoped_lock lock{chunk_mutex};
+            if (!end_ready() || !end_rules || !end_level) {
+                OV_LOG_WARN("{} stepped into an End portal, and the End is unavailable", who.name);
+                return true;
+            }
+            world::ChunkMap& map   = end_world->chunks();
+            bool             ready = true;
+            // The platform's two chunks, and nothing else: the fight waits for
+            // its own arena on later ticks, as the game's does.
+            for (const ChunkPos pos : end_platform_chunks()) {
+                if (end_world->resident(pos.x, pos.z) != nullptr) {
+                    continue;
+                }
+                if (end_world->read_from_disk(pos.x, pos.z)) {
+                    (void)end_world->chunk_at(pos.x, pos.z);
+                } else {
+                    ready = false;
+                }
+            }
+            if (!ready) {
+                if (who.end_crossing_ticks == 0) {
+                    OV_LOG_INFO("{}: waiting for the End's platform chunks", who.name);
+                }
+                // Radius one round (6, 0): the two 4 x 4 generation blocks the
+                // platform's chunks fall in, and no more.
+                const BlockPos spawn = gameplay::kEndSpawnPoint;
+                map.set_ticket(world::TicketType::Transient, static_cast<u64>(who.entity_id),
+                               ChunkPos{spawn.x >> 4, spawn.z >> 4},
+                               world::LoadLevel::for_view_distance(1));
+                world::LevelChanges changes;
+                map.refresh(changes);
+                return false;
+            }
+            end_level->set_game_time(server_tick.load(std::memory_order_relaxed));
+            end_rules->build_platform(*end_level);
+            world::LevelChanges changes;
+            view_of(from).chunks->remove_ticket(world::TicketType::Player,
+                                               static_cast<u64>(who.entity_id));
+            view_of(from).chunks->refresh(changes);
+            map.remove_ticket(world::TicketType::Transient, static_cast<u64>(who.entity_id));
+            map.refresh(changes);
+        }
+        const EndArrival arrival = end_arrival();
+        who.pitch                = arrival.pitch;
+        arrive_in(who, from, DimensionId::End, arrival.position, arrival.yaw, 3);
+        return true;
+    };
+
+    /// Is a player's box in an End portal's slab, in the level they stand in?
+    const auto in_end_portal = [&](const Player& who) -> bool {
+        if (!end_rules || who.dimension == DimensionId::Nether) {
+            return false;
+        }
+        const std::scoped_lock lock{chunk_mutex};
+        ServerLevel* here = who.dimension == DimensionId::End ? (end_level ? &*end_level : nullptr)
+                                                              : (level ? &*level : nullptr);
+        return here != nullptr &&
+               end_rules->box_in_portal(*here, gameplay::player_box(Vec3d{who.x, who.y, who.z}));
+    };
+
+    /// Out through the exit portal: the credits. The client asks to respawn
+    /// when they are over (Client Command 0), and `won_game` sends it home.
+    const auto leave_end = [&](Player& who) {
+        if (who.won_game) {
+            return;
+        }
+        who.won_game = true;
+        if (const auto framed = net::encode_packet(
+                net::clientbound::kGameEvent,
+                net::encode_game_event(kGameEventWinGame, who.seen_credits ? 0.0F : 1.0F))) {
+            who.connection->send(*framed);
+        }
+        who.seen_credits = true;
+        OV_LOG_INFO("{} went through the exit portal: the credits", who.name);
+    };
+    // ── end end ─────────────────────────────────────────────────────────────
 
     while (!should_stop()) {
         const auto tick_started = std::chrono::steady_clock::now();
@@ -6826,6 +7184,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         if (nether) {
             const std::scoped_lock lock{chunk_mutex};
             nether->tick(clock.tick_count());
+        }
+        if (end_world) {  // ── end ── and the End's
+            const std::scoped_lock lock{chunk_mutex};
+            end_world->tick(clock.tick_count());
         }
 
         // ── What the tickets want and the map has not got ───────────────────
@@ -7047,7 +7409,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 }
                 (void)world_ticks->run(*nether_level, clock.tick_count());
             }
-            flush_nether_tick_writes();
+            flush_nether_tick_writes(nether_tick_broadcasts, DimensionId::Nether);  // ── end ──
         }
         if (portal_rules && level && nether_level) {
             std::unique_lock portal_lock{players_mutex, std::try_to_lock};
@@ -7078,6 +7440,120 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             }
         }
         // ── end nether ──────────────────────────────────────────────────────
+
+        // ── end: the End level's drain, and its portals ─────────────────────
+        if (end_world && end_level && world_ticks) {
+            std::vector<net::WirePosition> edits;
+            {
+                const std::scoped_lock lock{notification_mutex};
+                edits.swap(end_notifications);
+            }
+            {
+                const std::scoped_lock chunk_lock{chunk_mutex};
+                end_level->set_game_time(clock.tick_count());
+                for (const net::WirePosition& where : edits) {
+                    (void)world_ticks->notify(*end_level, BlockPos{where.x, where.y, where.z});
+                }
+                (void)world_ticks->run(*end_level, clock.tick_count());
+            }
+            flush_nether_tick_writes(end_tick_broadcasts, DimensionId::End);
+        }
+        if (end_rules) {
+            // No wait and no cooldown: an End portal takes whoever touches its
+            // slab, on the tick the move is processed (end_portal.hpp).
+            std::unique_lock end_lock{players_mutex, std::try_to_lock};
+            if (end_lock.owns_lock()) {
+                for (auto& [end_key, who] : players) {
+                    if (!who.confirmed || !who.connection || who.survival.awaiting_respawn ||
+                        who.won_game) {
+                        continue;
+                    }
+                    if (!who.end_crossing && !in_end_portal(who)) {
+                        continue;
+                    }
+                    if (!who.end_crossing) {
+                        OV_LOG_INFO("{} is in an End portal at ({:.3f}, {:.3f}, {:.3f}) in {}",
+                                    who.name, who.x, who.y, who.z,
+                                    dimension_info(who.dimension).name);
+                    }
+                    if (who.dimension == DimensionId::End) {
+                        leave_end(who);
+                        continue;
+                    }
+                    who.end_crossing = true;
+                    // Five minutes: a Debug build on a machine at load 35
+                    // took more than one to generate the platform's blocks.
+                    constexpr i32 kEndCrossingPatience = 6000;
+                    if (enter_end(who)) {
+                        who.end_crossing       = false;
+                        who.end_crossing_ticks = 0;
+                    } else if (++who.end_crossing_ticks > kEndCrossingPatience) {
+                        OV_LOG_WARN("{}: the End's platform chunks did not arrive in {} ticks; "
+                                    "the crossing is abandoned",
+                                    who.name, kEndCrossingPatience);
+                        who.end_crossing       = false;
+                        who.end_crossing_ticks = 0;
+                    }
+                }
+                // The fight starts once someone is in the End and its arena —
+                // the four chunks round the origin, where the exit portal goes —
+                // is loaded: the game's own condition (it waits for the arena).
+                if (end_fight && !end_fight->started() && end_world && end_level &&
+                    std::ranges::any_of(players, [](const auto& entry) {
+                        return entry.second.dimension == DimensionId::End;
+                    })) {
+                    const std::scoped_lock arena_lock{chunk_mutex};
+                    world::ChunkMap&       map   = end_world->chunks();
+                    constexpr std::array<ChunkPos, 4> kArena{
+                        ChunkPos{-1, -1}, ChunkPos{0, -1}, ChunkPos{-1, 0}, ChunkPos{0, 0}};
+                    const bool loaded = std::ranges::all_of(kArena, [&](ChunkPos pos) {
+                        return end_world->resident(pos.x, pos.z) != nullptr;
+                    });
+                    if (loaded) {
+                        const i32 top = end_world->resident(0, 0)
+                                            ->heightmap(world::HeightmapType::MotionBlockingNoLeaves)
+                                            .first_free(0, 0);
+                        end_level->set_game_time(clock.tick_count());
+                        end_fight->start(*end_level, top, end_fight_host);
+                        map.remove_ticket(world::TicketType::Transient, kEndFightTicket);
+                    } else {
+                        map.set_ticket(world::TicketType::Transient, kEndFightTicket,
+                                       ChunkPos{0, 0}, world::LoadLevel::for_view_distance(1));
+                    }
+                    world::LevelChanges changes;
+                    map.refresh(changes);
+                }
+                // The fight: its tick, and once a second who sees it — the
+                // game's own cadence for its boss bar's players.
+                if (end_fight && end_fight->started() && end_level) {
+                    {
+                        const std::scoped_lock fight_lock{chunk_mutex};
+                        end_fight->tick(*end_level, end_fight_host);
+                    }
+                    if (clock.tick_count() % 20 == 0) {
+                        for (auto& [viewer_key, viewer] : players) {
+                            if (!viewer.connection) {
+                                continue;
+                            }
+                            const bool sees = viewer.dimension == DimensionId::End &&
+                                              EndFight::within_range(
+                                                  Vec3d{viewer.x, viewer.y, viewer.z});
+                            const auto send_viewer = [&](i32 id, std::span<const u8> payload) {
+                                if (const auto framed = net::encode_packet(id, payload)) {
+                                    viewer.connection->send(*framed);
+                                }
+                            };
+                            if (sees && end_fight_viewers.insert(viewer.entity_id).second) {
+                                end_fight->show_to(send_viewer);
+                            } else if (!sees && end_fight_viewers.erase(viewer.entity_id) != 0) {
+                                end_fight->hide_from(send_viewer);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // ── end end ─────────────────────────────────────────────────────────
 
         // ── agriculture: the random tick ────────────────────────────
         //
@@ -7853,6 +8329,30 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                      under, who.survival.last_fall);
                     }
 
+                    // ── end ── The credits are over: home, keeping everything —
+                    // the respawn a win is, not a death's.
+                    if (who.wants_respawn && who.won_game) {
+                        who.wants_respawn = false;
+                        who.won_game      = false;
+                        const DimensionId from = who.dimension;
+                        {
+                            const std::scoped_lock ticket_lock{chunk_mutex};
+                            world::LevelChanges    changes;
+                            view_of(from).chunks->remove_ticket(world::TicketType::Player,
+                                                                static_cast<u64>(who.entity_id));
+                            view_of(from).chunks->refresh(changes);
+                        }
+                        Vec3d home{static_cast<f64>(level_settings.spawn_x) + 0.5,
+                                   static_cast<f64>(level_settings.spawn_y),
+                                   static_cast<f64>(level_settings.spawn_z) + 0.5};
+                        if (const auto own =
+                                commands ? commands->personal_spawn(who.uuid) : std::nullopt) {
+                            home = Vec3d{static_cast<f64>(own->x) + 0.5, static_cast<f64>(own->y),
+                                         static_cast<f64>(own->z) + 0.5};
+                        }
+                        arrive_in(who, from, DimensionId::Overworld, home, who.yaw,
+                                  kEndExitDataKept);
+                    }
                     if (who.wants_respawn) {
                         who.wants_respawn = false;
                         // ── nether ── The world spawn is in the overworld: a
@@ -8188,7 +8688,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                             world::Chunk* ready =
                                 chunk_if_resident_in(player.dimension, cx, cz);
                             if (ready == nullptr) {
-                                if (chunk_source || player.dimension == DimensionId::Nether) {
+                                if (chunk_source ||
+                                    player.dimension != DimensionId::Overworld) {  // ── end ──
                                     // Not here yet. The fill pass above has
                                     // already asked for it; this loop's job is
                                     // to send, not to generate.
@@ -8381,6 +8882,15 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
 
                 for (auto& [key, player] : players) {
                     if (now_ms - player.last_keep_alive_sent_ms < 10000) {
+                        continue;
+                    }
+                    // ── end ── Never a second challenge while one is pending,
+                    // as vanilla: on a server whose packets are handled more
+                    // than ten seconds late, the reply to the first arrived
+                    // after the second had replaced its id, and the "wrong
+                    // id" rule above dropped the player in silence — twice, in
+                    // the End e2e, on the tick the portal opened.
+                    if (player.awaiting_keep_alive) {
                         continue;
                     }
                     player.last_keep_alive_sent_ms = now_ms;

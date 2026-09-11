@@ -22,6 +22,7 @@ ov_add_library(ov_gameplay
         src/fluid.cpp
         src/item_use.cpp
         src/nether_portal.cpp
+        src/end_portal.cpp
         src/food.cpp
         src/mob_logic.cpp
         src/breeding.cpp
@@ -86,6 +87,7 @@ ov_add_test(test_ov_gameplay
         tests/test_crafting.cpp
         tests/test_crafting_parity.cpp
         tests/test_smelting.cpp
+        tests/test_end_portal.cpp
     DEPS ov_gameplay simdjson::simdjson
     LABELS unit
 )
