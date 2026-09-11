@@ -2978,6 +2978,7 @@ int main(int argc, char** argv) {
         // the GPU's cost as the CPU's.
         const auto        record_start = std::chrono::steady_clock::now();
         rhi::CommandList& cmd          = **frame;
+        (*overlay)->begin_frame();
         const u32         width  = device.swapchain_width();
         const u32         height = device.swapchain_height();
 

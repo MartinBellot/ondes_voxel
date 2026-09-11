@@ -94,11 +94,19 @@ std::expected<std::unique_ptr<Overlay>, rhi::RhiError> Overlay::create(rhi::Devi
     return self;
 }
 
+void Overlay::begin_frame() {
+    // The device's own slot, not a counter of ours: it is the one whose fence
+    // the device waited on, so the GPU is done reading this buffer. A counter
+    // advanced by a draw call stalls whenever that draw is skipped — the HUD
+    // hides the line crosshair, and the ring then filled up and stayed full.
+    used_[device_->frame_index() % static_cast<u32>(used_.size())] = 0;
+}
+
 void Overlay::draw_lines(rhi::CommandList& cmd, std::span<const f32> vertices, const Push& push) {
     if (vertices.empty()) {
         return;
     }
-    const u32 slot   = ring_ % static_cast<u32>(vertices_.size());
+    const u32 slot   = device_->frame_index() % static_cast<u32>(vertices_.size());
     auto*     mapped = static_cast<f32*>(device_->map(vertices_[slot]));
     if (mapped == nullptr) {
         return;
@@ -196,10 +204,6 @@ void Overlay::draw_crosshair(rhi::CommandList& cmd, u32 width, u32 height) {
     push.colour = {1.0F, 1.0F, 1.0F, 0.75F};
     push.flags  = {0.0F, 0.0F, 0.0F, 0.0F};
     draw_lines(cmd, scratch_, push);
-
-    // The next frame writes from the start of its own buffer.
-    ring_       = (ring_ + 1) % static_cast<u32>(vertices_.size());
-    used_[ring_] = 0;
 }
 
 }  // namespace ov::client
