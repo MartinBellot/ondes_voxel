@@ -122,12 +122,26 @@ def feature_seed(level_seed, min_x, min_z, index, step):
 # --------------------------------------------------------------- pack
 
 
-def write_pack(root, vanilla, features):
+def write_pack(root, vanilla, features, step=9):
     """`features` : des noms de features configurées, ou `@fichier.json` pour
     une définition locale — c'est ce qui permet de faire varier *un* champ d'un
-    placer et de lire ce que le jeu en fait, au lieu de le supposer."""
+    placer et de lire ce que le jeu en fait, au lieu de le supposer.
+
+    Deux formes de plus, pour les features qui ne sont pas des arbres :
+
+    * `=minecraft:nom` nomme une **placed** feature de vanilla, gardée telle
+      quelle avec son propre pipeline (une géode, un lac, un iceberg) ;
+    * `%fichier.json` est une placed feature écrite par nous — typiquement
+      `count(1) → in_square → height_range → <feature de vanilla>`, pour avoir
+      une géode par chunk au lieu d'une sur vingt-quatre.
+
+    `step` est l'étape de décoration où la liste est posée (9 par défaut). Une
+    liste vide donne le monde **témoin** : même graine, même preset, aucune
+    feature — c'est l'état du terrain avant la feature, bloc pour bloc.
+    """
     if isinstance(features, str):
         features = [features]
+    features = [f for f in features if f and f != "none"]
     root = pathlib.Path(root)
     vanilla = pathlib.Path(vanilla)
     for sub in ("data/minecraft/worldgen/biome",
@@ -147,7 +161,11 @@ def write_pack(root, vanilla, features):
     biome = json.loads((vanilla / "worldgen/biome/plains.json").read_text())
     biome["carvers"] = {}
     biome["features"] = [[] for _ in range(11)]
-    biome["features"][9] = [f"probe:tree{i}" for i in range(len(features))]
+    # `=minecraft:nom` goes into the list under its own name: the biome lists
+    # the vanilla placed feature itself, pipeline included, and the probe
+    # writes no file for it. Its index is still its position in this list.
+    biome["features"][step] = [
+        f[1:] if f.startswith("=") else f"probe:tree{i}" for i, f in enumerate(features)]
     biome["spawners"] = {key: [] for key in biome.get("spawners", {})}
     biome["spawn_costs"] = {}
     (root / "data/minecraft/worldgen/biome/plains.json").write_text(
@@ -159,6 +177,14 @@ def write_pack(root, vanilla, features):
     # nous : elle sert à faire varier *un* champ d'un placer et à lire la règle
     # que le jeu en tire.
     for index, feature in enumerate(features):
+        target = root / f"data/probe/worldgen/placed_feature/tree{index}.json"
+        if feature.startswith("="):
+            # A vanilla placed feature, pipeline and all: the biome names it
+            # directly and the probe redefines nothing.
+            continue
+        if feature.startswith("%"):
+            target.write_text(pathlib.Path(feature[1:]).read_text())
+            continue
         if feature.startswith("@"):
             body = json.loads(pathlib.Path(feature[1:]).read_text())
             name = f"probe:body{index}"
@@ -294,7 +320,9 @@ def main():
         return 2
     command = sys.argv[1]
     if command == "pack":
-        write_pack(sys.argv[2], sys.argv[3], sys.argv[4:])
+        import os
+        write_pack(sys.argv[2], sys.argv[3], sys.argv[4:],
+                   step=int(os.environ.get("STEP", "9")))
     elif command == "read":
         read_world(sys.argv[2], sys.argv[3])
     else:

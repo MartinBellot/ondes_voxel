@@ -70,6 +70,9 @@ enum class PlantSurvivalRule : u8 {
     Fire,
     /// `#minecraft:soul_fire_base_blocks` below: soul sand or soul soil.
     SoulFire,
+    /// `#small_dripleaf_placeable` below, or a water source here and
+    /// `#dirt`/farmland below. The small dripleaf.
+    SmallDripleaf,
 };
 
 /// The rule for one block, or nothing when this layer does not know it.

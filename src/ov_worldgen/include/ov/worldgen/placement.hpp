@@ -264,6 +264,14 @@ public:
     [[nodiscard]] bool contains(std::string_view tag, registry::BlockId block) const;
     [[nodiscard]] bool known(std::string_view tag) const;
 
+    /// A tag's members in the order its file lists them, nested `#tag`
+    /// references expanded in place, a repeat kept at its first appearance.
+    ///
+    /// For the features that draw an *index* into a tag — the corals pick
+    /// their block with `tag.getRandomElement(random)` — where the order is
+    /// part of the seed and a set would not do. Empty for an unknown tag.
+    [[nodiscard]] std::vector<registry::BlockId> ordered(std::string_view tag) const;
+
     [[nodiscard]] usize tag_count() const noexcept;
 
 private:
@@ -308,8 +316,9 @@ struct FeatureContext {
     /// modifier needs it.
     std::string_view     feature_name;
     const BiomeFeatures* biomes{nullptr};
-    /// ── end ── The world seed. The End's spikes are a function of it alone
-    /// (`end_spikes`), not of the chunk's decoration seed.
+    /// The world seed, `WorldGenLevel.getSeed()`. ── end ── The End's spikes
+    /// are a function of it alone (`end_spikes`); ── features-2 ── the geode
+    /// seeds its shell noise from it rather than from the feature's generator.
     i64 level_seed{0};
 };
 

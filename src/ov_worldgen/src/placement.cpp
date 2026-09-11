@@ -3,6 +3,7 @@
 #include "ov/worldgen/placement.hpp"
 
 #include "feature_json.hpp"
+#include "overworld_feature.hpp"
 
 #include "ov/base/log.hpp"
 
@@ -320,6 +321,8 @@ private:
 
 struct BlockTags::Impl {
     std::unordered_map<std::string, std::unordered_set<u16>> tags;
+    /// The same members in file order (features-2: the corals draw an index).
+    std::unordered_map<std::string, std::vector<u16>> ordered;
 };
 
 std::expected<BlockTags, FeatureError> BlockTags::load(const std::filesystem::path& data_root,
@@ -403,6 +406,39 @@ std::expected<BlockTags, FeatureError> BlockTags::load(const std::filesystem::pa
         impl->tags.emplace(name, std::move(resolved));
     }
 
+    // The ordered form: file order, a nested tag expanded where it is named,
+    // a repeat dropped at its second appearance. Depth-first with an explicit
+    // stack of (tag, next entry) so that a cycle is a no-op, not an overflow.
+    for (const auto& [name, members] : raw) {
+        (void)members;
+        std::vector<u16>                              out;
+        std::unordered_set<u16>                       placed;
+        std::unordered_set<std::string>               open{name};
+        std::vector<std::pair<std::string, usize>>    stack{{name, 0}};
+        while (!stack.empty()) {
+            auto& [current, next] = stack.back();
+            const auto found      = raw.find(current);
+            if (found == raw.end() || next >= found->second.size()) {
+                stack.pop_back();
+                continue;
+            }
+            const std::string member = found->second[next++];
+            if (member.starts_with('#')) {
+                std::string referenced = qualify(std::string_view(member).substr(1));
+                if (open.insert(referenced).second) {
+                    stack.emplace_back(std::move(referenced), 0);
+                }
+                continue;
+            }
+            if (const auto block = blocks.find_block(qualify(member))) {
+                if (placed.insert(block->value()).second) {
+                    out.push_back(block->value());
+                }
+            }
+        }
+        impl->ordered.emplace(name, std::move(out));
+    }
+
     BlockTags result;
     result.impl_ = std::move(impl);
     OV_LOG_INFO("worldgen: {} block tags", result.impl_->tags.size());
@@ -419,6 +455,22 @@ bool BlockTags::contains(std::string_view tag, registry::BlockId block) const {
 
 bool BlockTags::known(std::string_view tag) const {
     return impl_ != nullptr && impl_->tags.contains(qualify(tag));
+}
+
+std::vector<registry::BlockId> BlockTags::ordered(std::string_view tag) const {
+    std::vector<registry::BlockId> out;
+    if (impl_ == nullptr) {
+        return out;
+    }
+    const auto found = impl_->ordered.find(qualify(tag));
+    if (found == impl_->ordered.end()) {
+        return out;
+    }
+    out.reserve(found->second.size());
+    for (const u16 block : found->second) {
+        out.push_back(registry::BlockId{block});
+    }
+    return out;
 }
 
 usize BlockTags::tag_count() const noexcept {
@@ -573,10 +625,10 @@ std::expected<BlockPredicateRef, FeatureError> parse_block_predicate(
         return std::static_pointer_cast<const BlockPredicate>(std::move(pointer));
     };
 
-    if (kind == "matching_blocks" || kind == "matching_fluids") {
-        // Fluids and blocks are the same lookup here: `minecraft:water` is a
-        // block whose default state is the source, which is what the datapack
-        // names in both cases.
+    // `matching_fluids` is answered in overworld_feature.cpp (features-2): a
+    // fluid is not a block — `flowing_water` and `empty` have no block, and a
+    // waterlogged block holds water.
+    if (kind == "matching_blocks") {
         std::vector<u16> ids;
         for (const std::string& name : read_names(node.at_key(
                  kind == "matching_blocks" ? "blocks" : "fluids"))) {
@@ -666,6 +718,9 @@ std::expected<BlockPredicateRef, FeatureError> parse_block_predicate(
     // ── the tree and vegetation work hooks in here, and only here ──────────
     if (kind == "would_survive") {
         return parse_survival_predicate(node, blocks, tags);
+    }
+    if (auto shaped = parse_shape_predicate(kind, node, blocks, tags)) {  // features-2
+        return std::move(*shaped);
     }
     // ── end of that hook ───────────────────────────────────────────────────
 
@@ -1041,7 +1096,10 @@ std::expected<IntProviderRef, FeatureError> parse_int_provider(Json node) {
             integer("max_inclusive", 0)));
     }
     if (kind == "clamped") {
-        auto source = node.at_key("source");
+        // `source` sits next to the bounds, inside "value" — not at the top.
+        // Looking for it at the top failed silently and cost `forest_flowers`
+        // and `flower_forest_flowers` (features-2).
+        auto source = holder.at_key("source");
         if (source.error() != simdjson::SUCCESS) {
             return std::unexpected(FeatureError::Malformed);
         }
@@ -1297,6 +1355,9 @@ std::expected<PlacementModifierRef, FeatureError> parse_placement_modifier(
     // a plausible number nobody had measured. `carving_mask` needs the carvers,
     // which are not built yet. All three are refused by name so that the
     // placed features using them are visibly absent rather than quietly wrong.
+    if (auto noise = parse_noise_placement(kind, node)) {  // features-2: BIOME_INFO_NOISE
+        return std::move(*noise);
+    }
     OV_LOG_ERROR("worldgen: placement modifier '{}' is not implemented", kind);
     return std::unexpected(FeatureError::Unsupported);
 }

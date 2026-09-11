@@ -519,6 +519,16 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       arbres est à **40,5 %** de troncs au bon endroit et **43,1 %** de formes
       exactes parmi eux : les placeurs simples sont justes, les ramifiés
       (`fancy`, jungle, `giant`) ne le sont pas, et chacun est nommé)*
+      *(**2026-09-11 — features-2** : **150/194** configurées, 183 placed, et
+      les 20 placed de biome encore non construites sont toutes des refus
+      nommés. Géode **100 %** des blocs, champignons géants 95 %, herbe marine,
+      cornichons et magma 88,5 %, varech 90 %, herbe et fleurs des plaines
+      91,8 % (témoins décalés 0–20 %). Arbres ramifiés : acacia 48 → 74,5 %,
+      chêne noir 0 → 38 %, épicéa géant 0 → 37,5 %, mangrove 0 → 44 %, jungle
+      géante 0 → 29 %, cerisier 0 %. Graine 987654321 hors échantillon :
+      troncs au bon endroit 67 → 164 sur 364. Restent coraux (37–53 %),
+      dripstone (59 %), cerisier, et `monster_room`, fossiles, icebergs, sculk.
+      Voir `docs/provenance/features.md`)*
 - [~] **Placement** des structures : les 19 `structure_set`, grille, spreads,
       réducteurs, tirage pondéré, tags de biome, filtre de dimension
       *(**rappel 36/36, 5/5 et 17/17** sur trois mondes de référence, et zéro

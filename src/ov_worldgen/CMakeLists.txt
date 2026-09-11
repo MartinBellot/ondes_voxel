@@ -20,6 +20,21 @@ ov_add_library(ov_worldgen
         src/feature.cpp
         src/noise.cpp
         src/ore_feature.cpp
+        # ── overworld features (features-2) ──
+        src/bamboo_feature.cpp
+        src/biome_info_noise.cpp
+        src/cave_feature.cpp
+        src/dripstone_feature.cpp
+        src/huge_mushroom_feature.cpp
+        src/ice_feature.cpp
+        src/lush_feature.cpp
+        src/noise_state_provider.cpp
+        src/ocean_feature.cpp
+        src/overworld_feature.cpp
+        src/root_system_feature.cpp
+        src/surface_feature.cpp
+        src/terrain_feature.cpp
+        # ── end overworld features ──
         src/pipeline.cpp
         src/placement.cpp
         src/random_factory.cpp
@@ -56,6 +71,7 @@ ov_add_test(test_ov_worldgen
         tests/test_feature.cpp
         tests/test_nether.cpp
         tests/test_noise.cpp
+        tests/test_overworld_feature.cpp
         tests/test_pipeline.cpp
         tests/test_structure_set.cpp
         tests/test_structure_template.cpp
