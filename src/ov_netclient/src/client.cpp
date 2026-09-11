@@ -8,6 +8,7 @@
 #include "ov/protocol/chat_types.hpp"
 #include "ov/protocol/client_play.hpp"
 #include "ov/protocol/entity.hpp"
+#include "ov/protocol/entity_metadata.hpp"
 #include "ov/protocol/framing.hpp"
 #include "ov/protocol/play.hpp"
 #include "ov/protocol/survival.hpp"
@@ -34,139 +35,6 @@ constexpr i32 kProtocolVersion = 763;
 constexpr i32 kStatePlay = 2;
 
 enum class Stage : u8 { Handshaking, Login, Play, Closed };
-
-/// Walk a Set Entity Metadata body, keeping the fields this client understands.
-///
-/// The format is `(index, type, value)*` terminated by 0xFF, with **no length
-/// prefix per field**. That is the whole reason this function is written out
-/// rather than reaching for the one field it wants: a value skipped by the
-/// wrong width shifts everything after it, and the next index reads as data
-/// from the middle of a float. Two types cannot be skipped without a parser
-/// this module does not have — a compound tag and a particle — and meeting one
-/// stops the walk instead of guessing its length.
-///
-/// Returns false when it stopped early. What was read before that is kept:
-/// vanilla puts the fields in index order, so a prefix is still true.
-[[nodiscard]] bool read_metadata(io::ByteReader& reader, ClientEvents::EntityChange& out) {
-    for (;;) {
-        const auto index = reader.read_u8();
-        if (!index) {
-            return false;
-        }
-        if (*index == 0xFF) {
-            return true;
-        }
-        const auto type = net::read_varint(reader);
-        if (!type) {
-            return false;
-        }
-        switch (static_cast<net::MetadataType>(*type)) {
-            case net::MetadataType::Byte:
-            case net::MetadataType::Boolean:
-                if (!reader.skip(1)) {
-                    return false;
-                }
-                break;
-            case net::MetadataType::Float:
-                if (!reader.skip(4)) {
-                    return false;
-                }
-                break;
-            case net::MetadataType::VarInt:
-            case net::MetadataType::VarLong:
-            case net::MetadataType::Direction:
-            case net::MetadataType::BlockState:
-            case net::MetadataType::OptionalBlockState:
-            case net::MetadataType::OptionalUnsignedInt:
-            case net::MetadataType::Pose:
-            case net::MetadataType::CatVariant:
-            case net::MetadataType::FrogVariant:
-            case net::MetadataType::PaintingVariant:
-            case net::MetadataType::SnifferState:
-                if (!net::read_varint(reader)) {
-                    return false;
-                }
-                break;
-            case net::MetadataType::String:
-            case net::MetadataType::Component:
-                if (!net::read_string(reader)) {
-                    return false;
-                }
-                break;
-            case net::MetadataType::OptionalComponent: {
-                const auto present = reader.read_u8();
-                if (!present) {
-                    return false;
-                }
-                if (*present != 0 && !net::read_string(reader)) {
-                    return false;
-                }
-                break;
-            }
-            case net::MetadataType::ItemStack: {
-                auto stack = net::read_slot(reader);
-                if (!stack) {
-                    return false;
-                }
-                if (*index == net::metadata::kItemStack) {
-                    out.stack = std::move(*stack);
-                }
-                break;
-            }
-            case net::MetadataType::Rotations:
-            case net::MetadataType::Vector3:
-                if (!reader.skip(12)) {
-                    return false;
-                }
-                break;
-            case net::MetadataType::BlockPos:
-                if (!reader.skip(8)) {
-                    return false;
-                }
-                break;
-            case net::MetadataType::OptionalBlockPos:
-            case net::MetadataType::OptionalUuid: {
-                const auto present = reader.read_u8();
-                if (!present) {
-                    return false;
-                }
-                const usize width =
-                    static_cast<net::MetadataType>(*type) == net::MetadataType::OptionalUuid ? 16
-                                                                                             : 8;
-                if (*present != 0 && !reader.skip(width)) {
-                    return false;
-                }
-                break;
-            }
-            case net::MetadataType::VillagerData:
-                for (int field = 0; field < 3; ++field) {
-                    if (!net::read_varint(reader)) {
-                        return false;
-                    }
-                }
-                break;
-            case net::MetadataType::OptionalGlobalPos: {
-                const auto present = reader.read_u8();
-                if (!present) {
-                    return false;
-                }
-                if (*present != 0 && (!net::read_string(reader) || !reader.skip(8))) {
-                    return false;
-                }
-                break;
-            }
-            case net::MetadataType::Quaternion:
-                if (!reader.skip(16)) {
-                    return false;
-                }
-                break;
-            case net::MetadataType::CompoundTag:
-            case net::MetadataType::Particle:
-                // Refused by name rather than skipped by a guessed width.
-                return false;
-        }
-    }
-}
 
 }  // namespace
 
@@ -477,6 +345,7 @@ void Client::Impl::handle_play(i32 packet_id, std::span<const u8> body) {
             const std::lock_guard lock(mutex);
             inbox.game_mode = *mode;
             inbox.hardcore  = *hardcore != 0;  // ── screens ──
+            inbox.player_entity_id = *entity_id;  // ── entity-models ──
             if (chat_types) {
                 inbox.chat_types = std::move(*chat_types);
             }
@@ -727,10 +596,91 @@ void Client::Impl::handle_play(i32 packet_id, std::span<const u8> body) {
             // unreadable. It stops there rather than guessing — the alternative
             // is decoding another field's bytes as this one's value, which
             // looks like data instead of like an error.
-            if (!read_metadata(reader, change)) {
+            net::ParsedMetadata parsed = net::parse_entity_metadata(reader);
+            if (!parsed.complete) {
                 OV_LOG_WARN("entity {}: metadata stopped at a field this client cannot skip",
                             *id);
             }
+            for (const net::MetadataValue& value : parsed.values) {
+                if (value.index == net::metadata::kItemStack && value.stack) {
+                    change.stack = *value.stack;
+                }
+            }
+            change.metadata = std::move(parsed.values);
+            const std::lock_guard lock(mutex);
+            inbox.entities.push_back(std::move(change));
+            break;
+        }
+
+        // ── entity-models ── What an entity wears and holds, when it dies,
+        // when it is hurt, and what it rides. Each is parsed by
+        // ov/protocol/entity_metadata.hpp, round-trip tested against the
+        // encoder the server writes it with.
+        case net::clientbound::kEntityEquipment: {
+            auto parsed = net::parse_entity_equipment(body);
+            if (!parsed) {
+                fail("malformed Set Equipment");
+                return;
+            }
+            ClientEvents::EntityChange change;
+            change.kind      = ClientEvents::EntityChangeKind::Equipment;
+            change.id        = parsed->entity_id;
+            change.equipment = std::move(parsed->entries);
+            const std::lock_guard lock(mutex);
+            inbox.entities.push_back(std::move(change));
+            break;
+        }
+
+        case net::clientbound::kEntityEvent: {
+            const auto parsed = net::parse_entity_event(body);
+            if (!parsed) {
+                fail("malformed Entity Event");
+                return;
+            }
+            ClientEvents::EntityChange change;
+            change.kind   = ClientEvents::EntityChangeKind::Event;
+            change.id     = parsed->entity_id;
+            change.status = parsed->status;
+            const std::lock_guard lock(mutex);
+            inbox.entities.push_back(std::move(change));
+            break;
+        }
+
+        case net::clientbound::kHurtAnimation:
+        case net::clientbound::kDamageEvent: {
+            // Either one starts the red flash. Vanilla's server sends Damage
+            // Event to every viewer and Hurt Animation to the victim alone, so
+            // a mob seen from outside is flashed by the first.
+            std::optional<i32> victim;
+            if (packet_id == net::clientbound::kHurtAnimation) {
+                if (const auto hurt = net::parse_hurt_animation(body)) {
+                    victim = hurt->entity_id;
+                }
+            } else {
+                victim = net::parse_damage_event_victim(body);
+            }
+            if (!victim) {
+                fail("malformed Damage Event / Hurt Animation");
+                return;
+            }
+            ClientEvents::EntityChange change;
+            change.kind = ClientEvents::EntityChangeKind::Hurt;
+            change.id   = *victim;
+            const std::lock_guard lock(mutex);
+            inbox.entities.push_back(std::move(change));
+            break;
+        }
+
+        case net::clientbound::kSetPassengers: {
+            auto parsed = net::parse_set_passengers(body);
+            if (!parsed) {
+                fail("malformed Set Passengers");
+                return;
+            }
+            ClientEvents::EntityChange change;
+            change.kind   = ClientEvents::EntityChangeKind::Passengers;
+            change.id     = parsed->vehicle_id;
+            change.riders = std::move(parsed->riders);
             const std::lock_guard lock(mutex);
             inbox.entities.push_back(std::move(change));
             break;
@@ -1169,6 +1119,8 @@ void Client::poll(ClientEvents& out) {
     out.close_window = impl_->inbox.close_window;
     out.game_mode    = impl_->inbox.game_mode;
     impl_->inbox.game_mode.reset();
+    out.player_entity_id = impl_->inbox.player_entity_id;  // ── entity-models ──
+    impl_->inbox.player_entity_id.reset();
     out.abilities = impl_->inbox.abilities;  // ── flight ──
     impl_->inbox.abilities.reset();
     impl_->inbox.health.reset();
