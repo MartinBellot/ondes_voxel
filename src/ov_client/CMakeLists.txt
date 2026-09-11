@@ -69,6 +69,8 @@ ov_add_shaders(ov_client_shaders
         shaders/debug_triangle.frag
         shaders/entity.vert
         shaders/entity.frag
+        shaders/entity_additive.frag
+        shaders/entity_translucent.frag
         shaders/crumbling.frag
         shaders/gui.vert
         shaders/gui.frag
