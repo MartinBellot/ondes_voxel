@@ -171,20 +171,7 @@ void Client::Impl::handle_login(i32 packet_id, std::span<const u8> body) {
             stage   = Stage::Play;
             playing = true;
             OV_LOG_INFO("logged in as {}", desc.username);
-
-            // Client Information. Not cosmetic: the view distance here is what
-            // the server sizes its chunk sending by, and a server that thinks
-            // it is 2 sends nine chunks and stops.
-            io::ByteWriter writer;
-            net::write_string(writer, "en_gb");
-            writer.write_u8(desc.view_distance);
-            net::write_varint(writer, 0);  // chat mode: enabled
-            writer.write_u8(1);            // chat colours
-            writer.write_u8(0x7F);         // every skin part shown
-            net::write_varint(writer, 1);  // main hand: right
-            writer.write_u8(0);            // no text filtering
-            writer.write_u8(1);            // listed in the player list
-            send_raw(net::serverbound::kClientInformation, writer.data());
+            // Client Information waits for Login (play): see there.
             break;
         }
         case 0x03: {  // Set Compression
@@ -341,6 +328,25 @@ void Client::Impl::handle_play(i32 packet_id, std::span<const u8> body) {
             auto chat_types = net::read_login_chat_types(body);
             if (!chat_types) {
                 OV_LOG_WARN("Login (play): the registry codec did not read; chat types unknown");
+            }
+
+            // Client Information, now and not at Login Success. Sent at Login
+            // Success it can reach a vanilla server still decoding in the
+            // login state, whose three packets make 0x08 "Index 8 out of
+            // bounds for length 3" and a disconnect on join; the vanilla client
+            // sends it here. Not cosmetic either: the view distance is what the
+            // server sizes its chunk sending by.
+            {
+                io::ByteWriter writer;
+                net::write_string(writer, "en_gb");
+                writer.write_u8(desc.view_distance);
+                net::write_varint(writer, 0);  // chat mode: enabled
+                writer.write_u8(1);            // chat colours
+                writer.write_u8(0x7F);         // every skin part shown
+                net::write_varint(writer, 1);  // main hand: right
+                writer.write_u8(0);            // no text filtering
+                writer.write_u8(1);            // listed in the player list
+                send_raw(net::serverbound::kClientInformation, writer.data());
             }
             const std::lock_guard lock(mutex);
             inbox.game_mode = *mode;
