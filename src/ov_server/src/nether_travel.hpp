@@ -138,6 +138,13 @@ public:
 
     void mark_dirty(i32 cx, i32 cz) { dirty_.insert(chunk_key_of(cx, cz)); }
 
+    /// ── persistence ── The chunks evicted since the last call, appended to
+    /// `out`: their entities go to the dimension's `entities/`.
+    void take_evicted(std::vector<ChunkPos>& out) {
+        out.insert(out.end(), evicted_.begin(), evicted_.end());
+        evicted_.clear();
+    }
+
     /// Write every dirty chunk to `DIM-1/region`. `game_time` and the two
     /// tick snapshots are the level's, as for the overworld.
     usize save(i64 game_time, std::span<const world::ScheduledTick> block_ticks,
@@ -160,6 +167,7 @@ private:
     std::vector<GeneratedBlock>       finished_;
     std::vector<ChunkPos>             wanted_;
     std::vector<ChunkPos>             to_evict_;
+    std::vector<ChunkPos>             evicted_;  // ── persistence ──
     u64                               synchronous_{0};
 };
 

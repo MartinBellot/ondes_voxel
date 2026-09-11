@@ -311,16 +311,17 @@ lisent maintenant d'abord ces chunks (`read_before_write`), puis écrivent.
 | module | entités | sauvé ici ? | vanilla |
 |---|---|---|---|
 | `rails_session` | les 7 wagonnets | **oui, adoptant** | dans le chunk |
-| `tnt_gravity` | TNT amorcée, bloc qui tombe | non (`transient`) | sauvés dans le chunk (`Fuse`, `BlockState`, `Time`) |
-| `projectiles` | flèches, projectiles | non (`transient`) | sauvés dans le chunk |
-| `server.cpp` `ground_items` / `ground_orbs` | objets au sol, orbes | non (hors `EntityWorld`) | sauvés dans le chunk |
-| `nether_mobs` | les mobs du Nether | non (magasin à part) | `DIM-1/entities/` |
-| `end_fight` | le dragon, les orbes de l'End | non (nommé dans `end_fight.hpp`) | `DIM1/entities/` |
+| `tnt_gravity` | TNT amorcée, bloc qui tombe | **oui, adoptant** (2026-09-11, persistance) | sauvés dans le chunk (`Fuse`, `BlockState`, `Time`) |
+| `projectiles` | flèches, projectiles | **oui, adoptant** | sauvés dans le chunk |
+| `ground_entities` (`ground_items` / `ground_orbs`) | objets au sol, orbes | **oui, `LooseAdopter`**, une instance par dimension | sauvés dans le chunk |
+| `brewing_session` | nuages persistants | **oui, `LooseAdopter`** | sauvés dans le chunk |
+| `nether_mobs` | les mobs du Nether | **oui**, par le stockage de `DIM-1/entities` | `DIM-1/entities/` |
+| `end_fight` | le dragon, les cristaux | **oui, `LooseAdopter`** de `DIM1/entities` ; ses boules de feu, nuages et orbes non | `DIM1/entities/` |
 
-Aucun de ceux-là n'écrit dans `entities/` : il n'y a pas d'autre conflit d'écrivain. Ce sont des
-**manques de persistance**, nommés, pas des écrivains concurrents : chacun pourra devenir adoptant par
-la même interface. Les entités de ces types lues dans un monde vanilla restent rendues intactes
-(`foreign_`).
+Aucun de ceux-là n'écrit dans `entities/` : il n'y a pas d'autre conflit d'écrivain. La vague
+« persistance » (`persistance-entites.md`) les a tous branchés : chaque dimension a son stockage,
+seul écrivain de son répertoire, et une entité que ce serveur ne fait pas vivre reste rendue
+intacte (`foreign_`).
 
 **Preuves.**
 
