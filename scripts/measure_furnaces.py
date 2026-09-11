@@ -19,7 +19,10 @@ Deux campagnes, contre `tools/vanilla/server.jar` :
 Sortie : `.scratch/furnaces.json`, et sur la sortie standard les cellules
 sous la forme que lit `src/ov_server/tests/test_furnace_entity.cpp`.
 
-Usage : python3 scripts/measure_furnaces.py [ticks|xp|all]
+Usage : python3 scripts/measure_furnaces.py [ticks|xp|xp-iron|all]
+
+`xp-iron` refait le fer, l'extraction et l'entonnoir en gardant les pierres
+déjà mesurées.
 """
 from __future__ import annotations
 
@@ -184,12 +187,44 @@ class XpProbe(Probe):
             self.settle(0.1)
 
 
-def points(server: CraftServer, name: str) -> int:
-    for line in server.batch([f"xp query {name} points"]):
-        m = re.search(r"has (\d+) experience points", line)
-        if m:
-            return int(m.group(1))
-    raise RuntimeError("xp query unanswered")
+def level_points(level: int) -> int:
+    """Les points qu'il faut pour atteindre ce niveau depuis zéro."""
+    if level <= 16:
+        return level * level + 6 * level
+    if level <= 31:
+        return int(2.5 * level * level - 40.5 * level + 360)
+    return int(4.5 * level * level - 162.5 * level + 2220)
+
+
+def collected(server: CraftServer, name: str) -> int:
+    """Tout ce que l'extraction a versé : le joueur, niveaux compris, plus
+    les orbes encore au sol.
+
+    `xp query … points` ne compte que les points *dans* le niveau courant :
+    sept points font exactement le niveau 1 et s'y lisent 0. C'est ce qui a
+    donné trois zéros sur quatre à dix lingots de fer (10 × 0,7 = 7).
+    """
+    lines = server.batch([f"xp query {name} levels", f"xp query {name} points",
+                          "execute as @e[type=minecraft:experience_orb] "
+                          "run data get entity @s Value"])
+    levels = points = None
+    ground = 0
+    for line in lines:
+        if m := re.search(r"has (\d+) experience levels", line):
+            levels = int(m.group(1))
+        elif m := re.search(r"has (\d+) experience points", line):
+            points = int(m.group(1))
+        elif m := re.search(r"has the following entity data: (\d+)s?$", line):
+            ground += int(m.group(1))
+    if levels is None or points is None:
+        raise RuntimeError(f"xp query unanswered: {lines[-5:]}")
+    return level_points(levels) + points + ground
+
+
+def block_data(server: CraftServer, pos: tuple[int, int, int]) -> str | None:
+    lines = server.batch([f"data get block {pos[0]} {pos[1]} {pos[2]}"])
+    found = [line for line in lines if "block data" in line]
+    return found[0] if found else None
 
 
 def campaign_xp(server: CraftServer, trials: int = 40) -> dict:
@@ -205,55 +240,64 @@ def campaign_xp(server: CraftServer, trials: int = 40) -> dict:
     server.batch(["gamemode survival Oven0", f"tp Oven0 {stand[0]} {stand[1]} {stand[2]}",
                   f"setblock {pos[0]} {pos[1] - 1} {pos[2]} minecraft:stone"])
     probe.settle(1.0)
-    results: dict = {"iron10": [], "stone5": [], "cleared": None, "hopper_keeps": None}
+    results: dict = {"iron10": [], "raw": [], "cleared": None, "hopper_keeps": None}
+    if trials:
+        results["stone5"] = []
 
-    def one(output: str, count: int, recipe: str, used: int) -> int:
-        server.batch([f"xp set Oven0 0 points", f"xp set Oven0 0 levels",
+    def place(output: str, count: int, recipe: str, used: int) -> None:
+        # L'air d'abord : `setblock` sur un four déjà là répond « Could not
+        # set the block » et n'applique pas le NBT.
+        server.batch([f"setblock {pos[0]} {pos[1]} {pos[2]} minecraft:air",
                       f'setblock {pos[0]} {pos[1]} {pos[2]} minecraft:furnace{{Items:[{{Slot:2b,'
                       f'id:"minecraft:{output}",Count:{count}b}}],RecipesUsed:{{"minecraft:{recipe}":{used}}}}}'])
+
+    def one(output: str, count: int, recipe: str, used: int) -> int | None:
+        """Les points versés, ou None si la sortie n'a pas été prise."""
+        server.batch(["xp set Oven0 0 levels", "xp set Oven0 0 points",
+                      "kill @e[type=minecraft:experience_orb]", "clear Oven0"])
+        place(output, count, recipe, used)
         probe.settle(0.3)
         probe.open_block(pos, stand)
         probe.settle(0.2)
         probe.click(2, 0, 1)            # shift-clic sur la sortie
-        probe.settle(3.0)               # laisser les orbes arriver jusqu'au joueur
-        probe.close()
         probe.settle(0.5)
-        # Un joueur ne ramasse qu'une orbe tous les deux ticks, et une orbe
-        # met un moment à le rejoindre : on relit jusqu'à ce que le compte
-        # tienne deux lectures de suite.
-        got, previous = points(server, "Oven0"), -1
+        probe.close()
+        after = block_data(server, pos) or ""
+        taken = "Slot: 2b" not in after and "RecipesUsed: {}" in after
+        # Le joueur plus le sol : ramasser déplace les points sans en créer,
+        # donc deux lectures égales suffisent.
+        got, previous = collected(server, "Oven0"), -1
         for _ in range(8):
-            if got == previous and got > 0:
+            if got == previous:
                 break
             probe.settle(0.5)
-            previous, got = got, max(got, points(server, "Oven0"))
-        server.batch(["kill @e[type=minecraft:experience_orb]",
-                      f"setblock {pos[0]} {pos[1]} {pos[2]} minecraft:air",
-                      "clear Oven0"])
-        return got
+            previous, got = got, collected(server, "Oven0")
+        results["raw"].append({"output": output, "taken": taken, "got": got, "after": after})
+        return got if taken else None
 
-    for _ in range(4):
+    for _ in range(6):
         results["iron10"].append(one("iron_ingot", 10, "iron_ingot_from_smelting_iron_ore", 10))
     for _ in range(trials):
         results["stone5"].append(one("stone", 5, "stone", 5))
-    print(f"iron10 → {results['iron10']}; stone5 → {sum(results['stone5'])}/{trials} gave 1",
+    stone = [v for v in results.get("stone5", []) if v is not None]
+    print(f"iron10 → {results['iron10']}; stone5 → {sum(stone)}/{len(stone)} gave 1",
           flush=True)
 
     # RecipesUsed vidé par l'extraction, et gardé si c'est un entonnoir qui vide.
-    server.batch([f'setblock {pos[0]} {pos[1]} {pos[2]} minecraft:furnace{{Items:[{{Slot:2b,'
-                  f'id:"minecraft:iron_ingot",Count:3b}}],RecipesUsed:{{"minecraft:iron_ingot_from_smelting_iron_ore":3}}}}'])
+    place("iron_ingot", 3, "iron_ingot_from_smelting_iron_ore", 3)
     probe.open_block(pos, stand)
     probe.click(2, 0, 1)
     probe.settle(0.5)
     probe.close()
-    after = [l for l in server.batch([f"data get block {pos[0]} {pos[1]} {pos[2]}"]) if "block data" in l]
-    results["cleared"] = after[0] if after else None
-    server.batch([f"setblock {pos[0]} {pos[1] - 1} {pos[2]} minecraft:hopper",
-                  f'setblock {pos[0]} {pos[1]} {pos[2]} minecraft:furnace{{Items:[{{Slot:2b,'
-                  f'id:"minecraft:iron_ingot",Count:3b}}],RecipesUsed:{{"minecraft:iron_ingot_from_smelting_iron_ore":3}}}}'])
+    results["cleared"] = block_data(server, pos)
+    # Un entonnoir dessous vide la sortie sans joueur : le four garde-t-il
+    # `RecipesUsed` ? L'entonnoir d'abord, puis le four, sur de l'air.
+    server.batch([f"setblock {pos[0]} {pos[1] - 1} {pos[2]} minecraft:hopper"])
+    place("iron_ingot", 3, "iron_ingot_from_smelting_iron_ore", 3)
     time.sleep(3.0)
-    after = [l for l in server.batch([f"data get block {pos[0]} {pos[1]} {pos[2]}"]) if "block data" in l]
-    results["hopper_keeps"] = after[0] if after else None
+    results["hopper_keeps"] = block_data(server, pos)
+    results["hopper_took"] = [line for line in server.batch(
+        [f"data get block {pos[0]} {pos[1] - 1} {pos[2]} Items"]) if "block data" in line]
     probe.s.close()
     return results
 
@@ -268,6 +312,10 @@ def main() -> int:
             result["ticks"] = campaign_ticks(server)
         if phase in ("xp", "all"):
             result["xp"] = campaign_xp(server)
+        if phase == "xp-iron":
+            # Les 40 pierres déjà mesurées sont gardées ; seuls le fer,
+            # l'extraction et l'entonnoir sont refaits.
+            result.setdefault("xp", {}).update(campaign_xp(server, trials=0))
     finally:
         server.stop()
     OUT.write_text(json.dumps(result, indent=1))
