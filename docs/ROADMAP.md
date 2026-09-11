@@ -86,7 +86,10 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] Message d'erreur actionnable si la version est absente
 - [x] Extraction du jar client : `models/`, `blockstates/`, `font/`, `lang/`
 - [x] Résolution via `assets/indexes/*.json` → `objects/<hash>` (142 langues)
-- [ ] Sons : `--sounds` implémenté, non activé par défaut (inutile avant M9)
+- [x] Sons : `--sounds` implémenté, **activé par défaut** depuis que le client les joue
+      *(**2026-09-11** : 152 Mo d'effets dans `run/assets/`, gitignoré ; `--no-sounds`
+      les écarte, `--music` ajoute musique et disques, 432 Mo. Voir
+      `docs/provenance/son-client.md`)*
 - [x] Empilage des packs selon la priorité vanilla, dossiers **et** zips
 - [x] Manifeste de provenance par fichier → `run/assets/PROVENANCE.tsv`
 - [ ] `ov-assetgen` : atlas procédural (démarrage sans aucun asset externe)
@@ -407,7 +410,16 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       un seul processus, et les octets restent ceux du protocole)*
 - [ ] Prédiction de mouvement et réconciliation
 - [ ] Interpolation d'entités
-- [ ] Mixeur audio, sons 3D atténués, catégories de volume
+- [x] Mixeur audio, sons 3D atténués, catégories de volume
+      *(**2026-09-11** : atténuation linéaire à `attenuation_distance` × max(1,
+      volume), panoramique sur l'axe droit `regard × haut` de la tête —
+      invariant au tangage, prouvé —, **8/8 positions** du modèle numérique
+      retrouvées dans les échantillons du mixeur à 10⁻⁴ ; priorité des voix
+      (le plus faible aux oreilles cède) : 200 sons/frame tiennent en **4,9 ms
+      p99** par rappel de 10,7 ms, contre 16,0 ms sans plafond ; dix catégories
+      et `showSubtitles` dans `options.txt` aux clés du vrai client. Bornes de
+      voix et loi de panoramique : les nôtres, non comparées au vrai client.
+      Voir `docs/provenance/son-client.md`)*
 - [~] **Deux clients pour un serveur · p99 ≤ 20 ms à 12 chunks** ⭐
       *(le p99 est tenu : 17,77 ms avec vsync, dont 0,41 ms d'enregistrement
       CPU et 10,91 ms de GPU, à 12 chunks sur M2 en 2560×1440. Les deux
@@ -1059,8 +1071,19 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       forme, calendrier local identique au tick près (pierre à la main 151).
       Restent la main à la première personne et la prédiction locale du bloc
       cassé. Voir `docs/provenance/cassage-bloc.md`)*
-- [ ] Audio : tous les événements sonores, musique adaptative par biome et
+- [~] Audio : tous les événements sonores, musique adaptative par biome et
       dimension, disques, sous-titres
+      *(**2026-09-11** : musique par situation dans l'ordre du wiki (menu,
+      crédits, dragon, End, sous l'eau, créatif, biome, jeu), dimension lue
+      dans Login et Respawn, musique des **31 biomes** lue dans le codec de
+      Login, barre du dragon par le drapeau 0x02 de Boss Bar ; disques par
+      World Event **1010/1011 mesurés** sur le vrai serveur (id d'objet, reçus
+      par l'acteur aussi), « Now Playing » en barre d'action, musique qui
+      s'efface sous un disque ; sous-titres en bas à droite avec flèches et
+      fondu ; clic des boutons des menus. Restent : éclaboussures, crédits,
+      Update Tags (liste « sous l'eau » en table), arc-en-ciel de « Now
+      Playing », sous-titres non comparés au pixel ; notre serveur n'émet pas
+      encore 1010. Voir `docs/provenance/son-client.md`)*
 - [ ] Resource packs empilables, i18n, options persistées, captures d'écran
 
 ### Commandes et progression
