@@ -347,6 +347,17 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       d'une section reste, et demande son propre index buffer)*
 - [ ] Plafond d'upload par frame (les spikes, pas le FPS moyen, sont le risque)
 - [~] Ciel, soleil, lune, étoiles, nuages, brouillard, météo
+      *(**2026-09-11 — la météo** : cycle naturel de pluie et d'orage (durées
+      `/weather` uniformes, χ² p = 0,88/0,19/0,39), tick de chunk de
+      précipitation — glace des océans gelés **11 285/11 285** colonnes du monde
+      de référence, neige et chaudrons —, foudre (21 éclairs vanilla pour 20,0
+      prédits sur 208 chunks, paratonnerre 40/40, conversions), lits : seuils
+      de sommeil identiques au tick près au clair, sous la pluie et l'orage,
+      nuit sautée, point de réapparition. Client : pluie et neige dessinées,
+      ciel et brouillard assombris par les Game Events 7/8, flash d'éclair —
+      0,45/1,35 ms p50/p99 d'enregistrement pour un orage. Restent la campagne
+      vanilla des lits (en file), le feu de la foudre, phantoms et insomnie.
+      Voir `docs/provenance/meteo-sommeil.md`)*
       *(la **courbe de luminosité** (les 16 valeurs publiées à 1e-7), le
       **lightmap 16×16** reconstruit par frame, le **cycle du jour** (13670 et
       22331 au tick près) et le **brouillard cylindrique** avec sa couleur

@@ -43,6 +43,7 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`combat.md`](provenance/combat.md) | Frapper, utiliser, manger, user : la jauge d'attaque, 34 armes, 91 tables de butin |
 | [`verbes.md`](provenance/verbes.md) | Les verbes branchés au serveur, et le levier enfin tiré |
 | [`explosions.md`](provenance/explosions.md) | La résistance au souffle des 987 blocs, mesurée — et le plafond au-delà duquel aucune explosion ne peut plus distinguer deux valeurs |
+| [`meteo-sommeil.md`](provenance/meteo-sommeil.md) | La pluie qui vient seule, la glace des océans gelés à 11 285/11 285, la foudre et les lits |
 | [`nether.md`](provenance/nether.md) | Le Nether à 99,9 %, des portails là où le jeu les met, et le bruit de l'Overworld qui lisait ses octaves à l'envers |
 | [`son.md`](provenance/son.md) | Les sons de 1003 blocs et 79 créatures, relevés sur le fil, et le client qui les joue |
 | [`elevage.md`](provenance/elevage.md) | Veaux, agneaux et poussins : reproduction à 59-62 ticks, couleurs héritées, et une vitesse de marche qui n'est pas l'attribut divisé par deux |
