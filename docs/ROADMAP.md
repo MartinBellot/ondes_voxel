@@ -705,14 +705,33 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       **dragon** et les **cristaux** dans `DIM1/entities` : santé, phase et position
       revenues, un cristal détruit ne revient pas, le combat ne redémarre plus. Voir
       `docs/provenance/persistance-entites.md`)*
-- [ ] **Passifs (32)** : allay, axolotl, bat, camel, cat, chicken, cod, cow,
+- [~] **Passifs (32)** : allay, axolotl, bat, camel, cat, chicken, cod, cow,
       donkey, fox, frog, glow_squid, horse, mooshroom, mule, ocelot, parrot,
       pig, pufferfish, rabbit, salmon, sheep, skeleton_horse, sniffer,
       snow_golem, squid, strider, tadpole, tropical_fish, turtle, villager,
       wandering_trader
-- [ ] **Neutres (14)** : bee, cave_spider, dolphin, enderman, goat, iron_golem,
+      *(**2026-09-11 — apprivoisement et montures**, mesuré contre le vrai
+      serveur : chat, ocelot, perroquet, cheval, âne, mule apprivoisables,
+      montables ou dignes de confiance ; un essai sur trois apprivoise un chat
+      (447 morues, χ² p > 0,05, témoins 1/2 et 1/5 rejetés) ; statistiques
+      d'un cheval et de ses poulains à la règle 1.20 (écarts-types à 12 % près
+      sur 120 poulains ; la mule hérite sa vitesse) ; tempérament +5 par chute ;
+      un cheval dompté, sellé et conduit par `Move Vehicle` de bout en bout, et
+      revenu de `entities/`. Lapin, renard, tortue, abeille, chèvre, dromadaire
+      et renifleur vivent, se nourrissent, se reproduisent et gardent leur type
+      à la sauvegarde. Restent le vol et l'épaule du perroquet, la ruche, la
+      mule née d'un croisement, l'inventaire du cheval. Voir
+      `docs/provenance/apprivoisement.md`)*
+- [~] **Neutres (14)** : bee, cave_spider, dolphin, enderman, goat, iron_golem,
       llama, trader_llama, panda, piglin, polar_bear, spider, wolf,
       zombified_piglin
+      *(**2026-09-11** : le loup — un os sur trois l'apprivoise (435 os), assis
+      et à 20 de vie ; colère de 20 à 39 s et toute la meute ; il suit son maître
+      au-delà de 10 blocs, est téléporté dès 12, défend son maître et ne mord
+      jamais un creeper ; collier, propriétaire et colère sur le fil et sur
+      disque. Le lama et le lama marchand se montent et s'apprivoisent
+      (tempérament sur 30) ; la chèvre et l'abeille vivent sans leurs attaques.
+      Voir `docs/provenance/apprivoisement.md`)*
 - [ ] **Hostiles (29)** : blaze, creeper, drowned, elder_guardian, endermite,
       evoker, ghast, guardian, hoglin, husk, magma_cube, phantom, piglin_brute,
       pillager, ravager, shulker, silverfish, skeleton, slime, stray, vex,
@@ -886,6 +905,12 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       lancé qui fait éclore un poussin. Restent les autres espèces (lapin,
       équidés, loup, chat), l'apprivoisement, et la persistance des mobs.
       Voir `docs/provenance/elevage.md`)*
+      *(**2026-09-11 — apprivoisement et croisement des chevaux et lamas** :
+      loup, chat, perroquet, ocelot, cheval, âne, lama ; poulains à la règle
+      1.20 mesurée sur 132 naissances, louveteaux à leur maître, et l'élevage
+      des lapins, renards, chèvres (traite), tortues, abeilles et dromadaires.
+      La force d'un lama, que le wiki donne à 1 sur 25, est ajustée sur 160
+      mesures. Voir `docs/provenance/apprivoisement.md`)*
 - [~] **Enchantement**
       *(**2026-09-11**, mesuré contre le vrai serveur : table **512/512 offres**
       (56 graines, 0-15 étagères, 46 objets) et **57/57 enchantements appliqués**,

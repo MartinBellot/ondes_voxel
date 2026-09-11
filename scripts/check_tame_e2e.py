@@ -390,11 +390,13 @@ def check_zoo() -> int:
         stop(server)
     out["fichiers entities"] = sorted(p.name for p in (OURS_ZOO / "entities").glob("*.mca"))
     total = sum(out["vus"].values())
-    out["zoo"] = f"{total} mobs sur 16"
+    # Sixteen summoned, fifteen saved by the real server: no trader llama in
+    # its entities/ (apprivoisement.md § 8.2). What it saved, we must show.
+    out["zoo"] = f"{total} mobs sur les 15 enregistrés par vanilla"
     OUT.with_name("tame_zoo_e2e.json").write_text(json.dumps(out, indent=1, ensure_ascii=False))
     for key, value in out.items():
         print(f"{key:18} {value}")
-    return 0 if total >= 16 else 1
+    return 0 if total >= 15 else 1
 
 
 if __name__ == "__main__":

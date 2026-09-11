@@ -237,9 +237,21 @@ passe, deux fois de suite à l'identique :**
 | une teinture bleue | indice 20 = 11 |
 | `stop`, redémarrage | le loup revient de `entities/` : 0x04, même propriétaire, collier 11 |
 
-**Le cheval ne passe pas encore** : la sonde est bien mise en selle (`Set Passengers`), mais la
-décision arrive 370 et 600 ticks après la montée, là où vanilla décide en une soixantaine. Le
-diagnostic est en cours (§ 9).
+**Le cheval passe aussi** :
+
+| étape | vu sur le fil |
+|---|---|
+| main vide sur le cheval sauvage | `Set Passengers` avec la sonde ; jetée (6) huit fois, puis les cœurs (7) à la neuvième montée ; indice 17 = 0x02 |
+| descendre (`Player Input` 0x02), une selle | `Set Passengers` vide ; indice 17 = 0x06 |
+| remonter, 40 `Move Vehicle` de 0,25 bloc | le cheval avance de **10,0 blocs** sur le fil ; descendu |
+| `stop`, redémarrage | le cheval revient apprivoisé et sellé (0x06) |
+
+Le journal du serveur date chaque montée et chaque chute : **116, 159, 80, 33, 93, 153 et 43
+ticks** de la montée à la décision, 97 en moyenne sur sept — plus que les 50 d'un tirage de 1 sur
+50, que `test_tame.cpp` retrouve sur 40 chevaux, mais dans l'écart de la mesure vanilla (moyenne 78
+sur 63, lue à 20 ticks près). **Une exécution précédente** avait vu 370 et 600 ticks sans que rien
+ne l'explique ; elle ne s'est pas reproduite, et c'est pour la reconnaître si elle revient que
+chaque montée et chaque descente sont désormais journalisées avec leur raison.
 
 ### 8.2 Le zoo du vrai serveur, relu par le nôtre
 
@@ -253,6 +265,14 @@ tapis d'un lama, type de lapin, renard des neiges endormi, variante et propriét
 perroquet, œuf de tortue, nectar d'abeille, chèvre hurleuse à une corne, selle d'un dromadaire.
 Les statistiques d'un cheval sont celles de sa liste `Attributes`, relues puis réécrites telles
 quelles.
+
+Puis **`ov_dedicated` sur une copie de ce monde** (`check_tame_e2e.py zoo`) : les quinze mobs
+arrivent sur le fil avec leurs indices — chat 0x05, UUID de la sonde, variante 5 (calico), collier
+3 ; lama 0x02, force 4, tapis 11 (bleu), variante 3 ; cheval 14 (0x02 | 0x04 | 0x08) et variante
+515 ; âne 0x02 et coffre ; ocelot confiant ; lapin 3 ; renard des neiges (17 = 1) endormi (18 =
+0x20) ; perroquet 0x05, variante 2 ; tortue à l'œuf ; abeille 0x08 ; chèvre hurleuse, corne droite
+fausse ; dromadaire sellé (0x04). `save-all`, et le monde réécrit par notre serveur est gardé pour
+`measure_tame.py zoo_back`.
 
 ---
 
