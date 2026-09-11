@@ -188,6 +188,8 @@ void ClientEvents::clear() {
     changed.clear();
     teleport.reset();
     time_of_day.reset();
+    rain_level.reset();     // ── weather ──
+    thunder_level.reset();  // ── weather ──
     health.reset();
     experience.reset();
     containers.clear();
@@ -421,6 +423,26 @@ void Client::Impl::handle_play(i32 packet_id, std::span<const u8> body) {
             // Negative means the cycle is frozen; the magnitude is still the
             // time, so it is the absolute value that matters.
             inbox.time_of_day = *time < 0 ? -*time : *time;
+            break;
+        }
+
+        // ── weather ── Game Event: one byte of kind, one float of value.
+        case net::clientbound::kGameEvent: {
+            const auto kind  = reader.read_u8();
+            const auto value = reader.read_f32();
+            if (!kind || !value) {
+                return;
+            }
+            const std::lock_guard lock(mutex);
+            if (*kind == 1) {
+                inbox.rain_level = 0.0F;
+            } else if (*kind == 2) {
+                inbox.rain_level = 1.0F;
+            } else if (*kind == 7) {
+                inbox.rain_level = *value;
+            } else if (*kind == 8) {
+                inbox.thunder_level = *value;
+            }
             break;
         }
 
@@ -1025,6 +1047,12 @@ void Client::poll(ClientEvents& out) {
     out.time_of_day = impl_->inbox.time_of_day;
     impl_->inbox.teleport.reset();
     impl_->inbox.time_of_day.reset();
+    // ── weather ── copied like every other field: the inbox is not handed out
+    // whole, and a field left out here is a packet read and thrown away.
+    out.rain_level    = impl_->inbox.rain_level;
+    out.thunder_level = impl_->inbox.thunder_level;
+    impl_->inbox.rain_level.reset();
+    impl_->inbox.thunder_level.reset();
     out.containers.swap(impl_->inbox.containers);
     out.container_slots.swap(impl_->inbox.container_slots);
     out.health      = impl_->inbox.health;

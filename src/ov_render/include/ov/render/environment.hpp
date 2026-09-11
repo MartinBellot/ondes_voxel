@@ -68,6 +68,17 @@ inline constexpr f32 kNetherAmbientLight    = 0.1F;
 /// The sky colour: the biome's, scaled. Black at night, exactly.
 [[nodiscard]] u32 sky_colour(u32 biome_sky, f32 darken) noexcept;
 
+// ── weather ──
+/// The fog under rain and thunder: rain dims red and green by half and blue by
+/// two fifths at full strength, thunder all three by half more. `thunder` is
+/// the client's thunder level, already multiplied by the rain level.
+/// Unmeasured constants — see docs/provenance/meteo-sommeil.md.
+[[nodiscard]] u32 weather_fog_colour(u32 fog, f32 rain, f32 thunder) noexcept;
+
+/// The sky under rain and thunder, drawn towards a grey of its own luminance,
+/// and a lightning flash (0..1) pulling it towards a pale blue-white.
+[[nodiscard]] u32 weather_sky_colour(u32 sky, f32 rain, f32 thunder, f32 flash) noexcept;
+
 /// Vanilla's 16x16 lightmap, rebuilt every frame.
 ///
 /// Not a formula in a shader: the game builds this texture on the CPU and

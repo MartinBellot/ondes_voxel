@@ -74,6 +74,8 @@ struct PlantHooks {
     /// Spawn the loot of a block a rule broke. Called before the block is
     /// replaced, because the loot table reads the state.
     std::function<void(BlockPos, registry::BlockStateId)> drop_block;
+    // ── weather ── Is rain falling here? Empty: it never rains.
+    std::function<bool(BlockPos)> is_raining_at;
 };
 
 /// `gameplay::PlantEnvironment` over callbacks.
@@ -85,10 +87,11 @@ public:
     [[nodiscard]] u8 sky_light(BlockPos pos) const override;
     [[nodiscard]] u8 sky_darken() const override;
 
-    /// This server has no weather: it never rains, and farmland that would
-    /// have been kept wet by rain dries. Said here rather than returned
-    /// silently from a callback nobody reads.
-    [[nodiscard]] bool is_raining_at(BlockPos) const override { return false; }
+    /// ── weather ── The weather session's answer (weather_session.hpp); with
+    /// no hook, it never rains and farmland that rain would keep wet dries.
+    [[nodiscard]] bool is_raining_at(BlockPos pos) const override {
+        return hooks_.is_raining_at && hooks_.is_raining_at(pos);
+    }
 
     void drop_block(BlockPos pos, registry::BlockStateId state) override;
     bool grow_tree(world::LevelWriter& level, BlockPos pos, registry::BlockStateId sapling,

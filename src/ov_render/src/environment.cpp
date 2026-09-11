@@ -82,6 +82,43 @@ u32 sky_colour(u32 biome_sky, f32 darken) noexcept {
            to_byte(static_cast<f32>(channel(biome_sky, 0)) / 255.0F * a);
 }
 
+// ── weather ─────────────────────────────────────────────────────────────────
+
+u32 weather_fog_colour(u32 fog, f32 rain, f32 thunder) noexcept {
+    const f32 wet   = std::clamp(rain, 0.0F, 1.0F);
+    const f32 storm = std::clamp(thunder, 0.0F, 1.0F);
+    const f32 rg    = (1.0F - wet * 0.5F) * (1.0F - storm * 0.5F);
+    const f32 b     = (1.0F - wet * 0.4F) * (1.0F - storm * 0.5F);
+    return (to_byte(static_cast<f32>(channel(fog, 16)) / 255.0F * rg) << 16U) |
+           (to_byte(static_cast<f32>(channel(fog, 8)) / 255.0F * rg) << 8U) |
+           to_byte(static_cast<f32>(channel(fog, 0)) / 255.0F * b);
+}
+
+u32 weather_sky_colour(u32 sky, f32 rain, f32 thunder, f32 flash) noexcept {
+    f32 r = static_cast<f32>(channel(sky, 16)) / 255.0F;
+    f32 g = static_cast<f32>(channel(sky, 8)) / 255.0F;
+    f32 b = static_cast<f32>(channel(sky, 0)) / 255.0F;
+    const auto towards_grey = [&](f32 level, f32 grey_scale) {
+        if (level <= 0.0F) {
+            return;
+        }
+        const f32 grey = (r * 0.3F + g * 0.59F + b * 0.11F) * grey_scale;
+        const f32 keep = 1.0F - std::clamp(level, 0.0F, 1.0F) * 0.75F;
+        r              = r * keep + grey * (1.0F - keep);
+        g              = g * keep + grey * (1.0F - keep);
+        b              = b * keep + grey * (1.0F - keep);
+    };
+    towards_grey(rain, 0.6F);
+    towards_grey(thunder, 0.2F);
+    if (flash > 0.0F) {
+        const f32 f = std::min(flash, 1.0F) * 0.45F;
+        r           = r * (1.0F - f) + 0.8F * f;
+        g           = g * (1.0F - f) + 0.8F * f;
+        b           = b * (1.0F - f) + 1.0F * f;
+    }
+    return (to_byte(r) << 16U) | (to_byte(g) << 8U) | to_byte(b);
+}
+
 void Lightmap::update(f32 darken, f32 ambient_light, f32 gamma, f32 flicker) noexcept {
     for (u32 sky = 0; sky < kSize; ++sky) {
         for (u32 block = 0; block < kSize; ++block) {

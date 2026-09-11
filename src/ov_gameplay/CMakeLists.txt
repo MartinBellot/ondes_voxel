@@ -39,6 +39,8 @@ ov_add_library(ov_gameplay
         src/recipe.cpp
         src/crafting.cpp
         src/smelting.cpp
+        src/weather.cpp
+        src/sleep.cpp
     DEPS
         ov_world
         ov_entity
@@ -84,6 +86,8 @@ ov_add_test(test_ov_gameplay
         tests/test_crafting.cpp
         tests/test_crafting_parity.cpp
         tests/test_smelting.cpp
+        tests/test_weather.cpp
+        tests/test_climate_oracle.cpp
     DEPS ov_gameplay simdjson::simdjson
     LABELS unit
 )

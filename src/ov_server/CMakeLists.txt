@@ -24,6 +24,7 @@ ov_add_library(ov_server
         src/projectiles.cpp
         src/survival_session.cpp
         src/tnt_gravity.cpp
+        src/weather_session.cpp
         src/workbench.cpp
         src/world_ticks.cpp
         # ── commands and chat ──
@@ -73,6 +74,7 @@ ov_add_test(test_ov_server
         tests/test_player_inventory.cpp
         tests/test_player_level.cpp
         tests/test_player_data.cpp
+        tests/test_weather_session.cpp
     DEPS ov_server
     LABELS unit
 )

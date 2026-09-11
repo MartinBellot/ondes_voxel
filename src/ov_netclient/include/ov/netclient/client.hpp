@@ -92,6 +92,15 @@ struct ClientEvents {
     /// The world's clock, when it was sent this poll.
     std::optional<i64> time_of_day;
 
+    // ── weather ──
+    /// Game Events 7 and 8 — the rain and thunder levels the sky darkens by —
+    /// the last of each this poll. Game Event 1 (rain begins) sets the rain
+    /// level to 0 and Game Event 2 (rain ends) to 1, as the game's client
+    /// does, before the server's 7 and 8 that always follow them.
+    std::optional<f32> rain_level;
+    std::optional<f32> thunder_level;
+    // ── end weather ──
+
     // ── What an interface needs ─────────────────────────────────────────────
     //
     // Everything below is here because a client that draws a HUD has to be
@@ -249,7 +258,7 @@ struct ClientEvents {
                !time_of_day && !health && !experience && containers.empty() &&
                container_slots.empty() && !open_screen && !close_window && !game_mode &&
                !abilities && entities.empty() && chat.empty() && !chat_types &&
-               !commands && suggestions.empty();
+               !commands && suggestions.empty() && !rain_level && !thunder_level;
     }
     void clear();
 };

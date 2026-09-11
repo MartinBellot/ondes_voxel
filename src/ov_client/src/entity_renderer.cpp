@@ -54,7 +54,7 @@ EntityRenderer::~EntityRenderer() {
 }
 
 std::expected<std::unique_ptr<EntityRenderer>, rhi::RhiError> EntityRenderer::create(
-    rhi::Device& device, rhi::Format colour_format, rhi::Format depth_format) {
+    rhi::Device& device, rhi::Format colour_format, rhi::Format depth_format, EntityPass pass) {
     std::unique_ptr<EntityRenderer> self(new EntityRenderer);
     self->device_ = &device;
 
@@ -84,6 +84,13 @@ std::expected<std::unique_ptr<EntityRenderer>, rhi::RhiError> EntityRenderer::cr
     pipeline.blend      = rhi::BlendMode::None;
     pipeline.topology   = rhi::PrimitiveTopology::TriangleList;
     pipeline.debug_name = "entities";
+    if (pass == EntityPass::Translucent) {  // ── weather ──
+        pipeline.fragment_shader = "weather.frag.spv";
+        pipeline.blend           = rhi::BlendMode::Alpha;
+        pipeline.depth_write     = false;
+        pipeline.cull_mode       = rhi::CullMode::None;
+        pipeline.debug_name      = "weather";
+    }
 
     auto created = device.create_graphics_pipeline(pipeline);
     if (!created) {
@@ -97,7 +104,10 @@ std::expected<std::unique_ptr<EntityRenderer>, rhi::RhiError> EntityRenderer::cr
     auto sampler = device.create_sampler(rhi::SamplerDesc{rhi::Filter::Nearest,
                                                           rhi::Filter::Nearest,
                                                           rhi::MipFilter::Nearest,
-                                                          rhi::AddressMode::ClampToEdge, 1.0F,
+                                                          pass == EntityPass::Translucent
+                                                              ? rhi::AddressMode::Repeat
+                                                              : rhi::AddressMode::ClampToEdge,
+                                                          1.0F,
                                                           0.0F});
     if (!sampler) {
         return std::unexpected(sampler.error());
