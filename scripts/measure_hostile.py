@@ -21,6 +21,17 @@ Campaigns (run all by default, or name some):
   anvil     cows and zombies saved by vanilla with effects on them, the world
             kept under .scratch/hostile-anvil-vanilla/ for the round trip.
 
+The four species the plan brings next — the wiki's numbers are hypotheses:
+
+  enderman  a survival probe teleported to face an enderman's eyes (the
+            enderman in a pit, so it cannot wander out of the gaze) against one
+            looking away: its `AngryAt`; then water poured on it.
+  spider    its hits on a survival probe at noon and at midnight.
+  slime     contact hits by size (0, 1, 3), and each size's jump rhythm with
+            nobody to chase.
+  witch     what a survival probe at 9 and at 2.5 blocks is given and loses,
+            and what the witch drinks.
+
 Raw readings go to .scratch/hostile.json (not tracked). The results are in
 docs/provenance/mobs-4.md.
 
@@ -242,20 +253,36 @@ def campaign_packets(server, rec: Recorder) -> dict:
 
 # ── speed ───────────────────────────────────────────────────────────────────
 
-SPEED_CELLS = [("none", ""),
-               ("speed1", "ActiveEffects:[{Id:1,Amplifier:0b,Duration:-1,ShowParticles:0b}]"),
-               ("speed2", "ActiveEffects:[{Id:1,Amplifier:1b,Duration:-1,ShowParticles:0b}]"),
-               ("slow1", "ActiveEffects:[{Id:2,Amplifier:0b,Duration:-1,ShowParticles:0b}]")]
+# The first run gave every cell through `ActiveEffects` in the summon NBT, and
+# all four walked at the control's 0.11417: an effect read from NBT does not
+# bring its modifier — vanilla keeps those in `Attributes`. So the effects are
+# given by `effect give` now, and the NBT way is kept as a cell of its own.
+SPEED_CELLS = [("none", None), ("speed1", ("speed", 0)), ("speed2", ("speed", 1)),
+               ("slow1", ("slowness", 0)), ("speed1_nbt", "nbt")]
+SPEED_NBT = "ActiveEffects:[{Id:1,Amplifier:0b,Duration:-1,ShowParticles:0b}]"
 
 
 def campaign_speed(server, rec: Recorder) -> dict:
     mm2.reset(server)
     field = mm2.Field(server)
     groups: dict[str, list[str]] = {}
-    for c, (label, extra) in enumerate(SPEED_CELLS):
+    for c, (label, how) in enumerate(SPEED_CELLS):
         for k in range(5):
-            name = field.summon("zombie", -30.5 + k * 12.0, -30.5 + c * 16.0, extra)
+            name = field.summon("zombie", -30.5 + k * 12.0, -30.5 + c * 16.0,
+                                SPEED_NBT if how == "nbt" else "")
             groups.setdefault(label, []).append(name)
+    time.sleep(1.0)
+    commands = []
+    for label, how in SPEED_CELLS:
+        if isinstance(how, tuple):
+            effect, amplifier = how
+            commands += [f"effect give @e[name={n},limit=1] minecraft:{effect} infinite "
+                         f"{amplifier} true" for n in groups[label]]
+    server.batch(commands, timeout=120)
+    # The replies themselves, so that a None below can be read for its cause.
+    raw_attribute = server.batch(
+        [f"attribute @e[name={groups[label][0]},limit=1] minecraft:generic.movement_speed get"
+         for label, _ in SPEED_CELLS], timeout=60)
     field.read_attributes()
     time.sleep(1.0)
     field.run(110.0)
@@ -266,7 +293,7 @@ def campaign_speed(server, rec: Recorder) -> dict:
             steps += mm2.steps_of(field.mobs[n]["trace"])
         table[label] = {"plateau": mm2.plateau(steps),
                         "attribute": [field.mobs[n]["attribute"] for n in names]}
-    return {"table": table, "raw": field.dump()}
+    return {"table": table, "raw_attribute": raw_attribute, "raw": field.dump()}
 
 
 # ── strength ────────────────────────────────────────────────────────────────
@@ -289,12 +316,16 @@ def heal(server) -> None:
     server.batch([f"effect clear {PROBE}"], timeout=30)
 
 
-def hits_of(server, summon_nbt: str, wanted: int = 4, limit: float = 25.0) -> list[dict]:
+def hits_of(server, summon_nbt: str, wanted: int = 4, limit: float = 25.0,
+            kind: str = "zombie", dx: float = 2.0, setup: list[str] | None = None,
+            after: list[str] | None = None) -> list[dict]:
     fresh(server, "normal", "survival")
-    server.batch([f"clear {PROBE}"])
+    server.batch([f"clear {PROBE}"] + (setup or []))
     heal(server)
-    server.batch([f"summon minecraft:zombie 2.0 {Y} 0.5 "
+    server.batch([f"summon minecraft:{kind} {0.5 + dx:.2f} {Y} 0.5 "
                   "{PersistenceRequired:1b,Silent:1b,Tags:[\"ovm\"]," + summon_nbt + "}"])
+    if after:
+        server.batch(after)
     _, last = health(server)
     hits = []
     swings = 0
@@ -315,13 +346,18 @@ def hits_of(server, summon_nbt: str, wanted: int = 4, limit: float = 25.0) -> li
 
 
 def campaign_strength(server, rec: Recorder) -> dict:
+    # By `effect give`, not summon NBT: the first run gave them in NBT and all
+    # four cells hit for the control's 3.0 — the modifier does not come with an
+    # effect read from NBT (see SPEED_CELLS).
     out = {}
-    for label, nbt in (("strength1", "ActiveEffects:[{Id:5,Amplifier:0b,Duration:-1}]"),
-                       ("strength2", "ActiveEffects:[{Id:5,Amplifier:1b,Duration:-1}]"),
-                       ("weakness1", "ActiveEffects:[{Id:18,Amplifier:0b,Duration:-1}]"),
-                       ("control", "")):
+    for label, effect in (("strength1", "strength infinite 0"),
+                          ("strength2", "strength infinite 1"),
+                          ("weakness1", "weakness infinite 0"),
+                          ("control", None)):
         print(f"   strength {label}", flush=True)
-        out[label] = hits_of(server, nbt, limit=14.0 if label == "weakness1" else 25.0)
+        after = [f"effect give @e[tag=ovm] minecraft:{effect} true"] if effect else None
+        out[label] = hits_of(server, "", limit=14.0 if label == "weakness1" else 25.0,
+                             after=after)
     return out
 
 
@@ -410,7 +446,13 @@ def campaign_arrow(server, rec: Recorder) -> dict:
         time.sleep(1.2)
         raw = value(server.batch(["data get entity @e[tag=ova,limit=1] ActiveEffects"]))
         hp = value(server.batch(["data get entity @e[tag=ova,limit=1] Health"]))
-        out[label] = {"effects": effects_of(raw), "health": hp}
+        # The first run hit no cow at all (health 10.0) and the zombie: where
+        # the arrow and the mob ended up tells a miss from a refusal.
+        mob_pos = value(server.batch(["data get entity @e[tag=ova,limit=1] Pos"]))
+        arrow_pos = value(server.batch([f"data get entity @e[type=minecraft:{entity},limit=1] "
+                                        "Pos"]))
+        out[label] = {"effects": effects_of(raw), "health": hp, "mob_pos": mob_pos,
+                      "arrow_pos": arrow_pos}
     return out
 
 
@@ -448,19 +490,138 @@ OURS_ANVIL = ROOT / ".scratch" / "hostile-anvil-ours"
 
 
 def campaign_anvil_back(server, rec: Recorder) -> dict:
-    """Vanilla reads back the world our server rewrote (check_hostile_e2e.py anvil)."""
+    """Vanilla reads back the world our server rewrote (check_hostile_e2e.py anvil).
+
+    Every tagged mob, wherever it stands: our server ignores NoAI (mobs-3.md
+    § 6), so the zoo walks during the e2e run — the first version looked for
+    each mob within two blocks of where it was summoned and found none.
+    """
     time.sleep(3.0)
-    dump = {}
-    for i, (mob, _) in enumerate(ZOO):
-        dump[f"{i}:{mob}"] = value(server.batch(
-            [f"data get entity @e[tag=ovzoo,limit=1,sort=nearest,x={4.5 + i * 3},y={Y},z=4.5,"
-             f"distance=..2] ActiveEffects"]))
-    return {"data_get": dump}
+    lines = server.batch(["execute as @e[tag=ovzoo] run data get entity @s"], timeout=60)
+    mobs = []
+    for line in lines:
+        m = DATA.search(line)
+        if not m:
+            continue
+        raw = m.group(1)
+        kind = re.search(r'id: "minecraft:([a-z_]+)"', raw)
+        section = raw.split("ActiveEffects:", 1)[1][:800] if "ActiveEffects:" in raw else ""
+        mobs.append({"type": kind.group(1) if kind else None,
+                     "effects": effects_of(section) if section else []})
+    return {"mobs": mobs}
+
+
+# ── The four species the plan brings next ───────────────────────────────────
+#
+# The wiki's numbers (enderman, slime, spider, witch pages) are the hypotheses;
+# these campaigns are what decides. Each keeps its raw readings.
+
+def gametime_of(lines: list[str]) -> int | None:
+    for line in lines:
+        m = GAMETIME.search(line)
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def campaign_enderman(server, rec: Recorder) -> dict:
+    out: dict = {}
+    # The enderman in a pit two blocks deep: it cannot jump out (2.9 tall,
+    # jump 1.25) and so cannot wander out of the gaze. Its eyes at Y - 2 + 2.55,
+    # the probe's at Y + 1.62, eight blocks apart: the line clears the rim.
+    pit = [f"fill 8 {Y - 2} 0 8 {Y - 1} 0 minecraft:air"]
+    dy = (Y - 2 + 2.55) - (Y + 1.62)
+    pitch = -math.degrees(math.atan2(dy, 8.0))
+    for label, yaw in (("stare", -90.0), ("away", 90.0)):
+        fresh(server, "normal", "survival")
+        server.batch([f"clear {PROBE}", "time set midnight"] + pit)
+        server.batch([f"summon minecraft:enderman 8.5 {Y - 2} 0.5 "
+                      "{PersistenceRequired:1b,Silent:1b,Tags:[\"ove\"]}"])
+        time.sleep(1.0)
+        # A teleport with a rotation sets where the player looks, server-side.
+        server.batch([f"tp {PROBE} 0.5 {Y} 0.5 {yaw} {pitch:.3f}"])
+        rows = []
+        for _ in range(10):
+            time.sleep(0.5)
+            lines = server.batch(["time query gametime",
+                                  "data get entity @e[tag=ove,limit=1] AngryAt"])
+            rows.append({"tick": gametime_of(lines), "angry_at": value(lines)})
+        out[label] = {"pitch": pitch, "rows": rows,
+                      "pos": value(server.batch(["data get entity @e[tag=ove,limit=1] Pos"]))}
+    # Water on it, at midnight, in the open: health and where it went.
+    fresh(server)
+    server.batch(["time set midnight", f"summon minecraft:enderman 8.5 {Y} 0.5 "
+                  "{PersistenceRequired:1b,Silent:1b,Tags:[\"ove\"]}"])
+    time.sleep(1.0)
+    server.batch([f"setblock 8 {Y} 0 minecraft:water"])
+    trace = []
+    begin = time.monotonic()
+    while time.monotonic() - begin < 10.0:
+        tick = gametime_of(server.batch(["time query gametime"]))
+        hp = value(server.batch(["data get entity @e[tag=ove,limit=1] Health"]))
+        pos = value(server.batch(["data get entity @e[tag=ove,limit=1] Pos"]))
+        trace.append({"tick": tick, "health": hp, "pos": pos})
+    out["water"] = trace
+    return out
+
+
+def campaign_spider(server, rec: Recorder) -> dict:
+    out = {}
+    for when in ("noon", "midnight"):
+        print(f"   spider {when}", flush=True)
+        out[when] = hits_of(server, "", wanted=3, limit=14.0, kind="spider", dx=3.0,
+                            setup=[f"time set {when}"])
+    return out
+
+
+def campaign_slime(server, rec: Recorder) -> dict:
+    out: dict = {"contact": {}, "rhythm": None}
+    for size in (0, 1, 3):
+        print(f"   slime contact size {size}", flush=True)
+        out["contact"][size] = hits_of(server, f"Size:{size}", wanted=4, limit=12.0,
+                                       kind="slime", dx=1.5, setup=["time set midnight"])
+    # The rhythm, with nobody to chase: the probe is in creative far away.
+    mm2.reset(server)
+    field = mm2.Field(server)
+    for i, size in enumerate((0, 1, 3)):
+        for k in range(3):
+            field.summon("slime", -20.5 + k * 12.0, -20.5 + i * 16.0, f"Size:{size}")
+    time.sleep(1.0)
+    field.run(40.0)
+    out["rhythm"] = field.dump()
+    return out
+
+
+def campaign_witch(server, rec: Recorder) -> dict:
+    out = {}
+    for label, d in (("far", 9.0), ("near", 2.5)):
+        print(f"   witch {label}", flush=True)
+        fresh(server, "normal", "survival")
+        server.batch([f"clear {PROBE}", "time set midnight"])
+        heal(server)
+        server.batch([f"summon minecraft:witch {0.5 + d:.2f} {Y} 0.5 "
+                      "{PersistenceRequired:1b,Silent:1b,Tags:[\"ovw\"]}"])
+        rows = []
+        begin = time.monotonic()
+        while time.monotonic() - begin < 24.0:
+            tick = gametime_of(server.batch(["time query gametime"]))
+            mine = effects_of(value(server.batch([f"data get entity {PROBE} ActiveEffects"])))
+            hp = value(server.batch([f"data get entity {PROBE} Health"]))
+            hers = effects_of(value(server.batch(["data get entity @e[tag=ovw,limit=1] "
+                                                  "ActiveEffects"])))
+            rows.append({"tick": tick, "probe_effects": mine, "health": hp,
+                         "witch_effects": hers})
+            if hp is not None and float(hp.rstrip("f")) < 8.0:
+                # Healing only: clearing the effects would change her choice.
+                server.batch([f"effect give {PROBE} minecraft:instant_health 1 5 true"])
+        out[label] = rows
+    return out
 
 
 CAMPAIGNS = {"packets": campaign_packets, "speed": campaign_speed, "strength": campaign_strength,
              "splash": campaign_splash, "arrow": campaign_arrow, "anvil": campaign_anvil,
-             "anvil_back": campaign_anvil_back}
+             "enderman": campaign_enderman, "spider": campaign_spider, "slime": campaign_slime,
+             "witch": campaign_witch, "anvil_back": campaign_anvil_back}
 
 
 def main(argv: list[str]) -> int:
@@ -484,7 +645,11 @@ def main(argv: list[str]) -> int:
         for name in wanted:
             print(f"== {name}", flush=True)
             started = time.monotonic()
-            result[name] = CAMPAIGNS[name](server, rec)
+            try:
+                result[name] = CAMPAIGNS[name](server, rec)
+            except Exception as error:  # one campaign's mistake must not cost the others
+                result[name] = {"error": repr(error)}
+                print(f"   {name} failed: {error!r}", flush=True)
             print(f"   {name}: {time.monotonic() - started:.0f} s", flush=True)
             OUT.write_text(json.dumps(result, indent=1, default=str))
     finally:

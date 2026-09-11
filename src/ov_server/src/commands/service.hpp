@@ -109,6 +109,15 @@ struct CommandHost {
     std::function<bool(i32 entity, Vec3d position, f32 yaw, f32 pitch)> teleport_entity;
     /// A mob dies (animation and loot) or an item vanishes.
     std::function<bool(i32 entity)> kill_entity;
+    /// ── mobs-4 ── `/effect give` on a mob. Nullopt: `entity` is no mob that
+    /// bears effects (an item, an arrow, a Nether mob).
+    std::function<std::optional<gameplay::AddResult>(i32 entity,
+                                                     const gameplay::EffectInstance& instance)>
+        give_mob_effect;
+    /// `/effect clear` on a mob: one effect, or every one with nullopt.
+    /// Nullopt: no such mob; else how many went.
+    std::function<std::optional<usize>(i32 entity, std::optional<gameplay::Effect> effect)>
+        clear_mob_effect;
     std::function<std::optional<EntityInfo>(std::string_view type, Vec3d position)> summon;
     /// ── nether-2 ── The same, knowing who asked (-1: the console), so that a
     /// player standing in the Nether summons into the Nether. Empty: `summon`.

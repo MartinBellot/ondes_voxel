@@ -83,6 +83,7 @@ struct FakeServer {
     std::vector<std::pair<i32, std::vector<u8>>> broadcast;
     std::map<std::tuple<i32, i32, i32>, registry::BlockStateId> blocks;
     std::vector<EntityInfo>                                     mobs;
+    std::map<i32, std::vector<gameplay::Effect>>                mob_effects;  // ── mobs-4 ──
     std::vector<std::string>                                    console;
     i32  next_id{100};
     bool stopped{false};
@@ -138,6 +139,34 @@ struct FakeServer {
         };
         h.kill_entity = [this](i32 id) {
             return std::erase_if(mobs, [&](const EntityInfo& e) { return e.id == id; }) > 0;
+        };
+        // ── mobs-4 ── a mob bears effects; an item does not
+        const auto is_mob = [this](i32 id) {
+            return std::ranges::any_of(mobs, [&](const EntityInfo& e) {
+                return e.id == id && e.type != "minecraft:item";
+            });
+        };
+        h.give_mob_effect = [this, is_mob](i32 id, const gameplay::EffectInstance& instance)
+            -> std::optional<gameplay::AddResult> {
+            if (!is_mob(id)) {
+                return std::nullopt;
+            }
+            mob_effects[id].push_back(instance.effect);
+            return gameplay::AddResult::Added;
+        };
+        h.clear_mob_effect = [this, is_mob](i32 id, std::optional<gameplay::Effect> effect)
+            -> std::optional<usize> {
+            if (!is_mob(id)) {
+                return std::nullopt;
+            }
+            std::vector<gameplay::Effect>& on = mob_effects[id];
+            const usize before = on.size();
+            if (effect) {
+                std::erase(on, *effect);
+            } else {
+                on.clear();
+            }
+            return before - on.size();
         };
         h.summon = [this](std::string_view type, Vec3d p) -> std::optional<EntityInfo> {
             EntityInfo e;
@@ -683,6 +712,30 @@ TEST_CASE("effect answers with vanilla's three arguments", "[commands][vanilla]"
           std::vector<std::string>{R"({"color":"red","extra":[{"translate":"commands.effect.clear.everything.failed"}],"text":""})"});
     CHECK(h.run("effect give @s nosuch") ==
           std::vector<std::string>{R"({"color":"red","extra":[{"translate":"argument.resource.not_found","with":["minecraft:nosuch","minecraft:mob_effect"]}],"text":""})"});
+}
+
+// ── mobs-4 ──
+TEST_CASE("effect reaches a mob, and names it by its type", "[commands][mobs4]") {
+    if (!have_packs()) {
+        SKIP("no registry pack");
+    }
+    Harness h;
+    (void)h.run("summon minecraft:cow 0.5 -60 3.5");
+    const auto given = h.run("effect give @e[type=cow] speed 10 1");
+    REQUIRE(given.size() == 1);
+    CHECK(given[0].find("commands.effect.give.success.single") != std::string::npos);
+    CHECK(given[0].find("entity.minecraft.cow") != std::string::npos);
+    REQUIRE(h.server.mob_effects.size() == 1);
+    CHECK(h.server.mob_effects.begin()->second ==
+          std::vector<gameplay::Effect>{gameplay::Effect::Speed});
+
+    const auto cleared = h.run("effect clear @e[type=cow]");
+    REQUIRE(cleared.size() == 1);
+    CHECK(cleared[0].find("commands.effect.clear.everything.success.single") != std::string::npos);
+    CHECK(h.server.mob_effects.begin()->second.empty());
+    // Nothing left to clear: vanilla's failure, not a refusal.
+    CHECK(h.run("effect clear @e[type=cow]")[0].find("commands.effect.clear.everything.failed") !=
+          std::string::npos);
 }
 
 TEST_CASE("killing a player announces the death first, and @e forgets the dead", "[commands][vanilla]") {

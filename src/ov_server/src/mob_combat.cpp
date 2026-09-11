@@ -5,6 +5,7 @@
 #include "ov/base/log.hpp"
 #include "ov/registry/block_states.hpp"
 
+#include <algorithm>
 #include <fstream>
 #include <iterator>
 #include <utility>
@@ -47,21 +48,37 @@ void MobCombat::tick(const gameplay::DamageConstants& constants) {
 
 MobHurt MobCombat::hurt(entity::EntityState& state, f32 amount,
                         const gameplay::DamageConstants& constants) {
-    auto [row, inserted] = windows_.try_emplace(state.network_id);
-    gameplay::HealthState& window = row->second;
-    if (inserted) {
-        // Seeded from the entity, not from twenty: a zombie has 20 and a cow
-        // has 10, and a table that started every mob at the player's maximum
-        // would make a cow take two swings too many.
-        window.health     = state.health;
-        window.max_health = state.max_health;
-    }
-
     // `minecraft:player_attack` is the type, and it is not in
     // #bypasses_invulnerability — which is the whole reason the window applies
     // to a sword at all.
-    const gameplay::DamageResult result =
-        gameplay::apply_damage(window, gameplay::DamageKind::PlayerAttack, amount, constants);
+    return hurt(state, gameplay::DamageKind::PlayerAttack, amount, constants);
+}
+
+f32 MobCombat::absorption(i32 network_id) const noexcept {
+    const auto row = windows_.find(network_id);
+    return row != windows_.end() ? row->second.absorption : 0.0F;
+}
+
+void MobCombat::set_absorption(const entity::EntityState& state, f32 amount) {
+    auto [row, inserted] = windows_.try_emplace(state.network_id);
+    if (inserted) {
+        row->second.health     = state.health;
+        row->second.max_health = state.max_health;
+    }
+    row->second.absorption = std::max(amount, 0.0F);
+}
+
+MobHurt MobCombat::hurt(entity::EntityState& state, gameplay::DamageKind kind, f32 amount,
+                        const gameplay::DamageConstants& constants) {
+    gameplay::HealthState& window = windows_[state.network_id];
+    // Seeded from the entity, not from twenty: a zombie has 20 and a cow has
+    // 10, and a table that started every mob at the player's maximum would
+    // make a cow take two swings too many. ── mobs-4 ── And reseeded every
+    // time: regeneration and health boost write the entity, not this table.
+    window.health     = state.health;
+    window.max_health = state.max_health;
+
+    const gameplay::DamageResult result = gameplay::apply_damage(window, kind, amount, constants);
 
     state.health = window.health;
 
