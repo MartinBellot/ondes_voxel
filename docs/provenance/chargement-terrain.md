@@ -184,6 +184,24 @@ Les quatre outils de parité, mêmes arguments, binaires avant et après : **sor
 
 Le cache de terrain, sur les 64 chunks : 112 copies, 144 générations (43,8 % du terrain copié).
 
+**Seconde série**, reprise avec le bras parallèle sur un cache de terrain **froid** (la première
+chronométrait des copies, § 7) ; charge **24 à 40** pendant toute la série — la machine n'était
+pas au repos, et rien de ce tableau ne prétend l'être :
+
+| | avant | après |
+|---|---:|---:|
+| Release, 1 thread, 64 chunks, ms/chunk | 2 770 | **567** (1 170 sans cache de terrain) |
+| Debug, 1 thread, 16 chunks, ms/chunk | 14 167 | **6 723** |
+| Release, 144 chunks, 4 ouvriers | 555 s (UTILITY, ancien ordonnancement) | **26,5 s** (USER_INITIATED) |
+| même binaire « après », 4 ouvriers en UTILITY | — | 106,6 s |
+| Release, 144 chunks, 6 ouvriers | — | 18,9 s |
+| condensés | `91441dd6c78f21b3`, `be05d77e3959e2da`, `320ceab21b9f88a0` | **identiques**, les trois |
+
+La classe d'ordonnancement a maintenant sa propre mesure : **le même binaire, dans les mêmes
+conditions, met quatre fois plus longtemps en UTILITY** (106,6 s contre 26,5 s). Les rapports
+avant / après varient entre les deux séries (×3,5 à ×4,9 en Release, ×2,1 à ×4 en Debug) parce
+que la charge variait pendant chacune ; le sens et l'ordre de grandeur, eux, ne varient pas.
+
 ### 3.2 Le streaming (`scripts/bench_stream.py`, Release)
 
 | | avant | après |
@@ -203,6 +221,26 @@ Le cache de terrain, sur les 64 chunks : 112 copies, 144 générations (43,8 % d
 
 Debug, entrée seule : spawn prêt en **24,4 s au lieu de 140,3 s** ; le serveur Debug d'avant a
 fermé la connexion de la sonde avant le premier chunk.
+
+**Le même banc sur une machine saturée — et ce qui n'y tient plus.** Binaire « après » repris
+dans la seconde série, charge **18,8 à 63,4 (médiane 35,4)** ; le serveur n'a obtenu que
+**107 % de CPU**, un peu plus d'un cœur, contre 398 % dans la série du tableau ci-dessus :
+
+| après, machine saturée | |
+|---|---:|
+| spawn prêt | 16,3 s |
+| carré du spawn complet, rayons 4 / 8 | 5,7 / 20,5 s |
+| téléport de 1000 blocs, rayon 8 rempli | 99,8 / 104,3 / 150,0 s |
+| sprint 5,6 m/s : chunk sous le joueur manquant | **0 %** (rayon 4 complet 81,7 % du temps) |
+| vol créatif 11 m/s : chunk sous le joueur manquant | **40 %** |
+| élytre 33 m/s : chunk sous le joueur manquant | 80 % |
+| « can't keep up » ; tick p99 / max | 13 ; 79,9 ms / 1,75 s |
+
+Le sprint tient encore ; **le vol créatif ne tient pas quand la génération n'a qu'un cœur** —
+quatre ouvriers et le tick se le partagent, et le tick lui-même en souffre (p99 de 80 ms). Ce
+n'est pas le code qui change entre les deux tableaux, c'est la part de la machine laissée au
+serveur ; les deux sont donnés, parce que la promesse « le vol créatif ne voit plus de trou »
+ne vaut que sur une machine qui laisse ses cœurs au jeu.
 
 Le tick p50 monte, et c'est le prix du débit : trois fois plus de monde arrive par seconde
 (3 280 chunks en 3 min 20 contre 2 144 en 14 min), et avec lui la lumière de chaque chunk
@@ -231,13 +269,17 @@ sauvegarde ni avec ce travail ; il est nommé ici pour ne pas être caché.
    seconde, soit ~35 chunks neufs par seconde à l'avant de la vue, et quatre ouvriers en
    livrent 10 à 19. Six ouvriers (mesurés identiques au bit près) et la génération « en
    avance du mouvement » sont les deux leviers suivants ; non faits.
-2. **Le Debug reste lent** : 2,8 s par chunk. Il est fait pour déboguer, pas pour jouer.
-3. **Le plafond d'upload par frame** (`ROADMAP.md`) : le client borne le temps de maillage par
+2. **Sur une machine saturée, le vol créatif va plus vite que la génération.** Quand le serveur
+   n'obtient qu'un cœur (107 % de CPU, charge médiane 35, § 3.2), le chunk sous le joueur manque
+   40 % du temps à 11 m/s et le tick lui-même souffre (13 « can't keep up »). Le sprint tient
+   encore. La promesse « plus de trou en vol » suppose une machine qui laisse ses cœurs au jeu.
+3. **Le Debug reste lent** : 2,8 s par chunk. Il est fait pour déboguer, pas pour jouer.
+4. **Le plafond d'upload par frame** (`ROADMAP.md`) : le client borne le temps de maillage par
    frame (4 ms), pas les octets envoyés au GPU. Non mesuré, non fait.
-4. **La distance de vue** reste plafonnée à 8 par le serveur.
-5. **Le journal des arbres** : 8 832 lignes ERROR en quatre minutes. Le coût en temps est nul,
+5. **La distance de vue** reste plafonnée à 8 par le serveur.
+6. **Le journal des arbres** : 8 832 lignes ERROR en quatre minutes. Le coût en temps est nul,
    le coût en lisibilité ne l'est pas ; signalé au chantier des features.
-6. **Le reste de la sauvegarde** (entités, Nether, End, `level.dat`) écrit encore sur le tick ;
+7. **Le reste de la sauvegarde** (entités, Nether, End, `level.dat`) écrit encore sur le tick ;
    ce sont les plus petits.
 
 ## 5. Rejouer

@@ -312,7 +312,9 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       QoS `USER_INITIATED`, sauvegarde automatique hors du tick : en Release, spawn prêt en
       3,6 s au lieu de 10,2, distance de vue remplie en 15-28 s après un téléport de 1000
       blocs au lieu de 3 min, **aucun chunk manquant sous le joueur au sprint ni en vol
-      créatif** ; l'élytre (33 m/s) va encore plus vite que la génération. Voir
+      créatif** sur une machine qui laisse ses cœurs au serveur (saturée, avec un cœur pour
+      le serveur, le vol créatif en manque encore 40 % du temps) ; l'élytre (33 m/s) va encore
+      plus vite que la génération. Voir
       `docs/provenance/chargement-terrain.md`)*
 - [x] Collisions : boîtes par état, chevauchement et glissement axe par axe
 - [x] Physique du joueur : marche, sprint, accroupissement, saut, chute — ajustés sur une trace du vrai client
