@@ -5,6 +5,7 @@
 #include "feature_json.hpp"
 
 #include "ov/base/log.hpp"
+#include "ov/worldgen/biome_zoom.hpp"  // ── worldgen-3 ──
 
 #include <algorithm>
 #include <cstdlib>
@@ -141,7 +142,13 @@ struct Decorator::Impl {
     /// Named by a biome and not built by the registry. Kept so the gap is a
     /// list rather than a silence.
     std::set<std::string> missing;
+
+    const TemplateLibrary* templates{nullptr};  // ── worldgen-3 ──
 };
+
+void Decorator::set_templates(const TemplateLibrary* templates) noexcept {
+    impl_->templates = templates;
+}
 
 Decorator::Decorator() : impl_(std::make_unique<Impl>()) {}
 Decorator::Decorator(Decorator&&) noexcept            = default;
@@ -410,6 +417,19 @@ usize Decorator::decorate(FeatureLevel& level, i32 chunk_x, i32 chunk_z, i64 lev
     const auto kind     = configured_feature_random();
     const i64  seed     = decoration_seed(level_seed, origin_x, origin_z, kind);
 
+    // ── worldgen-3 ── Every biome question a feature asks of the world goes
+    // through `BiomeManager`'s zoom. `OV_BIOME_ZOOM=0` is the instrument that
+    // gives the "before" from the same binary.
+    struct Zoom {
+        bool fuzzy{true};
+        i64  seed{0};
+    } zoom;
+    if (const char* setting = std::getenv("OV_BIOME_ZOOM");
+        setting != nullptr && std::string_view(setting) == "0") {
+        zoom.fuzzy = false;
+    }
+    zoom.seed = obfuscate_biome_seed(level_seed);
+
     // Every biome in the chunk and in the eight around it. A feature listed by
     // a neighbour is *attempted* here and then thrown away by the `biome`
     // modifier if it lands outside that biome — which is how a forest's trees
@@ -470,6 +490,9 @@ usize Decorator::decorate(FeatureLevel& level, i32 chunk_x, i32 chunk_z, i64 lev
             context.feature_name = name;
             context.biomes       = &impl_->listed;
             context.level_seed   = level_seed;  // ── end ── and the geode's shell noise
+            context.templates    = impl_->templates;  // ── worldgen-3 ── the fossils
+            context.fuzzy_biomes    = zoom.fuzzy;         // ── worldgen-3 ── biome zoom
+            context.biome_zoom_seed = zoom.seed;
 
             bool wrote = false;
             // The origin is the bottom corner of the chunk, floor included.

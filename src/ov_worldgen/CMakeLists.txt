@@ -18,12 +18,22 @@ ov_add_library(ov_worldgen
         src/end_features.cpp
         src/end_islands.cpp
         src/feature.cpp
+        # ── jigsaw ──
+        src/jigsaw_assembler.cpp
+        src/jigsaw_nbt.cpp
+        src/jigsaw_place.cpp
+        src/jigsaw_pool.cpp
         src/nether_feature.cpp  # ── nether-2 ──
         src/noise.cpp
         src/ore_feature.cpp
         # ── overworld features (features-2) ──
         src/bamboo_feature.cpp
         src/biome_info_noise.cpp
+        src/climate_noise.cpp  # ── worldgen-3 ──
+        src/surface_extension.cpp  # ── worldgen-3 ──
+        src/fossil_feature.cpp  # ── worldgen-3 ──
+        src/freeze_feature.cpp  # ── worldgen-3 ──
+        src/biome_zoom.cpp  # ── worldgen-3 ──
         src/cave_feature.cpp
         src/dripstone_feature.cpp
         src/huge_mushroom_feature.cpp
@@ -55,6 +65,7 @@ ov_add_library(ov_worldgen
         ov_nbt
         ov_registry
         ov_world
+        ov_gameplay  # ── worldgen-3 ── the climate noises (weather.hpp), layer 9
     PRIVATE_DEPS
         # Same rule as everywhere else: simdjson is a template-heavy header, so
         # it appears in the .cpp files that read the datapack and in no
@@ -71,10 +82,12 @@ ov_add_test(test_ov_worldgen
         tests/test_density.cpp
         tests/test_end.cpp
         tests/test_feature.cpp
+        tests/test_jigsaw.cpp  # ── jigsaw ──
         tests/test_nether.cpp
         tests/test_nether_feature.cpp  # ── nether-2 ──
         tests/test_noise.cpp
         tests/test_overworld_feature.cpp
+        tests/test_worldgen3.cpp  # ── worldgen-3 ──
         tests/test_pipeline.cpp
         tests/test_structure_nbt.cpp  # ── structures ──
         tests/test_structure_set.cpp

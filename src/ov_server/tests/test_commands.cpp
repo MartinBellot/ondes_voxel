@@ -191,7 +191,8 @@ struct Harness {
     Harness()
         : service{ServiceConfig{packs().blocks ? &*packs().blocks : nullptr,
                                 packs().registries ? &*packs().registries : nullptr,
-                                {}, {}, false, 4, "Ondes VOXEL", {}}} {
+                                {}, {}, false, 4, "Ondes VOXEL", {},
+                                nullptr, 4, true, true}} {
         host            = server.host();
         service.console = [this](std::string_view line) { server.console.emplace_back(line); };
         service.world().rules.set(*GameRules::index_of("doDaylightCycle"), 0);
@@ -713,6 +714,9 @@ TEST_CASE("help prints vanilla's smart usage", "[commands][vanilla]") {
     // Every usage vanilla's `/help` printed for a command this server has.
     const std::vector<std::string> expected{
         "/clear [<targets>]",
+        // ── dedicated server administration ── vanilla prints
+        // "(start|stop|function)"; `debug function` waits for functions.
+        "/debug (start|stop)",
         "/defaultgamemode <gamemode>",
         "/difficulty [peaceful|easy|normal|hard]",
         "/effect (clear|give)",
@@ -730,16 +734,21 @@ TEST_CASE("help prints vanilla's smart usage", "[commands][vanilla]") {
         "/tell -> msg",
         "/w -> msg",
         "/say <message>",
+        "/scoreboard (objectives|players)",  // ── scoreboard ──
         "/seed",
         "/setblock <pos> <block> [destroy|keep|replace]",
         "/spawnpoint [<targets>]",
         "/setworldspawn [<pos>]",
         "/summon <entity> [<pos>]",
+        "/team (list|add|remove|empty|join|leave|modify)",  // ── scoreboard ──
+        "/teammsg <message>",
+        "/tm -> teammsg",
         "/teleport (<location>|<destination>|<targets>)",
         "/tp -> teleport",
         "/tellraw <targets> <message>",
         "/time (set|add|query)",
         "/title <targets> (clear|reset|title|subtitle|actionbar|times)",
+        "/trigger <objective> [add|set]",  // ── scoreboard ──
         "/weather (clear|rain|thunder)",
         "/deop <targets>",
         "/op <targets>",
@@ -751,7 +760,7 @@ TEST_CASE("help prints vanilla's smart usage", "[commands][vanilla]") {
         gamerule += (i == 0 ? "" : "|") + std::string{kGameRules[i].name};
     }
     std::vector<std::string> with_rules = expected;
-    with_rules.insert(with_rules.begin() + 9, gamerule + ")");
+    with_rules.insert(with_rules.begin() + 10, gamerule + ")");  // before /give
     std::vector<std::string> printed;
     for (const std::string& line : h.run("help")) {
         printed.push_back(line.substr(9, line.size() - 11));  // {"text":"…"}
@@ -779,8 +788,10 @@ TEST_CASE("the Commands packet reads back and gates by permission", "[commands][
     for (const i32 child : everyone->nodes[static_cast<usize>(everyone->root)].children) {
         open.push_back(everyone->nodes[static_cast<usize>(child)].name);
     }
-    // Vanilla's level-0 tree, less teammsg/tm/trigger which this server lacks.
-    CHECK(open == std::vector<std::string>{"me", "help", "list", "msg", "tell", "w"});
+    // Vanilla's level-0 tree, whole since the scoreboard wave brought
+    // teammsg, tm and trigger.
+    CHECK(open == std::vector<std::string>{"me", "help", "list", "msg", "tell", "w", "teammsg", "tm",
+                                           "trigger"});
 }
 
 TEST_CASE("suggestions answer with vanilla's ranges", "[commands][suggest]") {

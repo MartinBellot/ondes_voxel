@@ -6,6 +6,7 @@
 #include "overworld_feature.hpp"
 
 #include "ov/base/log.hpp"
+#include "ov/worldgen/biome_zoom.hpp"  // ── worldgen-3 ──
 
 #include <algorithm>
 #include <array>
@@ -804,6 +805,19 @@ private:
     HeightProviderRef height_;
 };
 
+}  // namespace
+
+// ── worldgen-3 ── See biome_zoom.hpp.
+std::string_view FeatureContext::biome_at(const FeatureLevel& level, i32 x, i32 y, i32 z) const {
+    if (!fuzzy_biomes) {
+        return level.biome_at(x, y, z);
+    }
+    const BiomeCell cell = fuzzy_biome_cell(biome_zoom_seed, x, y, z);
+    return level.biome_at(cell.x * 4, cell.y * 4, cell.z * 4);
+}
+
+namespace {
+
 class BiomeFilter final : public PlacementModifier {
 public:
     void positions(const FeatureContext& context, const FeatureLevel& level,
@@ -812,7 +826,7 @@ public:
         if (context.biomes == nullptr) {
             return;
         }
-        if (context.biomes->lists(level.biome_at(at.x, at.y, at.z), context.feature_name)) {
+        if (context.biomes->lists(context.biome_at(level, at.x, at.y, at.z), context.feature_name)) {
             out.push_back(at);
         }
     }

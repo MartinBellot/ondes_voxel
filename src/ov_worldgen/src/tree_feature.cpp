@@ -9,8 +9,11 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <list>
 #include <unordered_map>
 
@@ -195,6 +198,29 @@ i32 java_block_pos_hash(BlockPos at) noexcept {
 
 namespace {
 
+/// A bucket of eight in a table of 64 or more: counted, and said at most once a
+/// minute with the running total. Every generation worker reaches this, and at
+/// one line each it drowned the console and cost time. A diagnostic's own
+/// counter, not world state: nothing reads it back.
+void note_untreeified_bucket(usize capacity) noexcept {
+    static std::atomic<u64> total{0};
+    static std::atomic<i64> last_said{std::numeric_limits<i64>::min()};
+    const u64  seen = total.fetch_add(1, std::memory_order_relaxed) + 1;
+    const auto now  = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now().time_since_epoch())
+                         .count();
+    i64 last = last_said.load(std::memory_order_relaxed);
+    if (last != std::numeric_limits<i64>::min() && now - last < 60'000) {
+        return;
+    }
+    if (!last_said.compare_exchange_strong(last, now, std::memory_order_relaxed)) {
+        return;  // another worker is saying it
+    }
+    OV_LOG_WARN("worldgen: {} tree position buckets have reached eight in a table of 64 or more "
+                "(latest table {}); java would treeify them and this does not",
+                seen, capacity);
+}
+
 /// `HashMap.hash`: spread the high bits down, because the table index only
 /// uses the low ones.
 [[nodiscard]] u32 java_spread(i32 hash) noexcept {
@@ -245,10 +271,7 @@ std::vector<BlockPos> java_hash_order(const std::vector<BlockPos>& inserted) {
         ++size;
         if (table[bucket].size() >= 8) {
             if (capacity >= 64) {
-                OV_LOG_ERROR(
-                    "worldgen: eight tree positions collided in one hash bucket of a table of "
-                    "{}; java would treeify it and this does not",
-                    capacity);
+                note_untreeified_bucket(capacity);
             } else {
                 resize(capacity * 2);
                 continue;

@@ -29,6 +29,7 @@
 #include "ov/math/block_pos.hpp"
 #include "ov/nbt/tag.hpp"
 #include "ov/registry/block_states.hpp"
+#include "ov/worldgen/jigsaw.hpp"  // ── jigsaw ──
 #include "ov/worldgen/placement.hpp"
 #include "ov/worldgen/structure.hpp"
 #include "ov/worldgen/structure_template.hpp"
@@ -50,6 +51,7 @@ enum class PieceKind : u8 {
     RuinedPortal,
     BuriedTreasure,
     NetherFossil,  // ── nether-2 ──
+    Jigsaw,        // ── jigsaw ── a pool element, jigsaw.hpp
 };
 
 [[nodiscard]] std::string_view to_string(PieceKind kind) noexcept;
@@ -93,6 +95,12 @@ struct StructurePiece {
     /// igloo's box to the terrain and leaves its template position where the
     /// start put it (read on the reference worlds: bottom `TPY` 54, box at 35).
     BlockPos generated_origin;
+    // ── jigsaw ── A pool element piece: the element (owned by the builder's
+    // `JigsawLibrary`), its ground delta and its junctions, as the game stores
+    // them. `origin` is the element's position, `pivot` zero.
+    const PoolElement*          element{nullptr};
+    i32                         ground_level_delta{1};
+    std::vector<JigsawJunction> junctions;
 };
 
 struct StructureStart {
@@ -178,6 +186,10 @@ public:
                            bool height_drawn = false) const;
 
     [[nodiscard]] const TemplateLibrary& templates() const noexcept;
+
+    /// ── jigsaw ── The template pools and jigsaw structures, over the same
+    /// templates. Null only for a builder that failed to load them.
+    [[nodiscard]] const JigsawLibrary* jigsaw() const noexcept;
 
     StructureBuilder(StructureBuilder&&) noexcept;
     StructureBuilder& operator=(StructureBuilder&&) noexcept;

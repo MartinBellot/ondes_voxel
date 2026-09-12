@@ -521,7 +521,32 @@ Parsed<void> handle_option(EntitySelector& s, std::string_view name, StringReade
         s.unsupported.emplace_back("nbt");
         return {};
     }
-    if (name == "scores" || name == "advancements") {
+    if (name == "scores") {  // ── scoreboard ── {objective=range, …}
+        if (auto ok = reader.expect('{'); !ok) {
+            return ok;
+        }
+        reader.skip_whitespace();
+        while (reader.can_read() && reader.peek() != '}') {
+            reader.skip_whitespace();
+            const std::string objective{reader.read_unquoted_string()};
+            reader.skip_whitespace();
+            if (auto ok = reader.expect('='); !ok) {
+                return ok;
+            }
+            reader.skip_whitespace();
+            auto bounds = read_int_bounds(reader);
+            if (!bounds) {
+                return std::unexpected{bounds.error()};
+            }
+            s.scores.emplace_back(objective, *bounds);
+            reader.skip_whitespace();
+            if (reader.can_read() && reader.peek() == ',') {
+                reader.skip();
+            }
+        }
+        return reader.expect('}');
+    }
+    if (name == "advancements") {
         if (auto ok = skip_braced(reader); !ok) {
             return ok;
         }
@@ -622,9 +647,17 @@ bool matches(const EntitySelector& s, const EntityInfo& e, const Vec3d& origin,
         }
     }
     for (const auto& m : s.teams) {
-        // Nor teams: `team=` means "on no team", which everyone is.
-        const bool on = m.value.empty();
+        // ── scoreboard ── `team=` is "on no team", `team=!` "on some team",
+        // `team=x` "on x".
+        const bool on = m.value.empty() ? e.team.empty() : e.team == m.value;
         if (on == m.negated) {
+            return false;
+        }
+    }
+    for (const auto& [objective, bounds] : s.scores) {  // ── scoreboard ── no score, no match
+        const auto held = std::ranges::find_if(
+            e.scores, [&](const std::pair<std::string, i32>& score) { return score.first == objective; });
+        if (held == e.scores.end() || !bounds.contains(held->second)) {
             return false;
         }
     }

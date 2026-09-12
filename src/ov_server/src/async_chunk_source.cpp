@@ -106,7 +106,7 @@ bool AsyncChunkSource::request(ChunkPos pos) {
         // Worker index plus one: stack zero belongs to the tick thread's own
         // synchronous fallback, and two threads on one stack is the race.
         impl->world->generate_square(worker + 1, block_x * kBlockChunks, block_z * kBlockChunks,
-                                     kBlockChunks, block.chunks);
+                                     kBlockChunks, block.chunks, &block.fluid_wakeups);
 
         const u64 count = block.chunks.size();
         {
@@ -158,9 +158,10 @@ void AsyncChunkSource::generate_here(usize stack, i32 block_x, i32 block_z, Gene
     out.block_x = block_x;
     out.block_z = block_z;
     out.chunks.clear();
+    out.fluid_wakeups.clear();  // ── worldgen-3 ──
     out.chunks.reserve(static_cast<usize>(kBlockChunks) * kBlockChunks);
     impl_->world->generate_square(stack, block_x * kBlockChunks, block_z * kBlockChunks,
-                                  kBlockChunks, out.chunks);
+                                  kBlockChunks, out.chunks, &out.fluid_wakeups);
 }
 
 }  // namespace ov::server

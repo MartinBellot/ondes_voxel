@@ -95,6 +95,19 @@ using ClaimedFeature = std::optional<std::expected<FeatureRef, FeatureError>>;
 parse_shape_predicate(std::string_view kind, Json node, const registry::BlockRegistry& blocks,
                       const BlockTags& tags);
 
+/// ── worldgen-3 ── `fossil`, in fossil_feature.cpp: two structure templates
+/// from the server jar, placed through their processor lists.
+[[nodiscard]] ClaimedFeature parse_fossil_feature(std::string_view kind, Json config,
+                                                  const registry::BlockRegistry& blocks,
+                                                  const BlockTags&               tags,
+                                                  const FeatureResolver&         resolve);
+
+/// ── worldgen-3 ── `freeze_top_layer`, in freeze_feature.cpp — called from
+/// the terrain family.
+[[nodiscard]] ClaimedFeature parse_freeze_feature(std::string_view kind,
+                                                  const registry::BlockRegistry& blocks,
+                                                  const BlockTags&               tags);
+
 /// `bamboo` — called from the terrain family, in bamboo_feature.cpp.
 [[nodiscard]] ClaimedFeature parse_bamboo_feature(std::string_view kind, Json config,
                                                   const registry::BlockRegistry& blocks,

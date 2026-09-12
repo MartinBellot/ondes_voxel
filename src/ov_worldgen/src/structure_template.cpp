@@ -624,6 +624,13 @@ public:
             !tags_->contains(rottable_, context.blocks->block_of(current.state))) {
             return current;
         }
+        // ── worldgen-3 ── The placement's random when it has one, in block order.
+        if (context.shared_random != nullptr) {
+            if (context.shared_random->next_float() <= integrity_) {
+                return current;
+            }
+            return std::nullopt;
+        }
         auto random = random_at(current.pos);
         if (random.next_float() <= integrity_) {
             return current;
@@ -1428,6 +1435,7 @@ PlaceResult place_template(StructureLevel& level, const StructureTemplate& tpl, 
     context.pivot    = settings.pivot;
     context.rotation = settings.rotation;
     context.mirror   = settings.mirror;
+    context.shared_random = settings.processor_random;  // ── worldgen-3 ──
 
     const auto inside = [&](BlockPos pos) {
         return !settings.clip || settings.clip->contains(pos.x, pos.y, pos.z);
