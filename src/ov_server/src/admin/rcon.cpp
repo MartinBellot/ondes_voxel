@@ -92,7 +92,9 @@ std::vector<RconPacket> RconSession::handle(const RconPacket& packet) {
         return {RconPacket{-1, kRconAuthOk, ""}};
     }
     if (!authenticated) {
-        return {RconPacket{-1, kRconAuthOk, ""}};
+        // Measured: the jar answers nothing to a command sent before the
+        // password — not -1, which only a wrong password gets.
+        return {};
     }
     if (packet.type == kRconCommand) {
         return split_rcon_response(packet.request, run ? run(packet.body) : std::string{});

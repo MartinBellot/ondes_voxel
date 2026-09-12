@@ -1656,7 +1656,14 @@ void CommandService::register_commands() {
                     return out;
                 }
             }
-            out.emplace_back(arg.name, net::Uuid::offline_player(arg.name));
+            // ── dedicated server administration ── a name nobody here has:
+            // the jar's offline profile of the name in lower case (measured:
+            // `op Ovq_dave` answers "Made ovq_dave a server operator").
+            std::string lowered = arg.name;
+            std::ranges::transform(lowered, lowered.begin(), [](unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+            out.emplace_back(lowered, net::Uuid::offline_player(lowered));
             return out;
         };
         const auto change = [this, profiles](bool grant) {
@@ -1708,14 +1715,25 @@ void CommandService::register_commands() {
 
     // ── save-all / stop ─────────────────────────────────────────────────────
     {
-        const Executor save = [this](const CommandContext& ctx) -> Parsed<i32> {
-            success(ctx.source(), Text::translatable("commands.save.saving"), false);
-            host_->save();
-            success(ctx.source(), Text::translatable("commands.save.success"), true);
-            return 0;
+        const auto save = [this](bool flush) {
+            return Executor{[this, flush](const CommandContext& ctx) -> Parsed<i32> {
+                success(ctx.source(), Text::translatable("commands.save.saving"), false);
+                host_->save();
+                // ── dedicated server administration ── `flush` logs what the
+                // jar's chunk storage logs, one line per level then the total,
+                // before the success line (measured on its console).
+                if (flush && console) {
+                    console("ThreadedAnvilChunkStorage (world): All chunks are saved");
+                    console("ThreadedAnvilChunkStorage (DIM1): All chunks are saved");
+                    console("ThreadedAnvilChunkStorage (DIM-1): All chunks are saved");
+                    console("ThreadedAnvilChunkStorage: All dimensions are saved");
+                }
+                success(ctx.source(), Text::translatable("commands.save.success"), true);
+                return 0;
+            }};
         };
-        const u32 node = top("save-all", kPermissionOwner, save);
-        d.literal(node, "flush", save);
+        const u32 node = top("save-all", kPermissionOwner, save(false));
+        d.literal(node, "flush", save(true));
         register_save_switches(top);  // ── dedicated server administration ──
         top("stop", kPermissionOwner, [this](const CommandContext& ctx) -> Parsed<i32> {
             success(ctx.source(), Text::translatable("commands.stop.stopping"), true);

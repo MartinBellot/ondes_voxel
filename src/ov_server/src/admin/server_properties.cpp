@@ -14,7 +14,8 @@ namespace {
 // The set and the defaults are the file the real server wrote on its first
 // start (scripts/capture_admin.py properties); the order is only used to
 // break ties between keys that share a bucket of the JDK map.
-constexpr std::array<PropertyDefault, 58> kDefaults{{
+// (log-ips and resource-pack-id came later: the 1.20.1 jar writes neither.)
+constexpr std::array<PropertyDefault, 56> kDefaults{{
     {"online-mode", "true"},
     {"prevent-proxy-connections", "false"},
     {"server-ip", ""},
@@ -22,10 +23,6 @@ constexpr std::array<PropertyDefault, 58> kDefaults{{
     {"spawn-npcs", "true"},
     {"pvp", "true"},
     {"allow-flight", "false"},
-    {"resource-pack", ""},
-    {"require-resource-pack", "false"},
-    {"resource-pack-prompt", ""},
-    {"resource-pack-sha1", ""},
     {"motd", "A Minecraft Server"},
     {"force-gamemode", "false"},
     {"enforce-whitelist", "false"},
@@ -65,14 +62,19 @@ constexpr std::array<PropertyDefault, 58> kDefaults{{
     {"player-idle-timeout", "0"},
     {"white-list", "false"},
     {"enforce-secure-profile", "true"},
-    {"log-ips", "true"},
     {"level-seed", ""},
     {"generator-settings", "{}"},
     {"level-type", "minecraft\\:normal"},
     {"generate-structures", "true"},
     {"initial-enabled-packs", "vanilla"},
     {"initial-disabled-packs", ""},
-    {"resource-pack-id", ""},
+    // The server resource pack is read last, after the world's settings —
+    // the order that puts every line of the jar's file in place (57/57,
+    // scripts/jdk_order_oracle.java against the captured file).
+    {"resource-pack", ""},
+    {"require-resource-pack", "false"},
+    {"resource-pack-prompt", ""},
+    {"resource-pack-sha1", ""},
 }};
 
 constexpr std::array<std::string_view, 4> kGameModes{"survival", "creative", "adventure",
@@ -339,12 +341,11 @@ std::string escape_property(std::string_view text, bool is_key, bool unicode) {
             continue;
         default: break;
         }
-        if (c >= 0x20 && c <= 0x7E) {
+        if ((c >= 0x20 && c <= 0x7E) || !unicode) {
+            // The Writer form of store() — the one the 1.20.1 jar uses, measured:
+            // it writes "motd=Café" — escapes only the characters above and
+            // writes every other one as it is, UTF-8 included.
             out += static_cast<char>(c);
-            continue;
-        }
-        if (!unicode && c >= 0x80) {
-            out += static_cast<char>(c);  // raw UTF-8, as a Writer writes it
             continue;
         }
         // \uXXXX per UTF-16 unit, upper-case hex.
@@ -454,8 +455,11 @@ void ServerProperties::fill_defaults() {
 
 std::vector<std::string> ServerProperties::write_order() const {
     // The Properties object: filled by load() in file order, then each
-    // setting's get() puts its key. Stored through a copy (putAll into a new
-    // Properties), whose iteration is the file's order.
+    // setting's get() puts its key — and stored as it is. Measured: the
+    // 1.20.1 jar's file is the iteration of that very table, grown by the
+    // puts to 128 buckets (53/57 lines at once, the rest settled by the
+    // order the settings are read in); a putAll copy, presized to 256, put 1
+    // line of 57 in place.
     ConcurrentHashMapOrder map{8};
     for (usize i = 0; i < from_file_ && i < entries_.size(); ++i) {
         map.put(entries_[i].first);
@@ -466,7 +470,7 @@ std::vector<std::string> ServerProperties::write_order() const {
     for (const auto& [key, value] : entries_) {
         map.put(key);
     }
-    return map.copied(8).keys();
+    return map.keys();
 }
 
 std::string ServerProperties::render(std::string_view date_line) const {
@@ -480,10 +484,12 @@ std::string ServerProperties::render(std::string_view date_line) const {
     out += '#';
     out += date_line;
     out += kEol;
+    // The Writer form of Properties.store, the jar's: backslash escapes only,
+    // every other character as it is (measured: "motd=Café \: \= x").
     for (const std::string& key : write_order()) {
-        out += escape_property(key, true, true);
+        out += escape_property(key, true, false);
         out += '=';
-        out += escape_property(*get(key), false, true);
+        out += escape_property(*get(key), false, false);
         out += kEol;
     }
     return out;

@@ -25,8 +25,35 @@ void put_session(std::vector<u8>& out, i32 session) {
     out.push_back(static_cast<u8>(u));
 }
 
+/// The jar's strings go out as ISO-8859-1 (measured: "é" is the one byte
+/// 0xE9); a character outside it becomes '?', as String.getBytes does.
+[[nodiscard]] std::string latin1(std::string_view utf8) {
+    std::string out;
+    usize       i = 0;
+    while (i < utf8.size()) {
+        const auto c   = static_cast<u8>(utf8[i]);
+        u32        cp  = c;
+        usize      len = 1;
+        if (c >= 0xF0 && i + 3 < utf8.size()) {
+            cp  = 0x10000;
+            len = 4;
+        } else if (c >= 0xE0 && i + 2 < utf8.size()) {
+            cp  = ((c & 0x0FU) << 12) | ((static_cast<u8>(utf8[i + 1]) & 0x3FU) << 6) |
+                 (static_cast<u8>(utf8[i + 2]) & 0x3FU);
+            len = 3;
+        } else if (c >= 0xC0 && i + 1 < utf8.size()) {
+            cp  = ((c & 0x1FU) << 6) | (static_cast<u8>(utf8[i + 1]) & 0x3FU);
+            len = 2;
+        }
+        out.push_back(cp <= 0xFF ? static_cast<char>(cp) : '?');
+        i += len;
+    }
+    return out;
+}
+
 void put_cstring(std::vector<u8>& out, std::string_view text) {
-    out.insert(out.end(), text.begin(), text.end());
+    const std::string bytes = latin1(text);
+    out.insert(out.end(), bytes.begin(), bytes.end());
     out.push_back(0);
 }
 
@@ -193,6 +220,23 @@ private:
 };
 
 }  // namespace
+
+std::string local_address() {
+    // What the jar reports as hostip when server-ip is empty: this machine's
+    // own address (measured: its LAN address, not 0.0.0.0) — the first IPv4
+    // address its host name resolves to.
+    try {
+        asio::io_context        io;
+        asio::ip::tcp::resolver resolver{io};
+        for (const auto& entry : resolver.resolve(asio::ip::host_name(), "")) {
+            if (const auto address = entry.endpoint().address(); address.is_v4()) {
+                return address.to_string();
+            }
+        }
+    } catch (const std::exception&) {
+    }
+    return "0.0.0.0";
+}
 
 std::unique_ptr<QueryServer> QueryServer::start(u16 port, const std::string& address,
                                                 std::function<QueryInfo()> info) {

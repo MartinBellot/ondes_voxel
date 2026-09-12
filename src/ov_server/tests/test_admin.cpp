@@ -97,7 +97,7 @@ TEST_CASE("ban dates", "[admin][java]") {
     // Date.toString(): 2026-09-11 is a Friday.
     const i64 friday = *parse_ban_date("2026-09-11 18:40:12 +0200");
     CHECK(format_java_date(friday, 7200, "CEST") == "Fri Sep 11 18:40:12 CEST 2026");
-    CHECK(format_zone_date(friday, 7200, "CEST") == "2026-09-11 18:40:12 CEST");
+    CHECK(format_zone_date(friday, 7200, "CEST") == "2026-09-11 at 18:40:12 CEST");
 }
 
 // ── server.properties ───────────────────────────────────────────────────────
@@ -288,8 +288,9 @@ TEST_CASE("RCON packets", "[admin][rcon]") {
 
 TEST_CASE("RCON session: a password, then commands", "[admin][rcon]") {
     RconSession session{"pw", false, [](std::string c) { return "ran " + c; }};
-    auto        out = session.handle({3, kRconCommand, "seed"});
-    CHECK(out.front().request == -1);
+    // Before logging in, a command gets no answer at all (measured).
+    auto out = session.handle({3, kRconCommand, "seed"});
+    CHECK(out.empty());
     out = session.handle({4, kRconLogin, "wrong"});
     CHECK(out.front().request == -1);
     out = session.handle({5, kRconLogin, "pw"});
@@ -440,16 +441,12 @@ TEST_CASE("a first start writes the file, a second one finds it", "[admin][prope
     CHECK(second.existed);
     CHECK(second.settings.motd == "A Minecraft Server");
     CHECK(second.settings.server_port == 25565);
-    // Every key once — but not in the same order both times, and that is the
-    // JDK's doing, not ours: a second start loads the keys in the order the
-    // first one wrote them, and two keys that share a bucket come back
-    // swapped. OpenJDK 17 does exactly this (scripts/jdk_order_oracle.java,
-    // "restart"): gamemode and enable-command-block trade places, nothing else.
-    std::vector<std::string> restarted = first.properties.write_order();
-    REQUIRE(restarted.size() == ServerProperties::vanilla_defaults().size());
-    REQUIRE(restarted[1] == "gamemode");
-    std::swap(restarted[1], restarted[2]);
-    CHECK(second.properties.write_order() == restarted);
+    // Every key once, and the same order both times: a second start loads the
+    // first file's keys in its order, and the table that grows from them
+    // iterates as before (OpenJDK 17, scripts/jdk_order_oracle.java,
+    // "direct-restart": no key moves).
+    CHECK(first.properties.write_order().size() == ServerProperties::vanilla_defaults().size());
+    CHECK(second.properties.write_order() == first.properties.write_order());
     std::filesystem::remove_all(dir);
 }
 
@@ -471,23 +468,28 @@ std::vector<std::string> split_commas(std::string_view text) {
     return out;
 }
 
+// A first start's file: the 56 keys of 1.20.1, as the table the jar fills
+// iterates them. The same order, with the capture's unknown key added, is
+// the real server's file line for line (57/57).
 constexpr std::string_view kJdkFresh =
-    "rcon.port,gamemode,enable-command-block,pvp,max-chained-neighbor-updates,"
-    "network-compression-threshold,max-tick-time,max-players,online-mode,resource-pack-prompt,"
-    "allow-nether,resource-pack-id,hide-online-players,rcon.password,force-gamemode,white-list,"
-    "spawn-npcs,log-ips,function-permission-level,initial-enabled-packs,level-type,"
-    "text-filtering-config,max-world-size,enable-jmx-monitoring,level-seed,enable-query,"
-    "generator-settings,enforce-secure-profile,level-name,motd,query.port,generate-structures,"
-    "difficulty,require-resource-pack,use-native-transport,enable-status,allow-flight,"
-    "initial-disabled-packs,broadcast-rcon-to-ops,view-distance,server-ip,server-port,enable-rcon,"
-    "sync-chunk-writes,op-permission-level,prevent-proxy-connections,resource-pack,"
-    "entity-broadcast-range-percentage,simulation-distance,player-idle-timeout,rate-limit,hardcore,"
-    "broadcast-console-to-ops,spawn-animals,spawn-monsters,enforce-whitelist,resource-pack-sha1,"
-    "spawn-protection";
+    "enable-jmx-monitoring,rcon.port,level-seed,gamemode,enable-command-block,enable-query,"
+    "generator-settings,enforce-secure-profile,level-name,motd,query.port,pvp,generate-structures,"
+    "max-chained-neighbor-updates,difficulty,network-compression-threshold,max-tick-time,"
+    "require-resource-pack,use-native-transport,max-players,online-mode,enable-status,allow-flight,"
+    "initial-disabled-packs,broadcast-rcon-to-ops,view-distance,server-ip,resource-pack-prompt,"
+    "allow-nether,server-port,enable-rcon,sync-chunk-writes,op-permission-level,"
+    "prevent-proxy-connections,hide-online-players,resource-pack,entity-broadcast-range-percentage,"
+    "simulation-distance,rcon.password,player-idle-timeout,force-gamemode,rate-limit,hardcore,"
+    "white-list,broadcast-console-to-ops,spawn-npcs,spawn-animals,function-permission-level,"
+    "initial-enabled-packs,level-type,text-filtering-config,spawn-monsters,enforce-whitelist,"
+    "spawn-protection,resource-pack-sha1,max-world-size";
 
 }  // namespace
 
-TEST_CASE("the Properties copy iterates as JDK 17's does", "[admin][java][jdk]") {
+// The jar stores the Properties it filled, not a putAll copy of it: the
+// copy's presized table put 1 line of 57 in place, the filled one 57.
+TEST_CASE("server.properties is written in the order of the jar's own table",
+          "[admin][java][jdk]") {
     // A first start: every key put in the order the settings are read.
     ServerProperties fresh = ServerProperties::from_text("");
     fresh.fill_defaults();

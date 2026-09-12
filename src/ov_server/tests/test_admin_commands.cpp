@@ -182,7 +182,11 @@ TEST_CASE("whitelist: on/off writes white-list, add/remove/list", "[admin][comma
     CHECK(h.kicks.empty());
     CHECK(h.admin.login_refusal(net::Uuid::offline_player("Carol"), "1.2.3.4", 0).has_value());
     (void)h.run("whitelist add Carol");
-    CHECK_FALSE(h.admin.login_refusal(net::Uuid::offline_player("Carol"), "1.2.3.4", 0).has_value());
+    // Nobody called Carol is online: the jar's offline profile of the name in
+    // lower case goes on the list — so "carol" gets in and "Carol", whose
+    // uuid is another, still does not (measured on the real server with ban).
+    CHECK_FALSE(h.admin.login_refusal(net::Uuid::offline_player("carol"), "1.2.3.4", 0).has_value());
+    CHECK(h.admin.login_refusal(net::Uuid::offline_player("Carol"), "1.2.3.4", 0).has_value());
     CHECK(mentions(h.run("whitelist add Carol"), "commands.whitelist.add.failed"));
     CHECK(mentions(h.run("whitelist list"), "commands.whitelist.list"));
     (void)h.run("whitelist remove Carol");

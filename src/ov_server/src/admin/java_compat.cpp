@@ -318,7 +318,9 @@ std::optional<i64> parse_ban_date(std::string_view text) {
 }
 
 std::string format_zone_date(i64 epoch_seconds, i32 utc_offset_seconds, std::string_view zone) {
-    return ymd_hms(civil_from_epoch(epoch_seconds + utc_offset_seconds)) + " " + std::string{zone};
+    // "yyyy-MM-dd 'at' HH:mm:ss z" — measured: "2099-01-02 at 04:04:05 CET".
+    const std::string stamp = ymd_hms(civil_from_epoch(epoch_seconds + utc_offset_seconds));
+    return stamp.substr(0, 10) + " at " + stamp.substr(11) + " " + std::string{zone};
 }
 
 std::string format_java_date(i64 epoch_seconds, i32 utc_offset_seconds, std::string_view zone) {

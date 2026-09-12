@@ -51,6 +51,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import zlib
 from pathlib import Path
 
@@ -66,8 +67,12 @@ SCRATCH = ROOT / ".scratch" / "admin"
 LINE = re.compile(r"^\[[0-9:.]+\] \[[^\]]+\](?: \[[^\]]+\])?:? (.*)$")
 
 PORT = int(os.environ.get("OV_ADMIN_PORT", "25610"))
-RCON_PORT = PORT + 1
-QUERY_PORT = PORT + 2
+# Inside the two ports this measurement owns (PORT and PORT + 100): RCON on
+# the second one over TCP, Query on the first one over UDP — a separate
+# namespace, and vanilla's own default for query.port is the server port.
+# PORT + 1 was another campaign's, and the jar died on "Address already in use".
+RCON_PORT = PORT + 100
+QUERY_PORT = PORT
 RCON_PASSWORD = "ovsecret"
 
 # Names that no Mojang account is likely to hold: an offline jar still asks
@@ -225,6 +230,11 @@ def start(target: str, directory: Path) -> Process:
     (directory / "eula.txt").write_text("eula=true\n")
     server = Process(["java", "-Xmx1G", "-jar", "server.jar", "nogui"], directory)
     server.await_line("Done (", timeout=240)
+    # "Done" comes before the jar has finished starting: Query and RCON come
+    # up after it, and a status ping sent at once was closed unanswered. The
+    # last line of the start, then a second, as for our own server.
+    server.await_line("RCON running on", timeout=30)
+    time.sleep(1.0)
     return server
 
 
@@ -277,6 +287,19 @@ def handshake(sock: socket.socket, next_state: int) -> None:
 
 
 def status() -> dict:
+    """The Status Response, asked up to three times: a server that closes the
+    first ping unanswered is still starting, not refusing."""
+    for attempt in range(3):
+        try:
+            return status_once()
+        except (EOFError, ConnectionError):
+            if attempt == 2:
+                raise
+            time.sleep(0.5)
+    raise AssertionError("unreachable")
+
+
+def status_once() -> dict:
     with socket.create_connection(("127.0.0.1", PORT), timeout=10) as sock:
         handshake(sock, 1)
         send_packet(sock, 0x00, b"")
@@ -444,11 +467,19 @@ def rcon_round() -> dict:
         for i, command in enumerate(RCON_COMMANDS, start=100):
             good.send(i, 2, command)
             out["commands"].append({"command": command, "packets": good.read_all(1.0)})
-        good.send(200, 2, "seed", split=True)
-        out["split"] = good.read_all(1.0)
         good.send(201, 99, "seed")
         out["unknown_type"] = good.read_all(1.0)
         good.close()
+
+        # A request cut in two TCP writes, on a connection of its own: the jar
+        # answered nothing to it, and anything asked after it on the same
+        # connection went unanswered too.
+        split = Rcon()
+        split.send(12, 3, RCON_PASSWORD)
+        out["split_auth"] = split.read_all(0.5)
+        split.send(200, 2, "seed", split=True)
+        out["split"] = split.read_all(1.5)
+        split.close()
 
         unauth = Rcon()
         unauth.send(5, 2, "seed")
@@ -483,6 +514,8 @@ COMMANDS: list[str] = [
     "seed", "debug start", "debug start", "debug stop", "debug stop", "publish",
     "kick Ovq_nobody", "banlist players",
 ]
+
+PROFILE_COMMANDS = {"ban", "pardon", "op", "deop", "whitelist"}
 
 CONSOLE: list[str] = [
     "banlist", "ban Ovq_console Console ban", "banlist players", "pardon Ovq_console",
@@ -535,7 +568,11 @@ def run_round(target: str, directory: Path) -> dict:
         document["commands"] = []
         for text in COMMANDS:
             probe.command(text)
-            probe.pump(0.7)
+            # A name the jar does not know sends it to Mojang's profile API
+            # before it answers: a longer window, or its reply lands in the
+            # next command's.
+            words = text.split(" ")
+            probe.pump(3.0 if words[0] in PROFILE_COMMANDS and len(words) > 1 else 0.7)
             packets = [e for e in probe.take() if not is_sync(e)]
             document["commands"].append({"command": text, "packets": packets})
         print(f"commands: {len(COMMANDS)}")
@@ -602,7 +639,9 @@ def run_round(target: str, directory: Path) -> dict:
         # Kept, with the server's log, rather than lost with the traceback:
         # the log says why a login was refused.
         document["error"] = f"{type(error).__name__}: {error}"
+        document["traceback"] = traceback.format_exc()
         print(f"round stopped: {document['error']}")
+        print(document["traceback"])
     finally:
         if server.process.poll() is None:
             server.stop()

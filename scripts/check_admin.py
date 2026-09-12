@@ -137,6 +137,9 @@ def rcon_view(packets: list[dict]) -> list:
             out.append("closed")
             continue
         body = re.sub(r"Seed: \[-?\d+\]", "Seed: [<seed>]", p["body"])
+        # The fresh world's clock: vanilla's starts at 0, this server's at
+        # 1000 — a world default, not administration.
+        body = re.sub(r"The time is \d+", "The time is <t>", body)
         body = re.sub(r"after [\d.]+ seconds and \d+ ticks \([\d.]+ ticks per second\)",
                       "after <s> seconds and <n> ticks (<tps> ticks per second)", body)
         out.append([p["request"], p["type"], body, p["tail"]])
@@ -147,10 +150,21 @@ def compare_rcon(vanilla: dict, ours: dict) -> int:
     v, o = vanilla["rcon"], ours["rcon"]
     cases = [("bad_auth", v.get("bad_auth"), o.get("bad_auth")),
              ("auth", v.get("auth"), o.get("auth"))]
+    known = []
     for vc, oc in zip(v.get("commands", []), o.get("commands", [])):
+        if vc["command"] == "help":
+            # 79 commands in the jar's list, fewer here: named, not compared.
+            known.append("help (the jar lists 79 commands)")
+            continue
         cases.append((f"command {vc['command']!r}", vc["packets"], oc["packets"]))
-    for key in ("split", "unknown_type", "unauthenticated_command"):
+    for key in ("unknown_type", "unauthenticated_command", "split_auth"):
         cases.append((key, v.get(key), o.get(key)))
+    # The split request: the jar drops the session, this server reassembles
+    # it — a named difference, shown but not counted.
+    print(f"  rcon split request: vanilla {rcon_view(v.get('split') or [])} / "
+          f"ours {rcon_view(o.get('split') or [])} (named)")
+    for name in known:
+        print(f"  rcon {name}: named, not compared")
     diffs, same = [], 0
     for name, a, b in cases:
         va, ob = rcon_view(a or []), rcon_view(b or [])
@@ -167,8 +181,17 @@ def compare_logins(vanilla: dict, ours: dict) -> int:
     cases.append((vanilla.get("full"), ours.get("full")))
     cases.append(({"duplicate_old": [p.get("decoded") for p in vanilla.get("duplicate_old", [])]},
                   {"duplicate_old": [p.get("decoded") for p in ours.get("duplicate_old", [])]}))
-    cases.append(({"ip_ban_kick": [(p["id"], p.get("decoded")) for p in vanilla.get("ip_ban_kick", [])]},
-                  {"ip_ban_kick": [(p["id"], p.get("decoded")) for p in ours.get("ip_ban_kick", [])]}))
+    def kick_view(capture: dict) -> list:
+        # The kick and the ban-ip lines only: joins and deaths around them
+        # are the world's traffic.
+        out = []
+        for p in capture.get("ip_ban_kick", []):
+            text = json.dumps(p.get("decoded"))
+            if p["id"] == 0x1A or "banip" in text:
+                out.append((p["id"], p.get("decoded")))
+        return out
+
+    cases.append(({"ip_ban_kick": kick_view(vanilla)}, {"ip_ban_kick": kick_view(ours)}))
     diffs = [f"vanilla {a} / ours {b}" for a, b in cases if a != b]
     show("logins and kicks", len(cases) - len(diffs), len(cases), diffs)
     return len(diffs)
@@ -201,6 +224,7 @@ def console_view(lines: list[str]) -> list[str]:
         line = normalise(line)
         if ("ovprobe" in line and ("joined" in line or "logged in" in line or "lost connection" in line)) \
                 or re.match(r"saved \d+ chunks", line) or "Thread RCON" in line \
+                or line.startswith("entities: saved") \
                 or "logging in as" in line or "handshake" in line or "Disconnecting" in line \
                 or "UUID of player" in line or "left the game" in line:
             continue

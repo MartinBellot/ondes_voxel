@@ -82,8 +82,8 @@ void append_gson_string(std::string& out, std::string_view text);
 /// The same pattern read back; nullopt when it does not parse.
 [[nodiscard]] std::optional<i64> parse_ban_date(std::string_view text);
 
-/// `yyyy-MM-dd HH:mm:ss z` — the form a login refusal shows an expiry in —
-/// with `zone` the abbreviation ("CEST").
+/// `yyyy-MM-dd 'at' HH:mm:ss z` — the form a login refusal shows an expiry in,
+/// "2099-01-02 at 04:04:05 CET" — with `zone` the abbreviation.
 [[nodiscard]] std::string format_zone_date(i64 epoch_seconds, i32 utc_offset_seconds,
                                            std::string_view zone);
 

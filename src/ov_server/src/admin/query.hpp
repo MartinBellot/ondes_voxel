@@ -56,6 +56,10 @@ private:
     std::vector<Challenge> challenges_;
 };
 
+/// This machine's address, as the jar reports it in `hostip` when
+/// server-ip is empty; "0.0.0.0" when it cannot be found.
+[[nodiscard]] std::string local_address();
+
 [[nodiscard]] std::vector<u8> query_basic_stat(i32 session, const QueryInfo& info);
 [[nodiscard]] std::vector<u8> query_full_stat(i32 session, const QueryInfo& info);
 

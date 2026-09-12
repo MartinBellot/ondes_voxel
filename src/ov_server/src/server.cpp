@@ -8460,14 +8460,17 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             }
         }
         if (ds.enable_query) {
+            // hostip: server-ip, else this machine's own address, as the jar.
+            const std::string query_ip =
+                ds.server_ip.empty() ? admin::local_address() : ds.server_ip;
             query = admin::QueryServer::start(
-                static_cast<u16>(ds.query_port), ds.server_ip, [&] {
+                static_cast<u16>(ds.query_port), ds.server_ip, [&, query_ip] {
                     admin::QueryInfo info;
                     info.motd        = options.motd;
                     info.map         = options.world_dir;
                     info.max_players = options.max_players;
                     info.host_port   = options.port;
-                    info.host_ip     = ds.server_ip.empty() ? "0.0.0.0" : ds.server_ip;
+                    info.host_ip     = query_ip;
                     const std::scoped_lock lock{players_mutex};
                     for (const auto& [key, who] : players) {
                         if (who.connection) {

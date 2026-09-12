@@ -97,7 +97,13 @@ Parsed<std::vector<std::pair<std::string, net::Uuid>>> CommandService::game_prof
             return out;
         }
     }
-    out.emplace_back(arg.name, net::Uuid::offline_player(arg.name));
+    // A name nobody here has: the jar looks it up in its profile cache by the
+    // name in lower case and, offline, makes the profile of that lower-case
+    // name. Measured: `ban Ovq_alice` answers "Banned ovq_alice" and files the
+    // offline uuid of "ovq_alice" — so the player Ovq_alice, whose uuid is
+    // another, still gets in.
+    const std::string lowered = lower(arg.name);
+    out.emplace_back(lowered, net::Uuid::offline_player(lowered));
     return out;
 }
 
@@ -197,7 +203,7 @@ void CommandService::register_bans(const TopFn& top) {
             }
             success(ctx.source(),
                     Text::translatable("commands.banip.success",
-                                       {Text::raw(ip), Text::literal(reason.value_or(
+                                       {Text::raw(ip), Text::raw(reason.value_or(
                                                            std::string{admin::kDefaultBanReason}))}),
                     true);
             if (!affected.empty()) {
@@ -271,7 +277,7 @@ void CommandService::register_bans(const TopFn& top) {
                     success(ctx.source(),
                             Text::translatable("commands.banlist.entry",
                                                {std::move(line.name), Text::raw(line.source),
-                                                Text::literal(line.reason)}),
+                                                Text::raw(line.reason)}),  // a bare string, measured
                             false);
                 }
                 return static_cast<i32>(lines.size());
@@ -316,7 +322,7 @@ void CommandService::register_bans(const TopFn& top) {
                         Text::translatable(
                             "commands.ban.success",
                             {Text::literal(name),
-                             Text::literal(reason.value_or(std::string{admin::kDefaultBanReason}))}),
+                             Text::raw(reason.value_or(std::string{admin::kDefaultBanReason}))}),
                         true);
                 for (PlayerRef& p : players_) {
                     if (p.uuid == uuid) {
