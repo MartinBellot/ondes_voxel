@@ -310,8 +310,23 @@ public:
 };
 
 /// Everything a modifier or a feature needs besides the world itself.
+class TemplateLibrary;  // ── worldgen-3 ── structure_template.hpp
+
 struct FeatureContext {
     const registry::BlockRegistry* blocks{nullptr};
+    /// ── worldgen-3 ── The structure templates read from the server jar, for
+    /// the one feature built from them (`fossil`). Null when the caller has no
+    /// jar; the fossil then places nothing.
+    const TemplateLibrary* templates{nullptr};
+    /// ── worldgen-3 ── `BiomeManager`'s zoom seed (biome_zoom.hpp), when the
+    /// caller wants a world's biome questions answered the way the game asks
+    /// them — through the fuzzy zoom — rather than at the raw cell.
+    bool fuzzy_biomes{false};
+    i64  biome_zoom_seed{0};
+
+    /// The biome a world question about `(x, y, z)` reads: through the zoom
+    /// when `fuzzy_biomes`, the block's own cell otherwise.
+    [[nodiscard]] std::string_view biome_at(const FeatureLevel& level, i32 x, i32 y, i32 z) const;
     /// The placed feature currently being placed, by name. The `biome`
     /// modifier needs it.
     std::string_view     feature_name;

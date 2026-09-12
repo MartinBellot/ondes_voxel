@@ -1271,6 +1271,40 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     u64 absent_chunk_writes   = 0;
     u64 generations_for_packets = 0;
 
+    // ── light ── The Overworld's light, kept current edit by edit. Used only
+    // under `chunk_mutex`, like the map it lights. A chunk joins lit: alone
+    // first, then across its borders (`light_arrived`); an edit is noted where
+    // it is written and repaired once per tick by `flush_tick_writes`.
+    MapLightSource                    light_chunks{chunks};
+    std::optional<world::LightEngine> light;
+    if (blocks) {
+        light.emplace(*blocks, kOverworldLight);
+    }
+    /// Measurement only: `OV_LIGHT_FULL=1` repairs edits the way the server did
+    /// before this engine — the 3x3 around each chunk touched, from nothing —
+    /// so that one binary measures both sides of scripts/bench_play.py.
+    const bool light_full_recompute = [] {
+        const char* setting = std::getenv("OV_LIGHT_FULL");
+        return setting != nullptr && std::string_view{setting} == "1";
+    }();
+    /// Caller holds chunk_mutex. Pending edits go first, so that the stitch
+    /// never floods from light an edit has already made stale.
+    const auto light_arrived = [&](ChunkPos pos, bool keep_sky) {
+        if (!light) {
+            return;
+        }
+        world::Chunk* chunk = chunks.find(pos);
+        if (chunk == nullptr) {
+            return;
+        }
+        if (light->pending() > 0) {
+            (void)light->propagate(light_chunks);
+        }
+        light->light_chunk(*chunk, keep_sky);
+        (void)light->stitch(light_chunks, pos);
+    };
+    // ── end light ──
+
     /// The level a block behaviour writes through, and the two queues it wakes
     /// from. Declared here rather than where they are built because both
     /// `chunk_at` and `save_world` reach for them — a chunk read from disk
@@ -1371,6 +1405,26 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     // refused rather than dropping the player anywhere.
     std::unique_ptr<NetherWorld>         nether;
     std::optional<ServerLevel>           nether_level;
+    // ── light ── The Nether's and the End's light: block light only, the same
+    // engine as the Overworld's. Used under chunk_mutex, like their maps.
+    std::optional<world::LightEngine> nether_light;
+    std::optional<world::LightEngine> end_light;
+    if (blocks) {
+        nether_light.emplace(*blocks, kNoSkyLight);
+        end_light.emplace(*blocks, kNoSkyLight);
+    }
+    LookupLightSource nether_chunks{
+        [&](i32 x, i32 z) -> world::Chunk* { return nether ? nether->resident(x, z) : nullptr; }};
+    /// A chunk joining a dimension's map: alone, then across its borders.
+    const auto light_joined = [](world::LightEngine& engine, world::LightChunkSource& source,
+                                 world::Chunk& chunk) {
+        if (engine.pending() > 0) {
+            (void)engine.propagate(source);
+        }
+        engine.light_chunk(chunk);
+        (void)engine.stitch(source, chunk.position());
+    };
+    // ── end light ──
     std::optional<gameplay::PortalRules> portal_rules;
     if (blocks && registries) {
         portal_rules.emplace(*blocks, *registries);
@@ -1388,8 +1442,13 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             return false;
         }
         NetherWorld::Hooks hooks;
-        hooks.relight_loaded    = [&](world::Chunk& chunk) { relight_blocks(chunk, *blocks); };
-        hooks.relight_generated = [&](world::Chunk& chunk) { relight_blocks(chunk, *blocks); };
+        // ── light ── lit alone, then stitched to the Nether's loaded chunks
+        hooks.relight_loaded = [&](world::Chunk& chunk) {
+            light_joined(*nether_light, nether_chunks, chunk);
+        };
+        hooks.relight_generated = [&](world::Chunk& chunk) {
+            light_joined(*nether_light, nether_chunks, chunk);
+        };
         hooks.ticks_loaded      = [&](const nbt::Document& document) {
             if (!nether_level) {
                 return;
@@ -1435,6 +1494,18 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     // settings), built on first need like the Nether. `OV_END=0` turns it off.
     // The crossing and the rules are in end_travel.hpp / end_portal.hpp.
     std::unique_ptr<NetherWorld>             end_world;
+    // ── light ── the End's chunks as its light engine sees them
+    LookupLightSource end_chunks{[&](i32 x, i32 z) -> world::Chunk* {
+        return end_world ? end_world->resident(x, z) : nullptr;
+    }};
+    /// The engine and the chunks of a sky-less dimension, or none.
+    const auto light_of = [&](DimensionId dimension)
+        -> std::pair<world::LightEngine*, world::LightChunkSource*> {
+        if (dimension == DimensionId::End) {
+            return {end_light ? &*end_light : nullptr, &end_chunks};
+        }
+        return {nether_light ? &*nether_light : nullptr, &nether_chunks};
+    };
     std::optional<ServerLevel>               end_level;
     std::optional<gameplay::EndPortalRules>  end_rules;
     if (blocks) {
@@ -1453,8 +1524,13 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             return false;
         }
         NetherWorld::Hooks hooks;
-        hooks.relight_loaded    = [&](world::Chunk& chunk) { relight_blocks(chunk, *blocks); };
-        hooks.relight_generated = [&](world::Chunk& chunk) { relight_blocks(chunk, *blocks); };
+        // ── light ── lit alone, then stitched to the End's loaded chunks
+        hooks.relight_loaded = [&](world::Chunk& chunk) {
+            light_joined(*end_light, end_chunks, chunk);
+        };
+        hooks.relight_generated = [&](world::Chunk& chunk) {
+            light_joined(*end_light, end_chunks, chunk);
+        };
         hooks.ticks_loaded      = [&](const nbt::Document& document) {
             if (!end_level) {
                 return;
@@ -1508,29 +1584,19 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         if (auto loaded = world::from_nbt(*document, codec_context)) {
                             chunks.publish(ChunkPos{cx, cz}, std::move(*loaded));
                             world::Chunk& placed = *chunks.find(ChunkPos{cx, cz});
-                            // A saved chunk carries the light it was written
-                            // with, which may have come from another
-                            // implementation. Recomputing costs a pass and
-                            // removes a whole class of "the cave is lit and I
-                            // do not know why".
-                            if (blocks) {
-                                relight_blocks(placed, *blocks);
-                            }
-                            // Sky light is recomputed only when the file
-                            // carries none. A world written by a tool that has
-                            // no light engine — ov-lab, for one — would
-                            // otherwise be served pitch dark, while a world
-                            // vanilla wrote keeps the light vanilla computed
-                            // across chunk borders, which a per-chunk pass
-                            // here could only make worse.
-                            const bool has_sky_light =
-                                std::ranges::any_of(placed.sections(),
-                                                    [](const world::ChunkSection& section) {
-                                                        return !section.sky_light().is_absent();
-                                                    });
-                            if (!has_sky_light) {
-                                relight_chunk(placed, blocks ? &*blocks : nullptr);
-                            }
+                            // ── light ── A saved chunk carries the light it was
+                            // written with, and both arrays are recomputed, then
+                            // stitched to the loaded neighbours. Keeping the sky
+                            // a vanilla save carries was the rule before, and it
+                            // served black air: vanilla stores sky light in a
+                            // fifth of the sections (297 of 1536 in a world it
+                            // had just lit) and means "as above" by the others,
+                            // which this format reads as dark. Where vanilla did
+                            // store it, the engine agrees on 98.9 % of the cells
+                            // (docs/provenance/incremental-light.md § 6.3), and
+                            // a chunk lit by the engine is one the incremental
+                            // repair can start from.
+                            light_arrived(ChunkPos{cx, cz}, false);
                             // The ticks the chunk was written with. `t` on disk
                             // is a delay relative to the chunk's game time, so
                             // loading has to be told what "now" is — which is
@@ -1596,6 +1662,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         } else {
             chunks.publish(ChunkPos{cx, cz}, superflat.generate(ChunkPos{cx, cz}));
         }
+        light_arrived(ChunkPos{cx, cz}, false);  // ── light ── generated chunks carry none
         return *chunks.find(ChunkPos{cx, cz});
     };
 
@@ -2428,12 +2495,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     // lambda that feeds it; on the heap because it is ~100 KiB of counters and
     // an integrated server runs this on a thread with a small stack.
     const auto perf = std::make_unique<TickProfile>();
-    /// The chunks written since the last relight, relit **once each, on the
-    /// tick thread**, by `flush_tick_writes`. Every writer feeds it: the drain,
-    /// a command's fill, and a player's dig or place on the network thread —
-    /// which used to relight a 3x3 neighbourhood itself, per block, before it
-    /// could send the Block Update. Guarded by `chunk_mutex`.
-    std::unordered_set<i64> tick_relight;
+    // ── light ── The edits written since the last relight are noted in
+    // `light` (declared beside the map) by every writer — the drain, a
+    // command's fill, a player's dig or place on the network thread — and
+    // repaired **once per tick, on the tick thread**, by `flush_tick_writes`.
     // ── end perf ──
 
     std::vector<net::WirePosition> pending_notifications;
@@ -2537,8 +2602,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         write_block(chunk, position.x, position.y, position.z, state);
         dirty_chunks.insert(chunk_key(chunk_x, chunk_z));
 
-        if (relight) {
-            tick_relight.insert(chunk_key(chunk_x, chunk_z));  // ── perf ── on the tick
+        if (relight && light) {  // ── light ── repaired on the tick
+            light->block_changed(BlockPos{position.x, position.y, position.z});
         }
 
         for (i32 dz = -1; dz <= 1; ++dz) {
@@ -2561,11 +2626,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         {
             const std::scoped_lock lock{chunk_mutex};
             apply_block_change_in_nether(position, state, dimension);
-            if (blocks) {
-                if (world::Chunk* chunk =
-                        chunk_if_resident_in(dimension, position.x >> 4, position.z >> 4)) {
-                    relight_blocks(*chunk, *blocks);
-                }
+            // ── light ── repaired around the edit, across chunk borders
+            if (const auto [engine, source] = light_of(dimension); engine != nullptr) {
+                engine->block_changed(BlockPos{position.x, position.y, position.z});
+                (void)engine->propagate(*source);
             }
         }
         broadcast_in(dimension, nullptr, net::clientbound::kBlockUpdate,
@@ -2596,14 +2660,13 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             write_block(chunk, position.x, position.y, position.z, state);
             dirty_chunks.insert(chunk_key(chunk_x, chunk_z));
 
-            // ── perf ── WORLD_SURFACE has just moved, so the light has too —
-            // across the 3x3, since light does not respect chunk borders. Not
-            // here, though: relighting nine chunks before the Block Update
-            // went out was the break latency players felt (measured in
-            // docs/provenance/performance-tick.md). The tick relights every
-            // chunk written since its last pass once, however many blocks
-            // changed in it; the client lights its own edits meanwhile.
-            tick_relight.insert(chunk_key(chunk_x, chunk_z));
+            // ── perf ── The light has moved too. Not here, though: relighting
+            // before the Block Update went out was the break latency players
+            // felt (docs/provenance/performance-tick.md). The edit is noted
+            // and the tick repairs the light around it (── light ──).
+            if (light) {
+                light->block_changed(BlockPos{position.x, position.y, position.z});
+            }
             // ── end perf ──
 
             for (i32 dz = -1; dz <= 1; ++dz) {
@@ -2773,7 +2836,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             if (sounds) {  // ── sound ── a button releasing, a door moved by power
                 sounds->queue_changed(pos, before, state);
             }
-            tick_relight.insert(chunk_key(pos.x >> 4, pos.z >> 4));
+            if (light) {  // ── light ──
+                light->block_changed(pos);
+            }
         };
         hooks.container_signal = [&](BlockPos pos) -> i32 {
             // ── rails ── a detector rail reads the container cart on it
@@ -3119,17 +3184,22 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     const auto flush_tick_writes = [&] {
         {  // ── perf ── under the lock: the network thread feeds the set too
             const std::scoped_lock lock{chunk_mutex};
-            if (!tick_relight.empty()) {
+            if (light && light->pending() > 0) {  // ── light ── incremental
                 const TickPhase perf_was = perf->enter(TickPhase::Relight);
-                const ChunkLookup lookup = [&](i32 nx, i32 nz) -> world::Chunk* {
-                    return chunks.find(ChunkPos{nx, nz});
-                };
-                for (const i64 key : tick_relight) {
-                    relight_after_edit(lookup, static_cast<i32>(key >> 32),
-                                       static_cast<i32>(static_cast<u32>(key & 0xFFFFFFFF)),
-                                       blocks ? &*blocks : nullptr);
+                if (light_full_recompute) {
+                    std::unordered_set<i64> relit;
+                    const ChunkLookup       lookup = [&](i32 nx, i32 nz) -> world::Chunk* {
+                        return chunks.find(ChunkPos{nx, nz});
+                    };
+                    for (const BlockPos pos : light->pending_positions()) {
+                        if (relit.insert(chunk_key(pos.x >> 4, pos.z >> 4)).second) {
+                            relight_after_edit(lookup, pos.x >> 4, pos.z >> 4, &*blocks);
+                        }
+                    }
+                    light->discard_pending();
+                } else {
+                    (void)light->propagate(light_chunks);
                 }
-                tick_relight.clear();
                 perf->enter(perf_was);
             }
         }  // ── end perf ──
@@ -3173,19 +3243,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         if (writes.empty()) {
             return;
         }
-        if (blocks && other_world(dimension) != nullptr) {
+        // ── light ── the drain's writes as one batch, repaired once
+        if (const auto [engine, source] = light_of(dimension);
+            engine != nullptr && other_world(dimension) != nullptr) {
             const std::scoped_lock lock{chunk_mutex};
-            std::unordered_set<i64> relit;
             for (const auto& [where, state] : writes) {
-                const i64 key = chunk_key(where.x >> 4, where.z >> 4);
-                if (!relit.insert(key).second) {
-                    continue;
-                }
-                if (world::Chunk* chunk =
-                        other_world(dimension)->resident(where.x >> 4, where.z >> 4)) {
-                    relight_blocks(*chunk, *blocks);
-                }
+                engine->block_changed(BlockPos{where.x, where.y, where.z});
             }
+            (void)engine->propagate(*source);
         }
         const std::unique_lock lock{players_mutex, std::try_to_lock};
         if (lock.owns_lock()) {
@@ -4419,20 +4484,20 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // Update Section Blocks per section — a 32768-block fill must not
         // relight a neighbourhood per block.
         std::map<std::tuple<i32, i32, i32>, std::vector<net::SectionBlock>> sections;
-        std::unordered_set<i64>                                             touched;
         {
             const std::scoped_lock chunk_lock{chunk_mutex};
             for (const cmd::BlockChange& change : changes) {
                 const net::WirePosition at{change.pos.x, change.pos.y, change.pos.z};
                 apply_block_change(at, change.state, false);
                 command_block_entity(at, change.state);
-                touched.insert(chunk_key(at.x >> 4, at.z >> 4));
+                if (light) {  // ── light ── one batch, repaired on the tick
+                    light->block_changed(BlockPos{at.x, at.y, at.z});
+                }
                 sections[{at.x >> 4, at.y >> 4, at.z >> 4}].push_back(
                     net::SectionBlock{static_cast<u8>(at.x & 15), static_cast<u8>(at.y & 15),
                                       static_cast<u8>(at.z & 15),
                                       static_cast<i32>(change.state.value())});
             }
-            tick_relight.insert(touched.begin(), touched.end());  // ── perf ── on the tick
         }
         for (const auto& [section, list] : sections) {
             broadcast(nullptr, net::clientbound::kUpdateSectionBlocks,
@@ -8342,12 +8407,37 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             if (chunk_source->drain(finished_blocks) != 0) {
                 const std::scoped_lock lock{chunk_mutex};
                 for (GeneratedBlock& block : finished_blocks) {
-                    for (auto& [pos, chunk] : block.chunks) {
+                    // ── worldgen-3 ── which of the block's chunks are new here
+                    std::array<bool, 64> fresh{};
+                    for (usize index = 0; index < block.chunks.size(); ++index) {
+                        auto& [pos, chunk] = block.chunks[index];
                         if (chunks.contains(pos)) {
                             continue;
                         }
                         chunks.publish(pos, std::move(chunk));
+                        light_arrived(pos, false);  // ── light ──
                         ++chunks_published;
+                        if (index < fresh.size()) {
+                            fresh[index] = true;
+                        }
+                    }
+                    // ── worldgen-3 ── The fluids the aquifer marked, woken as a
+                    // neighbour's change would wake them: a generated waterfall
+                    // flows. Only in chunks generated just now — a chunk read
+                    // from disk won the race and carries its own ticks.
+                    if (level && world_ticks) {
+                        for (const BlockPos& at : block.fluid_wakeups) {
+                            const ChunkPos home{at.x >> 4, at.z >> 4};
+                            for (usize index = 0; index < block.chunks.size() && index < fresh.size();
+                                 ++index) {
+                                if (block.chunks[index].first == home) {
+                                    if (fresh[index]) {
+                                        world_ticks->fluid().on_neighbour_changed(*level, at);
+                                    }
+                                    break;
+                                }
+                            }
+                        }
                     }
                 }
             }
