@@ -136,8 +136,9 @@ FluidSample FluidWorld::sample(const Vec3d& position) const {
     next.velocity.x += push.x;
     next.velocity.z += push.z;
 
-    const AABB  box     = player_box(next.position);
-    const Vec3d allowed = world.slide(box, next.velocity);
+    const AABB  box      = player_box(next.position);
+    const Vec3d allowed  = world.slide(box, next.velocity);
+    const bool  hit_wall = allowed.x != next.velocity.x || allowed.z != next.velocity.z;
     next.position.x += allowed.x;
     next.position.y += allowed.y;
     next.position.z += allowed.z;
@@ -151,6 +152,16 @@ FluidSample FluidWorld::sample(const Vec3d& position) const {
     }
     if (allowed.y != next.velocity.y) {
         next.velocity.y = 0.0;
+    }
+
+    // Bubble columns act on the velocity after the move and before the drag;
+    // a ladder under water still climbs when walked into.
+    if (world.motion() != nullptr) {
+        apply_inside_effects(world, player_box(next.position), next.position, 0.6,
+                             next.on_ground, next.velocity, constants.effects);
+        if (hit_wall && on_climbable(world, next.position)) {
+            next.velocity.y = constants.effects.climb_speed;
+        }
     }
 
     next.velocity.x *= horizontal_drag;
@@ -251,18 +262,31 @@ MotionState step(const MotionState& state, const MoveInput& input, const MotionC
         }
     }
 
-    MotionState next = state;
+    MotionState       next      = state;
+    const AABB        start_box = player_box(state.position);
+    const bool        blocky    = world.motion() != nullptr;
+    const BlockEffectConstants& effects = constants.effects;
 
-    // The block underfoot decides how much of last tick's speed survives. Ice
-    // and slime differ, and they are read per block rather than assumed.
-    const f64 slipperiness = constants.default_slipperiness;
-    const f64 friction = state.on_ground ? slipperiness * constants.air_drag : constants.air_drag;
+    // The block underfoot decides how much of last tick's speed survives: the
+    // supporting block, half a block below the feet, read before the move.
+    const f64 slipperiness =
+        blocky ? static_cast<f64>(floor_friction(world, state.position, start_box, state.on_ground))
+               : constants.default_slipperiness;
+    // The product is taken in float, as the game does: an armor stand on stone
+    // keeps 0.546000063419 of its speed per tick — float(0.6F × 0.91F) — and
+    // not the 0.546000021696 of the same product in double.
+    const auto air_drag = static_cast<f32>(constants.air_drag);
+    const f64  friction = state.on_ground
+                              ? static_cast<f64>(static_cast<f32>(slipperiness) * air_drag)
+                              : static_cast<f64>(air_drag);
 
     // Jumping happens before anything else moves, and a sprinting jump also
     // gets a shove in the direction faced — which is what makes sprint-jumping
-    // the fastest way to travel on foot.
+    // the fastest way to travel on foot. Honey halves the jump, not the shove.
     if (input.jump && state.on_ground) {
-        next.velocity.y = constants.jump_power;
+        const f64 jump_factor =
+            blocky ? static_cast<f64>(jump_factor_at(world, state.position, start_box, true)) : 1.0;
+        next.velocity.y = constants.jump_power * jump_factor;
         if (input.sprint) {
             const f64 radians = static_cast<f64>(input.yaw) * std::numbers::pi / 180.0;
             next.velocity.x -= std::sin(radians) * constants.sprint_jump_boost;
@@ -295,24 +319,67 @@ MotionState step(const MotionState& state, const MoveInput& input, const MotionC
     next.velocity.x += push.x;
     next.velocity.z += push.z;
 
+    // On a climbable the speed is clamped before the move, and holding sneak
+    // stops the slide down — except on scaffolding, where sneaking is how you
+    // go down.
+    if (blocky && on_climbable(world, state.position)) {
+        const f64 clamp = effects.climb_clamp;
+        next.velocity.x = std::clamp(next.velocity.x, -clamp, clamp);
+        next.velocity.z = std::clamp(next.velocity.z, -clamp, clamp);
+        next.velocity.y = std::max(next.velocity.y, -clamp);
+        if (next.velocity.y < 0.0 && input.sneak && !feet_in_scaffolding(world, state.position)) {
+            next.velocity.y = 0.0;
+        }
+    }
+
+    // Inside a cobweb, a berry bush or powder snow the move is scaled and the
+    // velocity thrown away: only what gravity rebuilds this tick moves you.
+    Vec3d wanted = next.velocity;
+    if (blocky) {
+        const Vec3d stuck = stuck_multiplier(world, start_box, state.position, true);
+        if (stuck.x != 0.0 || stuck.y != 0.0 || stuck.z != 0.0) {
+            wanted        = Vec3d{wanted.x * stuck.x, wanted.y * stuck.y, wanted.z * stuck.z};
+            next.velocity = Vec3d{};
+        }
+    }
+
     // Move, then let the world cut it short. What was cut is lost: hitting a
     // wall does not store speed for later.
     const AABB  box     = player_box(next.position);
-    const Vec3d allowed = world.slide(box, next.velocity);
+    const Vec3d allowed = world.slide(box, wanted);
 
     next.position.x += allowed.x;
     next.position.y += allowed.y;
     next.position.z += allowed.z;
 
-    next.on_ground = allowed.y != next.velocity.y && next.velocity.y < 0.0;
-    if (allowed.x != next.velocity.x) {
+    const bool landed      = allowed.y != wanted.y && wanted.y < 0.0;
+    const bool hit_wall    = allowed.x != wanted.x || allowed.z != wanted.z;
+    next.on_ground         = landed;
+    if (allowed.x != wanted.x) {
         next.velocity.x = 0.0;
     }
-    if (allowed.z != next.velocity.z) {
+    if (allowed.z != wanted.z) {
         next.velocity.z = 0.0;
     }
-    if (allowed.y != next.velocity.y) {
-        next.velocity.y = 0.0;
+    if (allowed.y != wanted.y && !landed) {
+        next.velocity.y = 0.0;  // a ceiling
+    }
+    // A landing stops the fall — or, on slime, reflects it.
+    land_on(world, next.position, box, true, input.sneak, landed, next.on_ground, next.velocity,
+            effects);
+
+    if (blocky) {
+        const AABB moved = player_box(next.position);
+        apply_inside_effects(world, moved, next.position, 0.6, next.on_ground, next.velocity,
+                             effects);
+        const f64 speed_factor =
+            static_cast<f64>(speed_factor_at(world, next.position, moved, next.on_ground));
+        next.velocity.x *= speed_factor;
+        next.velocity.z *= speed_factor;
+        // Climbing is walking into a wall (or holding jump) on a climbable.
+        if ((hit_wall || input.jump) && on_climbable(world, next.position)) {
+            next.velocity.y = effects.climb_speed;
+        }
     }
 
     // Gravity after the move, then drag — in that order. Drag before gravity
