@@ -406,9 +406,12 @@ class ReferenceQueries final : public worldgen::SurfaceQueries {
 public:
     ReferenceQueries(const ReferenceChunk& chunk, const registry::BlockRegistry& blocks,
                      const worldgen::NoiseRouter& router, const std::array<i32, 256>& heights,
-                     const std::array<i32, 256>& terrain_tops, bool prelim_from_reference)
+                     const std::array<i32, 256>& terrain_tops, bool prelim_from_reference,
+                     const worldgen::BiomeSource* source = nullptr)
         : chunk_(&chunk),
           blocks_(&blocks),
+          router_(&router),
+          source_(source),
           initial_(router.entry("initial_density_without_jaggedness")),
           heights_(&heights),
           terrain_tops_(&terrain_tops),
@@ -416,7 +419,19 @@ public:
           prelim_from_reference_(prelim_from_reference) {}
 
     [[nodiscard]] std::string_view biome_at(i32 x, i32 y, i32 z) const override {
-        return chunk_->biome(x - chunk_->chunk_x * 16, y, z - chunk_->chunk_z * 16);
+        const i32 local_x = x - chunk_->chunk_x * 16;
+        const i32 local_z = z - chunk_->chunk_z * 16;
+        if (local_x >= 0 && local_x < 16 && local_z >= 0 && local_z < 16) {
+            return chunk_->biome(local_x, y, local_z);
+        }
+        // ── worldgen-3 ── A neighbour's cell, which the biome zoom reaches.
+        // Our biome source answers it: it agrees with the game's biomes cell
+        // for cell (ov_parity), and the reference chunk has no neighbour here.
+        if (source_ != nullptr) {
+            const i32 quart_y = std::clamp(y, kMinY, kMinY + kHeight - 1) >> 2;
+            return source_->biome_at(source_->sample(*router_, x >> 2, quart_y, z >> 2));
+        }
+        return chunk_->biome(std::clamp(local_x, 0, 15), y, std::clamp(local_z, 0, 15));
     }
 
     [[nodiscard]] f64 temperature_at(i32 x, i32 y, i32 z) const override {
@@ -471,6 +486,8 @@ public:
 private:
     const ReferenceChunk*             chunk_;
     const registry::BlockRegistry*    blocks_;
+    const worldgen::NoiseRouter*      router_;
+    const worldgen::BiomeSource*      source_;
     const worldgen::DensityFunction*  initial_;
     const std::array<i32, 256>*       heights_;
     const std::array<i32, 256>*       terrain_tops_;
@@ -500,6 +517,13 @@ int main(int argc, char** argv) {
         return 1;
     }
     auto router = worldgen::NoiseRouter::load(options.data, "overworld", options.seed);
+    // ── worldgen-3 ── For the cells the biome zoom reaches outside a reference
+    // chunk. The reports sit two levels above the data (…/generated).
+    auto biome_source =
+        worldgen::BiomeSource::load(options.data.parent_path().parent_path(), "overworld");
+    if (!biome_source) {
+        OV_LOG_WARN("no biome source: a neighbour's cell answers with the chunk's edge");
+    }
     if (!router) {
         OV_LOG_ERROR("router: {}", worldgen::to_string(router.error()));
         return 1;
@@ -666,7 +690,8 @@ int main(int argc, char** argv) {
                 }
             }
             const ReferenceQueries queries{reference,     *blocks,      *router,
-                                           heights,       terrain_tops, options.prelim_reference};
+                                           heights,       terrain_tops, options.prelim_reference,
+                                           biome_source ? &*biome_source : nullptr};
 
             for (i32 cz = 0; cz < 16; ++cz) {
                 for (i32 cx = 0; cx < 16; ++cx) {
