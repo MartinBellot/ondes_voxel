@@ -30,6 +30,7 @@
 #include "ov/registry/block_states.hpp"
 #include "ov/registry/registries.hpp"
 #include "ov/world/chunk.hpp"
+#include "ov/worldgen/great_pyramid.hpp"  // ── great pyramid ──
 #include "ov/worldgen/structure.hpp"
 #include "ov/worldgen/structure_pieces.hpp"
 
@@ -58,9 +59,15 @@ public:
     /// columns outside the neighbourhood and the placer's biome filter; it may
     /// be null. `registries` resolves block entity ids for the wire; it may be
     /// null, and the ids are then zero.
+    ///
+    /// ── great pyramid ── `originals` is the generator-level switch for our
+    /// own structures (great_pyramid.hpp): on by default, as in every world
+    /// the game generates; the parity instruments pass
+    /// `OriginalStructures::vanilla_parity()`.
     StructureStage(const StructurePlacer& placer, const StructureBuilder& builder,
                    const StructureWorldSampler* sampler, const registry::BlockRegistry& blocks,
-                   const registry::Registries* registries, i64 level_seed);
+                   const registry::Registries* registries, i64 level_seed,
+                   OriginalStructures originals = OriginalStructures{});
 
     StructureStage(const StructureStage&)            = delete;
     StructureStage& operator=(const StructureStage&) = delete;
@@ -98,6 +105,11 @@ public:
     void refuse(StructureKind kind, std::string reason);
 
     [[nodiscard]] const StructureStageStats& stats() const noexcept;
+
+    // ── great pyramid ──
+    /// The Great Pyramids this stage places after the game's structures, or
+    /// null when the switch is off.
+    [[nodiscard]] GreatPyramidStage* great_pyramid() noexcept;
 
     /// How far, in chunks, a start's pieces can reach from its start chunk.
     /// Three covered the template kinds (a ship is at most 28 blocks long and
