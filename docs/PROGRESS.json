@@ -9,7 +9,7 @@
     "pack_format": 15,
     "auth_mode": "offline only — no Mojang authentication (product decision)"
   },
-  "last_updated": "2026-09-10",
+  "last_updated": "2026-09-11",
   "current_milestone": "M6",
   "current_task": "m6-block-interaction",
   "milestones": {
@@ -43,11 +43,11 @@
     "M3": {
       "name": "Tranche verticale",
       "status": "in_progress",
-      "done": 20,
+      "done": 21,
       "total": 25,
       "exit_criterion": "Un client Minecraft vanilla 1.20.1 non modifié se connecte, marche, casse et pose un bloc — sans une ligne de Vulkan.",
       "blocked": [],
-      "notes": "La tranche verticale est atteinte depuis le 2026-09-08. Ce qui reste de M3 est devenu le blocage principal du projet : la generation de terrain est correcte mais pas servable, parce qu'elle tourne sur le thread de tick. ChunkMap, tickets, sections copy-on-write et pool de jobs sont ce qui manque."
+      "notes": "La tranche verticale est atteinte depuis le 2026-09-08. 2026-09-11 : les paquets de jeu passent sur le thread de tick, les verrous du monde deviennent des vérifications de thread, et les sections sont copy-on-write (Chunk::snapshot, encodage sur le thread réseau). Casser un bloc sur un monde généré en Debug passe de 4,2 s à 1,8 ms au p50 (16,2 s à 124 ms au pire), 0 génération synchrone. Voir docs/provenance/performance-tick.md § 5.5–5.6."
     },
     "M4": {
       "name": "Monde persistant",

@@ -693,6 +693,165 @@ remodelage, bruit de pas), et le compteur dit *quel thread*, pas *quel appel*. C
 lectures partagées sur une supposition serait exactement ce que ce dépôt refuse. Le pas
 suivant est au § 7 (point 7).
 
+### 5.5 Les paquets passent sur le thread de tick ; les verrous du monde deviennent des preuves
+
+Le § 5.4 laissait une cause nommée (§ 7, point 7) posée sur un défaut de structure (§ 7,
+point 5) : les gestionnaires de paquets tournaient sur le thread réseau et entraient dans le
+monde sous `chunk_mutex` et `players_mutex`. Tant que c'est le cas, une lecture lente dans un
+gestionnaire bloque le tick, et un tick lent bloque tous les paquets de tous les joueurs.
+Plutôt que de corriger chaque site, le correctif retire la cause :
+
+- **le thread réseau ne fait plus que découper des octets.** Chaque paquet *Play* décodé est
+  rangé dans une file (`src/ov_server/src/inbound_queue.{hpp,cpp}`) ; le thread de tick la
+  vide au début de chaque tour **et pendant qu'il attend le tick suivant** — un cassage
+  n'attend donc pas le prochain tick, il est traité dès que le tour en cours se termine ;
+- **`chunk_mutex` et `players_mutex` ne sont plus des mutex**
+  (`src/ov_server/src/tick_thread_lock.{hpp,cpp}`). `lock()` ne prend rien : il vérifie que
+  l'appelant est le thread de tick. En Debug, le premier accès d'un autre thread arrête le
+  processus en le nommant ; en Release, il est compté pour le rapport d'arrêt. Les ~150
+  `scoped_lock` restent en place — ils compilent toujours, et ce qu'ils affirment est
+  désormais vérifié au lieu d'être supposé ;
+- **un gestionnaire de paquet ne génère plus jamais de chunk.** Sur un monde généré, une
+  lecture de bloc dans un chunk absent rend de l'air, une écriture y est refusée, et les deux
+  sont comptées ; toute génération à la volée qui resterait est journalisée avec le paquet
+  qui l'a causée. C'est le point 7 du § 7, dans l'ordre qu'il donnait : attribuer, puis
+  appliquer le traitement du correctif 2 ;
+- l'entrée d'un joueur n'attend plus le chunk du spawn : elle le cherche une fois ;
+- un paquet refusé par son gestionnaire ferme proprement la connexion. Avant, le joueur
+  restait dans la table des joueurs jusqu'à la fin du processus.
+
+**Changement de comportement, dit** : un gestionnaire qui lit un bloc au-delà de la zone
+générée (la connexion d'une barrière posée au bord extrême, par exemple) y voit de l'air
+jusqu'à ce que le chunk arrive par les ouvriers.
+
+Mesure — **Debug**, graine 12345, 60 s demandées, 1 geste/s
+(`scripts/bench_play.py --world=seed:12345 --seconds=60 --edit-rate=1`). « — » : non relevé
+dans la série « avant ».
+
+| Debug, graine 12345, 1 geste/s | avant | **après** |
+|---|---|---|
+| cassage → `Block Update` p50 / p90 / p99 / max | 4,2 s / — / — / 16,2 s | **1,8 / 15,5 / 31,2 / 124 ms**, 0 perdu sur 26 |
+| pose → `Block Update` p50 / p99 / max | — | 4,0 / 43,7 / 110 ms, 0 perdue sur 26 |
+| pire tick | 18,19 s (`entities` : 18,18 s) | 557 ms (sauvegarde automatique : 533 ms) |
+| pire traitement d'un paquet | 18,15 s | 25,0 ms |
+| attente d'un paquet dans la file p50 / p99 / max | (la file n'existait pas) | 0,6 / 123 / 553 ms |
+| « can't keep up » | 4 | 1 |
+| générations synchrones : tick / autres threads | 3 / 2 | **0 / 0** |
+| charge médiane de la machine | 23,6 | **53,2** |
+
+Rapport d'arrêt de la série « après » : **1 229 paquets traités sur le thread de tick**
+(0 refusé), **0 verrou du monde pris hors du thread de tick**, 0 chunk généré pour un paquet,
+1 396 lectures et 0 écriture de chunks pas encore générés répondues sans générer. Le serveur
+Debug s'arrête au premier accès étranger : qu'il ait tourné jusqu'au bout est la même
+affirmation, faite par le programme.
+
+Lecture :
+
+- **Le cassage passe de plusieurs secondes à quelques millisecondes, sous une charge plus de
+  deux fois plus haute** (53,2 contre 23,6). La comparaison joue *contre* le correctif ;
+  aucune compilation de cet agent ne tournait pendant la série « après ».
+- **Le pire paquet n'attend plus un verrou, il attend un tour de boucle.** Le max de la file
+  (553 ms) tombe sur le tick de la sauvegarde automatique (533 ms) : la sauvegarde est encore
+  synchrone sur le tick (`ROADMAP.md`, « asynchrone via COW : à venir »).
+- **Ce qui reste des ticks lents est du calcul, pas de l'attente** : 152 ticks au-delà de
+  50 ms, où la phase la plus lourde est le rallumage dans 81 cas et les entités dans 66, les
+  deux à ~78 % de CPU. Plus aucune phase n'attend à 0 % de CPU.
+- **L'envoi de chunks n'apparaît plus** : 285 ms au total sur la série, 17 ms au pire,
+  phase la plus lourde dans **0** des 152 ticks lents — il pesait dans le § 5.3 parce qu'il
+  tenait les deux verrous, et les verrous n'excluent plus personne.
+
+### 5.6 Sections copy-on-write : le `Chunk Data` s'encode sur le thread réseau
+
+Le § 5.5 a retiré l'attente ; l'encodage, lui, restait sur le tick — jusqu'à 8 `Chunk Data`
+par joueur et par tick. Le principe 3 de `CLAUDE.md` dit comment le partager : par
+`shared_ptr<const>`, en copy-on-write. Ce qui est en place :
+
+- **une section garde blocs, biomes et lumière dans un stockage partagé**
+  (`src/ov_world/include/ov/world/chunk_section.hpp`). Copier une section copie un
+  pointeur et **marque les deux côtés** ; le premier qui écrit prend sa propre copie. La règle
+  est volontairement brutale — *un stockage vu par deux sections n'est plus jamais écrit* —
+  parce que l'alternative, lire `use_count()` sur le tick pendant que le réseau relâche sa
+  référence, demanderait une barrière isolée pour être correcte, et TSan ne les modélise pas ;
+- **`Chunk::snapshot()`** rend un `shared_ptr<const Chunk>` : 24 pointeurs de sections pour
+  l'Overworld, plus les heightmaps, les entités de bloc et les départs de structures, copiés
+  parce qu'ils sont petits ;
+- **`Connection::send_chunk`** (`src/ov_protocol/include/ov/protocol/listener.hpp`) : la
+  connexion TCP encode l'instantané **sur son propre thread, dans la même file que `send`** —
+  un `Block Update` envoyé après le chunk ne peut pas le doubler. La version par défaut
+  encode sur place et appelle `send`, octet pour octet ce que le serveur envoyait avant ;
+- **le piège évité** : le rallumage prend `section->blocks()` par référence puis écrit la
+  lumière de la même section. Si la copie avait lieu à cette écriture, la référence
+  pointerait dans un stockage que seul l'instantané possède — libéré par le thread réseau
+  quand il veut. `Chunk::section_for_y` en écriture **désolidarise donc avant de rendre la
+  section**, et le test « a reference from a writable section outlives the snapshot » fixe ce
+  comportement.
+
+Vérifié :
+
+| | Debug | TSan |
+|---|---|---|
+| `test_ov_world` (dont 6 cas `[snapshot]`) | 97 cas verts | 97 cas verts, 0 rapport |
+| `test_ov_protocol` (dont le test sur socket réel) | 150 verts, 1 sauté | 150 verts, 1 sauté, 0 rapport ; **20 passes sur 20** |
+| `test_ov_server` | 125 cas verts | 124 verts, 1 sauté, 0 rapport |
+
+Le cas sauté de `test_ov_protocol` demande un monde dans `run/world/region`, absent de ce
+worktree ; il l'était déjà avant. Le test sur socket réel envoie un paquet, un instantané,
+puis un autre paquet, **pendant que le thread du test réécrit le chunk** : les trois arrivent
+dans l'ordre, et le chunk reçu est celui d'avant la réécriture.
+
+**Une première mesure ratée, et ce qu'elle montre.** La série « après copy-on-write » lancée
+juste après ces tests n'a jamais fait entrer la sonde : **0 bloc généré (0 chunk) en 3,6 min
+avec 4 ouvriers**, zone de spawn à 0 %, 7 connexions refusées « refused for now » puis fermées
+après 30 s de silence. Le serveur n'avait pas de problème de tick (20 tours/s, aucun au-delà
+de 50 ms) : il n'avait simplement rien à envoyer. Sa part de CPU était de **42 %** contre 190 %
+sur la série du § 5.5, avec **7,7 Go de swap relus** pendant la mesure — les ouvriers de
+génération affamés, exactement le § 4.3. Le code des ouvriers ne copie jamais de chunk (le
+pipeline déplace, `pipeline.cpp:390`) : le copy-on-write n'y ajoute aucune copie.
+
+**La seconde tentative réfute la famine comme explication suffisante.** Relancée après la suite
+complète (16 exécutables verts, `test_ov_worldgen` en 352 s contre 512 s avant le changement,
+0 avertissement), sur une machine plus calme — charge médiane **16**, **300 Mo** de swap relus,
+**148 %** de CPU pour le serveur —, la sonde n'entre toujours pas : 0 bloc généré en 4 min.
+Les quatre ouvriers ne sont pas bloqués pour autant : chacun écrit dans le journal du début à
+l'arrêt du serveur (dernières lignes 24 à 53 s *après* le rapport d'arrêt), ils travaillent.
+Le chiffre qui recadre tout est dans la série du § 5.5, faite *avant* le copy-on-write : la
+sonde y est entrée à **195,3 s**, pour une patience de 240 s. En Debug sur cette machine, la
+préparation du spawn consommait déjà 80 % de la patience ; deux échecs à 254–256 s restent dans
+cette marge.
+
+**Une patience de 600 s ne suffit pas non plus** : troisième tentative, 0 bloc en 620 s, charge
+médiane 25 (17,4 à 57,8), **26 %** d'un cœur pour le serveur. Des ouvriers qui n'obtiennent
+qu'un quart de cœur à eux quatre ressemblent à la famine du § 4.3 — mais c'est aussi ce que
+montrerait un ouvrier ralenti par le changement. Une seule expérience sépare les deux.
+
+**A/B à conditions identiques : les deux binaires lancés en même temps.** Le serveur d'avant le
+copy-on-write (sources de `fa3b709` recompilées — `chunk.cpp`, `chunk_section.cpp`,
+`listener.cpp` et `server.cpp` dans le journal de construction) et celui d'après, deux mondes
+et deux ports distincts, même graine, même sonde, patience 600 s :
+
+| | avant copy-on-write | **après copy-on-write** |
+|---|---|---|
+| blocs générés en ~600 s | 0 | 0 |
+| entrée de la sonde | refusée, abandon à 604,7 s | refusée, abandon à 605,9 s |
+| CPU du serveur | 13 % d'un cœur | 13 % d'un cœur |
+| tours de boucle du tick | 19,96 /s | 19,96 /s |
+
+Charge pendant la paire : `uptime` **29,21 / 37,27 / 32,22** avant, **51,68 / 50,32 / 41,38**
+après ; médiane 37,9 (27,2 à 64,1), 1,5 Go de swap relus. Selon l'agent coordinateur, la
+machine faisait tourner au même moment des outils de parité, plusieurs suites de tests et deux
+JVM.
+
+**Verdict** : le binaire d'avant échoue exactement comme celui d'après. Ce n'est pas le
+copy-on-write qui empêche la génération ; ce sont des ouvriers en QoS `UTILITY` sans temps de
+CPU sur une machine à 40–50 de charge — le point 2 du § 7, qui reste la prochaine correction.
+
+**Non mesuré, et dit comme tel.** Aucune de ces séries n'a fait entrer un joueur : il n'y a donc
+**pas de chiffre** de latence de cassage ni d'envoi de chunks après le copy-on-write, et ceux
+qu'une série contendue aurait donnés ne seraient pas comparables au § 5.5. La série qui les
+fournira doit passer par la voie de construction partagée des agents (aucune compilation à
+côté), avec `uptime` avant et après — et une charge encore bien au-dessus de ~10 notée à côté
+des chiffres.
+
 ## 6. Côté client
 
 Le client (`ov_voxel`) imprimait déjà `cpu`, `rec` et `gpu` ; un `max` à 733 ms n'y disait
@@ -760,7 +919,9 @@ propositions, chacune adossée à une mesure de ce fichier.
      **sans une ligne au niveau INFO** (§ 2.1) — au minimum, le journaliser ;
    - l'unique thread réseau fait *toutes* les écritures de socket : tout ce qui le retient
      retient le monde entier. Tant que des paquets de jeu sont traités sur ce thread sous
-     les verrous du monde, c'est la prochaine source de latence.
+     les verrous du monde, c'est la prochaine source de latence. **Appliqué au § 5.5** : les
+     paquets de jeu sont traités sur le thread de tick, et le thread réseau ne fait plus
+     que lire et écrire des octets.
 6. **Le prochain correctif côté serveur : l'envoi des chunks.** Mesuré : il encode jusqu'à
    8 `Chunk Data` par joueur et par tick **en tenant `players_mutex` et `chunk_mutex`** ; en
    Debug il a porté l'attente du verrou joueurs côté réseau jusqu'à p99 754 ms (§ 3.2), et
@@ -771,6 +932,11 @@ propositions, chacune adossée à une mesure de ce fichier.
    Non fait ici parce qu'il restructure un bloc de `server.cpp` que l'agent des écrans
    modifie en parallèle (fours et établis vivent dans la même section verrouillée) : une
    fusion à trois voies y serait un risque réel pour un gain qui mérite sa propre mesure.
+   **Appliqué dans le code aux § 5.5–5.6**, sous une autre forme que celle proposée ici : il
+   n'y a plus de verrou à tenir (§ 5.5), et l'encodage a quitté le tick — le tick prend un
+   instantané (`Chunk::snapshot`), le thread réseau encode (`Connection::send_chunk`). Le
+   bloc de `server.cpp` n'a changé que sur ces quelques lignes. **Le gain n'est pas encore
+   mesuré** (§ 5.6, fin).
 7. **La troisième cause : la génération synchrone sur le thread réseau.** Mesurée (§ 5.4) :
    2 chunks générés hors du tick en une minute, un paquet de 19,7 s, et le tick bloqué
    autant de temps derrière `chunk_mutex`. Deux pas, dans l'ordre : (1) **attribuer** —
@@ -779,7 +945,8 @@ propositions, chacune adossée à une mesure de ce fichier.
    compteur ; (2) **appliquer** au site nommé le traitement du correctif 2 : lecture des
    chunks résidents seulement, un chunk absent se lit comme de l'air et n'est jamais
    généré depuis un gestionnaire de paquet. La génération n'a qu'une place : les ouvriers,
-   à la demande d'un ticket.
+   à la demande d'un ticket. **Appliqué au § 5.5**, les deux pas, pour tous les
+   gestionnaires à la fois : 0 génération synchrone sur la série « après ».
 
 ### Note de méthode : le bruit que cet agent a ajouté
 
@@ -796,6 +963,7 @@ voici, série par série, si une compilation de cet agent tournait :
 | Debug « avant », graine 12345 (§ 4.3) | **oui** (construction Release « après ») |
 | Release « avant » puis « après » | non — lancées l'une après l'autre, sans compilation |
 | Debug « après » | non |
+| Debug « après », paquets sur le thread de tick, graine 12345 (§ 5.5) | non |
 
 La première série Debug à 1 geste/s avait une unité de charge de plus que la série
 « après » ne l'aura : une comparaison avec elle aurait joué **en faveur** du correctif

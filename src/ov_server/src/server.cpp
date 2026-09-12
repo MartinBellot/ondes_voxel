@@ -58,6 +58,8 @@
 #include "player_inventory.hpp"
 #include "world_ticks.hpp"
 #include "tick_profile.hpp"  // ── perf ──
+#include "inbound_queue.hpp"     // ── concurrency ──
+#include "tick_thread_lock.hpp"  // ── concurrency ──
 #include "relight.hpp"       // ── perf ──
 #include "sounds.hpp"  // ── sound ──
 #include "destroy_stages.hpp"  // ── breaking ──
@@ -1247,21 +1249,28 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     }
     // ── end commands ────────────────────────────────────────────────────────
 
-    /// What `chunk_mutex` still protects, and what it no longer does.
+    /// `chunk_mutex` is not a mutex any more. ── concurrency ──
     ///
-    /// It guards the map itself — a lookup, an insert, an eviction — because
-    /// the network thread reads chunks while the tick thread publishes them,
-    /// and that arrangement predates this work.
-    ///
-    /// What it used to guard as well was **generation**: `chunk_at` ran the
-    /// whole worldgen pipeline with the lock held, hundreds of milliseconds at
-    /// a time, and any thread that wanted a block waited behind it. That is
-    /// gone. Terrain is built by `chunk_source` on its own threads, out of any
-    /// lock, on chunks nobody can see, and arrives here by move on the tick
-    /// thread. What is left under the lock is bookkeeping measured in
-    /// microseconds. See docs/provenance/chunkmap.md § 5 for the numbers.
-    std::mutex              chunk_mutex;
+    /// It guarded the map because packet handlers ran on the network thread
+    /// and read chunks while the tick published them. They run on the tick
+    /// thread now (`inbound`, below), so the world has one thread and a lock
+    /// excludes nobody. The name and the ~150 `scoped_lock` lines stay, and
+    /// each of them now **checks** it is on the tick thread: a Debug build
+    /// aborts on the first touch from anywhere else, a Release build counts it
+    /// for the shutdown report (tick_thread_lock.hpp). CLAUDE.md principle 3,
+    /// enforced rather than hoped. docs/provenance/concurrence.md has the
+    /// measurements.
+    TickThreadLock          chunk_mutex;
     world::ChunkMap         chunks;
+    /// Every packet, connection and disconnection the network thread sees,
+    /// on its way to the handlers below — which run on the tick thread.
+    InboundQueue inbound;
+    /// Reads of a chunk that is not resident, in a generated world, answered
+    /// as air rather than by generating it on the spot; and writes into one,
+    /// refused. See `chunk_without_generating`. ── concurrency ──
+    u64 absent_chunk_reads    = 0;
+    u64 absent_chunk_writes   = 0;
+    u64 generations_for_packets = 0;
 
     /// The level a block behaviour writes through, and the two queues it wakes
     /// from. Declared here rather than where they are built because both
@@ -1315,7 +1324,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
 
     std::unordered_map<const net::Connection*, Player> players;
     std::unordered_map<std::string, SavedPlayer>       saved_players;
-    std::mutex                                         players_mutex;
+    /// Like `chunk_mutex`: a tick-thread check, not a mutex. ── concurrency ──
+    TickThreadLock                                     players_mutex;
     std::atomic<i32>                                   next_entity_id{1};
 
     // The mobs. Their wire ids start a million above the players' so that the
@@ -1576,6 +1586,13 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             } else {
                 ++synchronous_generations_elsewhere;
             }
+            // ── concurrency ── and which packet asked for it, if one did
+            // (performance-tick.md § 7, point 7: attribute before fixing).
+            if (const i32 packet = inbound.current_packet_id(); packet >= 0) {
+                ++generations_for_packets;
+                OV_LOG_WARN("chunk {},{} generated on the spot for packet 0x{:02X}", cx, cz,
+                            packet);
+            }
             chunks.publish(ChunkPos{cx, cz}, generated->generate(cx, cz));
         } else {
             chunks.publish(ChunkPos{cx, cz}, superflat.generate(ChunkPos{cx, cz}));
@@ -1592,6 +1609,31 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     /// Caller holds chunk_mutex.
     const auto chunk_if_resident = [&](i32 cx, i32 cz) -> world::Chunk* {
         return chunks.find(ChunkPos{cx, cz});
+    };
+
+    /// The chunk if it can be had **without running worldgen**: resident, or
+    /// read from disk, or — in a superflat, where building one costs
+    /// microseconds — built. In a generated world a chunk that exists nowhere
+    /// yet comes back null, and is left to the ticket pipeline.
+    ///
+    /// This is what the block reads and writes of packet handlers go through.
+    /// They used to reach `chunk_at`, and a neighbour read one block across a
+    /// border into a chunk not yet generated ran the whole pipeline on the
+    /// spot: the 19.7 s packet of performance-tick.md § 5.4. A chunk nobody
+    /// has generated is one no client has been sent either, so no player can
+    /// see what a read of it returns. ── concurrency ──
+    const auto chunk_without_generating = [&](i32 cx, i32 cz) -> world::Chunk* {
+        if (world::Chunk* resident = chunks.find(ChunkPos{cx, cz}); resident != nullptr) {
+            return resident;
+        }
+        if (!generated) {
+            return &chunk_at(cx, cz);
+        }
+        if (const auto region = nbt::RegionFile::open(region_path(world_dir, cx, cz));
+            region && region->has_chunk(static_cast<u32>(cx & 31), static_cast<u32>(cz & 31))) {
+            return &chunk_at(cx, cz);
+        }
+        return nullptr;
     };
 
     // ── nether ── The same questions, asked of a given level. The overworld
@@ -2341,6 +2383,15 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         if (!shape.contains_y(where.y)) {
             return registry::BlockStateId{0};
         }
+        if (dimension == DimensionId::Overworld) {  // ── concurrency ── never generates
+            const world::Chunk* chunk = chunk_without_generating(where.x >> 4, where.z >> 4);
+            if (chunk == nullptr) {
+                ++absent_chunk_reads;
+                return registry::BlockStateId{0};
+            }
+            return chunk->get_block(static_cast<usize>(where.x & 15), where.y,
+                                    static_cast<usize>(where.z & 15));
+        }
         return chunk_at_in(dimension, where.x >> 4, where.z >> 4)
             .get_block(static_cast<usize>(where.x & 15), where.y, static_cast<usize>(where.z & 15));
     };
@@ -2467,7 +2518,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                         bool relight) {
         const i32 chunk_x = position.x >> 4;
         const i32 chunk_z = position.z >> 4;
-        world::Chunk& chunk = chunk_at(chunk_x, chunk_z);
+        // ── concurrency ── a write into a chunk that does not exist yet is
+        // refused, never paid for with a generation on this thread.
+        world::Chunk* target = chunk_without_generating(chunk_x, chunk_z);
+        if (target == nullptr) {
+            ++absent_chunk_writes;
+            return;
+        }
+        world::Chunk& chunk = *target;
 
         write_block(chunk, position.x, position.y, position.z, state);
         dirty_chunks.insert(chunk_key(chunk_x, chunk_z));
@@ -2519,7 +2577,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         const i32 chunk_z = position.z >> 4;
         {
             const std::scoped_lock lock{chunk_mutex};
-            world::Chunk&          chunk = chunk_at(chunk_x, chunk_z);
+            // ── concurrency ── refused rather than generated, as above; and no
+            // Block Update for a block that was not written.
+            world::Chunk* target = chunk_without_generating(chunk_x, chunk_z);
+            if (target == nullptr) {
+                ++absent_chunk_writes;
+                return;
+            }
+            world::Chunk& chunk = *target;
 
             write_block(chunk, position.x, position.y, position.z, state);
             dirty_chunks.insert(chunk_key(chunk_x, chunk_z));
@@ -4434,13 +4499,16 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     std::unordered_map<const net::Connection*, ConnectionState> states;
     std::mutex                                                  states_mutex;
 
-    listener->on_connect([&](const net::ConnectionPtr& connection) {
+    // ── concurrency ── The three handlers below run on the **tick** thread:
+    // the listener only queues (`inbound.attach`, after them), and the loop
+    // drains the queue at the top of each iteration and while it waits.
+    const net::ConnectionHandler handle_connect = [&](const net::ConnectionPtr& connection) {
         const std::scoped_lock lock{states_mutex};
         states[connection.get()] = ConnectionState::Handshaking;
         OV_LOG_DEBUG("{} connected", connection->peer_address());
-    });
+    };
 
-    listener->on_disconnect([&](const net::ConnectionPtr& connection) {
+    const net::ConnectionHandler handle_disconnect = [&](const net::ConnectionPtr& connection) {
         // ── player data: captured under the lock, written after it ──
         std::optional<std::tuple<net::Uuid, std::string, PlayerRecord>> leaving;
         {
@@ -4514,10 +4582,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         const std::scoped_lock lock{states_mutex};
         states.erase(connection.get());
         OV_LOG_DEBUG("{} disconnected", connection->peer_address());
-    });
+    };
 
-    listener->on_packet([&](const net::ConnectionPtr& connection, i32 packet_id,
-                            std::span<const u8> body) -> bool {
+    const net::PacketHandler handle_packet = [&](const net::ConnectionPtr& connection,
+                                                 i32 packet_id, std::span<const u8> body) -> bool {
         ConnectionState state{};
         {
             const std::scoped_lock lock{states_mutex};
@@ -4714,8 +4782,6 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     // on its way before anyone connects. All that is needed is
                     // to let it arrive, with the lock **released** between
                     // looks so the thread that publishes it can get in.
-                    constexpr auto kSpawnWait = std::chrono::seconds{20};
-                    const auto     deadline   = std::chrono::steady_clock::now() + kSpawnWait;
                     const i32      home_x     = level_settings.spawn_x >> 4;
                     const i32      home_z     = level_settings.spawn_z >> 4;
                     const auto local_x = static_cast<usize>(level_settings.spawn_x & 15);
@@ -4738,33 +4804,31 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                 .first_free(local_x, local_z));
                         have_home = true;
                     }
-                    while (!have_home && std::chrono::steady_clock::now() < deadline) {
-                        {
-                            const std::scoped_lock chunk_lock{chunk_mutex};
-                            if (const world::Chunk* home = chunk_if_resident(home_x, home_z);
-                                home != nullptr) {
-                                player.y = static_cast<f64>(
-                                    home->heightmap(world::HeightmapType::WorldSurface)
-                                        .first_free(local_x, local_z));
-                                have_home = true;
-                            }
+                    // ── concurrency ── One look, never a wait. This handler runs
+                    // on the tick thread now — the thread that publishes the
+                    // chunk — so waiting here would wait for itself, twenty
+                    // seconds with the world stopped. The gate above opens only
+                    // once the nine spawn chunks are resident, and their Forced
+                    // ticket keeps them there, so the look finds the chunk.
+                    if (!have_home) {
+                        const std::scoped_lock chunk_lock{chunk_mutex};
+                        if (const world::Chunk* home = chunk_if_resident(home_x, home_z);
+                            home != nullptr) {
+                            player.y = static_cast<f64>(
+                                home->heightmap(world::HeightmapType::WorldSurface)
+                                    .first_free(local_x, local_z));
+                            have_home = true;
                         }
-                        if (have_home) {
-                            break;
-                        }
-                        std::this_thread::sleep_for(std::chrono::milliseconds{5});
                     }
 
                     if (!have_home) {
-                        // Twenty seconds and the spawn chunk is still not here.
-                        // Refused with a reason rather than generated on this
-                        // thread: a join that costs the tick loop a second is
-                        // worse for everyone already playing than a join that
-                        // does not happen and says why.
-                        OV_LOG_WARN("spawn chunk {},{} did not arrive in {} s — refusing the join",
-                                    home_x, home_z,
-                                    std::chrono::duration_cast<std::chrono::seconds>(kSpawnWait)
-                                        .count());
+                        // The spawn chunk is not here. Refused with a reason
+                        // rather than generated on this thread: a join that
+                        // costs the tick loop a second is worse for everyone
+                        // already playing than a join that does not happen and
+                        // says why.
+                        OV_LOG_WARN("spawn chunk {},{} is not resident — refusing the join", home_x,
+                                    home_z);
                         // ── loading: after Login Success the client is in Play,
                         // so this is the Play Disconnect — same JSON reason ──
                         send_packet(net::clientbound::kDisconnect,
@@ -6825,11 +6889,15 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             }
         }
         return false;
-    });
+    };
+    // ── concurrency ── The listener queues; the tick handles.
+    inbound.attach(*listener);
+    const InboundHandlers inbound_handlers{handle_connect, handle_packet, handle_disconnect};
 
     // The event loop runs on its own thread so the tick keeps its cadence
-    // regardless of network activity — and so that the two never share state
-    // implicitly.
+    // regardless of network activity. It frames bytes and nothing else: every
+    // packet goes through `inbound` to the tick thread, so the two share no
+    // world state at all.
     std::thread network_thread{[&] {
         set_thread_role("ov-net", ThreadRole::Network);
         listener->run();
@@ -8247,7 +8315,11 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // The network thread still answers; the clock restarts on resume so
         // the pause is not caught up afterwards.
         if (external_pause != nullptr && external_pause->load(std::memory_order_relaxed)) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            // ── concurrency ── "still answers": the handlers run here now.
+            if (inbound.wait_until(std::chrono::steady_clock::now() +
+                                   std::chrono::milliseconds(10))) {
+                (void)inbound.dispatch(inbound_handlers, &perf->network_queue_wait);
+            }
             clock.reset();
             continue;
         }
@@ -8256,6 +8328,13 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         const auto tick_started = std::chrono::steady_clock::now();
         const i32  ticks        = clock.advance();
         server_tick.store(clock.tick_count(), std::memory_order_relaxed);
+
+        // ── concurrency ── What the network thread queued while the last tick
+        // ran. Everything that arrives while the loop waits is handled in the
+        // wait itself, at the bottom; this catches the rest, before any of the
+        // world moves.
+        perf->enter(TickPhase::NetworkInput);
+        (void)inbound.dispatch(inbound_handlers, &perf->network_queue_wait);
 
         perf->enter(TickPhase::ChunkPublish);  // ── perf ──
         // ── Terrain comes home ──────────────────────────────────────────────
@@ -10407,17 +10486,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                     std::chrono::steady_clock::now().time_since_epoch())
                                     .count();
 
-            // try_lock, not lock. The packet handler holds this mutex while it
-            // generates and sends chunks, which for a long jump is hundreds of
-            // milliseconds — and a tick thread waiting behind that misses its
-            // deadline and logs an overload. Measured: exactly that, during a
-            // five-chunk jump.
-            //
-            // A keep-alive deferred by one tick is harmless; a tick blocked
-            // behind the network is not. The real fix is the world moving onto
-            // the tick thread — the single-writer rule the project is built on,
-            // arriving with ov_sim. This keeps the two apart until then rather
-            // than pretending they already are.
+            // try_lock, which can no longer fail. The packet handlers that
+            // used to hold this lock for hundreds of milliseconds run on this
+            // thread now (── concurrency ──, inbound_queue.hpp), so nothing is
+            // ever waited for here; the shape is kept to keep the diff small.
             //
             // The whole pass sits inside the check: skipping it with `continue`
             // would jump past the sleep at the bottom of the loop and spin the
@@ -10459,7 +10531,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                             continue;
                         }
 
-                        std::vector<u8> payload;
+                        // ── concurrency ── A snapshot, not bytes: the sections
+                        // are shared rather than copied, and the network
+                        // thread encodes it in send order
+                        // (`Connection::send_chunk`), so this loop no longer
+                        // pays for up to eight encodings per player per tick.
+                        std::shared_ptr<const world::Chunk> snapshot;
                         {
                             const std::scoped_lock chunk_lock{chunk_mutex};
                             // ── nether ── From the player's own level; the
@@ -10478,12 +10555,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                 // there is nothing to move off this thread.
                                 ready = &chunk_at(cx, cz);
                             }
-                            payload = net::encode_chunk_data(*ready);
+                            snapshot = ready->snapshot();
                         }
-                        if (const auto framed =
-                                net::encode_packet(net::clientbound::kChunkDataAndLight, payload)) {
-                            player.connection->send(*framed);
-                        }
+                        player.connection->send_chunk(std::move(snapshot));
                         player.loaded_chunks.insert(chunk);
                         sent_at[sent] = index;
                         ++sent;
@@ -10579,8 +10653,21 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // Sleep until the next tick is due rather than spinning. A spinning
         // tick thread on a laptop is a battery and thermal problem, and on a
         // shared host it steals time from the workers.
+        //
+        // ── concurrency ── Waiting on the inbound queue rather than sleeping:
+        // a dig that arrives now is answered now, not up to a tick later. The
+        // game's server does the same, running queued network tasks while it
+        // waits for its next tick. Bounded by the deadline, so a flood of
+        // packets cannot hold the next tick back.
         if (const Duration idle = clock.time_until_next_tick(); idle > Duration::zero()) {
-            std::this_thread::sleep_for(idle);
+            const auto wake =
+                std::chrono::steady_clock::now() +
+                std::chrono::duration_cast<std::chrono::steady_clock::duration>(idle);
+            while (std::chrono::steady_clock::now() < wake) {
+                if (inbound.wait_until(wake)) {
+                    (void)inbound.dispatch(inbound_handlers, &perf->network_queue_wait);
+                }
+            }
         }
     }
 
@@ -10658,6 +10745,13 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             chunk_source->blocks_done(), chunk_source->chunks_done(), chunks_published,
             synchronous_generations, synchronous_generations_elsewhere);
     }
+    // ── concurrency ── the claims of docs/provenance/concurrence.md, counted
+    OV_LOG_INFO("concurrency: {} packets handled on the tick thread ({} refused), {} world "
+                "locks taken off the tick thread, {} chunks generated for a packet, {} reads "
+                "and {} writes of chunks not generated yet answered without generating",
+                inbound.packets_handled(), inbound.packets_refused(),
+                chunk_mutex.foreign_locks() + players_mutex.foreign_locks(),
+                generations_for_packets, absent_chunk_reads, absent_chunk_writes);
 
     OV_LOG_INFO("stopped after {} ticks ({} overload events)", clock.tick_count(), behind_events);
     return 0;
