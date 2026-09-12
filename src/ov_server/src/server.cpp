@@ -1556,22 +1556,19 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         if (auto loaded = world::from_nbt(*document, codec_context)) {
                             chunks.publish(ChunkPos{cx, cz}, std::move(*loaded));
                             world::Chunk& placed = *chunks.find(ChunkPos{cx, cz});
-                            // A saved chunk carries the light it was written
-                            // with, which may have come from another
-                            // implementation. Block light is recomputed —
-                            // that removes a whole class of "the cave is lit
-                            // and I do not know why" — and sky light only when
-                            // the file carries none: a world written by a tool
-                            // with no light engine (ov-lab) would otherwise be
-                            // served pitch dark, while one vanilla wrote keeps
-                            // what vanilla computed. Either way the chunk is
-                            // then stitched to its loaded neighbours (── light ──).
-                            const bool has_sky_light =
-                                std::ranges::any_of(placed.sections(),
-                                                    [](const world::ChunkSection& section) {
-                                                        return !section.sky_light().is_absent();
-                                                    });
-                            light_arrived(ChunkPos{cx, cz}, has_sky_light);
+                            // ── light ── A saved chunk carries the light it was
+                            // written with, and both arrays are recomputed, then
+                            // stitched to the loaded neighbours. Keeping the sky
+                            // a vanilla save carries was the rule before, and it
+                            // served black air: vanilla stores sky light in a
+                            // fifth of the sections (297 of 1536 in a world it
+                            // had just lit) and means "as above" by the others,
+                            // which this format reads as dark. Where vanilla did
+                            // store it, the engine agrees on 98.9 % of the cells
+                            // (docs/provenance/incremental-light.md § 6.3), and
+                            // a chunk lit by the engine is one the incremental
+                            // repair can start from.
+                            light_arrived(ChunkPos{cx, cz}, false);
                             // The ticks the chunk was written with. `t` on disk
                             // is a delay relative to the chunk's game time, so
                             // loading has to be told what "now" is — which is

@@ -114,8 +114,8 @@ qui la sauvegarde. Le moteur ne l'efface pas ; nommé au § 7.
 - un `world::LightEngine` à côté de la `ChunkMap`, utilisé seulement sous `chunk_mutex`,
   comme la carte qu'il éclaire ;
 - `light_arrived(pos, keep_sky)` après chacune des trois publications : lecture disque
-  (le ciel écrit par vanilla est gardé s'il existe, la lumière de bloc est recalculée),
-  génération synchrone et chunks générés par les ouvriers. Les modifications en attente
+  (les deux lumières recalculées — pourquoi le ciel écrit par vanilla n'est plus gardé :
+  § 6.3), génération synchrone et chunks générés par les ouvriers. Les modifications en attente
   passent d'abord, pour que la couture ne propage jamais une lumière déjà périmée ;
 - les quatre écrivains (geste du joueur, drain du tick, `/fill`, `apply_block_change`)
   appellent `block_changed` ; `flush_tick_writes` appelle `propagate` une fois par tick,
@@ -168,6 +168,32 @@ pierre, et le sommet du monde lui-même ; neuf chunks arrivant un à un dans un 
 laisse des trous, éclairés seuls puis cousus, identiques au recalcul de la région après
 **chaque** arrivée ; une dimension sans ciel. Total : 8 526 assertions, toutes vertes.
 
+### 6.2 Après un geste, contre le vrai serveur
+
+`scripts/measure_light_edits.py` (voie java, port 25602) copie `run/saves/New World`
+sous `.scratch/light-lab/`, le fait charger par le vrai serveur 1.20.1 — qui l'éclaire :
+les 64 chunks relus portent alors `isLightOn` —, y construit des scènes (une boîte creuse
+à cheval sur x = 16 avec une torche, une salle souterraine à la pierre lumineuse, un bloc
+de pierre à percer, une canopée de feuilles persistantes, un bassin entre quatre vitres),
+sauvegarde (`before/`), fait les gestes (toits ouverts, torche déplacée, pierre lumineuse
+cassée, lanterne posée, puits percé jusqu'au ciel, canopée recouverte, bassin couvert),
+sauvegarde encore (`after/`). Toutes les commandes ont été acceptées par le jeu.
+
+`test_ov_world "[.light-vanilla-edits]"` éclaire `before/` avec notre moteur, retrouve
+**515 blocs changés** en comparant les deux sauvegardes, les applique en incrémental, puis
+compare, dans les 36 chunks dont les huit voisins sont chargés, **chaque case dont vanilla
+a changé la lumière** entre les deux sauvegardes. Le témoin est notre lumière d'avant les
+gestes.
+
+| Cases changées par vanilla | Lumière de bloc (1 497) | Lumière du ciel (1 241) |
+|---|---|---|
+| filtrage du ciel coupé (`filtering_dims_sky=0`) | **1 497/1 497** (témoin 9) | 844/1 241 (témoin 5) |
+| filtrage du ciel actif (`filtering_dims_sky=1`) | **1 497/1 497** (témoin 9) | **1 182/1 241** (témoin 319) |
+
+Relu case par case dans les sauvegardes du jeu, le bassin posé sous le ciel vaut eau 14,
+13, 12 (puis 12, par les vitres) et la canopée posée feuille 14, air 13, 12, 11 : pour des
+blocs **posés**, le jeu filtre exactement comme le dit le wiki.
+
 ### 6.3 Contre la lumière que vanilla a écrite
 
 **Un faux oracle d'abord.** La première comparaison a porté sur `run/saves/New World`,
@@ -181,8 +207,36 @@ ailleurs), et une égalité de lumière de bloc sur un tel fichier peut n'être 
 tableaux vides. Écarté.
 
 **Le vrai oracle** est le même terrain une fois chargé, éclairé et sauvegardé par le
-vrai serveur : `scripts/measure_light_edits.py` le fait tourner sur une copie et écrit
-`.scratch/light-lab/before`, relu par `test_ov_world "[.light-vanilla]"`.
+vrai serveur : `.scratch/light-lab/before` (§ 6.2), relu par
+`test_ov_world "[.light-vanilla]"`. Notre moteur éclaire une copie depuis les seuls blocs,
+et chaque case des 36 chunks intérieurs est comparée à ce que le jeu a écrit :
+
+| 36 chunks intérieurs | Ciel, dans les sections où vanilla l'a stocké | Bloc |
+|---|---|---|
+| filtrage coupé | **741 427/749 568 (98,9 %)** | **3 534 214/3 538 944 (99,87 %)** |
+| filtrage actif | 726 868/749 568 (97,0 %) | idem |
+
+**Deux régimes chez vanilla.** Le terrain naturel que le jeu a éclairé au chargement
+laisse passer le ciel à 15 à travers deux à quatre feuilles de chêne et dans une mare d'un
+bloc — le filtrage coupé ; ses **mises à jour** après un geste filtrent (§ 6.2). La lumière
+que le jeu stocke n'est donc pas un point fixe unique : elle dépend de l'histoire du chunk.
+Notre moteur n'en a qu'un, par construction. Le réglage retenu est **coupé** : il colle au
+terrain que tout joueur voit (98,9 % contre 97,0 %), au prix des cases proches d'un geste
+près de l'eau ou des feuilles (844 contre 1 182 sur 1 241). L'écart vers le fond des océans
+(nous plus clairs de +1 à +15 sur 5 110 cases d'eau) dit que l'éclairage initial filtre
+quand même en profondeur — la règle exacte n'est pas établie.
+
+La lumière de bloc diffère sur 4 730 cases (air 3 788, eau 729, lave 193, lichen
+lumineux 18) : non analysées.
+
+**Ce que le serveur en tire au chargement.** Le jeu ne stocke le ciel que dans **297 des
+1 536 sections** d'un monde qu'il vient d'éclairer ; une section sans tableau veut dire
+« comme au-dessus », que ce format lit comme noir (681 sections des chunks comparés, où
+nous éclairons 1,77 million de cases). L'ancienne règle — garder le ciel d'une sauvegarde
+vanilla s'il en porte — servait donc de l'air noir au-dessus du relief. Le serveur
+recalcule maintenant les deux lumières de tout chunk lu, puis le coud : 98,9 % d'accord
+avec le jeu là où le jeu a écrit, un état dont la réparation incrémentale peut partir, et
+plus de sections noires.
 
 ### 6.4 Le coût d'un geste
 
@@ -236,6 +290,11 @@ série à l'autre de la charge et ne sont pas attribués.
   ne laissent passer la lumière que par certaines faces (wiki « Light »). Le moteur ne
   connaît qu'« arrête » ou « laisse passer », par bloc — c'est la table mesurée du
   registre, et c'est là que la prochaine mesure contre vanilla trouvera ses écarts.
+- **Le filtrage du ciel par l'eau et les feuilles** (§ 6.3) : le jeu ne filtre pas au
+  premier éclairage d'un chunk et filtre dans ses mises à jour. Reproduire les deux
+  demanderait de garder l'histoire d'une case ; le moteur garde un point fixe, réglé sur
+  le terrain naturel. La profondeur exacte à laquelle l'éclairage initial se met à
+  perdre de la lumière sous l'eau est la prochaine mesure à faire.
 - **Un chunk déchargé** laisse chez ses voisins la lumière qu'il leur donnait, comme le
   jeu qui la sauvegarde. Le recalcul de l'ensemble chargé l'enlèverait ; le moteur ne le
   fait pas, et une réparation ultérieure près de cette lumière la traite comme n'importe

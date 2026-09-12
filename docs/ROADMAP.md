@@ -250,8 +250,14 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       ~35 ms → < 1 ms) ; le p99 du tick entier, fait par les autres phases, ne
       bouge pas. Les chunks générés arrivent éclairés, la lumière de bloc
       traverse les frontières, le Nether et l'End passent au même moteur, et le
-      client `ov_voxel` éclaire ses propres gestes. Restent les formes
-      directionnelles (dalles, escaliers). Voir
+      client `ov_voxel` éclaire ses propres gestes. Contre le vrai serveur :
+      lumière de bloc **1 497/1 497** cases changées par 515 gestes identiques et
+      99,87 % du stocké, ciel 98,9 % du stocké ; le jeu ne filtre pas l'eau et
+      les feuilles au premier éclairage d'un chunk mais les filtre ensuite
+      (ciel après un geste 844/1 241, 1 182 en filtrant) — deux régimes, un seul
+      point fixe ici, réglé sur le terrain naturel. Un chunk lu est rééclairé en
+      entier : vanilla ne stocke le ciel que dans 297 sections sur 1 536.
+      Restent les formes directionnelles (dalles, escaliers). Voir
       `docs/provenance/incremental-light.md`)*
 - [x] Tableaux de lumière nullables à valeur uniforme (divise l'empreinte par 2)
 - [x] Heightmaps : stockage, packing 9 bits, sémantique vérifiée sur monde réel
