@@ -41,6 +41,7 @@ Usage :
 
 import argparse
 import json
+import math
 import os
 import struct
 import subprocess
@@ -378,6 +379,196 @@ def rest_bounds(model):
     return [v / 16.0 for v in lo], [v / 16.0 for v in hi]
 
 
+# ── La source Java : les modèles tels que le vrai client les cuit ───────────
+#
+# `scripts/measure_entity_render.py models` fait tourner le client 1.20.1 de
+# l'utilisateur et écrit, pour chacune de ses ~200 couches, l'arbre de
+# ModelPart cuit : pivots, rotations, échelles, et les polygones que le jeu
+# dessine — positions et coordonnées de texture comprises. C'est la géométrie
+# de Java elle-même, et non une conversion depuis Bedrock : le mouton, le
+# villageois, le bateau, les calques du noyé et du vagabond y sont tels que le
+# jeu les dessine. Ce qui suit la convertit dans les axes de ce projet.
+#
+# Les axes. Le modèle Java a +Y vers le BAS (le renderer le retourne par
+# scale(-1, -1, 1)). Ce projet a +Y vers le haut, −Z devant, +X à gauche : le
+# passage est la réflexion F = diag(1, −1, 1). Une rotation conjuguée par F
+# garde son angle en Y et change de signe en X et en Z — d'où
+# `rotation = (−xRot, yRot, −zRot)`, en degrés, composée Z·Y·X comme
+# `Quaternionf.rotationZYX` du jeu. Les positions sont gardées dans le repère
+# Java retourné, SANS l'origine du renderer : un mob vivant est dessiné
+# 1,501 bloc au-dessus de ses pieds, un wagonnet 0,375 bloc — c'est la table
+# des espèces du client (entity_look.cpp) qui porte ce décalage, parce qu'il
+# dépend du renderer et non de la couche.
+
+JAVA_DUMP = "data/vanilla/1.20.1/entity_java_models.json"
+
+
+def _sub(a, b):
+    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+
+def _cross(a, b):
+    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+
+
+def _dot(a, b):
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def java_model(layer):
+    """Une couche du dump Java en modèle au format 2 de ce projet."""
+    tw, th = layer["texture"]
+    bones = []
+    used = set()
+    stats = {"quads": 0, "degenerate": 0}
+
+    def walk(part, parent_name, parent_abs):
+        # Le pivot Java est relatif au parent, dans le repère du parent AVANT
+        # sa rotation : la position absolue non tournée est donc la somme des
+        # translations, et c'est ce que ce projet appelle le pivot d'un os
+        # (la rotation du parent s'applique ensuite, par la hiérarchie).
+        px, py, pz = part["pivot"]
+        ax, ay, az = parent_abs[0] + px, parent_abs[1] + py, parent_abs[2] + pz
+        name = part["name"]
+        while name in used:
+            name += "_"
+        used.add(name)
+        quads = []
+        for cube in part["cubes"]:
+            for polygon in cube["polygons"]:
+                verts = [[ax + v[0], -(ay + v[1]), az + v[2], v[3] * tw, v[4] * th]
+                         for v in polygon["vertices"]]
+                n = polygon["normal"]
+                normal = (n[0], -n[1], n[2])
+                pts = [tuple(v[:3]) for v in verts]
+                c = _cross(_sub(pts[1], pts[0]), _sub(pts[2], pts[0]))
+                if _dot(c, c) < 1e-12:
+                    c = _cross(_sub(pts[2], pts[0]), _sub(pts[3], pts[0]))
+                if _dot(c, c) < 1e-12:
+                    # Une face d'aire nulle — un cube plat en a quatre. Elle ne
+                    # dessine rien et n'a pas d'orientation : jetée, comptée.
+                    stats["degenerate"] += 1
+                    continue
+                # Stockée dans le sens HORAIRE vue de l'extérieur, dans l'espace
+                # du modèle : le passage modèle → monde est une réflexion
+                # (entity_mesh.hpp), qui la retourne dans le sens direct.
+                if _dot(c, normal) > 0:
+                    verts.reverse()
+                quads.append({"n": [round(x, 6) for x in normal],
+                              "v": [[round(x, 6) for x in v] for v in verts]})
+                stats["quads"] += 1
+        rot = part["rotation"]
+        bones.append({
+            "name": name,
+            "parent": parent_name or "",
+            "pivot": [ax, -ay, az],
+            "rotation": [-math.degrees(rot[0]), math.degrees(rot[1]), -math.degrees(rot[2])],
+            "scale": part["scale"],
+            "visible": bool(part["visible"]),
+            "render": (not part["skip_draw"]) and bool(quads),
+            "quads": quads,
+        })
+        for child in part["children"]:
+            walk(child, name, (ax, ay, az))
+
+    walk(layer["root"], None, (0.0, 0.0, 0.0))
+    return {"texture_width": float(tw), "texture_height": float(th), "bones": bones}, stats
+
+
+def java_bounds(model, origin_y):
+    """Boîte au repos, en blocs, rotations de repos comprises (en Python, pour
+    le rapport : le client refait ce calcul par entity_bounds)."""
+    # Transformation de chaque os, composée parent avant enfant. Trois par
+    # trois à la main : ce rapport ne vaut pas une dépendance.
+    def mat_mul(a, b):
+        return [[sum(a[i][k] * b[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
+
+    def mat_vec(a, v):
+        return [sum(a[i][k] * v[k] for k in range(3)) for i in range(3)]
+
+    by_name = {}
+    lo = [1e9] * 3
+    hi = [-1e9] * 3
+    for bone in model["bones"]:
+        rx, ry, rz = (math.radians(a) for a in bone["rotation"])
+        cx, sx, cy, sy, cz, sz = (math.cos(rx), math.sin(rx), math.cos(ry), math.sin(ry),
+                                  math.cos(rz), math.sin(rz))
+        rot_x = [[1, 0, 0], [0, cx, -sx], [0, sx, cx]]
+        rot_y = [[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]]
+        rot_z = [[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]]
+        r = mat_mul(mat_mul(rot_z, rot_y), rot_x)
+        p = bone["pivot"]
+        rp = mat_vec(r, p)
+        local = (r, [p[i] - rp[i] for i in range(3)])
+        if bone["parent"]:
+            pr, pt = by_name[bone["parent"]]
+            lt = mat_vec(pr, local[1])
+            world = (mat_mul(pr, local[0]), [lt[i] + pt[i] for i in range(3)])
+        else:
+            world = local
+        by_name[bone["name"]] = world
+        if not bone["render"]:
+            continue
+        for quad in bone["quads"]:
+            for v in quad["v"]:
+                q = mat_vec(world[0], v[:3])
+                q = [q[i] + world[1][i] for i in range(3)]
+                q[1] += origin_y
+                for axis in range(3):
+                    lo[axis] = min(lo[axis], q[axis] / 16.0)
+                    hi[axis] = max(hi[axis], q[axis] / 16.0)
+    return lo, hi
+
+
+def main_java(args):
+    dump = json.load(open(args.java))
+    models = {}
+    rows = []
+    hitboxes = {}
+    if os.path.exists(args.entities):
+        hitboxes = json.load(open(args.entities)).get("hitbox", {})
+    for key in sorted(dump["layers"]):
+        name = key.split(":", 1)[1]
+        if name.endswith("#main"):
+            name = name[: -len("#main")]
+        model, stats = java_model(dump["layers"][key])
+        models[name] = model
+        rows.append((name, len(model["bones"]), stats["quads"], stats["degenerate"],
+                     int(model["texture_width"]), int(model["texture_height"])))
+    payload = {
+        "format": 2,
+        "source": ("client Java 1.20.1 de l'utilisateur, ModelPart cuits lus à l'exécution "
+                   "(scripts/entity_model_oracle.java ; donnée Mojang, jamais commitée)"),
+        "refused": [],
+        "models": models,
+    }
+    out_dir = os.path.dirname(args.out)
+    os.makedirs(out_dir, exist_ok=True)
+    if os.path.islink(args.out):
+        # Ne jamais écrire à travers un lien : dans un worktree, ce fichier peut
+        # pointer vers celui d'un autre checkout.
+        sys.exit(f"{args.out} est un lien symbolique — le supprimer d'abord")
+    with open(args.out, "w") as handle:
+        json.dump(payload, handle, separators=(",", ":"))
+    print(f"écrit {args.out} ({os.path.getsize(args.out)} o), {len(models)} modèles")
+
+    # Le rapport : quelques mobs vivants, dessinés à 1,501 bloc de leurs pieds,
+    # contre leur hitbox mesurée — même lecture que la table Bedrock historique.
+    print(f"\n{'modèle':22s} {'os':>3s} {'quads':>5s} {'nuls':>4s} {'feuille':>8s} "
+          f"{'largeur':>7s} {'hauteur':>7s} {'hitbox l×h':>12s}")
+    living = {"zombie", "skeleton", "creeper", "spider", "cow", "pig", "sheep", "sheep#fur",
+              "chicken", "villager", "wolf", "cat", "horse", "enderman", "piglin", "hoglin",
+              "blaze", "strider", "witch", "fox", "rabbit"}
+    for name, bone_count, quads, degenerate, tw, th in rows:
+        if name not in living:
+            continue
+        lo, hi = java_bounds(models[name], 24.016)
+        hitbox = hitboxes.get("minecraft:" + name.split("#")[0])
+        box = f"{hitbox['width']:.2f}×{hitbox['height']:.2f}" if hitbox else "?"
+        print(f"{name:22s} {bone_count:3d} {quads:5d} {degenerate:4d} {tw:>4d}x{th:<3d} "
+              f"{max(hi[0] - lo[0], hi[2] - lo[2]):7.3f} {hi[1] - lo[1]:7.3f} {box:>12s}")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--fetch", action="store_true",
@@ -388,7 +579,18 @@ def main():
     parser.add_argument("--entities",
                         default="data/vanilla/1.20.1/normalized/entities.json")
     parser.add_argument("--out", default="data/vanilla/1.20.1/entity_models.json")
+    parser.add_argument("--java", default=JAVA_DUMP,
+                        help="le dump du vrai client (measure_entity_render.py models)")
+    parser.add_argument("--bedrock", action="store_true",
+                        help="forcer l'ancienne source Bedrock (format 1, dix modèles)")
     args = parser.parse_args()
+
+    if not args.bedrock and os.path.exists(args.java):
+        main_java(args)
+        return
+    if not args.bedrock:
+        print(f"⚠ {args.java} absent : repli sur la géométrie Bedrock (format 1, dix modèles). "
+              "Lancer `lockf /tmp/ov-vanilla.lock python3 scripts/measure_entity_render.py models`.")
 
     os.makedirs(args.geometry_dir, exist_ok=True)
     files = sorted({entry[0] for entry in SPECIES})

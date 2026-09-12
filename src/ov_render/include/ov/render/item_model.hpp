@@ -25,9 +25,11 @@
 #include "ov/math/vec.hpp"
 #include "ov/render/asset_source.hpp"
 #include "ov/render/atlas.hpp"
+#include "ov/render/model.hpp"
 
 #include <array>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -75,6 +77,9 @@ struct ItemMesh {
     std::vector<SpriteUv> layers;
     /// The quads of a solid icon, already culled and sorted back to front.
     std::vector<ItemQuad> quads;
+    /// The model's `display.thirdperson_righthand` (translation in blocks),
+    /// when its chain states one: how a mob or a player holds it.
+    std::optional<DisplayTransform> hand;
     /// False when nothing could be resolved: no model file, or a model with no
     /// geometry and no layers.
     bool drawable{false};

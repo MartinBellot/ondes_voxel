@@ -37,7 +37,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 PRESET = os.environ.get("OV_PRESET", "macos-debug")
 BIN = ROOT / "build" / PRESET / "bin"
-WORLD = ROOT / "run" / "sound-client-e2e"
+# Never under run/: it is the shared asset tree, a symlink in every worktree,
+# and a world written there is written into every other agent's run/ too.
+WORLD = Path(os.environ.get("OV_CLIENT_E2E_DIR", str(ROOT / ".scratch" / "sound-client-e2e")))
 PORT = int(os.environ.get("OV_CLIENT_E2E_PORT", "25752"))
 
 PERCENTILES = re.compile(r"^(cpu|rec|gpu|snd)\s+p50 ([0-9.]+) ms\s+p99 ([0-9.]+) ms")

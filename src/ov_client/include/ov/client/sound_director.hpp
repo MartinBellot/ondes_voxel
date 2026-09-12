@@ -6,14 +6,19 @@
 // its own landing. Others the server sends to nobody, because every client can
 // work them out from a packet it already gets: an explosion from Explosion,
 // the pickup plop from Take Item Entity, another player's broken block from
-// World Event 2001. The capture of the real server (docs/provenance/son.md) is
-// what separates the three; this class covers all of them.
+// World Event 2001, a record from World Event 1010. The capture of the real
+// server (docs/provenance/son.md) is what separates the three; this class
+// covers all of them.
 //
 // Volumes and pitches of the local gestures are the same set the server's
 // are derived from — BlockRegistry::sounds() — through the ratios the capture
 // measured (place (v+1)/2 and p*0.8, step v*0.15, fall v*0.5 and p*0.75) and,
 // for the two no packet carries, the wiki's block tables (break (v+1)/2 and
 // p*0.8, hit (v+1)/8 and p*0.5: stone's row reads 1.0/0.8 and 0.25/0.5).
+//
+// It also decides the music (audio::situational_music, from the dimension,
+// the biome music and the boss bars the server sent), plays records, and
+// feeds the subtitles.
 //
 // Layer 15, and nothing here draws: it takes events and positions, and calls
 // the engine. Testable with the null backend.
@@ -29,7 +34,9 @@
 
 #include <functional>
 #include <optional>
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace ov::netclient {
 struct ClientEvents;
@@ -42,6 +49,8 @@ enum class SoundCategory : u8;
 
 namespace ov::client {
 
+class SubtitleOverlay;
+
 /// An entity the director needs to place a sound on.
 struct HeardEntity {
     Vec3d position{};
@@ -51,6 +60,19 @@ struct HeardEntity {
 
 /// Where an entity is, by network id. Empty for one this client does not know.
 using EntityLookup = std::function<std::optional<HeardEntity>(i32 id)>;
+
+/// What only the game loop knows about the music's situation. The rest — the
+/// dimension, the biomes' music, the boss bars — came in the packets.
+struct MusicContext {
+    /// No world: the title screen and the menus in front of it.
+    bool menu{false};
+    /// Creative: may build instantly and fly.
+    bool creative{false};
+    /// The eyes are in water.
+    bool underwater{false};
+    /// The biome at the player, `minecraft:forest`.
+    std::string_view biome;
+};
 
 class SoundDirector {
 public:
@@ -63,7 +85,7 @@ public:
     void on_events(const netclient::ClientEvents& events, const EntityLookup& lookup);
 
     /// The ears: the camera, every frame.
-    void listen(Vec3d eyes, f32 yaw_degrees);
+    void listen(Vec3d eyes, f32 yaw_degrees, f32 pitch_degrees = 0.0F);
 
     // ── The player's own gestures, which the server sends to everyone else ──
 
@@ -85,20 +107,63 @@ public:
     /// everyone else, and this client is the one that must play it. A lever is
     /// sent to the clicker too, and playing it here would double it.
     void toggled(registry::BlockStateId before, registry::BlockStateId after, BlockPos pos);
+    /// A button of the interface was pressed: `ui.button.click`, heard at the
+    /// ears whatever the position, in the master category. Volume 0.25 is ours.
+    void clicked();
 
-    /// One client tick, 20 Hz: the music.
+    /// One client tick, 20 Hz: the music, and the music fading under a record.
+    void tick(const MusicContext& context);
+    /// The overworld's music alone, for callers that know nothing else.
     void tick(bool creative);
+
+    /// The subtitles to feed, or none. Not owned.
+    void set_subtitles(SubtitleOverlay* subtitles) noexcept { subtitles_ = subtitles; }
+
+    /// The action bar a record started this poll: a chat component as JSON,
+    /// `record.nowPlaying` with the disc's description. Taken once.
+    [[nodiscard]] std::optional<std::string> take_now_playing();
 
     [[nodiscard]] u64 played() const noexcept { return played_; }
     [[nodiscard]] u64 refused() const noexcept { return refused_; }
     [[nodiscard]] const audio::MusicManager& music() const noexcept { return music_; }
+    [[nodiscard]] std::string_view dimension() const noexcept { return dimension_; }
+    [[nodiscard]] bool boss_music() const noexcept { return !boss_bars_.empty(); }
+    /// The music category's fade under a record, 0 .. 1.
+    [[nodiscard]] f32 music_fade() const noexcept { return music_fade_; }
+
+    /// Ticks for the music to fade out under a record, and back. Ours: the
+    /// wiki says the music "fades out when a music disc song can be heard, and
+    /// fades in again", not how fast.
+    static constexpr i32 kFadeTicks = 40;
+    /// A jukebox is heard to 64 blocks (the wiki's Jukebox page): the record
+    /// plays at volume 4, and 4 x 16 is that range.
+    static constexpr f32 kRecordVolume = 4.0F;
 
 private:
-    void play(std::string_view event, i32 category, Vec3d at, f32 volume, f32 pitch, i64 seed);
+    void play(std::string_view event, i32 category, Vec3d at, f32 volume, f32 pitch, i64 seed,
+              bool relative = false);
+    void record_started(i32 item_id, BlockPos pos);
+    void record_stopped(BlockPos pos);
     [[nodiscard]] f32 pitch_between(f32 lo, f32 hi);
     [[nodiscard]] std::optional<registry::BlockRegistry::BlockSounds> sounds_of(
         registry::BlockStateId state) const noexcept;
     [[nodiscard]] std::string_view event_name(i32 id) const noexcept;
+
+    struct Record {
+        BlockPos    pos{};
+        std::string event;
+    };
+    struct BossBar {
+        u64 most{0};
+        u64 least{0};
+    };
+    struct BiomeTrack {
+        std::string biome;
+        std::string sound;
+        i32         min_delay{12000};
+        i32         max_delay{24000};
+        bool        replace{false};
+    };
 
     audio::SoundEngine*            engine_;
     const registry::BlockRegistry* blocks_;
@@ -106,6 +171,17 @@ private:
     math::LegacyRandomSource       random_;
     audio::MusicManager            music_;
     std::optional<registry::RegistryId> sound_registry_;
+    std::optional<registry::RegistryId> item_registry_;
+    SubtitleOverlay*               subtitles_{nullptr};
+
+    Vec3d                      ears_{};
+    f32                        ears_yaw_{0.0F};
+    std::string                dimension_{"minecraft:overworld"};
+    std::vector<BiomeTrack>    biome_music_;
+    std::vector<BossBar>       boss_bars_;
+    std::vector<Record>        records_;
+    std::optional<std::string> now_playing_;
+    f32                        music_fade_{1.0F};
 
     f64      walked_{0.0};
     f64      next_step_{1.0};

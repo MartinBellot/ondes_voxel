@@ -7,6 +7,7 @@
 // back, character for character.
 #include "ov/gameplay/fluid.hpp"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
@@ -18,6 +19,8 @@
 #include <string_view>
 #include <tuple>
 #include <vector>
+
+#include "ov/gameplay/fluid_push.hpp"  // ── movement physics ──
 
 using namespace ov;
 using namespace ov::gameplay;
@@ -887,6 +890,54 @@ TEST_CASE("still water pushes nothing and a flow pushes downhill", "[fluid]") {
     const Vec3d diagonal = rules().flow_vector(level, BlockPos{2, -60, 2});
     REQUIRE(diagonal.x > 0.0);
     REQUIRE(diagonal.z > 0.0);
+}
+
+// ── movement physics ── the magnitude of the push, not only its direction.
+TEST_CASE("a current pushes at its strength, never below the floor", "[fluid][blocks]") {
+    TestLevel level;
+    level.floor(-61, 10, state_of("minecraft:stone"));
+    REQUIRE(rules().place_fluid(level, BlockPos{0, -60, 0}, FluidKind::Water));
+    REQUIRE(level.settle(rules()) >= 0);
+
+    const CurrentConstants constants;
+    const auto             box_at = [](f64 x, f64 z, f64 width, f64 height) {
+        return AABB::from_entity(Vec3d{x, -60.0, z}, width, height);
+    };
+
+    // Three blocks east of the source: the flow is due east, and a mob (not a
+    // player) is pushed at the full strength whatever the depth.
+    const Vec3d mob = current_push(rules(), level, box_at(3.5, 0.5, 0.5, 1.975), FluidKind::Water,
+                                   Vec3d{}, false, constants.water);
+    CHECK(mob.x == Catch::Approx(0.014).epsilon(1e-12));
+    CHECK(mob.z == 0.0);
+
+    // A player there is in one block deep enough (5/9 of a block) to count in
+    // full: the same push.
+    const Vec3d player = current_push(rules(), level, box_at(3.5, 0.5, 0.6, 1.8),
+                                      FluidKind::Water, Vec3d{}, true, constants.water);
+    CHECK(player.x == Catch::Approx(0.014).epsilon(1e-12));
+
+    // On the source the four neighbours cancel: nothing.
+    const Vec3d source = current_push(rules(), level, box_at(0.5, 0.5, 0.5, 1.975),
+                                      FluidKind::Water, Vec3d{}, false, constants.water);
+    CHECK(source.x == 0.0);
+    CHECK(source.z == 0.0);
+
+    // At the thin edge (1/9 deep) a still player's push is scaled by the depth
+    // and then raised to the floor; a moving one keeps the weak push.
+    const Vec3d thin_still = current_push(rules(), level, box_at(7.5, 0.5, 0.6, 1.8),
+                                          FluidKind::Water, Vec3d{}, true, constants.water);
+    CHECK(thin_still.x == Catch::Approx(constants.min_push).epsilon(1e-12));
+    const Vec3d thin_moving = current_push(rules(), level, box_at(7.5, 0.5, 0.6, 1.8),
+                                           FluidKind::Water, Vec3d{0.1, 0.0, 0.0}, true,
+                                           constants.water);
+    CHECK(thin_moving.x < constants.min_push);
+    CHECK(thin_moving.x > 0.0);
+
+    // No lava here: a lava current reads nothing.
+    const Vec3d lava = current_push(rules(), level, box_at(3.5, 0.5, 0.5, 1.975),
+                                    FluidKind::Lava, Vec3d{}, false, constants.lava);
+    CHECK(lava.x == 0.0);
 }
 
 TEST_CASE("a sponge dries the puddle it is dropped into", "[fluid][parity]") {
