@@ -33,6 +33,7 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`features.md`](provenance/features.md) | L'ensemencement de la décoration, et pourquoi `WorldgenRandom` n'est pas la source qu'il enveloppe |
 | [`pipeline-de-chunks.md`](provenance/pipeline-de-chunks.md) | La couche qui possède neuf chunks : 27,97 % des écritures franchissent une frontière |
 | [`structures.md`](provenance/structures.md) | Le placement des 19 `structure_set`, exact au chunk près — et le mineshaft comme oracle pur des réducteurs ; § 20 : les structures posées par le serveur, `structures.starts` et `References` au format du jeu |
+| [`grande-pyramide.md`](provenance/grande-pyramide.md) | **Structure originale, pas du contenu Minecraft** : la Grande Pyramide `ondes_voxel:great_pyramid` (101 × 101), son placement, son plan, ses pièges, son butin, l'interrupteur de parité et ses mesures |
 | [`chunkmap.md`](provenance/chunkmap.md) | Tickets, pool de jobs, génération hors du thread de tick, déterminisme sous TSan |
 | **Jeu** | |
 | [`fluides.md`](provenance/fluides.md) | Écoulement, recherche du trou, mélanges : 3172/3172 positions |
@@ -45,12 +46,14 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`verbes.md`](provenance/verbes.md) | Les verbes branchés au serveur, et le levier enfin tiré |
 | [`explosions.md`](provenance/explosions.md) | La résistance au souffle des 987 blocs, mesurée — et le plafond au-delà duquel aucune explosion ne peut plus distinguer deux valeurs |
 | [`performance-tick.md`](provenance/performance-tick.md) | Pourquoi casser un bloc prenait 5 s : la lumière sur le thread réseau, des chunks générés sur le tick, et la part de la machine saturée |
+| [`incremental-light.md`](provenance/incremental-light.md) | La lumière réparée autour d'un geste au lieu d'un 3×3 recalculé : les règles du wiki « Light », l'équivalence au recalcul complet sur de vrais mondes, et la lumière que vanilla a écrite |
 | [`enchantement.md`](provenance/enchantement.md) | La table à 512/512 offres, l'enclume à 93/93, et l'archive du protocole qui se trompait sur la graine |
 | [`ecrans.md`](provenance/ecrans.md) | Le menu principal, les mondes par graine, la pause et `options.txt` relu à l'octet |
 | [`meteo-sommeil.md`](provenance/meteo-sommeil.md) | La pluie qui vient seule, la glace des océans gelés à 11 285/11 285, la foudre et les lits |
 | [`feu.md`](provenance/feu.md) | Le feu qui se propage, la lave qui allume deux fois par tirage, et une fenêtre de dégâts de 10 ticks et non 11 |
 | [`alchimie.md`](provenance/alchimie.md) | L'alambic et les 43 potions : 2709/2709 recettes, et l'éclaboussure qui part d'où était la fiole |
 | [`end.md`](provenance/end.md) | L'End à 100 % des biomes et 99,9996 % des blocs, son portail et son arène (le combat : `dragon.md`) |
+| [`worldgen-3.md`](provenance/worldgen-3.md) | Icebergs (passe de surface et feature), glace bleue, fossiles tirés du jar, couche gelée et bruits de température, zoom flou des biomes (SHA-256, FIPS 180-4), fluides réveillés à la publication d'un chunk |
 | [`commandes-solo.md`](provenance/commandes-solo.md) | « Autoriser les commandes » : la règle du bouton relevée sur le vrai client en onze étapes, `allowCommands` dans level.dat, et le niveau de l'hôte |
 | [`cassage-bloc.md`](provenance/cassage-bloc.md) | Casser un bloc dans notre client : fissures au pixel près, 151 ticks pour la pierre à la main comme le vrai client, et 64 éclats |
 | [`rails-wagonnets.md`](provenance/rails-wagonnets.md) | Les rails (Rail, Powered Rail, Minecart du wiki) : 1536/1536 formes, et 14 trajectoires de wagonnet à moins de 1e-9 du vrai serveur |
@@ -59,6 +62,7 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`dragon.md`](provenance/dragon.md) | Le combat contre l'Ender Dragon : phases, cristaux qui explosent (puissance 6), souffle, 12 000 points en 66 orbes, `DragonFight` aux clés du jeu, réinvocation en 604 ticks — mesurés contre le vrai serveur |
 | [`mobs-2.md`](provenance/mobs-2.md) | La loi de marche, l'apparition par biome, douze espèces, et les monstres qui n'apparaissaient jamais en surface la nuit |
 | [`mobs-3.md`](provenance/mobs-3.md) | Le coup des mobs hostiles (22/22 cellules difficulté × armure), le despawn mesuré, les mobs dans `entities/`, et le villageois zombie — et des zombies qui ne voyaient pas les joueurs |
+| [`mobs-4.md`](provenance/mobs-4.md) | Les effets de statut portés par un mob : corps, marche, table des effets, `/effect`, potions et sauvegarde — branchés, mesure en attente |
 | [`nether.md`](provenance/nether.md) | Le Nether à 99,9 %, des portails là où le jeu les met, et le bruit de l'Overworld qui lisait ses octaves à l'envers |
 | [`nether-2.md`](provenance/nether-2.md) | Les features du Nether, ses fossiles à 185 départs sur 185, et ses mobs dans un monde à eux : troc, salves, boules de feu |
 | [`son.md`](provenance/son.md) | Les sons de 1003 blocs et 79 créatures, relevés sur le fil, et le client qui les joue |
@@ -79,6 +83,7 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`interface.md`](provenance/interface.md) | Police, HUD, inventaire : 2414 glyphes validés glyphe par glyphe |
 | [`inventaire-creatif.md`](provenance/inventaire-creatif.md) | Les 14 onglets demandés au jar serveur, 1689 cases, et la géométrie comptée dans les pixels |
 | [`rendu-entites.md`](provenance/rendu-entites.md) | Les ~200 modèles d'entités lus du vrai client pendant qu'il tourne, textures par métadonnées, et chaque espèce mesurée contre lui — et la vache qui se tenait debout |
+| [`serveur-dedie.md`](provenance/serveur-dedie.md) | Le serveur dédié administré comme vanilla : `server.properties` et les quatre listes dans l'ordre même des tables de hachage du JDK 17, la porte, RCON, Query, le chien de garde — et la fermeture côté serveur que l'écouteur ne signalait jamais |
 | [`persistance-entites.md`](provenance/persistance-entites.md) | Objets, orbes, flèches, TNT, sable, nuages, mobs du Nether, dragon et cristaux, et le wagonnet du joueur : sauvés au type près mesuré sur le vrai serveur, un écrivain par dimension |
 
 ---
@@ -159,6 +164,7 @@ Une ligne par système non trivial, ajoutée au moment de son implémentation.
 | VarInt / VarLong | `ov_protocol` | archive protocole 763, *Data types* | ≤ 5 et ≤ 10 octets. Un négatif occupe **toujours** la taille maximale (complément à deux). |
 | Chaînes du protocole | `ov_protocol` | archive protocole 763, *Data types* | Préfixe VarInt en **octets** ; la limite déclarée est en unités UTF-16, donc la borne en octets vaut 3×. |
 | Registres et blockstates | `ov_datagen` | data generator officiel, `server.jar` 1.20.1 (SHA-1 `84194a2f286ef7c14ed7ce0090dba59902951553`) | Voir les deux pièges ci-dessous. |
+| Grande Pyramide (structure originale) | `ov_worldgen`, `ov_server` | aucune : conçue ici, à la demande de l'utilisateur ; l'agencement évoque Khéops (connaissance générale) | Pas du contenu Minecraft, espace de noms `ondes_voxel:`. Tables de butin écrites ici, aucune copiée. Voir `provenance/grande-pyramide.md` et `ARCHITECTURE.md` § 9.1. |
 | Musique, disques, sous-titres du client | `ov_audio`, `ov_client` | wiki *Music*, *Subtitles*, *Jukebox* ; archive protocole 763 (World Event, Boss Bar, Login, Respawn) ; mesure sur le vrai serveur (`scripts/measure_jukebox_events.py`) | 1010 = id d'objet du disque, 1011 = arrêt (éjection et casse), reçus par l'acteur aussi. Durées de fondu et de sous-titre, volume du clic, priorité des voix : les nôtres. Voir `docs/provenance/son-client.md`. |
 
 ---

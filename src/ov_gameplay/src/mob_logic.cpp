@@ -193,7 +193,7 @@ void Mob::tick(entity::EntityWorld& world, entity::EntityHandle self,
     // The brain runs only when there is a world to read. Without a level a mob
     // still falls — which is the floor `FallingMob` established — but it does
     // not decide anything, because every decision here needs blocks.
-    if (mob->level != nullptr && !rider_controls(brain_.tame)) {
+    if (mob->level != nullptr && !rider_controls(brain_.tame) && !no_ai_) {  // ── noai ──
         brain_.wants_move = false;
         brain_.wants_jump = false;
         brain_.has_look   = false;
@@ -230,9 +230,11 @@ void Mob::tick(entity::EntityWorld& world, entity::EntityHandle self,
                 const f64 length = std::sqrt(dx * dx + dz * dz);
                 if (length > 1e-6) {
                     // ── tame ── a horse walks at its own drawn attribute
+                    // ── mobs-4 ── times what Speed or Slowness make of the walk
                     const f64 speed =
                         (brain_.speed > 0.0 ? brain_.speed : kind_->speed(kind_->stroll)) *  // ── mobs-2 ──
-                        tame_speed_factor(brain_.tame, kind_->movement_speed);
+                        tame_speed_factor(brain_.tame, kind_->movement_speed) *
+                        brain_.effect_walk;
                     // Divided by the friction the step is about to apply, so
                     // that what comes out is `speed` blocks of *displacement*.
                     // Without this the mob moves at 0.546 of the number in the
@@ -280,6 +282,14 @@ void Mob::tick(entity::EntityWorld& world, entity::EntityHandle self,
         }
     }
 
+    // ── noai ── no physics either: the position stays and the stored velocity
+    // decays by 0.98 a tick, with no gravity added (apprivoisement.md § 8.3).
+    if (no_ai_) {
+        state->velocity.x *= 0.98;
+        state->velocity.y *= 0.98;
+        state->velocity.z *= 0.98;
+        return;
+    }
     *state = step_entity(*state, motion_, *mob->world);
 }
 

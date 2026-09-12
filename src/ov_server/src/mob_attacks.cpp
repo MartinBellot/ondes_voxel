@@ -85,7 +85,10 @@ MobAttackStats MobAttacks::resolve(entity::EntityWorld& world, gameplay::Difficu
             ++stats.refused;
             continue;
         }
-        const f32              damage = static_cast<f32>(*base);
+        // ── mobs-4 ── Strength and Weakness act on the attribute itself
+        std::optional<f64> modified =
+            host.attack_damage ? host.attack_damage(attacker->network_id) : std::nullopt;
+        const f32              damage = static_cast<f32>(modified.value_or(*base));
         const std::string_view type =
             entity_registry_ ? registries_->entry_of(*entity_registry_, attacker->type)
                              : std::string_view{};

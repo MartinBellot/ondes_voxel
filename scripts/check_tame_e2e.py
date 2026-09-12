@@ -165,9 +165,17 @@ def main() -> int:  # noqa: C901 - one scenario, told in order
             print("ov_dedicated n'écoute pas (journal : .scratch/e2e-tame.log)")
             return 1
         probe = connect()
-        probe.settle(8.0)
-        wolves = [e for e, t in probe.types.items() if t == WOLF]
-        horses = [e for e, t in probe.types.items() if t == HORSE]
+        # Up to a minute for the wolf and the horse, not a fixed eight
+        # seconds: the server now counts only the ticks it runs, and on a
+        # loaded machine it ran 40 ticks in those eight seconds, before
+        # --mobs had placed anything (two runs failed so).
+        deadline = time.monotonic() + 60.0
+        wolves: list[int] = []
+        horses: list[int] = []
+        while time.monotonic() < deadline and not (wolves and horses):
+            probe.settle(1.0)
+            wolves = [e for e, t in probe.types.items() if t == WOLF]
+            horses = [e for e, t in probe.types.items() if t == HORSE]
         if not wolves or not horses:
             print(f"les mobs de --mobs ne sont pas arrivés : {probe.types}")
             return 1
@@ -244,7 +252,9 @@ def main() -> int:  # noqa: C901 - one scenario, told in order
             probe.settle(0.5)
             mounted = probe.riding(horse, since)
             verdict = None
-            deadline = time.monotonic() + 30.0
+            # 60 s: on a loaded server running five ticks a second, a long
+            # but ordinary ride of 150 ticks already takes half a minute.
+            deadline = time.monotonic() + 60.0
             while time.monotonic() < deadline:
                 probe.settle(0.25)
                 got = [s for s in probe.events_of(horse, since) if s in (6, 7)]

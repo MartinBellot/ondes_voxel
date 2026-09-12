@@ -657,6 +657,69 @@ def campaign_temper(rig: Oracle) -> dict:
     return out
 
 
+def campaign_ride_timing_open(rig: Oracle) -> dict:
+    """`ride_timing` on open ground: no pen.
+
+    The first run used the old campaign's glass pen, whose floor is 3 x 3:
+    mean 72, median about 40, and five rides of 197 to 294 ticks. A horse
+    boxed in that tightly can hardly run, and its tantrum only draws while it
+    runs somewhere — the tail looks like that. This is the comparable case:
+    our e2e rides are in the open, and so are test_tame.cpp's forty horses.
+    """
+    return campaign_ride_timing(rig, pen=False)
+
+
+def campaign_ride_timing_open60(rig: Oracle) -> dict:
+    """Sixty more open-ground first rides. The first thirty (27 timed) gave a
+    mean of 31.6 and nothing over 90 ticks: one in fifty a tick (mean 50)
+    fits badly, one in twenty-five plus a start latency fits well. Sixty more
+    tell the two apart."""
+    return campaign_ride_timing(rig, pen=False, horses=60)
+
+
+def campaign_ride_timing(rig: Oracle, pen: bool = True, horses: int = 30) -> dict:
+    """How long a ridden wild horse takes to decide, to the tick.
+
+    `temper` read the game time from the probe's copy, which the server only
+    sends once a second: both ends of a ride were up to 19 ticks stale, and its
+    mean of 78 carries that. Here the server is asked itself (`time query
+    gametime`, run on its next tick) as soon as the probe is seated and as
+    soon as the throw or the hearts arrive: good to about a tick at each end.
+    Only each fresh horse's first ride counts — at temper 0 it always ends in
+    a throw, and a fresh horse is a fresh sample.
+    """
+    hand: Rider = rig.hand  # type: ignore[assignment]
+    rides = []
+    for _ in range(horses):
+        setup = [f"tp {PROBE} -0.5 {Y} 0.5 -90 0",
+                 "item replace entity ovhand weapon.mainhand with minecraft:air"]
+        if pen:
+            setup[1:1] = [f"fill 0 {Y} -2 4 {Y + 2} 2 minecraft:glass",
+                          f"fill 1 {Y} -1 3 {Y + 2} 1 minecraft:air"]
+        else:
+            setup.insert(1, f"fill 0 {Y} -2 4 {Y + 2} 2 minecraft:air")
+        rig.server.batch(setup)
+        n, eid = rig.summon_near("horse", "Silent:1b,Variant:0", (2.0, Y, 0.0))
+        time.sleep(0.3)
+        since = time.monotonic()
+        hand.interact(eid)
+        mounted = hand.wait_passengers(eid, since, True, 3.0)
+        t0 = rig.gametime() if mounted is not None else None
+        got = hand.wait_event(eid, {6, 7}, since, timeout=60.0) if mounted is not None else None
+        t1 = rig.gametime() if got else None
+        ticks = (t1 - t0) if (t0 is not None and t1 is not None) else None
+        rides.append({"status": got[0] if got else None, "ticks": ticks})
+        print(f"  horse {len(rides)}: status {rides[-1]['status']}, {ticks} ticks", flush=True)
+        rig.server.batch([f"ride {PROBE} dismount"])
+        rig.kill(n)
+    rig.server.batch([f"fill 0 {Y} -2 4 {Y + 2} 2 minecraft:air", f"tp {PROBE} -0.5 {Y} 0.5 -90 0"])
+    delays = [r["ticks"] for r in rides if r["ticks"] is not None]
+    if delays:
+        print(f"  {len(delays)} decisions: mean {sum(delays) / len(delays):.1f}, "
+              f"sorted {sorted(delays)}", flush=True)
+    return {"rides": rides}
+
+
 # ── zoo ─────────────────────────────────────────────────────────────────────
 
 ZOO = [
@@ -703,6 +766,54 @@ def campaign_zoo(rig: Oracle) -> dict:
     shutil.copytree(RUN / "world", ZOO_COPY)
     rig.server.batch(["kill @e[tag=tamezoo]"])
     return {"zoo": [m for m, _ in ZOO], "data_get": dump}
+
+
+def campaign_noai(rig: Oracle) -> dict:
+    """`NoAI` on a Mob: no brain *and* no physics.
+
+    A zombie summoned six blocks up with `NoAI` should stay there; a cow given
+    `Motion:[0.5,0,0]` should not move while its Motion decays by 0.98 a tick
+    (explosions.md § 4 saw the decay on knocked-back zombies). And a zombie
+    without `NoAI`: does vanilla write the key as 0b, or leave it out?
+    """
+    x0, z0 = 40.5, 40.5
+    # Cows, not zombies: the rig runs on peaceful, where the real server
+    # deletes a hostile mob the moment it appears (the first run read no
+    # zombie at all, and "absent" for a key on an entity that was gone).
+    rig.server.batch([
+        f'summon minecraft:cow {x0} {Y + 6} {z0} {{NoAI:1b,Silent:1b,Tags:["noai_air"]}}',
+        f'summon minecraft:cow {x0 + 4} {Y} {z0} '
+        f'{{NoAI:1b,Silent:1b,Motion:[0.5d,0.0d,0.0d],Tags:["noai_push"]}}',
+        f'summon minecraft:cow {x0 + 8} {Y} {z0} {{Silent:1b,Tags:["with_ai"]}}',
+    ])
+    samples = []
+    for _ in range(8):
+        raw = rig.ask(["time query gametime",
+                       "data get entity @e[tag=noai_air,limit=1] Pos",
+                       "data get entity @e[tag=noai_air,limit=1] Motion",
+                       "data get entity @e[tag=noai_push,limit=1] Pos",
+                       "data get entity @e[tag=noai_push,limit=1] Motion"])
+        time_match = GAMETIME.search(" ".join(raw[0]))
+        samples.append({
+            "gametime": int(time_match.group(1)) if time_match else None,
+            # pos_of reads one string; each reply here is a list of lines.
+            "air_pos": pos_of(" ".join(raw[1])), "air_motion": pos_of(" ".join(raw[2])),
+            "push_pos": pos_of(" ".join(raw[3])), "push_motion": pos_of(" ".join(raw[4])),
+        })
+        print(f"  {samples[-1]}", flush=True)
+        time.sleep(0.5)
+    full = value_of(rig.ask(["data get entity @e[tag=with_ai,limit=1]"])[0])
+    rig.server.batch(["kill @e[tag=noai_air]", "kill @e[tag=noai_push]", "kill @e[tag=with_ai]"])
+    if full is None:
+        key = "mob missing"  # nothing was read: no answer, not "absent"
+    elif "NoAI: 0b" in full:
+        key = "NoAI: 0b"
+    elif "NoAI: 1b" in full:
+        key = "NoAI: 1b"
+    else:
+        key = "absent"
+    print(f"  NoAI on a mob without it: {key}", flush=True)
+    return {"samples": samples, "without_noai": key}
 
 
 OURS_ZOO = ROOT / ".scratch" / "tame-zoo-ours"
@@ -762,7 +873,9 @@ CAMPAIGNS = {"meta": campaign_meta, "tame": campaign_tame, "parrot": campaign_pa
              "ocelot": campaign_ocelot,
              "anger": campaign_anger, "wolf": campaign_wolf, "follow": campaign_follow,
              "spawn": campaign_spawn, "breed": campaign_breed, "temper": campaign_temper,
-             "zoo": campaign_zoo, "zoo_back": campaign_zoo_back}
+             "zoo": campaign_zoo, "zoo_back": campaign_zoo_back, "noai": campaign_noai,
+             "ride_timing": campaign_ride_timing, "ride_timing_open": campaign_ride_timing_open,
+             "ride_timing_open60": campaign_ride_timing_open60}
 
 
 def main(argv: list[str]) -> int:

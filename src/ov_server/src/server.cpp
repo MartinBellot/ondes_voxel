@@ -38,6 +38,8 @@
 #include "ov/protocol/entity.hpp"
 #include "ov/registry/registries.hpp"
 // ── crafting and smelting ───────────────────────────────────────────────────
+#include "furnace_entity.hpp"  // ── workstations ──
+#include "ov/gameplay/experience.hpp"  // ── workstations ── split_into_orbs
 #include "workbench.hpp"
 #include "enchant_session.hpp"  // ── enchanting ──
 #include "commands/text.hpp"   // ── enchanting: hover names ──
@@ -71,6 +73,14 @@
 #include "ov/protocol/survival.hpp"
 #include "ov/world/level_dat.hpp"
 #include "async_chunk_source.hpp"
+// ── dedicated server administration ──
+#include "admin/query.hpp"
+#include "admin/rcon.hpp"
+#include "admin/server_admin.hpp"
+#include "admin/server_properties.hpp"
+#include "admin/status_icon.hpp"
+#include "admin/watchdog.hpp"
+#include <future>
 #include "generated_world.hpp"
 #include "survival_session.hpp"
 #include "effect_session.hpp"  // ── effects ──
@@ -81,6 +91,7 @@
 // ── combat and interaction ───────────────────────────────────────────
 #include "combat_session.hpp"
 #include "mob_combat.hpp"
+#include "mob_effects.hpp"  // ── mobs-4 ──
 #include "player_level.hpp"
 #include "ov/gameplay/food.hpp"
 #include "ov/gameplay/item_use.hpp"
@@ -220,6 +231,13 @@ struct Options {
     /// record also goes into level.dat's Data.Player, where vanilla looks for
     /// the player of a singleplayer world. Empty on a dedicated server.
     std::string host_player;
+
+    // ── dedicated server administration ── A flag given on the command line
+    // wins over server.properties for this run, as vanilla's --port and
+    // --world do, and is not written back.
+    bool port_given{false};
+    bool world_given{false};
+    bool motd_given{false};
 };
 
 /// Where a connection is in the protocol's state machine.
@@ -573,6 +591,14 @@ struct Player {
     i64  keep_alive_id{0};
     bool awaiting_keep_alive{false};
 
+    // ── dedicated server administration ──
+    /// The address they came from, no port: what an IP ban is checked against.
+    std::string address;
+    /// Steady milliseconds of their last action, for player-idle-timeout.
+    i64 last_action_ms{0};
+    /// The last movement packet, hashed: one that repeats it is not an action.
+    u64 last_movement_hash{0};
+
     /// ── sound ── how far this player has walked, in footsteps.
     Sounds::Stride stride{};
 
@@ -819,12 +845,14 @@ Options parse_args(int argc, char** argv) {
             if (std::from_chars(value.data(), value.data() + value.size(), parsed).ec ==
                     std::errc{} &&
                 parsed > 0 && parsed < 65536) {
-                options.port = static_cast<ov::u16>(parsed);
+                options.port       = static_cast<ov::u16>(parsed);
+                options.port_given = true;
             } else {
                 OV_LOG_WARN("invalid --port value '{}', ignoring", value);
             }
         } else if (arg.starts_with("--world=")) {
-            options.world_dir = std::string{arg.substr(8)};
+            options.world_dir   = std::string{arg.substr(8)};
+            options.world_given = true;
         } else if (arg.starts_with("--seed=")) {  // ── screens ──
             const auto value  = arg.substr(7);
             ov::i64    parsed = 0;
@@ -835,7 +863,8 @@ Options parse_args(int argc, char** argv) {
                 OV_LOG_WARN("invalid --seed value '{}', ignoring", value);
             }
         } else if (arg.starts_with("--motd=")) {
-            options.motd = arg.substr(7);
+            options.motd       = arg.substr(7);
+            options.motd_given = true;
         } else if (arg.starts_with("--log-level=")) {
             options.log_level = ov::parse_log_level(arg.substr(12));
         } else if (arg.starts_with("--ticks=")) {
@@ -883,7 +912,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     const std::atomic<bool>* external_pause) {
     using namespace ov;
 
-    const Options options = parse_args(argc, argv);
+    Options options = parse_args(argc, argv);
     if (options.show_help) {
         print_help();
         return 0;
@@ -907,6 +936,50 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         std::signal(SIGTERM, handle_signal);
     }
 
+    // ── dedicated server administration ──────────────────────────────────────
+    // server.properties in the working directory, read and written back the
+    // way vanilla does on every start (admin/server_properties.hpp). Only a
+    // dedicated server has one: an integrated server's settings are the
+    // world's and the window's.
+    const bool             dedicated   = external_stop == nullptr;
+    const admin::WallClock admin_clock = admin::WallClock::system();
+    const auto             date_line   = [&admin_clock] {
+        const i64              now  = admin_clock.now();
+        const admin::LocalZone zone = admin_clock.zone(now);
+        return admin::format_java_date(now, zone.offset_seconds, zone.abbreviation);
+    };
+    std::optional<admin::PropertiesFile> properties;
+    const std::filesystem::path          properties_path{"server.properties"};
+    if (dedicated) {
+        properties = admin::load_properties_file(properties_path, date_line());
+        if (!properties->existed) {
+            // Offline only, by decision: a first start writes online-mode=false
+            // where vanilla writes true, so that the server it just configured
+            // can start. Named in docs/provenance/serveur-dedie.md.
+            properties->properties.set("online-mode", "false");
+            properties->settings.online_mode = false;
+            (void)admin::save_properties_file(properties_path, properties->properties, date_line());
+        }
+        const admin::DedicatedSettings& boot = properties->settings;
+        if (boot.online_mode) {
+            OV_LOG_ERROR("server.properties says online-mode=true. Ondes VOXEL has no Mojang "
+                         "authentication: it only runs offline, with offline uuids.");
+            OV_LOG_ERROR("Set online-mode=false in server.properties to start it.");
+            return 1;
+        }
+        if (!options.port_given) {
+            options.port = static_cast<u16>(boot.server_port);
+        }
+        if (!options.world_given) {
+            options.world_dir = boot.level_name;
+        }
+        if (!options.motd_given) {
+            options.motd = boot.motd;
+        }
+        options.max_players = boot.max_players;
+    }
+    // ── end dedicated server administration ─────────────────────────────────
+
     // ── Network ─────────────────────────────────────────────────────────────
     // Bound before the tick loop starts: failing to bind is worth saying
     // immediately rather than after the world has loaded.
@@ -919,6 +992,17 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     net::ServerStatus status;
     status.description = options.motd;
     status.max_players = options.max_players;
+    // ── dedicated server administration ── server-icon.png, 64×64, as a data
+    // URI: read once at start, as vanilla does.
+    if (dedicated) {
+        if (auto icon = admin::load_status_icon("server-icon.png")) {
+            if (icon->has_value()) {
+                status.favicon = **icon;
+            } else {
+                OV_LOG_WARN("server-icon.png: {}", icon->error());
+            }
+        }
+    }
 
     // The data a player needs before they can be let in. Both are generated
     // locally from the official jar and never committed; without them the
@@ -1005,6 +1089,15 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             workbench_context.menu_registry = *menus;
         }
     }
+    // ── workstations ── Every furnace in a loaded chunk, ticked as a block
+    // entity whether anybody is looking or not (furnace_entity.hpp).
+    // One pass per dimension: the Nether's and the End's furnaces cook too.
+    std::optional<DimensionFurnaces> furnace_entities;
+    if (registries && recipe_book) {
+        furnace_entities.emplace(*registries, *recipe_book);
+    }
+    /// The draw that rounds a furnace's fractional experience at extraction.
+    math::LegacyRandomSource furnace_random{0x4f56'4655'524eLL};
 
     // ── enchanting ──
     EnchantContext enchant_context;
@@ -1029,6 +1122,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         entity_loot = load_entity_loot(data_dir / "vanilla" / "1.20.1" / "entity_loot.ovpack",
                                        *registries, recipe_book ? &*recipe_book : nullptr);
         mob_combat.emplace(*registries, entity_loot ? &*entity_loot : nullptr);
+    }
+    // ── mobs-4 ── a mob's status effects, beside its damage window, which
+    // their poison and wither go through
+    std::optional<MobEffects> mob_effects;
+    if (registries) {
+        mob_effects.emplace(*registries, mob_combat ? &*mob_combat : nullptr);
     }
     /// The draw for a mob's table. A source of its own rather than
     /// `loot_random`: a block broken and a mob killed on the same tick must be
@@ -1182,6 +1281,20 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     // ── screens ── --seed, then the environment, then a level.dat that already
     // declares a seeded overworld (reopened from the world list).
     std::optional<i64> requested_seed = options.seed;
+    // ── dedicated server administration ── level-seed, for a world not yet
+    // created: a number is the seed, any other text its String.hashCode.
+    if (!requested_seed && properties && !properties->settings.level_seed.empty() &&
+        !level_settings.generated && !std::filesystem::exists(level_dir / "level.dat")) {
+        const std::string& level_seed_text = properties->settings.level_seed;
+        i64                level_seed_value = 0;
+        const auto [seed_end, seed_ec] =
+            std::from_chars(level_seed_text.data(), level_seed_text.data() + level_seed_text.size(),
+                            level_seed_value);
+        requested_seed =
+            seed_ec == std::errc{} && seed_end == level_seed_text.data() + level_seed_text.size()
+                ? level_seed_value
+                : static_cast<i64>(admin::java_string_hash(level_seed_text));
+    }
     if (const char* seed_text = std::getenv("OV_WORLDGEN_SEED"); !requested_seed && seed_text) {
         requested_seed = std::strtoll(seed_text, nullptr, 10);
     }
@@ -1221,6 +1334,29 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     if (options.survival) {
         level_settings.game_type = 0;
     }
+    // ── dedicated server administration ── gamemode and difficulty, which
+    // vanilla applies to the world on every start. Only from a file that was
+    // there before this start: a first start keeps this server's own
+    // defaults (creative, normal), which every tool of the project expects —
+    // a deviation named in docs/provenance/serveur-dedie.md.
+    if (properties && properties->existed && !options.survival) {
+        level_settings.game_type  = properties->settings.gamemode;
+        level_settings.difficulty = static_cast<i8>(
+            properties->settings.hardcore ? u8{3} : properties->settings.difficulty);
+    }
+    std::optional<admin::ServerAdmin> server_admin;
+    if (properties) {
+        admin::AdminConfig admin_config;
+        admin_config.directory         = ".";
+        admin_config.clock             = admin_clock;
+        admin_config.white_list        = properties->settings.white_list;
+        admin_config.enforce_whitelist = properties->settings.enforce_whitelist;
+        admin_config.max_players       = properties->settings.max_players;
+        server_admin.emplace(admin_config);
+        for (const std::string& problem : server_admin->load()) {
+            OV_LOG_WARN("{}", problem);
+        }
+    }
     std::unique_ptr<cmd::CommandService> commands;
     bool scoreboard_refused = false;  // ── scoreboard ── a scoreboard.dat that did not read
     if (blocks && registries) {
@@ -1238,6 +1374,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         command_config.host_player = options.host_player;
         command_config.max_players = options.max_players;
         command_config.motd        = options.motd;
+        // ── dedicated server administration ──
+        command_config.admin = server_admin ? &*server_admin : nullptr;
+        if (properties) {
+            command_config.op_permission_level =
+                std::clamp(properties->settings.op_permission_level, 1, 4);
+            command_config.broadcast_console_to_ops = properties->settings.broadcast_console_to_ops;
+            command_config.broadcast_rcon_to_ops    = properties->settings.broadcast_rcon_to_ops;
+        }
         commands = std::make_unique<cmd::CommandService>(std::move(command_config));
         commands->load_world(level_settings);
         commands->console = [](std::string_view line) { OV_LOG_INFO("{}", line); };
@@ -1275,6 +1419,40 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     u64 absent_chunk_reads    = 0;
     u64 absent_chunk_writes   = 0;
     u64 generations_for_packets = 0;
+
+    // ── light ── The Overworld's light, kept current edit by edit. Used only
+    // under `chunk_mutex`, like the map it lights. A chunk joins lit: alone
+    // first, then across its borders (`light_arrived`); an edit is noted where
+    // it is written and repaired once per tick by `flush_tick_writes`.
+    MapLightSource                    light_chunks{chunks};
+    std::optional<world::LightEngine> light;
+    if (blocks) {
+        light.emplace(*blocks, kOverworldLight);
+    }
+    /// Measurement only: `OV_LIGHT_FULL=1` repairs edits the way the server did
+    /// before this engine — the 3x3 around each chunk touched, from nothing —
+    /// so that one binary measures both sides of scripts/bench_play.py.
+    const bool light_full_recompute = [] {
+        const char* setting = std::getenv("OV_LIGHT_FULL");
+        return setting != nullptr && std::string_view{setting} == "1";
+    }();
+    /// Caller holds chunk_mutex. Pending edits go first, so that the stitch
+    /// never floods from light an edit has already made stale.
+    const auto light_arrived = [&](ChunkPos pos, bool keep_sky) {
+        if (!light) {
+            return;
+        }
+        world::Chunk* chunk = chunks.find(pos);
+        if (chunk == nullptr) {
+            return;
+        }
+        if (light->pending() > 0) {
+            (void)light->propagate(light_chunks);
+        }
+        light->light_chunk(*chunk, keep_sky);
+        (void)light->stitch(light_chunks, pos);
+    };
+    // ── end light ──
 
     /// The level a block behaviour writes through, and the two queues it wakes
     /// from. Declared here rather than where they are built because both
@@ -1376,11 +1554,35 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     // refused rather than dropping the player anywhere.
     std::unique_ptr<NetherWorld>         nether;
     std::optional<ServerLevel>           nether_level;
+    // ── light ── The Nether's and the End's light: block light only, the same
+    // engine as the Overworld's. Used under chunk_mutex, like their maps.
+    std::optional<world::LightEngine> nether_light;
+    std::optional<world::LightEngine> end_light;
+    if (blocks) {
+        nether_light.emplace(*blocks, kNoSkyLight);
+        end_light.emplace(*blocks, kNoSkyLight);
+    }
+    LookupLightSource nether_chunks{
+        [&](i32 x, i32 z) -> world::Chunk* { return nether ? nether->resident(x, z) : nullptr; }};
+    /// A chunk joining a dimension's map: alone, then across its borders.
+    const auto light_joined = [](world::LightEngine& engine, world::LightChunkSource& source,
+                                 world::Chunk& chunk) {
+        if (engine.pending() > 0) {
+            (void)engine.propagate(source);
+        }
+        engine.light_chunk(chunk);
+        (void)engine.stitch(source, chunk.position());
+    };
+    // ── end light ──
     std::optional<gameplay::PortalRules> portal_rules;
     if (blocks && registries) {
         portal_rules.emplace(*blocks, *registries);
     }
-    const bool nether_enabled = [] {
+    const bool nether_enabled = [&] {
+        // ── dedicated server administration ── allow-nether=false closes it.
+        if (properties && !properties->settings.allow_nether) {
+            return false;
+        }
         const char* setting = std::getenv("OV_NETHER");
         return setting == nullptr || std::string_view{setting} != "0";
     }();
@@ -1393,8 +1595,13 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             return false;
         }
         NetherWorld::Hooks hooks;
-        hooks.relight_loaded    = [&](world::Chunk& chunk) { relight_blocks(chunk, *blocks); };
-        hooks.relight_generated = [&](world::Chunk& chunk) { relight_blocks(chunk, *blocks); };
+        // ── light ── lit alone, then stitched to the Nether's loaded chunks
+        hooks.relight_loaded = [&](world::Chunk& chunk) {
+            light_joined(*nether_light, nether_chunks, chunk);
+        };
+        hooks.relight_generated = [&](world::Chunk& chunk) {
+            light_joined(*nether_light, nether_chunks, chunk);
+        };
         hooks.ticks_loaded      = [&](const nbt::Document& document) {
             if (!nether_level) {
                 return;
@@ -1440,6 +1647,18 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     // settings), built on first need like the Nether. `OV_END=0` turns it off.
     // The crossing and the rules are in end_travel.hpp / end_portal.hpp.
     std::unique_ptr<NetherWorld>             end_world;
+    // ── light ── the End's chunks as its light engine sees them
+    LookupLightSource end_chunks{[&](i32 x, i32 z) -> world::Chunk* {
+        return end_world ? end_world->resident(x, z) : nullptr;
+    }};
+    /// The engine and the chunks of a sky-less dimension, or none.
+    const auto light_of = [&](DimensionId dimension)
+        -> std::pair<world::LightEngine*, world::LightChunkSource*> {
+        if (dimension == DimensionId::End) {
+            return {end_light ? &*end_light : nullptr, &end_chunks};
+        }
+        return {nether_light ? &*nether_light : nullptr, &nether_chunks};
+    };
     std::optional<ServerLevel>               end_level;
     std::optional<gameplay::EndPortalRules>  end_rules;
     if (blocks) {
@@ -1458,8 +1677,13 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             return false;
         }
         NetherWorld::Hooks hooks;
-        hooks.relight_loaded    = [&](world::Chunk& chunk) { relight_blocks(chunk, *blocks); };
-        hooks.relight_generated = [&](world::Chunk& chunk) { relight_blocks(chunk, *blocks); };
+        // ── light ── lit alone, then stitched to the End's loaded chunks
+        hooks.relight_loaded = [&](world::Chunk& chunk) {
+            light_joined(*end_light, end_chunks, chunk);
+        };
+        hooks.relight_generated = [&](world::Chunk& chunk) {
+            light_joined(*end_light, end_chunks, chunk);
+        };
         hooks.ticks_loaded      = [&](const nbt::Document& document) {
             if (!end_level) {
                 return;
@@ -1513,29 +1737,19 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         if (auto loaded = world::from_nbt(*document, codec_context)) {
                             chunks.publish(ChunkPos{cx, cz}, std::move(*loaded));
                             world::Chunk& placed = *chunks.find(ChunkPos{cx, cz});
-                            // A saved chunk carries the light it was written
-                            // with, which may have come from another
-                            // implementation. Recomputing costs a pass and
-                            // removes a whole class of "the cave is lit and I
-                            // do not know why".
-                            if (blocks) {
-                                relight_blocks(placed, *blocks);
-                            }
-                            // Sky light is recomputed only when the file
-                            // carries none. A world written by a tool that has
-                            // no light engine — ov-lab, for one — would
-                            // otherwise be served pitch dark, while a world
-                            // vanilla wrote keeps the light vanilla computed
-                            // across chunk borders, which a per-chunk pass
-                            // here could only make worse.
-                            const bool has_sky_light =
-                                std::ranges::any_of(placed.sections(),
-                                                    [](const world::ChunkSection& section) {
-                                                        return !section.sky_light().is_absent();
-                                                    });
-                            if (!has_sky_light) {
-                                relight_chunk(placed, blocks ? &*blocks : nullptr);
-                            }
+                            // ── light ── A saved chunk carries the light it was
+                            // written with, and both arrays are recomputed, then
+                            // stitched to the loaded neighbours. Keeping the sky
+                            // a vanilla save carries was the rule before, and it
+                            // served black air: vanilla stores sky light in a
+                            // fifth of the sections (297 of 1536 in a world it
+                            // had just lit) and means "as above" by the others,
+                            // which this format reads as dark. Where vanilla did
+                            // store it, the engine agrees on 98.9 % of the cells
+                            // (docs/provenance/incremental-light.md § 6.3), and
+                            // a chunk lit by the engine is one the incremental
+                            // repair can start from.
+                            light_arrived(ChunkPos{cx, cz}, false);
                             // The ticks the chunk was written with. `t` on disk
                             // is a delay relative to the chunk's game time, so
                             // loading has to be told what "now" is — which is
@@ -1601,6 +1815,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         } else {
             chunks.publish(ChunkPos{cx, cz}, superflat.generate(ChunkPos{cx, cz}));
         }
+        light_arrived(ChunkPos{cx, cz}, false);  // ── light ── generated chunks carry none
         return *chunks.find(ChunkPos{cx, cz});
     };
 
@@ -1800,7 +2015,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     /// be 289 chunks a few steps apart, and the client would spend its time
     /// rebuilding meshes it already had.
     const auto stream_chunks = [&](const net::ConnectionPtr& connection, Player& player) {
-        constexpr i32 kRadius = 8;
+        // ── dedicated server administration ── view-distance, below this
+        // server's own radius of 8; above it, 8 still (named).
+        const i32 kRadius = properties ? std::clamp(properties->settings.view_distance, 2, 8) : 8;
 
         const i32 centre_x = static_cast<i32>(std::floor(player.x)) >> 4;
         const i32 centre_z = static_cast<i32>(std::floor(player.z)) >> 4;
@@ -2371,6 +2588,13 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 deliver(id, payload);
             });
         }
+        // ── mobs-4 ── what its effects set: the colour and bits, then the
+        // speed with its modifier — after the bases above, which it overrides
+        if (mob_effects) {
+            mob_effects->pairing(state, [&](i32 id, std::span<const u8> payload) {
+                deliver(id, payload);
+            });
+        }
     };
 
     /// The world as the collision code reads it: a plain function and a
@@ -2433,12 +2657,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     // lambda that feeds it; on the heap because it is ~100 KiB of counters and
     // an integrated server runs this on a thread with a small stack.
     const auto perf = std::make_unique<TickProfile>();
-    /// The chunks written since the last relight, relit **once each, on the
-    /// tick thread**, by `flush_tick_writes`. Every writer feeds it: the drain,
-    /// a command's fill, and a player's dig or place on the network thread —
-    /// which used to relight a 3x3 neighbourhood itself, per block, before it
-    /// could send the Block Update. Guarded by `chunk_mutex`.
-    std::unordered_set<i64> tick_relight;
+    // ── light ── The edits written since the last relight are noted in
+    // `light` (declared beside the map) by every writer — the drain, a
+    // command's fill, a player's dig or place on the network thread — and
+    // repaired **once per tick, on the tick thread**, by `flush_tick_writes`.
     // ── end perf ──
 
     std::vector<net::WirePosition> pending_notifications;
@@ -2542,8 +2764,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         write_block(chunk, position.x, position.y, position.z, state);
         dirty_chunks.insert(chunk_key(chunk_x, chunk_z));
 
-        if (relight) {
-            tick_relight.insert(chunk_key(chunk_x, chunk_z));  // ── perf ── on the tick
+        if (relight && light) {  // ── light ── repaired on the tick
+            light->block_changed(BlockPos{position.x, position.y, position.z});
         }
 
         for (i32 dz = -1; dz <= 1; ++dz) {
@@ -2566,11 +2788,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         {
             const std::scoped_lock lock{chunk_mutex};
             apply_block_change_in_nether(position, state, dimension);
-            if (blocks) {
-                if (world::Chunk* chunk =
-                        chunk_if_resident_in(dimension, position.x >> 4, position.z >> 4)) {
-                    relight_blocks(*chunk, *blocks);
-                }
+            // ── light ── repaired around the edit, across chunk borders
+            if (const auto [engine, source] = light_of(dimension); engine != nullptr) {
+                engine->block_changed(BlockPos{position.x, position.y, position.z});
+                (void)engine->propagate(*source);
             }
         }
         broadcast_in(dimension, nullptr, net::clientbound::kBlockUpdate,
@@ -2601,14 +2822,13 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             write_block(chunk, position.x, position.y, position.z, state);
             dirty_chunks.insert(chunk_key(chunk_x, chunk_z));
 
-            // ── perf ── WORLD_SURFACE has just moved, so the light has too —
-            // across the 3x3, since light does not respect chunk borders. Not
-            // here, though: relighting nine chunks before the Block Update
-            // went out was the break latency players felt (measured in
-            // docs/provenance/performance-tick.md). The tick relights every
-            // chunk written since its last pass once, however many blocks
-            // changed in it; the client lights its own edits meanwhile.
-            tick_relight.insert(chunk_key(chunk_x, chunk_z));
+            // ── perf ── The light has moved too. Not here, though: relighting
+            // before the Block Update went out was the break latency players
+            // felt (docs/provenance/performance-tick.md). The edit is noted
+            // and the tick repairs the light around it (── light ──).
+            if (light) {
+                light->block_changed(BlockPos{position.x, position.y, position.z});
+            }
             // ── end perf ──
 
             for (i32 dz = -1; dz <= 1; ++dz) {
@@ -2778,7 +2998,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             if (sounds) {  // ── sound ── a button releasing, a door moved by power
                 sounds->queue_changed(pos, before, state);
             }
-            tick_relight.insert(chunk_key(pos.x >> 4, pos.z >> 4));
+            if (light) {  // ── light ──
+                light->block_changed(pos);
+            }
         };
         hooks.container_signal = [&](BlockPos pos) -> i32 {
             // ── rails ── a detector rail reads the container cart on it
@@ -3124,17 +3346,22 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     const auto flush_tick_writes = [&] {
         {  // ── perf ── under the lock: the network thread feeds the set too
             const std::scoped_lock lock{chunk_mutex};
-            if (!tick_relight.empty()) {
+            if (light && light->pending() > 0) {  // ── light ── incremental
                 const TickPhase perf_was = perf->enter(TickPhase::Relight);
-                const ChunkLookup lookup = [&](i32 nx, i32 nz) -> world::Chunk* {
-                    return chunks.find(ChunkPos{nx, nz});
-                };
-                for (const i64 key : tick_relight) {
-                    relight_after_edit(lookup, static_cast<i32>(key >> 32),
-                                       static_cast<i32>(static_cast<u32>(key & 0xFFFFFFFF)),
-                                       blocks ? &*blocks : nullptr);
+                if (light_full_recompute) {
+                    std::unordered_set<i64> relit;
+                    const ChunkLookup       lookup = [&](i32 nx, i32 nz) -> world::Chunk* {
+                        return chunks.find(ChunkPos{nx, nz});
+                    };
+                    for (const BlockPos pos : light->pending_positions()) {
+                        if (relit.insert(chunk_key(pos.x >> 4, pos.z >> 4)).second) {
+                            relight_after_edit(lookup, pos.x >> 4, pos.z >> 4, &*blocks);
+                        }
+                    }
+                    light->discard_pending();
+                } else {
+                    (void)light->propagate(light_chunks);
                 }
-                tick_relight.clear();
                 perf->enter(perf_was);
             }
         }  // ── end perf ──
@@ -3178,19 +3405,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         if (writes.empty()) {
             return;
         }
-        if (blocks && other_world(dimension) != nullptr) {
+        // ── light ── the drain's writes as one batch, repaired once
+        if (const auto [engine, source] = light_of(dimension);
+            engine != nullptr && other_world(dimension) != nullptr) {
             const std::scoped_lock lock{chunk_mutex};
-            std::unordered_set<i64> relit;
             for (const auto& [where, state] : writes) {
-                const i64 key = chunk_key(where.x >> 4, where.z >> 4);
-                if (!relit.insert(key).second) {
-                    continue;
-                }
-                if (world::Chunk* chunk =
-                        other_world(dimension)->resident(where.x >> 4, where.z >> 4)) {
-                    relight_blocks(*chunk, *blocks);
-                }
+                engine->block_changed(BlockPos{where.x, where.y, where.z});
             }
+            (void)engine->propagate(*source);
         }
         const std::unique_lock lock{players_mutex, std::try_to_lock};
         if (lock.owns_lock()) {
@@ -3227,9 +3449,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             one.push_back(std::move(item));
             publish_items(one);
         };
+        // ── workstations ── In the player's own dimension. The version before
+        // this read the overworld at the same coordinates, so a furnace in the
+        // Nether or the End could not even be opened.
         host.block_entity = [&](i32 x, i32 y, i32 z) -> nbt::Tag* {
             world::BlockEntity* entity =
-                chunk_at(x >> 4, z >> 4)
+                chunk_at_in(who.dimension, x >> 4, z >> 4)
                     .block_entity_at(static_cast<usize>(x & 15), y, static_cast<usize>(z & 15));
             return entity != nullptr ? &entity->data : nullptr;
         };
@@ -3237,57 +3462,50 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             if (!blocks) {
                 return {};
             }
-            const registry::BlockStateId state = block_at({x, y, z});
+            const registry::BlockStateId state = block_at_in(who.dimension, {x, y, z});
             return blocks->block_name(blocks->block_of(state));
         };
-        host.set_lit = [&](i32 x, i32 y, i32 z, bool lit) {
-            if (!blocks) {
-                return;
-            }
-            const registry::BlockStateId state = block_at({x, y, z});
-            const registry::BlockId      block = blocks->block_of(state);
-            // `lit` is a property, so the new state is the same block with one
-            // value changed — not a different block. Looking the block up by
-            // name would find `minecraft:furnace` either way and lose the
-            // facing the player placed it with.
-            const auto property = blocks->find_property(block, "lit");
-            if (!property) {
-                return;
-            }
-            const auto wanted = lit ? std::string_view{"true"} : std::string_view{"false"};
-            for (u16 index = 0; index < property->values.size(); ++index) {
-                if (property->values[index] != wanted) {
-                    continue;
-                }
-                const registry::BlockStateId next =
-                    blocks->with_property(state, *property, index);
-                // Written here rather than through set_block_and_broadcast,
-                // which takes chunk_mutex itself — and the caller already holds
-                // it. std::mutex is not recursive, so going through it would
-                // deadlock the tick thread the first time a furnace lit up.
-                chunk_at(x >> 4, z >> 4)
-                    .set_block(static_cast<usize>(x & 15), y, static_cast<usize>(z & 15), next);
+        // ── workstations ── No `set_lit` here any more: the screen ticks
+        // nothing, and the furnace pass flips `lit` through
+        // `relight_furnace_block`, which keeps the block entity. The version
+        // before this wrote `chunk.set_block` here and emptied a furnace that
+        // lit up while someone had its screen open.
+        host.mark_dirty = [&](i32 x, i32 z) {
+            if (who.dimension == DimensionId::Overworld) {
                 dirty_chunks.insert(chunk_key(x >> 4, z >> 4));
-                const auto framed = net::encode_packet(
-                    net::clientbound::kBlockUpdate,
-                    net::encode_block_update({x, y, z}, static_cast<i32>(next.value())));
-                if (framed) {
+            } else if (NetherWorld* other = other_world(who.dimension)) {
+                other->mark_dirty(x >> 4, z >> 4);
+            }
+        };
+        // Taking from a furnace's output turns its `RecipesUsed` into orbs at
+        // the player's feet: one award per recipe, split as vanilla splits it.
+        // Sent over `players` directly: the caller holds players_mutex.
+        host.award_experience = [&](i32 amount) {
+            std::array<i32, 64> values{};
+            const usize         count = gameplay::split_into_orbs(amount, values);
+            for (usize k = 0; k < count; ++k) {
+                GroundOrb orb;
+                orb.entity_id = next_entity_id.fetch_add(1);
+                orb.x         = who.x;
+                orb.y         = who.y;
+                orb.z         = who.z;
+                orb.value     = values[k];
+                orb.born      = server_tick.load(std::memory_order_relaxed);
+                orb.dimension = who.dimension;
+                if (const auto framed = net::encode_packet(
+                        net::clientbound::kSpawnExperienceOrb,
+                        net::encode_spawn_experience_orb(orb.entity_id, orb.x, orb.y, orb.z,
+                                                         static_cast<i16>(orb.value)))) {
                     for (auto& [other_key, other] : players) {
-                        if (other.connection) {
+                        if (other.connection && other.dimension == who.dimension) {
                             other.connection->send(*framed);
                         }
                     }
                 }
-                return;
+                ground_orbs.push_back(orb);
             }
         };
-        host.mark_dirty = [&](i32 x, i32 z) { dirty_chunks.insert(chunk_key(x >> 4, z >> 4)); };
-        host.award_experience = [](f32) {
-            // Experience orbs are another agent's milestone. The furnace stops
-            // holding what it has handed over either way, so the amount is not
-            // lost twice — but nothing shows it yet, and saying so is better
-            // than a silent zero.
-        };
+        host.random = &furnace_random;
         return host;
     };
 
@@ -3841,6 +4059,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             return true;
         }
 
+        if (mob_effects) {  // ── mobs-4 ── its Resistance, before its window
+            damage = mob_effects->after_resistance(target_id, gameplay::DamageKind::PlayerAttack,
+                                                   damage);
+        }
         const MobHurt result = mob_combat->hurt(*state, damage, mob_damage_constants);
         if (!result.applied) {
             // The mob is there and the window swallowed the hit. True, not
@@ -4187,6 +4409,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             ref.survival      = &who.survival;
             ref.effects       = &who.effects;
             ref.effect_bearer = effect_bearer_for(who);
+            ref.address       = who.address;  // ── dedicated server administration ──
             ref.send          = [&who](i32 id, std::span<const u8> payload) {
                 if (const auto framed = net::encode_packet(id, payload); framed && who.connection) {
                     who.connection->send(*framed);
@@ -4325,6 +4548,31 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             }
         }
         return false;
+    };
+    // ── mobs-4 ── /effect on a mob
+    const auto mob_effect_sink = [&](i32 packet, std::span<const u8> payload) {
+        broadcast(nullptr, packet, payload);
+    };
+    command_host.give_mob_effect =
+        [&](i32 id, const gameplay::EffectInstance& instance) -> std::optional<gameplay::AddResult> {
+        if (!mob_effects || !mobs) {
+            return std::nullopt;
+        }
+        return mob_effects->apply(*mobs, id, instance, mob_effect_sink);
+    };
+    command_host.clear_mob_effect = [&](i32 id,
+                                        std::optional<gameplay::Effect> effect) -> std::optional<usize> {
+        if (!mob_effects || !mobs) {
+            return std::nullopt;
+        }
+        if (effect) {
+            const auto removed = mob_effects->remove(*mobs, id, *effect, mob_effect_sink);
+            if (!removed) {
+                return std::nullopt;
+            }
+            return usize{*removed ? 1U : 0U};
+        }
+        return mob_effects->clear(*mobs, id, mob_effect_sink);
     };
     command_host.kill_entity = [&](i32 id) -> bool {
         // ── dragon ── /kill on the fight's own: no animation, no orbs (measured)
@@ -4503,20 +4751,20 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // Update Section Blocks per section — a 32768-block fill must not
         // relight a neighbourhood per block.
         std::map<std::tuple<i32, i32, i32>, std::vector<net::SectionBlock>> sections;
-        std::unordered_set<i64>                                             touched;
         {
             const std::scoped_lock chunk_lock{chunk_mutex};
             for (const cmd::BlockChange& change : changes) {
                 const net::WirePosition at{change.pos.x, change.pos.y, change.pos.z};
                 apply_block_change(at, change.state, false);
                 command_block_entity(at, change.state);
-                touched.insert(chunk_key(at.x >> 4, at.z >> 4));
+                if (light) {  // ── light ── one batch, repaired on the tick
+                    light->block_changed(BlockPos{at.x, at.y, at.z});
+                }
                 sections[{at.x >> 4, at.y >> 4, at.z >> 4}].push_back(
                     net::SectionBlock{static_cast<u8>(at.x & 15), static_cast<u8>(at.y & 15),
                                       static_cast<u8>(at.z & 15),
                                       static_cast<i32>(change.state.value())});
             }
-            tick_relight.insert(touched.begin(), touched.end());  // ── perf ── on the tick
         }
         for (const auto& [section, list] : sections) {
             broadcast(nullptr, net::clientbound::kUpdateSectionBlocks,
@@ -4556,6 +4804,16 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         }
     };
     command_host.save = [&] { save_world(); };
+    // ── dedicated server administration ──
+    command_host.set_property = [&](std::string_view key, std::string value) {
+        if (properties) {
+            properties->properties.set(key, std::move(value));
+            // A command's rewrite: the jar stores a copy of its table then.
+            (void)admin::save_properties_file(properties_path, properties->properties, date_line(),
+                                              true);
+        }
+    };
+    command_host.tick_count = [&server_tick] { return server_tick.load(std::memory_order_relaxed); };
     command_host.stop = [] { g_stop_requested.store(true, std::memory_order_relaxed); };
     command_host.set_world_spawn = [&](i32 x, i32 y, i32 z, f32 angle) {
         level_settings.spawn_x     = x;
@@ -4682,6 +4940,40 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         OV_LOG_DEBUG("{} disconnected", connection->peer_address());
     };
 
+    // ── dedicated server administration ── spawn-protection, as
+    // MinecraftServer.isUnderSpawnProtection: the overworld only, only while
+    // someone is an operator, never for an operator, and within the square of
+    // that radius around the world spawn. Caller holds players_mutex.
+    const auto spawn_protected = [&](const Player& who, BlockPos at) {
+        if (!properties || !server_admin || properties->settings.spawn_protection <= 0 ||
+            who.dimension != DimensionId::Overworld || who.permission > 0 ||
+            !server_admin->has_ops()) {
+            return false;
+        }
+        const i32 spawn_dx = std::abs(at.x - level_settings.spawn_x);
+        const i32 spawn_dz = std::abs(at.z - level_settings.spawn_z);
+        return std::max(spawn_dx, spawn_dz) <= properties->settings.spawn_protection;
+    };
+
+    // ── dedicated server administration ── Status with the players who are on:
+    // their number, and a sample of up to twelve (none with
+    // hide-online-players).
+    const auto status_now = [&] {
+        net::ServerStatus live = status;
+        const std::scoped_lock status_lock{players_mutex};
+        for (const auto& [status_key, who] : players) {
+            if (!who.connection) {
+                continue;
+            }
+            ++live.online_players;
+            if (live.sample.size() < 12 &&
+                !(properties && properties->settings.hide_online_players)) {
+                live.sample.push_back(who.name);
+            }
+        }
+        return live;
+    };
+
     const net::PacketHandler handle_packet = [&](const net::ConnectionPtr& connection,
                                                  i32 packet_id, std::span<const u8> body) -> bool {
         ConnectionState state{};
@@ -4724,7 +5016,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             case ConnectionState::Status: {
                 if (packet_id == static_cast<i32>(net::StatusPacket::Request)) {
                     send_packet(static_cast<i32>(net::StatusPacket::Response),
-                                net::encode_status_response(status));
+                                net::encode_status_response(status_now()));
                     return true;
                 }
                 if (packet_id == static_cast<i32>(net::StatusPacket::Ping)) {
@@ -4766,6 +5058,42 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 const net::Uuid uuid = net::Uuid::offline_player(login->name);
                 OV_LOG_INFO("{} logging in as {} ({})", connection->peer_address(), login->name,
                             uuid.to_string());
+
+                // ── dedicated server administration ── the door: a banned profile, the
+                // whitelist, a banned address, a full server — vanilla's order
+                // and words, before Set Compression, as a Login Disconnect.
+                if (server_admin) {
+                    i32 online = 0;
+                    {
+                        const std::scoped_lock lock{players_mutex};
+                        for (const auto& [key, who] : players) {
+                            online += who.connection ? 1 : 0;
+                        }
+                    }
+                    if (const auto refusal = server_admin->login_refusal(
+                            uuid, admin::address_without_port(connection->peer_address()), online)) {
+                        OV_LOG_INFO("Disconnecting {} ({}): {}", login->name,
+                                    connection->peer_address(), *refusal);
+                        send_packet(static_cast<i32>(net::LoginPacket::Disconnect),
+                                    net::encode_component_packet(*refusal));
+                        return true;
+                    }
+                    // The same profile already on: the one there goes, with
+                    // vanilla's words, and this one comes in.
+                    const std::scoped_lock lock{players_mutex};
+                    for (auto& [key, who] : players) {
+                        if (who.connection && who.uuid == uuid) {
+                            if (const auto framed = net::encode_packet(
+                                    net::clientbound::kDisconnect,
+                                    net::encode_component_packet(
+                                        R"({"translate":"multiplayer.disconnect.duplicate_login"})"))) {
+                                who.connection->send(*framed);
+                            }
+                            who.connection->close();
+                        }
+                    }
+                }
+                // ── end dedicated server administration ──
 
                 if (!world_available) {
                     // Saying so beats leaving the client waiting for a join
@@ -4825,12 +5153,28 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 }
                 // ── end loading ──
 
+                // ── dedicated server administration ── network-compression-threshold:
+                // Set Compression before Login Success, and every packet after it
+                // framed compressed (the connection re-frames them). An integrated
+                // server's host is local and, like vanilla's, uncompressed.
+                if (properties && properties->settings.network_compression_threshold >= 0) {
+                    io::ByteWriter compression;
+                    net::write_varint(compression, properties->settings.network_compression_threshold);
+                    send_packet(0x03, compression.take());
+                    connection->set_compression_threshold(
+                        properties->settings.network_compression_threshold);
+                }
                 send_packet(static_cast<i32>(net::LoginPacket::Success),
                             net::encode_login_success(uuid, login->name));
 
                 Player player;
                 player.entity_id = next_entity_id.fetch_add(1);
                 player.identity  = uuid.to_string();
+                // ── dedicated server administration ──
+                player.address        = admin::address_without_port(connection->peer_address());
+                player.last_action_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                            std::chrono::steady_clock::now().time_since_epoch())
+                                            .count();
                 bool remembered  = false;
                 {
                     const std::scoped_lock lock{players_mutex};
@@ -5004,8 +5348,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 player.enchant_random.set_seed(enchant_random_seed(player.uuid));
                 join.game_mode           = player.game_mode;
                 join.registry_codec      = *codec_bytes;
-                join.view_distance       = 10;
-                join.simulation_distance = 10;
+                join.view_distance =
+                    properties ? std::clamp(properties->settings.view_distance, 2, 32) : 10;
+                join.simulation_distance =
+                    properties ? std::clamp(properties->settings.simulation_distance, 2, 32) : 10;
                 send_packet(net::clientbound::kLoginPlay, net::encode_login_play(join));
 
                 send_packet(net::clientbound::kPlayerAbilities,
@@ -5160,6 +5506,32 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     return false;
                 }
                 Player& player = it->second;
+                // ── dedicated server administration ── what counts as an action
+                // for player-idle-timeout: anything but the housekeeping, and a
+                // movement packet only when it says something new.
+                if (packet_id != net::serverbound::kKeepAlive &&
+                    packet_id != net::serverbound::kConfirmTeleport &&
+                    packet_id != net::serverbound::kClientInformation &&
+                    packet_id != net::serverbound::kPluginMessage) {
+                    bool acted = true;
+                    if (packet_id == net::serverbound::kSetPlayerPosition ||
+                        packet_id == net::serverbound::kSetPlayerPositionRot ||
+                        packet_id == net::serverbound::kSetPlayerRotation ||
+                        packet_id == net::serverbound::kSetPlayerOnGround) {
+                        u64 hash = 1469598103934665603ULL ^ static_cast<u64>(packet_id);
+                        for (const u8 b : body) {
+                            hash = (hash ^ b) * 1099511628211ULL;
+                        }
+                        acted                     = hash != player.last_movement_hash;
+                        player.last_movement_hash = hash;
+                    }
+                    if (acted) {
+                        player.last_action_ms =
+                            std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now().time_since_epoch())
+                                .count();
+                    }
+                }
 
                 switch (packet_id) {
                     case net::serverbound::kConfirmTeleport: {
@@ -5584,6 +5956,23 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         }
                         acknowledge(connection, action->sequence);
 
+                        // ── dedicated server administration ── spawn-protection:
+                        // the block stays, and the client is told so.
+                        if ((action->status == 0 || action->status == 2) &&
+                            spawn_protected(player, BlockPos{action->position.x,
+                                                             action->position.y,
+                                                             action->position.z})) {
+                            registry::BlockStateId there{0};
+                            {
+                                const std::scoped_lock chunk_lock{chunk_mutex};
+                                there = block_at_in(player.dimension, action->position);
+                            }
+                            send_packet(net::clientbound::kBlockUpdate,
+                                        net::encode_block_update(action->position,
+                                                                 static_cast<i32>(there.value())));
+                            return true;
+                        }
+
                         // ── combat and interaction ──────────────────────────
                         // Status 5 is "release use item": the button was let
                         // go. A player who lets go at tick 31 has eaten
@@ -5705,6 +6094,29 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                             return false;
                         }
                         acknowledge(connection, place->sequence);
+
+                        // ── dedicated server administration ── spawn-protection:
+                        // nothing is used or placed; the clicked block and the one
+                        // against its face are sent back as they are.
+                        if (spawn_protected(player, BlockPos{place->position.x, place->position.y,
+                                                             place->position.z})) {
+                            static constexpr std::array<std::array<i32, 3>, 6> kFaces{
+                                {{0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0}}};
+                            const auto& f = kFaces[static_cast<usize>(std::clamp(place->face, 0, 5))];
+                            for (const net::WirePosition at :
+                                 {place->position,
+                                  net::WirePosition{place->position.x + f[0], place->position.y + f[1],
+                                                    place->position.z + f[2]}}) {
+                                registry::BlockStateId there{0};
+                                {
+                                    const std::scoped_lock chunk_lock{chunk_mutex};
+                                    there = block_at_in(player.dimension, at);
+                                }
+                                send_packet(net::clientbound::kBlockUpdate,
+                                            net::encode_block_update(at, static_cast<i32>(there.value())));
+                            }
+                            return true;
+                        }
 
                         // ── end ── An eye of ender on an End portal frame: in
                         // it goes, and a ring it completes opens the portal
@@ -6398,6 +6810,43 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     }
 
                     case net::serverbound::kCloseContainer: {
+                        // ── workstations ── Window 0, the player's own: the
+                        // cursor and then the 2x2 grid go back into the
+                        // inventory, as vanilla does (measured,
+                        // scripts/measure_window0.py); what does not fit is
+                        // thrown at the player's feet.
+                        if (const auto shut = net::parse_close_container(body);
+                            shut && *shut == 0) {
+                            const std::vector<net::ItemStack> thrown = close_player_window(
+                                registries ? &*registries : nullptr, player.inventory,
+                                player.carried, player.held_slot);
+                            std::vector<ItemEntity> items;
+                            for (const net::ItemStack& stack : thrown) {
+                                ItemEntity item;
+                                item.entity_id = next_entity_id.fetch_add(1);
+                                item.uuid      = net::Uuid{
+                                    0x4f564954454d0000ULL | static_cast<u64>(item.entity_id),
+                                    static_cast<u64>(item.entity_id) * 0x9E3779B97F4A7C15ULL};
+                                item.x            = player.x;
+                                item.y            = player.y + 1.0;
+                                item.z            = player.z;
+                                item.stack        = stack;
+                                item.born         = server_tick.load(std::memory_order_relaxed);
+                                item.pickup_delay = 40;
+                                items.push_back(std::move(item));
+                            }
+                            if (!items.empty()) {
+                                publish_items(items);
+                            }
+                            send_packet(net::clientbound::kContainerContent,
+                                        net::encode_container_content(
+                                            0, 0,
+                                            player_window_contents(
+                                                registries ? &*registries : nullptr,
+                                                recipe_book ? &*recipe_book : nullptr,
+                                                player.inventory),
+                                            player.carried));
+                        }
                         // ── villagers ── a trading screen closes on the tick
                         if (villagers) {
                             if (const auto shut = net::parse_close_container(body);
@@ -6512,7 +6961,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                             const auto outcome = apply_player_click(
                                 registries ? &*registries : nullptr,
                                 recipe_book ? &*recipe_book : nullptr, *click, player.inventory,
-                                player.carried, player.drag);
+                                player.carried, player.drag, player.held_slot);
 
                             for (const net::ItemStack& stack : outcome.dropped) {
                                 if (stack.empty()) {
@@ -7105,12 +7554,58 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     std::vector<ChunkPos>               spawn_ticking;
     std::array<i32, 8>                  spawn_live{};
 
-    /// Every furnace in a loaded chunk, rebuilt once a second. See the headless
-    /// furnace pass for why it is an index and not a scan.
-    std::vector<net::WirePosition> furnace_index;
-    /// The screen a headless furnace is ticked through. One, reused: building a
-    /// `Workbench` per furnace per tick would allocate inside the tick body.
-    Workbench headless_furnace;
+    // ── workstations ── What each dimension's furnace pass reaches for, built
+    // once: a `std::function` rebuilt every tick would allocate inside the
+    // tick body. One host per dimension, over its own chunks and for its own
+    // players.
+    const auto mark_dirty_in = [&](DimensionId dimension, i32 cx, i32 cz) {
+        if (dimension == DimensionId::Overworld) {
+            dirty_chunks.insert(chunk_key(cx, cz));
+        } else if (NetherWorld* other = other_world(dimension)) {
+            other->mark_dirty(cx, cz);
+        }
+    };
+    std::array<FurnaceHost, DimensionFurnaces::kDimensions> furnace_hosts;
+    for (const DimensionId dimension :
+         {DimensionId::Overworld, DimensionId::Nether, DimensionId::End}) {
+        FurnaceHost& host = furnace_hosts[static_cast<usize>(dimension)];
+        host.chunk = [&, dimension](i32 cx, i32 cz) {
+            return chunk_if_resident_in(dimension, cx, cz);
+        };
+        // The Nether and the End open lazily: asked for at the call, not now.
+        host.for_each_chunk =
+            [&, dimension](const std::function<void(ChunkPos, const world::Chunk&)>& visit) {
+                if (dimension == DimensionId::Overworld) {
+                    chunks.for_each(visit);
+                } else if (NetherWorld* other = other_world(dimension)) {
+                    other->chunks().for_each(visit);
+                }
+            };
+        // `relight_furnace_block`, never `chunk.set_block`: the block entity —
+        // the furnace's ore, fuel and `RecipesUsed` — survives the flip. Sent
+        // over `players` directly: the tick holds players_mutex here.
+        host.set_lit = [&, dimension](world::Chunk& chunk, BlockPos at, bool lit) {
+            if (!blocks) {
+                return;
+            }
+            const auto next = relight_furnace_block(chunk, *blocks, at, lit);
+            if (!next) {
+                return;
+            }
+            mark_dirty_in(dimension, at.x >> 4, at.z >> 4);
+            if (const auto framed = net::encode_packet(
+                    net::clientbound::kBlockUpdate,
+                    net::encode_block_update(net::WirePosition{at.x, at.y, at.z},
+                                             static_cast<i32>(next->value())))) {
+                for (auto& [other_key, other] : players) {
+                    if (other.connection && other.dimension == dimension) {
+                        other.connection->send(*framed);
+                    }
+                }
+            }
+        };
+        host.mark_dirty = [&, dimension](i32 cx, i32 cz) { mark_dirty_in(dimension, cx, cz); };
+    }
     u64                         chunks_published = 0;
     // ── loading ──
     i32        spawn_percent_seen = -1;
@@ -7154,6 +7649,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
 
     bool      mobs_placed   = false;
     auto      last_autosave = std::chrono::steady_clock::now();
+    i64       last_autosave_tick = 0;  // ── dedicated server administration ──
 
     // ── tnt and gravity ─────────────────────────────────────────────────────
     // What an explosion reaches outside the module for. Built once, before the
@@ -7245,9 +7741,37 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     // ── commands: the dedicated server's console ────────────────────────────
     // Lines typed on stdin run at level 4. Only when nobody else owns the
     // process — an integrated server's window has no console.
+    // ── dedicated server administration ── Who is on, for the threads that
+    // are not the tick's — Query's answers and the console's Tab. The player
+    // table is the tick thread's alone (tick_thread_lock.hpp); these read a
+    // copy of the names, which the tick thread refreshes once a second in the
+    // keep-alive pass. The mutex guards a vector of strings, never the world.
+    struct OnlineNames {
+        std::mutex               mutex;
+        std::vector<std::string> names;
+    } online_names;
     std::optional<cmd::ConsoleReader> console;
     if (external_stop == nullptr && commands) {
-        console.emplace([&commands](std::string line) { commands->enqueue_console(std::move(line)); });
+        console.emplace(
+            [&commands](std::string line) { commands->enqueue_console(std::move(line)); },
+            // ── dedicated server administration ── Tab in a terminal: the
+            // engine's suggestions for the console, at level 4.
+            [&commands, &online_names](std::string_view text) {
+                std::vector<std::string> names;
+                {
+                    const std::scoped_lock lock{online_names.mutex};
+                    names = online_names.names;
+                }
+                const net::SuggestionsResponse r =
+                    commands->suggest(cmd::CommandSource{}, 0, text, names);
+                cmd::ConsoleSuggestions out;
+                out.start  = static_cast<usize>(std::max(r.start, 0));
+                out.length = static_cast<usize>(std::max(r.length, 0));
+                for (const net::Suggestion& m : r.matches) {
+                    out.matches.push_back(m.text);
+                }
+                return out;
+            });
     }
     // ── end commands ────────────────────────────────────────────────────────
     // ── projectiles ─────────────────────────────────────────────────────────
@@ -7425,11 +7949,32 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                                !who.survival.health.dead});
             }
         }
+        // ── mobs-4 ── and every living mob of the overworld's entity world
+        if (mobs && mob_effects) {
+            for (const entity::EntityHandle handle : mobs->handles()) {
+                const entity::EntityState* state = mobs->state(handle);
+                if (state == nullptr || state->removed || state->health <= 0.0F ||
+                    dynamic_cast<gameplay::Mob*>(mobs->logic(handle)) == nullptr) {
+                    continue;
+                }
+                PotionPlayer mob;
+                mob.entity_id  = state->network_id;
+                mob.feet       = state->position;
+                mob.half_width = static_cast<f64>(state->width) * 0.5;
+                mob.height     = static_cast<f64>(state->height);
+                mob.mob        = true;
+                out.push_back(mob);
+            }
+        }
     };
     potion_host.affect = [&](i32 id, const EffectRule& rule) {
         if (Player* who = projectile_player(id); who != nullptr) {
             who->effects.with_target(who->survival, effect_io_for(*who), effect_bearer_for(*who),
                                      rule);
+        } else if (mob_effects && mobs) {  // ── mobs-4 ──
+            (void)mob_effects->with_target(*mobs, id, rule, [&](i32 packet, std::span<const u8> payload) {
+                broadcast(nullptr, packet, payload);
+            });
         }
     };
     potion_host.next_entity_id = [&] { return next_entity_id.fetch_add(1); };
@@ -7490,6 +8035,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             framed && who->connection) {
             who->connection->send(*framed);
         }
+    };
+    mob_attack_host.attack_damage = [&](i32 attacker) -> std::optional<f64> {  // ── mobs-4 ──
+        return mob_effects ? mob_effects->attack_damage(attacker) : std::nullopt;
     };
     mob_attack_host.give_effect = [&](i32 id, const gameplay::EffectInstance& effect) {
         if (Player* who = projectile_player(id); who != nullptr) {
@@ -7760,14 +8308,24 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     };
     // ── tame ── Owner, Sitting, CollarColor, Tame, Temper, SaddleItem,
     // ArmorItem, ChestedHorse, Strength, Variant, the drawn Attributes…
+    // ── mobs-4 ── and `ActiveEffects`. One hook for both: each assignment
+    // replaces the last, and two would silently drop one side's keys. On a
+    // read the taming comes first — a horse's drawn maximum is the base a
+    // Health Boost read with it adds to.
     entity_storage_host.write_extra = [&](const entity::EntityState& state, nbt::Tag& out) {
         if (taming && mobs) {
             taming->write_nbt(*mobs, state, out);
+        }
+        if (mob_effects) {
+            mob_effects->write(state, out);
         }
     };
     entity_storage_host.read_extra = [&](entity::EntityState& state, const nbt::Tag& compound) {
         if (taming && mobs) {
             taming->read_nbt(*mobs, state, compound);
+        }
+        if (mob_effects && mobs) {
+            mob_effects->read(*mobs, state, compound);
         }
     };
     // ── persistence ── The items and orbs of every level, the Nether's mobs,
@@ -8383,6 +8941,116 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     };
     // ── end end ─────────────────────────────────────────────────────────────
 
+    // ── tick accounting ── Sleep until the next tick is due rather than
+    // spinning. A spinning tick thread on a laptop is a battery and thermal
+    // problem, and on a shared host it steals time from the workers.
+    //
+    // ── concurrency ── Waiting on the inbound queue rather than sleeping: a dig
+    // that arrives now is answered now, not up to a tick later. The game's
+    // server does the same, running queued network tasks while it waits for its
+    // next tick. Bounded by the deadline, so a flood of packets cannot hold the
+    // next tick back. No wait at all while ticks are due: those run back to back.
+    const auto wait_for_next_tick = [&] {
+        if (const Duration idle = clock.time_until_next_tick(); idle > Duration::zero()) {
+            const auto wake =
+                std::chrono::steady_clock::now() +
+                std::chrono::duration_cast<std::chrono::steady_clock::duration>(idle);
+            while (std::chrono::steady_clock::now() < wake) {
+                if (inbound.wait_until(wake)) {
+                    (void)inbound.dispatch(inbound_handlers, &perf->network_queue_wait);
+                }
+            }
+        }
+    };
+
+    // ── dedicated server administration ─────────────────────────────────────
+    // RCON and Query come up with the world, as vanilla's do, and the
+    // watchdog starts watching the first tick.
+    std::unique_ptr<admin::RconServer>  rcon;
+    std::unique_ptr<admin::QueryServer> query;
+    std::optional<admin::Watchdog>      watchdog;
+    if (properties && commands) {
+        const admin::DedicatedSettings& ds = properties->settings;
+        if (ds.enable_rcon) {
+            if (ds.rcon_password.empty()) {
+                OV_LOG_WARN("No rcon password set in server.properties, rcon disabled!");
+            } else {
+                rcon = admin::RconServer::start(
+                    static_cast<u16>(ds.rcon_port), ds.server_ip, ds.rcon_password,
+                    [&commands, &should_stop](std::string command) -> std::string {
+                        auto promise = std::make_shared<std::promise<std::string>>();
+                        auto future  = promise->get_future();
+                        commands->enqueue_captured(std::move(command), "Rcon",
+                                                   [promise](std::string words) {
+                                                       promise->set_value(std::move(words));
+                                                   });
+                        while (future.wait_for(std::chrono::milliseconds{100}) !=
+                               std::future_status::ready) {
+                            if (should_stop()) {
+                                return {};
+                            }
+                        }
+                        try {
+                            return future.get();
+                        } catch (const std::future_error&) {
+                            return {};
+                        }
+                    });
+                if (rcon) {
+                    OV_LOG_INFO("RCON running on {}:{}",
+                                ds.server_ip.empty() ? std::string{"0.0.0.0"} : ds.server_ip,
+                                ds.rcon_port);
+                }
+            }
+        }
+        if (ds.enable_query) {
+            // hostip: server-ip, else this machine's own address, as the jar.
+            const std::string query_ip =
+                ds.server_ip.empty() ? admin::local_address() : ds.server_ip;
+            query = admin::QueryServer::start(
+                static_cast<u16>(ds.query_port), ds.server_ip, [&, query_ip] {
+                    admin::QueryInfo info;
+                    info.motd        = options.motd;
+                    info.map         = options.world_dir;
+                    info.max_players = options.max_players;
+                    info.host_port   = options.port;
+                    info.host_ip     = query_ip;
+                    // The tick thread's copy: this is Query's thread.
+                    const std::scoped_lock lock{online_names.mutex};
+                    info.players = online_names.names;
+                    return info;
+                });
+            if (query) {
+                OV_LOG_INFO("Query running on {}:{}",
+                            ds.server_ip.empty() ? std::string{"0.0.0.0"} : ds.server_ip, ds.query_port);
+            }
+        }
+        const i64 max_tick = ds.max_tick_time;
+        watchdog.emplace(max_tick, [&admin_clock, max_tick](i64 overdue) {
+            const i64                now    = admin_clock.now();
+            const admin::LocalZone   zone   = admin_clock.zone(now);
+            const admin::CrashReport report = admin::watchdog_report(
+                overdue, max_tick, now, zone.offset_seconds,
+                "Ondes VOXEL dedicated server, Minecraft 1.20.1 (protocol 763)");
+            const std::string message = admin::watchdog_message(overdue);
+            const auto        cut     = message.find('\n');
+            OV_LOG_ERROR("{}", message.substr(0, cut));
+            OV_LOG_ERROR("{}", message.substr(cut + 1));
+            std::error_code ec;
+            std::filesystem::create_directories("crash-reports", ec);
+            const std::filesystem::path path =
+                std::filesystem::path{"crash-reports"} / report.file_name;
+            (void)io::write_file_atomic(
+                path, std::span<const u8>{reinterpret_cast<const u8*>(report.text.data()),
+                                          report.text.size()});
+            OV_LOG_ERROR("This crash report has been saved to: {}",
+                         std::filesystem::absolute(path, ec).string());
+            std::fflush(nullptr);
+            std::_Exit(1);
+        });
+    }
+    // ── end dedicated server administration ─────────────────────────────────
+
     while (!should_stop()) {
         // ── screens ── the integrated server behind a pause menu runs no tick.
         // The network thread still answers; the clock restarts on resume so
@@ -8397,9 +9065,38 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             continue;
         }
         // ── end screens ──
+        // ── tick accounting ── One pass of this loop is one whole tick. When the
+        // clock is behind, the ticks it yields run back to back, each a full
+        // tick with its own network drain, and no wait between them (vanilla's
+        // catch-up); past the cap they are dropped and never counted, and
+        // `clock.tick_count()`, which logic reads, is the ticks actually run.
+        // Before this, one pass ran for however many ticks were due while the
+        // counter jumped by all of them: wall-clock lag leaking into game time
+        // (principle 5), seen as a ridden horse "deciding late"
+        // (docs/provenance/apprivoisement.md § 8.1).
+        if (clock.pending_ticks() == 0) {
+            (void)clock.advance();
+            if (clock.is_behind()) {
+                ++behind_events;
+                OV_LOG_WARN("can't keep up — is the server overloaded? {} ticks behind: {} run "
+                            "back to back, {} skipped",
+                            clock.pending_ticks() + clock.dropped_ticks(), clock.pending_ticks(),
+                            clock.dropped_ticks());
+            }
+        }
+        if (!clock.take_tick()) {
+            wait_for_next_tick();  // nothing due: no tick without its time
+            continue;
+        }
         perf->begin_tick();  // ── perf ──
         const auto tick_started = std::chrono::steady_clock::now();
-        const i32  ticks        = clock.advance();
+        // ── dedicated server administration ── The watchdog times each tick on
+        // its own: started here, once per executed tick, catch-up ticks
+        // included — never once for a whole catch-up pass, and never on a pass
+        // with no tick due (── tick accounting ──).
+        if (watchdog) {
+            watchdog->tick_started();
+        }
         server_tick.store(clock.tick_count(), std::memory_order_relaxed);
 
         // ── concurrency ── What the network thread queued while the last tick
@@ -8426,12 +9123,37 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             if (chunk_source->drain(finished_blocks) != 0) {
                 const std::scoped_lock lock{chunk_mutex};
                 for (GeneratedBlock& block : finished_blocks) {
-                    for (auto& [pos, chunk] : block.chunks) {
+                    // ── worldgen-3 ── which of the block's chunks are new here
+                    std::array<bool, 64> fresh{};
+                    for (usize index = 0; index < block.chunks.size(); ++index) {
+                        auto& [pos, chunk] = block.chunks[index];
                         if (chunks.contains(pos)) {
                             continue;
                         }
                         chunks.publish(pos, std::move(chunk));
+                        light_arrived(pos, false);  // ── light ──
                         ++chunks_published;
+                        if (index < fresh.size()) {
+                            fresh[index] = true;
+                        }
+                    }
+                    // ── worldgen-3 ── The fluids the aquifer marked, woken as a
+                    // neighbour's change would wake them: a generated waterfall
+                    // flows. Only in chunks generated just now — a chunk read
+                    // from disk won the race and carries its own ticks.
+                    if (level && world_ticks) {
+                        for (const BlockPos& at : block.fluid_wakeups) {
+                            const ChunkPos home{at.x >> 4, at.z >> 4};
+                            for (usize index = 0; index < block.chunks.size() && index < fresh.size();
+                                 ++index) {
+                                if (block.chunks[index].first == home) {
+                                    if (fresh[index]) {
+                                        world_ticks->fluid().on_neighbour_changed(*level, at);
+                                    }
+                                    break;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -8650,6 +9372,24 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             std::unique_lock command_lock{players_mutex, std::try_to_lock};
             if (command_lock.owns_lock()) {
                 commands->run(command_host);
+                // ── dedicated server administration ── player-idle-timeout
+                if (const i32 idle = commands->idle_timeout(); idle > 0) {
+                    const i64 now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                           std::chrono::steady_clock::now().time_since_epoch())
+                                           .count();
+                    for (auto& [key, who] : players) {
+                        if (who.connection &&
+                            now_ms - who.last_action_ms > static_cast<i64>(idle) * 60'000) {
+                            if (const auto framed = net::encode_packet(
+                                    net::clientbound::kDisconnect,
+                                    net::encode_component_packet(
+                                        R"({"translate":"multiplayer.disconnect.idling"})"))) {
+                                who.connection->send(*framed);
+                            }
+                            who.connection->close();
+                        }
+                    }
+                }
                 // ── spawn eggs: the requests of the network thread, through
                 // /summon's own path, with the player map held as it needs ──
                 std::vector<std::pair<std::string, Vec3d>> eggs;
@@ -8952,6 +9692,20 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // ── end weather ─────────────────────────────────────────────
 
         perf->enter(TickPhase::Containers);  // ── perf ──
+        // ── workstations ── Every furnace in a loaded chunk cooks, watched or
+        // not: its block entity is its only copy (furnace_entity.hpp). Here,
+        // before the hoppers and the players: its input detector must see a
+        // furnace placed, set by a command or loaded this tick before anything
+        // writes into it.
+        if (furnace_entities) {
+            const std::scoped_lock furnace_pass{players_mutex, chunk_mutex};
+            // A dimension nobody has opened yet has no chunks to walk.
+            const std::array<const FurnaceHost*, DimensionFurnaces::kDimensions> hosts{
+                &furnace_hosts[static_cast<usize>(DimensionId::Overworld)],
+                nether ? &furnace_hosts[static_cast<usize>(DimensionId::Nether)] : nullptr,
+                end_world ? &furnace_hosts[static_cast<usize>(DimensionId::End)] : nullptr};
+            (void)furnace_entities->tick(hosts, static_cast<i64>(clock.tick_count()));
+        }
         // ── brewing ── Every brewing stand in the loaded chunks, watched or
         // not: a ticked block entity, like the furnace (brewing_session.hpp).
         if (brewing) {
@@ -9247,6 +10001,20 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                                       : server_tick.load(std::memory_order_relaxed);
 
                     spawner.spawn_tick(environment, spawn_requests);
+                    // ── dedicated server administration ── spawn-monsters and
+                    // spawn-animals. Vanilla skips the category's attempts;
+                    // here its proposals are dropped, which draws the same
+                    // positions and spawns nothing of it (named in
+                    // docs/provenance/serveur-dedie.md).
+                    if (properties && (!properties->settings.spawn_monsters ||
+                                       !properties->settings.spawn_animals)) {
+                        std::erase_if(spawn_requests, [&](const gameplay::SpawnRequest& r) {
+                            return (r.category == gameplay::MobCategory::Monster &&
+                                    !properties->settings.spawn_monsters) ||
+                                   (r.category == gameplay::MobCategory::Creature &&
+                                    !properties->settings.spawn_animals);
+                        });
+                    }
                 }
 
                 for (const gameplay::SpawnRequest& request : spawn_requests) {
@@ -9408,6 +10176,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                               net::encode_remove_entity(gone));
                     if (mob_combat) {
                         mob_combat->forget(gone);
+                    }
+                    if (mob_effects) {  // ── mobs-4 ── its effects went to disk with it
+                        mob_effects->forget(gone);
                     }
                 }
                 mobs3_unloaded.clear();
@@ -9595,6 +10366,28 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 if (rails_session && level && world_ticks) {
                     rails_session->before_entity_tick(*mobs, *level, *world_ticks, rails_host);
                 }
+                // ── mobs-4 ── the mobs' effects act before they move — a living
+                // entity ticks its effects before it travels — and what they
+                // hurt is told like any hit; what they kill dies as /kill does
+                if (mob_effects) {
+                    mob_effects->tick(*mobs, [&](i32 id, std::span<const u8> payload) {
+                        broadcast(nullptr, id, payload);
+                    });
+                    for (const MobEffectHurt& hit : mob_effects->hurts()) {
+                        broadcast(nullptr, net::clientbound::kDamageEvent,
+                                  net::encode_damage_event(hit.id, damage_type_id(hit.kind),
+                                                           std::nullopt, std::nullopt));
+                        if (hit.killed) {
+                            (void)command_host.kill_entity(hit.id);
+                            mob_effects->forget(hit.id);
+                        } else if (sounds) {
+                            if (const entity::EntityState* hurt = mobs->state(mobs->find(hit.id))) {
+                                sounds->mob_hurt(sound_host, hurt->type, hurt->position);
+                            }
+                        }
+                    }
+                    mob_effects->clear_hurts();
+                }
                 mobs->tick(entity::TickContext{clock.tick_count(), &mob_context});
                 // ── rails: detector and activator rails, riders carried ──
                 if (rails_session && level && world_ticks) {
@@ -9713,6 +10506,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     // server keeps one row per mob that ever lived.
                     if (mob_combat) {
                         mob_combat->forget(gone);
+                    }
+                    if (mob_effects) {  // ── mobs-4 ──
+                        mob_effects->forget(gone);
                     }
                     // ── end combat and interaction ──────────────────────────
                 }
@@ -10540,10 +11336,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             }
         }
 
-        for (i32 i = 0; i < ticks; ++i) {
-            // The world tick lives here. Everything inside must be
-            // deterministic, and must not allocate once running: in debug
-            // builds this guard aborts on the first allocation, naming it.
+        {
+            // TODO(no-alloc follow-up): this guard is meant to cover the whole
+            // world tick above — deterministic, and allocation-free once
+            // running; in debug builds it aborts on the first allocation,
+            // naming it. It was the body of an empty per-tick loop and guarded
+            // nothing. Wrapping the real body today would abort Debug builds on
+            // current allocations, so it stays a no-op here until the separate
+            // no-allocation work lands.
             const NoAllocScope no_alloc{"server tick"};
         }
 
@@ -10553,7 +11353,11 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // failure people remember. Thirty seconds is short enough to matter and
         // long enough that a world with nothing dirty costs a map lookup.
         if (const auto now = std::chrono::steady_clock::now();
-            now - last_autosave >= std::chrono::seconds{30}) {
+            // ── dedicated server administration ── vanilla's period, 6000 ticks,
+            // and not at all after save-off.
+            static_cast<i64>(clock.tick_count()) - last_autosave_tick >= 6000 &&
+            (!commands || commands->autosave_enabled())) {
+            last_autosave_tick = static_cast<i64>(clock.tick_count());
             last_autosave = now;
             save_online_players();  // ── player data ── before level.dat, for the host
             {
@@ -10585,6 +11389,18 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             // the map without the lock would be a race of its own.
             std::unique_lock lock{players_mutex, std::try_to_lock};
             if (lock.owns_lock()) {
+                // ── dedicated server administration ── the names Query and
+                // the console read, once a second, from this thread.
+                if (static_cast<i64>(clock.tick_count()) % 20 == 0) {
+                    std::vector<std::string> names;
+                    for (const auto& [names_key, who] : players) {
+                        if (who.connection) {
+                            names.push_back(who.name);
+                        }
+                    }
+                    const std::scoped_lock names_lock{online_names.mutex};
+                    online_names.names.swap(names);
+                }
                 // The chunk queue, drained under a budget.
                 //
                 // Sending the whole square at once overran the tick and the
@@ -10662,11 +11478,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
 
                 perf->enter(TickPhase::Screens);  // ── perf ──
                 // ── crafting and smelting ───────────────────────────────────
-                // The screens someone has open. What runs a furnace **nobody**
-                // is watching is the pass below this one; this one exists
-                // separately because an open screen also owes its viewer four
-                // property packets and a resend, which a headless furnace does
-                // not.
+                // The screens someone has open. They tick nothing: a furnace
+                // screen re-reads the block entity the furnace pass (in the
+                // containers phase) has ticked, and owes its viewer the four
+                // bars and a resend.
                 for (auto& [key, player] : players) {
                     if (!player.bench || !player.connection) {
                         continue;
@@ -10679,147 +11494,6 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     const std::scoped_lock chunk_lock{chunk_mutex};
                     tick_open_workbench(workbench_context, workbench_host(player, send),
                                         *player.bench, player.inventory);
-                }
-
-                // ── Furnaces nobody is watching ─────────────────────────────
-                //
-                // A furnace is a **ticked block entity**: it cooks whether a
-                // player is standing there or not, and one left burning with
-                // eight ores in it finishes them while its owner is away. That
-                // is the whole reason a furnace is worth building.
-                //
-                // The index rather than a scan every tick: walking every block
-                // entity of every loaded chunk twenty times a second is a cost
-                // that grows with the world and buys nothing, because a smelt
-                // takes 200 ticks. It is rebuilt once a second, so a furnace
-                // placed now starts cooking at most a second later — stated,
-                // and invisible against a ten-second smelt.
-                if (clock.tick_count() % 20 == 0) {
-                    const std::scoped_lock chunk_lock{chunk_mutex};
-                    furnace_index.clear();
-                    chunks.for_each([&](ChunkPos pos, const world::Chunk& chunk) {
-                        for (const world::BlockEntity& entity : chunk.block_entities()) {
-                            const auto kind = workbench_of_block(entity.type);
-                            if (!kind || !furnace_of(*kind)) {
-                                continue;
-                            }
-                            // A block entity stores its position **local** to
-                            // the chunk; the index holds world coordinates,
-                            // because that is what the tick below looks blocks
-                            // up by. Mixing the two conventions puts every
-                            // furnace in a different chunk, silently.
-                            furnace_index.push_back(net::WirePosition{
-                                pos.x * 16 + static_cast<i32>(entity.x), entity.y,
-                                pos.z * 16 + static_cast<i32>(entity.z)});
-                        }
-                    });
-                }
-
-                if (!furnace_index.empty() && registries) {
-                    const std::scoped_lock chunk_lock{chunk_mutex};
-                    for (const net::WirePosition& where : furnace_index) {
-                        // Skip the ones a player has open. Those already tick
-                        // above, holding their own copy of the state, and
-                        // ticking the block entity underneath one would advance
-                        // the same furnace twice a tick and show its viewer a
-                        // bar that jumps.
-                        bool watched = false;
-                        for (const auto& [key, other] : players) {
-                            if (other.bench && other.bench->x == where.x &&
-                                other.bench->y == where.y && other.bench->z == where.z) {
-                                watched = true;
-                                break;
-                            }
-                        }
-                        if (watched) {
-                            continue;
-                        }
-
-                        world::Chunk* chunk = chunk_if_resident(where.x >> 4, where.z >> 4);
-                        if (chunk == nullptr) {
-                            continue;
-                        }
-                        world::BlockEntity* entity = chunk->block_entity_at(
-                            static_cast<usize>(where.x & 15), where.y,
-                            static_cast<usize>(where.z & 15));
-                        if (entity == nullptr) {
-                            continue;
-                        }
-                        const auto kind = workbench_of_block(entity->type);
-                        if (!kind || !furnace_of(*kind)) {
-                            // The block entity changed under the index. Not an
-                            // error: the index is a second old by design.
-                            continue;
-                        }
-
-                        // A scratch screen, reused. `Workbench` is what
-                        // `tick_furnace` reads and writes, and building one per
-                        // furnace per tick would allocate inside the tick.
-                        headless_furnace           = Workbench{};
-                        headless_furnace.kind      = *kind;
-                        headless_furnace.window_id = 0;
-                        headless_furnace.x         = where.x;
-                        headless_furnace.y         = where.y;
-                        headless_furnace.z         = where.z;
-                        load_furnace(workbench_context, entity->data, headless_furnace);
-
-                        // Nothing to do, and the common case by far: an empty
-                        // furnace with a cold fire. Checked before the tick so
-                        // that a world full of decorative furnaces costs a load
-                        // and a comparison.
-                        if (!headless_furnace.furnace_state.lit() &&
-                            headless_furnace.furnace_slots.input.empty()) {
-                            continue;
-                        }
-
-                        const gameplay::FurnaceTick step =
-                            tick_furnace(workbench_context, headless_furnace);
-                        if (step.slots_changed) {
-                            store_furnace(workbench_context, entity->data, headless_furnace);
-                            dirty_chunks.insert(chunk_key(where.x >> 4, where.z >> 4));
-                        }
-                        if (step.lit_changed && blocks) {
-                            // The `lit` property, not a different block: looking
-                            // `minecraft:furnace` up by name would find it
-                            // either way and lose the facing it was placed
-                            // with. Written straight into the chunk because
-                            // `chunk_mutex` is already held here and is not
-                            // recursive.
-                            const registry::BlockStateId state = block_at(where);
-                            const registry::BlockId      block = blocks->block_of(state);
-                            const auto property = blocks->find_property(block, "lit");
-                            if (!property) {
-                                continue;
-                            }
-                            const auto wanted = headless_furnace.furnace_state.lit()
-                                                    ? std::string_view{"true"}
-                                                    : std::string_view{"false"};
-                            for (u16 index = 0; index < property->values.size(); ++index) {
-                                if (property->values[index] != wanted) {
-                                    continue;
-                                }
-                                const registry::BlockStateId next =
-                                    blocks->with_property(state, *property, index);
-                                // `write_block`, never `chunk->set_block`: a
-                                // furnace that lights would otherwise lose its
-                                // block entity — its ore, its fuel and its
-                                // stored experience — on the tick it catches.
-                                write_block(*chunk, where.x, where.y, where.z, next);
-                                dirty_chunks.insert(chunk_key(where.x >> 4, where.z >> 4));
-                                if (const auto framed = net::encode_packet(
-                                        net::clientbound::kBlockUpdate,
-                                        net::encode_block_update(
-                                            where, static_cast<i32>(next.value())))) {
-                                    for (auto& [other_key, other] : players) {
-                                        if (other.connection) {
-                                            other.connection->send(*framed);
-                                        }
-                                    }
-                                }
-                                break;
-                            }
-                        }
-                    }
                 }
 
                 for (auto& [key, player] : players) {
@@ -10869,36 +11543,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                   std::chrono::steady_clock::now() - tick_started)
                                   .count());
 
-        if (clock.is_behind()) {
-            ++behind_events;
-            OV_LOG_WARN(
-                "can't keep up — is the server overloaded? (running behind, dropped ticks)");
-        }
-
         if (options.run_ticks >= 0 && clock.tick_count() >= options.run_ticks) {
             OV_LOG_INFO("reached --ticks={}, stopping", options.run_ticks);
             break;
         }
 
-        // Sleep until the next tick is due rather than spinning. A spinning
-        // tick thread on a laptop is a battery and thermal problem, and on a
-        // shared host it steals time from the workers.
-        //
-        // ── concurrency ── Waiting on the inbound queue rather than sleeping:
-        // a dig that arrives now is answered now, not up to a tick later. The
-        // game's server does the same, running queued network tasks while it
-        // waits for its next tick. Bounded by the deadline, so a flood of
-        // packets cannot hold the next tick back.
-        if (const Duration idle = clock.time_until_next_tick(); idle > Duration::zero()) {
-            const auto wake =
-                std::chrono::steady_clock::now() +
-                std::chrono::duration_cast<std::chrono::steady_clock::duration>(idle);
-            while (std::chrono::steady_clock::now() < wake) {
-                if (inbound.wait_until(wake)) {
-                    (void)inbound.dispatch(inbound_handlers, &perf->network_queue_wait);
-                }
-            }
-        }
+        // Until the next tick is due (see `wait_for_next_tick`, above the
+        // loop); no wait while catch-up ticks are pending.
+        wait_for_next_tick();
     }
 
     if constexpr (kAllocationTrackingEnabled) {
@@ -10915,6 +11567,25 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 if (auto taken = rails_session->take_vehicle(*mobs, who.entity_id)) {
                     leaving_vehicles[who.entity_id] = std::move(taken->root_vehicle);
                 }
+            }
+        }
+    }
+    // ── dedicated server administration ── the loop is over: nothing to watch,
+    // no command can run, and every player is told why they go.
+    watchdog.reset();
+    rcon.reset();
+    query.reset();
+    if (dedicated) {
+        const std::scoped_lock lock{players_mutex};
+        for (auto& [key, who] : players) {
+            if (!who.connection) {
+                continue;
+            }
+            if (const auto framed = net::encode_packet(
+                    net::clientbound::kDisconnect,
+                    net::encode_component_packet(
+                        R"({"translate":"multiplayer.disconnect.server_shutdown"})"))) {
+                who.connection->send(*framed);
             }
         }
     }

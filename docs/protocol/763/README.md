@@ -29,8 +29,8 @@ Statut : le plus fort atteint — `vanilla` > `aller-retour` > `testé` > `codé
 
 | Statut | Paquets |
 |---|---:|
-| vanilla | 15 |
-| aller-retour | 36 |
+| vanilla | 19 |
+| aller-retour | 32 |
 | testé | 27 |
 | codé | 38 |
 | id seul | 9 |
@@ -43,7 +43,7 @@ Statut : le plus fort atteint — `vanilla` > `aller-retour` > `testé` > `codé
 | Status · client → serveur | 2 | 2 | 0 | 0 | 0 | 0 |
 | Login · serveur → client | 5 | 3 | 3 | 0 | 0 | 0 |
 | Login · client → serveur | 3 | 1 | 0 | 1 | 0 | 0 |
-| Play · serveur → client | 111 | 85 | 84 | 39 | 39 | 15 |
+| Play · serveur → client | 111 | 85 | 84 | 39 | 39 | 19 |
 | Play · client → serveur | 51 | 31 | 8 | 25 | 7 | 0 |
 
 ## Handshaking — client → serveur
@@ -170,17 +170,17 @@ Statut : le plus fort atteint — `vanilla` > `aller-retour` > `testé` > `codé
 | `0x4E` | Set Center Chunk | codé | ✓ | ✓ | · | · | · | · | ✓ | · |
 | `0x4F` | Set Render Distance | absent | · | · | · | · | · | · | · | · |
 | `0x50` | Set Default Spawn Position | codé | ✓ | ✓ | · | · | · | · | ✓ | · |
-| `0x51` | Display Objective | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | · | · |
+| `0x51` | Display Objective | vanilla | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `0x52` | Set Entity Metadata | vanilla | ✓ | ✓ | · | ✓ | · | ✓ | ✓ | ✓ |
 | `0x53` | Link Entities | absent | · | · | · | · | · | · | · | · |
 | `0x54` | Set Entity Velocity | vanilla | ✓ | ✓ | · | ✓ | · | ✓ | ✓ | · |
 | `0x55` | Set Equipment | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | ✓ | ✓ |
 | `0x56` | Set Experience | vanilla | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `0x57` | Set Health | vanilla | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `0x58` | Update Objectives | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | · | · |
+| `0x58` | Update Objectives | vanilla | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `0x59` | Set Passengers | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | ✓ | ✓ |
-| `0x5A` | Update Teams | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | · | · |
-| `0x5B` | Update Score | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | · | · |
+| `0x5A` | Update Teams | vanilla | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `0x5B` | Update Score | vanilla | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `0x5C` | Set Simulation Distance | absent | · | · | · | · | · | · | · | · |
 | `0x5D` | Set Subtitle Text | codé | ✓ | ✓ | · | · | · | · | ✓ | ✓ |
 | `0x5E` | Update Time | testé | ✓ | ✓ | · | ✓ | · | · | ✓ | ✓ |

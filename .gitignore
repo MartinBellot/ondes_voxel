@@ -48,3 +48,9 @@ __pycache__/
 run/reference-*/
 # the server's operators, per machine
 ops.json
+# the dedicated server's other files, written where it runs (vanilla's names)
+server.properties
+whitelist.json
+banned-players.json
+banned-ips.json
+crash-reports/
