@@ -32,6 +32,7 @@ ov_add_library(ov_server
         src/effect_session.cpp
         src/enchant_session.cpp
         src/fire_session.cpp
+        src/furnace_entity.cpp  # ── workstations ──
         src/campfire.cpp
         src/mob_combat.cpp
         src/mob_attacks.cpp  # ── mobs-3 ──
@@ -123,6 +124,7 @@ ov_add_test(test_ov_server
         tests/test_tame_server.cpp  # ── tame ──
         tests/test_world_structures.cpp  # ── structures ──
         tests/test_fluid_wakeups.cpp  # ── worldgen-3 ──
+        tests/test_furnace_entity.cpp  # ── workstations ──
     DEPS ov_server
     LABELS unit
 )

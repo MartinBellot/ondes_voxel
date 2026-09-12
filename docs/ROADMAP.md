@@ -964,7 +964,9 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       qu'un apparieur trop gourmand rate. 248 combustibles mesurés sur 1254 ;
       trois tables de cuisson et non une avec un diviseur. Restent la fenêtre
       2×2 du joueur, les écrans de forge et de pierre de taille,
-      `Place Recipe`, et un four qui ne tourne que pendant qu'on le regarde)*
+      et `Place Recipe`. Les fours tournent comme bloc-entités, regardés ou
+      non, dans les trois dimensions ; `RecipesUsed` est payé en orbes à
+      l'extraction)*
 - [~] **Agriculture et élevage** : toutes les cultures, terre labourée,
       hydratation, os, composteur, abeilles et pollinisation, mode amour,
       croissance, croisement de chevaux et lamas, apprivoisement, tonte, traite,

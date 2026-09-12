@@ -155,6 +155,139 @@ mesuré plutôt qu'un de moins.
 La progression perdue vaut deux ticks par tick éteint, ce qui empêche de cuire
 quoi que ce soit avec une poignée de bâtons donnés un par un.
 
+### Le four que personne ne regarde
+
+Un four est un bloc-entité tické : il cuit, que quelqu'un le regarde ou non.
+`src/ov_server/src/furnace_entity.cpp` fait tourner à chaque tick tous les fours
+des chunks chargés, dans chaque dimension : une passe par dimension (overworld,
+Nether, End), chacune sur ses propres chunks. Chaque passe tient un index
+reconstruit une fois par seconde ; un four qu'on ouvre ou qu'on clique y entre
+aussitôt. Le NBT du
+bloc-entité est **la seule copie** du four : `Items`, `BurnTime`, `CookTime` et
+`CookTimeTotal` (des shorts, écrits sur place), plus `RecipesUsed`. L'écran d'un
+four ne fait plus rien tourner : il relit le bloc-entité avant chaque clic et à
+chaque rafraîchissement.
+
+Trois bugs de la version précédente, trouvés à la lecture et épinglés par
+`src/ov_server/tests/test_furnace_entity.cpp` :
+
+* la passe ne parcourait que l'overworld, et l'écran d'un four lisait
+  l'overworld aux mêmes coordonnées : un four du Nether ou de l'End ne cuisait
+  pas et ne s'ouvrait même pas. Chaque dimension a maintenant sa passe (c'est
+  ce que le test épingle) et l'écran lit la dimension du joueur ;
+
+* la passe des fours non regardés n'écrivait les compteurs que quand une case
+  changeait. Elle relisait donc à chaque tick un `BurnTime` et un `CookTime`
+  périmés : un four fermé brûlait sans fin et ne finissait jamais un objet ;
+* l'écran allumait son four par `Chunk::set_block`, qui efface le bloc-entité
+  de la position écrite. Un four qui s'allumait pendant qu'on regardait son
+  écran perdait son minerai, son combustible et son expérience.
+  `relight_furnace_block` change la propriété `lit` en gardant le bloc-entité.
+
+L'expérience suit le format de vanilla : un compte par recette dans
+`RecipesUsed`. À l'extraction, chaque recette donne `nombre × expérience` en
+simple précision : la partie entière, plus un point avec une probabilité égale
+à la partie fractionnaire. Le tout est versé en orbes aux pieds du joueur.
+L'ancien champ `ovExperience`, propre à ce projet, est effacé à la première
+écriture.
+
+Mesuré sur le vrai serveur par `scripts/measure_furnaces.py` (campagnes `xp`
+et `xp-iron`), avec une sonde qui vide la sortie au shift-clic :
+
+| Cas | Vanilla |
+|---|---|
+| 10 lingots de fer, `RecipesUsed` = 10 (10 × 0,7 = 7) | **7 points, 6 fois sur 6** |
+| 5 pierres, `RecipesUsed` = 5 (5 × 0,1 = 0,5) | **1 point 18 fois sur 40**, 0 sinon |
+| Sortie vidée par un joueur | `RecipesUsed: {}` |
+| Sortie vidée par un entonnoir dessous | les 3 lingots dans l'entonnoir, `RecipesUsed` **gardé** (3) |
+| Un lingot lancé depuis la sortie (mode 4, bouton 0) | 2 lingots restent, `RecipesUsed` **vidé**, 2 points (3 × 0,7) |
+| La pile lancée depuis la sortie (mode 4, bouton 1) | sortie vide, `RecipesUsed` vidé, 2 points |
+| Touche numérique vers une case vide de la barre (mode 2) | la pile y va, `RecipesUsed` vidé, 2 points |
+| Touche numérique vers une case occupée (un pavé) | rien ne bouge, `RecipesUsed` gardé, 0 point |
+
+Lancer un seul objet paie donc **tout** `RecipesUsed`, comme prendre la pile.
+
+La touche numérique vers une case de la barre qui tient **déjà le même objet**
+(un lingot) a été mesurée une fois : rien ne bouge, `RecipesUsed` reste à 3, et
+la sonde relève pourtant 2 points. Ce n'est pas expliqué, donc pas repris : ce
+serveur n'y déplace rien et ne paie rien.
+
+### Le piège du niveau
+
+`xp query … points` ne compte que les points **dans le niveau courant**. Sept
+points font exactement le niveau 1 et s'y lisent 0 : la première campagne a lu
+0, 7, 0, 0 pour dix lingots de fer. La sonde additionne maintenant les niveaux,
+les points et les orbes encore au sol. Deux autres pièges du même relevé :
+`setblock` sur un four identique répond « Could not set the block » et
+n'applique pas le NBT (chaque four est donc posé sur de l'air), et une sonde
+qui flotte un bloc au-dessus du sol est expulsée au bout de quatre secondes.
+
+### Douze fours sans joueur
+
+`scripts/measure_furnaces.py ticks` pose douze fours par `/setblock`, avec leur
+NBT et `CookTimeTotal`, sans aucun joueur connecté, et les relit à dt = 22,
+153, 603, 1202, 1702 et 2503 ticks. dt est exact : pose et lecture partent dans
+le même lot qu'un `time query gametime`. `BurnTime`, `CookTime`,
+`CookTimeTotal` et les trois cases, à chaque date, sont repris tels quels par
+le test de parité de `src/ov_server/tests/test_furnace_entity.cpp`. Ce que la
+table fixe :
+
+* un charbon cuit exactement 8 objets, dans un four comme dans un haut-fourneau
+  ou un fumoir (100 ticks par objet, 800 de combustible) ; un bloc d'algues
+  séchées fait 20 lingots dans un haut-fourneau ;
+* un bâton seul (100 ticks) ne cuit rien, deux bâtons cuisent une pierre : le
+  second s'allume au tick même où le premier s'éteint, et la cuisson ne perd
+  rien (`CookTime` 153, `BurnTime` 48 à dt = 153) ;
+* une sortie qui ne peut rien recevoir (un lingot d'or devant du fer) n'allume
+  jamais le four ; une sortie qui arrive à 64 **laisse brûler** le combustible
+  déjà allumé sans plus rien cuire ;
+* un four qui ne peut pas cuire **garde** son `CookTimeTotal` (200 ou 100). Ce
+  serveur le remettait à 0 : corrigé dans `gameplay::furnace_tick` ;
+* le seau de lave laisse un seau dans la case de combustible.
+
+### Le piège du `CookTimeTotal` manquant
+
+La première campagne a posé ses fours sans `CookTimeTotal` : aucun n'a rien
+produit en 2500 ticks. Le témoin de la seconde le confirme : il brûle son
+charbon et compte `CookTime` jusqu'à 1202 sans jamais finir un objet. Vanilla
+ne recalcule donc pas le total à chaque tick, et un objet ne sort qu'à
+l'égalité exacte des deux compteurs.
+
+Ce serveur fait maintenant de même, sans que chaque écrivain de la case
+d'entrée (clic, entonnoir, commande) ait à le signaler. La passe des fours
+garde, pour chaque four, l'entrée telle que son dernier tick l'a laissée :
+l'objet et ses tags, pas le nombre. Au tick suivant, une entrée différente est
+un changement venu d'ailleurs : `CookTime` repart de 0 et `CookTimeTotal` est
+relu sur la recette. Sinon le total stocké sert tel quel, 0 compris. La passe
+retrouve les fours à chaque tick et tourne avant les entonnoirs et les joueurs,
+pour voir un four posé, chargé ou écrit par une commande avant quiconque.
+
+Mesuré sur le vrai serveur (`scripts/measure_furnaces.py changes`) : huit fours
+avec 8 minerais de fer et un charbon, leur entrée changée par
+`item replace … container.0` au tick 52, relus 251 ticks plus tard.
+
+| Changement | Juste après | 251 ticks plus tard |
+|---|---|---|
+| du sable à la place du minerai | `CookTime` 0, total 200 | 1 verre, `CookTime` 51 |
+| de la terre (rien à cuire) | 0, total **200 gardé** | rien, le feu brûle |
+| l'entrée retirée | 0, total 200 gardé | rien |
+| le même minerai, 3 au lieu de 8 | **52, pas de remise à zéro** | 1 lingot, `CookTime` 103 |
+| le même minerai avec un tag (`display.Name`) | 0 | 1 lingot, `CookTime` 51 |
+| retiré puis remis dans le même tick | **0** | 1 lingot, `CookTime` 51 |
+| témoin sans total, le même minerai (7) | 52, total 0 | **toujours bloqué**, `CookTime` 303 |
+| témoin sans total, du fer brut | 0, total 200 | 1 lingot, `CookTime` 51 |
+
+Le test `an input changed by someone else…` de `test_furnace_entity.cpp`
+rejoue ces cas, sauf le retrait et la remise dans le même tick. Restent :
+
+* **l'écart résiduel, mesuré** : le même objet retiré puis remis dans un seul
+  tick fait deux changements pour vanilla, qui remet la progression à 0, et
+  aucun pour une comparaison faite une fois par tick. Ce serveur garde la
+  progression ;
+* **non distingué** : pour une entrée qui ne cuit pas, ou vide, vanilla lit un
+  total de 200 là où il y avait 200. Ce serveur garde le total stocké. Un
+  haut-fourneau (100) dont l'entrée devient de la terre n'a pas été mesuré.
+
 ---
 
 ## 5. L'oracle d'appariement — 2885 grilles, 2885 identiques
@@ -303,14 +436,6 @@ Nommé plutôt que caché :
   sont ci-dessus.
 * **Le placement automatique depuis le livre de recettes** (`Place Recipe`)
   n'est pas implémenté ; le déverrouillage l'est.
-* **Un four ne tourne que pendant que quelqu'un le regarde.** La file de ticks
-  de blocs arrivée avec les fluides (`ov_world/block_ticks.hpp`) porte des
-  positions, pas des bloc-entités ; brancher les fours dessus demande de leur
-  donner un état persistant côté monde, et c'est un chantier à part. En
-  attendant, un four que personne n'a ouvert ne cuit pas — dit ici plutôt que
-  découvert au retour.
-* **L'expérience** est accumulée et remise à zéro à la récupération, mais rien
-  ne la matérialise : les orbes appartiennent à un autre jalon.
 * Le code de clic générique vit dans `src/ov_server/src/workbench.cpp`. Le
   chemin du coffre dans `server.cpp` devrait y être ramené une fois la vague de
   travail parallèle atterrie ; l'y ramener maintenant aurait rendu la fusion
