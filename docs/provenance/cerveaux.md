@@ -339,6 +339,34 @@ lieux mémorisés redeviennent les revendications du balayage.
   leur `Brain` et leurs `Gossips` tels que le vrai serveur les a écrits, relus : maison, pupitre,
   cloche, `last_worked_at_poi` 968, `ttl` 561, commerce 4 sur la sonde.
 
+### 10.1 De bout en bout, sur notre serveur
+
+`scripts/check_villager_life_e2e.py` : `ov_dedicated` sur un monde neuf (port 25624), mené par sa
+console ; un enclos de verre, trois lits, un pupitre, un composteur, un tonneau et une cloche à
+l'autre bout ; trois villageois invoqués ; une sonde protocole 763 jugée **sur le fil seulement** :
+
+```
+villageois          3 arrivés sur le fil
+métiers (midi)      [5, 6, 9] en 15,0 s (fermier, pêcheur, bibliothécaire), types [2, 2, 2]
+couchés (jour)      12017, 12077, 12116          (pose 2, jour lu sur Update Time)
+levés (jour)        13, 13, 13                   (vanilla : last_woken au jour 19)
+cloche (distance)   avant 9000 : 18,1 · 21,1 · 18,6 ; au jour 9105 : 4,7 · 5,9 · 4,8
+marchand ambulant   6 offres, titre « entity.minecraft.wandering_trader »
+entities/           Brain.memories des trois : home, job_site, meeting_point,
+                    last_slept, last_woken (et last_worked_at_poi pour deux)
+Gossips             minor_negative 25 sur la sonde, après un coup
+```
+
+**Relu par le vrai serveur** (`check_villager_life_e2e.py readback`, voie java, port 25724) : le
+jar 1.20.1 lancé sur une copie du monde que notre serveur a sauvé relit **les trois villageois
+avec maison, travail, cloche, `last_slept` et `last_woken`** dans `Brain.memories`, le ragot
+`{Target: [I; …], Type: "minor_negative", Value: 25}` sur la sonde, et le marchand ambulant avec
+ses **6 offres**. L'aller-retour nous → vanilla tient.
+
+Le lever tombe au jour 13 chez nous, 19 chez vanilla : les deux sont dans les 21 ticks que la
+porte de l'horaire laisse après 10 ; la phase de cette porte dépend du tick où chacun a consulté
+son horaire la dernière fois, et n'est pas reproduite au tick près — nommé.
+
 ---
 
 ## 11. Ce qui n'est pas fait, ou pas mesuré
