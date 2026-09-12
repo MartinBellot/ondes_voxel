@@ -85,10 +85,14 @@ Text item_display(std::string_view id, i32 count, const nbt::Tag* tag, const Par
         inner.style.italic = true;
     }
     Text out = Text::translatable("chat.square_brackets", {std::move(inner)});
-    // Rarity decides the colour, and rarity is Java code this server has no
-    // table of: every item is shown as common (white). Named in
-    // docs/provenance/commandes.md.
-    out.color("white");
+    // Rarity decides the colour, and this server has no table of the items'
+    // base rarities: every item is taken as common (white). One rule applies
+    // without the table: an enchanted item shows one tier up, common becoming
+    // rare — aqua, the capture's `give … diamond_sword{Enchantments:[…]}`.
+    // An item that is not common, enchanted or not, is still approximated.
+    // Named in docs/provenance/commandes.md.
+    const nbt::Tag* enchantments = tag != nullptr ? tag->find("Enchantments") : nullptr;
+    out.color(enchantments != nullptr && !enchantments->empty() ? "aqua" : "white");
     HoverEvent hover;
     hover.action = HoverEvent::Action::ShowItem;
     hover.id     = std::string{id};
