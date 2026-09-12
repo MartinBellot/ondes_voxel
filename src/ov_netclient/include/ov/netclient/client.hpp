@@ -29,7 +29,9 @@
 #include "ov/protocol/blast.hpp"
 #include "ov/protocol/breaking.hpp"  // ── breaking ──
 #include "ov/protocol/client_play.hpp"
+#include "ov/protocol/effect_packets.hpp"  // ── hud ── Update Attributes
 #include "ov/protocol/entity_metadata.hpp"
+#include "ov/protocol/tab_list.hpp"  // ── hud ──
 #include "ov/protocol/scoreboard_packets.hpp"  // ── scoreboard ──
 #include "ov/protocol/sound.hpp"
 #include "ov/registry/block_states.hpp"
@@ -315,15 +317,20 @@ struct ClientEvents {
     std::optional<std::string> dimension;
     /// Login (play)'s codec: every biome that names its background music.
     std::optional<std::vector<net::BiomeMusic>> biome_music;
-    /// Boss Bar (0x0B): adds, removes and flag updates — for the one flag the
-    /// music reads, 0x02 "play boss music". Title, health and colour are the
-    /// HUD's business and are not decoded here.
+    /// Boss Bar (0x0B), every action in arrival order: the music reads the
+    /// flag 0x02 "play boss music" of adds and flag updates, the HUD all of it.
     struct BossBarChange {
         u64 most{0};
         u64 least{0};
-        /// 0 add, 1 remove, 5 update flags; the others are not kept.
+        /// 0 add, 1 remove, 2 health, 3 title, 4 style, 5 flags.
         i32 action{0};
         u8  flags{0};
+        // ── hud ── what the action carries: title and health with 0 and 3/2,
+        // colour and division with 0 and 4.
+        std::string title_json{};
+        f32         health{0.0F};
+        i32         color{0};
+        i32         division{0};
     };
     std::vector<BossBarChange> boss_bars;
     // ── end music ──
@@ -343,6 +350,10 @@ struct ClientEvents {
         i32 effect_id{0};
         /// The amplifier, or -1 when the effect was removed.
         i32 amplifier{-1};
+        /// ── hud ── ticks left, -1 for infinite; and the flags byte (0x01
+        /// ambient, 0x02 particles, 0x04 icon) — the HUD's icons read both.
+        i32 duration{0};
+        u8  flags{0};
     };
     std::vector<OwnEffect> own_effects;
     // ── end breaking ──
@@ -374,6 +385,20 @@ struct ClientEvents {
     /// 2). Sent at join and on every change (/op, /deop, Open to LAN).
     std::optional<i32> op_level;
 
+    // ── hud ──
+    /// Player Info Update, Player Info Remove (the UUIDs) and Set Tab List
+    /// Header And Footer, in arrival order: a player removed and added again in
+    /// one poll is in the list, not out of it.
+    using TabListEvent =
+        std::variant<net::PlayerInfoUpdate, std::vector<net::Uuid>, net::TabListHeaderFooter>;
+    std::vector<TabListEvent> tab_list;
+    /// Update Attributes (0x6A), every entity's: the player's armour and its
+    /// mount's maximum health are there, and nowhere else.
+    std::vector<net::DecodedUpdateAttributes> attributes;
+    /// Open Horse Screen (0x20).
+    std::optional<net::OpenHorseScreen> open_horse_screen;
+    // ── end hud ──
+
     [[nodiscard]] bool empty() const noexcept {
         return loaded.empty() && unloaded.empty() && scoreboard.empty() && changed.empty() && !teleport &&
                !time_of_day && !health && !experience && containers.empty() &&
@@ -385,7 +410,8 @@ struct ClientEvents {
                !death_message && !respawned && !hardcore &&  // ── screens ──
                !op_level &&                                  // ── allow-commands ──
                destroy_stages.empty() && !own_entity_id && own_effects.empty() &&  // ── breaking ──
-               !dimension && !biome_music && boss_bars.empty();                  // ── music ──
+               !dimension && !biome_music && boss_bars.empty() &&                // ── music ──
+               tab_list.empty() && attributes.empty() && !open_horse_screen;     // ── hud ──
     }
     void clear();
 };
@@ -478,6 +504,11 @@ public:
     /// server does not bring a dead player back unasked.
     void send_respawn();
     // ── end screens ──
+
+    /// ── hud ── Player Command (0x1E) for this player: 7 asks the server to
+    /// open the ridden horse's inventory, which it answers with Open Horse
+    /// Screen.
+    void send_player_command(i32 action);
 
 private:
     struct Impl;

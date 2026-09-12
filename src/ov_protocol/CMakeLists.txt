@@ -26,6 +26,7 @@ ov_add_library(ov_protocol
         src/sound.cpp
         src/status.cpp
         src/survival.cpp
+        src/tab_list.cpp  # ── hud ──
         src/types.cpp
         src/varint.cpp
     DEPS
@@ -60,6 +61,7 @@ ov_add_test(test_ov_protocol
         tests/test_scoreboard_packets.cpp  # ── scoreboard ──
         tests/test_status.cpp
         tests/test_survival.cpp
+        tests/test_tab_list_packets.cpp  # ── hud ──
         tests/test_types.cpp
         tests/test_uuid_offline.cpp
         tests/test_varint.cpp

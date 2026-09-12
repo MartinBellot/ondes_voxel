@@ -495,6 +495,9 @@ std::string_view default_key_name(std::string_view keybind) noexcept {
     if (keybind == "key.chat") {
         return "T";
     }
+    if (keybind == "key.sneak") {  // ── hud ── "Press Left Shift to Dismount", as the real client reads
+        return "Left Shift";
+    }
     return {};
 }
 

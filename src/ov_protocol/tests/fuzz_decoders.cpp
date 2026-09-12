@@ -38,6 +38,7 @@
 #include "ov/protocol/sound.hpp"
 #include "ov/protocol/status.hpp"
 #include "ov/protocol/survival.hpp"
+#include "ov/protocol/tab_list.hpp"  // ── hud ──
 #include "ov/protocol/types.hpp"
 #include "ov/protocol/varint.hpp"
 #include "ov/world/chunk.hpp"
@@ -191,6 +192,11 @@ std::vector<NamedDecoder> all_decoders() {
     add("award_statistics", [](auto p) { observe(parse_award_statistics(p)); });
     add("select_advancements_tab", [](auto p) { observe(parse_select_advancements_tab(p)); });
     add("seen_advancements", [](auto p) { observe(parse_seen_advancements(p)); });
+    // ── hud ── the tab list and the horse's screen
+    add("player_info_update", [](auto p) { observe(parse_player_info_update(p)); });
+    add("player_info_remove", [](auto p) { observe(parse_player_info_remove(p)); });
+    add("tab_list_header_footer", [](auto p) { observe(parse_tab_list_header_footer(p)); });
+    add("open_horse_screen", [](auto p) { observe(parse_open_horse_screen(p)); });
 
     // The primitives every packet is made of.
     add("slot", [](auto p) {
@@ -410,6 +416,25 @@ std::vector<Bytes> seed_corpus() {
             SelectAdvancementsTab{std::string{"minecraft:story/root"}}));
         seeds.push_back(encode_seen_advancements(
             SeenAdvancements{SeenAdvancementsAction::OpenedTab, "minecraft:story/root"}));
+
+        // ── hud ── every action present, a signed property and a chat session.
+        PlayerInfoUpdate info;
+        info.actions = player_info::kAllActions;
+        PlayerInfoEntry entry;
+        entry.uuid              = Uuid{1, 2};
+        entry.name              = "Steve";
+        entry.properties        = {ProfileProperty{"textures", "e30=", std::string{"sig"}}};
+        entry.chat              = ChatSessionData{Uuid{3, 4}, 99, {1, 2, 3}, {4, 5}};
+        entry.game_mode         = 3;
+        entry.listed            = true;
+        entry.latency           = 150;
+        entry.display_name_json = R"({"text":"S"})";
+        info.entries.push_back(entry);
+        seeds.push_back(encode_player_info_update(info));
+        const std::array<Uuid, 2> gone{Uuid{1, 2}, Uuid{5, 6}};
+        seeds.push_back(encode_player_info_remove_many(gone));
+        seeds.push_back(encode_tab_list_header_footer({R"({"text":"H"})", R"({"text":"F"})"}));
+        seeds.push_back(encode_open_horse_screen({2, 17, 1234}));
     }
 
     // An empty chunk in both shapes: the largest decoder, and the one whose

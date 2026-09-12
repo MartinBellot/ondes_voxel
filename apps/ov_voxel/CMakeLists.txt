@@ -5,6 +5,7 @@ ov_add_executable(ov_voxel
         src/breaking.cpp  # ── breaking ──
         src/chat.cpp
         src/entities.cpp
+        src/hud_script.cpp  # ── hud ──
         src/interface.cpp
         src/main.cpp
         src/menus.cpp

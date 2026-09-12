@@ -63,6 +63,9 @@ public:
         return log_.lines().empty() ? -1 : ticks_ - log_.lines().front().added_tick;
     }
 
+    /// ── hud ── the title's remaining ticks, as the real client's titleTime.
+    [[nodiscard]] i32 title_time() const noexcept { return titles_.title_time(); }
+
 private:
     void run(const client::ChatAction& action, netclient::Client& client, client::Window* window);
     void close(client::Window* window);

@@ -32,6 +32,9 @@
 #include "ov/client/item_view.hpp"
 #include "ov/client/saved_hotbars.hpp"
 #include "ov/client/scoreboard_view.hpp"  // ── scoreboard ──
+#include "ov/client/boss_bar_view.hpp"    // ── hud ──
+#include "ov/client/status_effects.hpp"   // ── hud ──
+#include "ov/client/tab_list_view.hpp"    // ── hud ──
 #include "ov/client/subtitles.hpp"  // ── sound ──
 #include "ov/client/window.hpp"
 #include "ov/netclient/client.hpp"
@@ -216,6 +219,26 @@ public:
     audio::Listener                subtitle_ears_{};
     // ── end sound ──
 
+    // ── hud ──
+    /// A world hosted by this process: its tab list needs a second player or
+    /// a list objective before Tab shows it, as in vanilla.
+    void set_integrated(bool integrated) noexcept { integrated_ = integrated; }
+    /// Hold Tab (true), let it go (false), or leave it to the keyboard.
+    void set_tab_forced(std::optional<bool> held) noexcept { tab_forced_ = held; }
+    /// Set Tab List Header And Footer as if it had arrived: encoded, then
+    /// through the decoder the socket's bytes go through.
+    void inject_tab_header_footer(std::string_view header_json, std::string_view footer_json);
+    /// E: a ridden horse's inventory, the creative one, or the player's own.
+    void press_inventory(client::Window& window, netclient::Client& client);
+    /// F1: the whole interface, chat and titles included, hidden or shown.
+    void set_hud_visible(bool visible) noexcept { options_.hud = visible; }
+    /// The dimension Login (play) or Respawn named, for F3.
+    [[nodiscard]] const std::string& dimension() const noexcept { return dimension_; }
+    /// What the HUD shows, in the words of the real client's facts
+    /// (scripts/hud_oracle.java), for scripts/compare_hud.py's reader.
+    [[nodiscard]] std::string describe_hud() const;
+    // ── end hud ──
+
 private:
     Interface() = default;
 
@@ -314,6 +337,42 @@ private:
     /// arrived (no server): the tab is then what the option says.
     std::optional<i32> op_level_;
     void refresh_operator_tab();
+
+    // ── hud ──
+    void apply_hud(const netclient::ClientEvents& events);
+    /// Advance the GUI's 20 Hz tick and count the effects down with it.
+    void tick_hud(f64 delta_seconds);
+    void refresh_effects();
+    struct StatusEffect {
+        i32 id{0};
+        i32 amplifier{0};
+        i32 duration{0};
+        u8  flags{0};
+    };
+    client::BossBarView                 boss_bars_;
+    client::TabListView                 tab_list_;
+    client::EffectIconAtlas             effect_icons_;
+    client::GuiTexture                  inventory_sheet_{client::GuiTexture::Invalid};
+    client::GuiTexture                  bars_sheet_{client::GuiTexture::Invalid};
+    std::vector<StatusEffect>           status_effects_;
+    std::vector<client::HudEffect>      hud_effects_;
+    client::HealthBlink                 blink_;
+    std::optional<i32>                  own_id_;
+    std::optional<i32>                  vehicle_id_;
+    std::unordered_map<i32, i32>        entity_types_;
+    std::unordered_map<i32, f32>        entity_health_;
+    std::unordered_map<i32, f32>        entity_max_health_;
+    std::optional<registry::RegistryId> entity_registry_;
+    /// The `generic.armor` attribute, when the server sent it; else the table.
+    std::optional<i32>                  armour_attribute_;
+    i32                                 armour_table_{0};
+    f64                                 tick_clock_{0.0};
+    i64                                 ticks_{0};
+    bool                                tab_key_{false};
+    std::optional<bool>                 tab_forced_;
+    bool                                integrated_{false};
+    std::string                         dimension_{"minecraft:overworld"};
+    // ── end hud ──
 };
 
 }  // namespace ov::demo

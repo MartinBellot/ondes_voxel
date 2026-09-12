@@ -22,7 +22,7 @@ struct Binding {
     int glfw_code;
 };
 
-constexpr std::array<Binding, 15> kBindings{{
+constexpr std::array<Binding, 16> kBindings{{
     {Key::Forward, GLFW_KEY_W},
     {Key::Back, GLFW_KEY_S},
     {Key::Left, GLFW_KEY_A},
@@ -38,6 +38,7 @@ constexpr std::array<Binding, 15> kBindings{{
     {Key::SaveToolbar, GLFW_KEY_C},
     {Key::LoadToolbar, GLFW_KEY_X},
     {Key::Chat, GLFW_KEY_T},
+    {Key::PlayerList, GLFW_KEY_TAB},  // ── hud ──
 }};
 
 /// A key's label as the layout prints it, upper-cased, or `fallback`.

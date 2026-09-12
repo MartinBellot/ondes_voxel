@@ -167,6 +167,11 @@ void SoundDirector::on_events(const netclient::ClientEvents& events, const Entit
         }
     }
     for (const netclient::ClientEvents::BossBarChange& change : events.boss_bars) {
+        // ── hud ── health, title and style carry no flags: they must not take
+        // a playing bar out of the list.
+        if (change.action >= 2 && change.action <= 4) {
+            continue;
+        }
         std::erase_if(boss_bars_, [&](const BossBar& bar) {
             return bar.most == change.most && bar.least == change.least;
         });

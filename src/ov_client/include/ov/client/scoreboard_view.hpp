@@ -64,6 +64,27 @@ public:
 
     void draw(Gui& gui, const render::Language& language) const;
 
+    // ── hud ── what the tab list reads: the team a holder is on (by name, ""
+    // for none), the list slot's objective, whether it shows hearts, a score.
+    [[nodiscard]] std::string team_name(std::string_view holder) const {
+        const auto it = team_of_.find(std::string{holder});
+        return it == team_of_.end() ? std::string{} : it->second;
+    }
+    [[nodiscard]] std::string list_objective() const { return display_[net::scoreboard::kSlotList]; }
+    [[nodiscard]] bool objective_is_hearts(std::string_view objective) const {
+        const auto it = objectives_.find(std::string{objective});
+        return it != objectives_.end() && it->second.render_type == 1;
+    }
+    [[nodiscard]] std::optional<i32> score(std::string_view objective, std::string_view holder) const {
+        const auto it = scores_.find(std::string{objective});
+        if (it == scores_.end()) {
+            return std::nullopt;
+        }
+        const auto score = it->second.find(std::string{holder});
+        return score == it->second.end() ? std::nullopt : std::optional<i32>{score->second};
+    }
+    // ── end hud ──
+
 private:
     struct Objective {
         std::string display_json;

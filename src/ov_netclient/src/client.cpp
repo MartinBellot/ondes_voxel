@@ -12,7 +12,9 @@
 #include "ov/protocol/breaking.hpp"        // ── breaking ──
 #include "ov/protocol/effect_packets.hpp"  // ── breaking ──
 #include "ov/protocol/framing.hpp"
+#include "ov/protocol/hud.hpp"       // ── hud ── Boss Bar
 #include "ov/protocol/play.hpp"
+#include "ov/protocol/tab_list.hpp"  // ── hud ──
 #include "ov/protocol/survival.hpp"
 #include "ov/protocol/types.hpp"
 #include "ov/protocol/varint.hpp"
@@ -95,6 +97,9 @@ void ClientEvents::clear() {
     death_message.reset();  // ── screens ──
     respawned = false;
     hardcore.reset();
+    tab_list.clear();  // ── hud ──
+    attributes.clear();
+    open_horse_screen.reset();
 }
 
 struct Client::Impl {
@@ -847,40 +852,25 @@ void Client::Impl::handle_play(i32 packet_id, std::span<const u8> body) {
             break;
         }
 
-        case kBossBar: {  // ── music ──
-            // UUID, action; Add carries title, health, colour, division, then
-            // the flags; Update Flags carries the flags alone.
-            const auto most   = reader.read_u64();
-            const auto least  = reader.read_u64();
-            const auto action = net::read_varint(reader);
-            if (!most || !least || !action) {
+        case kBossBar: {  // ── music ── ── hud ──
+            // Every action, through ov/protocol/hud.hpp's decoder (fuzzed and
+            // byte-tested): the music reads the flags, the HUD the rest.
+            auto bar = net::parse_boss_bar(body);
+            if (!bar) {
+                OV_LOG_WARN("malformed Boss Bar ({} bytes)", body.size());
                 return;
             }
             ClientEvents::BossBarChange change;
-            change.most   = *most;
-            change.least  = *least;
-            change.action = *action;
-            if (*action == 0) {
-                const auto title    = net::read_string(reader);
-                const auto health   = reader.read_f32();
-                const auto colour   = net::read_varint(reader);
-                const auto division = net::read_varint(reader);
-                const auto flags    = reader.read_u8();
-                if (!title || !health || !colour || !division || !flags) {
-                    return;
-                }
-                change.flags = *flags;
-            } else if (*action == 5) {
-                const auto flags = reader.read_u8();
-                if (!flags) {
-                    return;
-                }
-                change.flags = *flags;
-            } else if (*action != 1) {
-                return;  // health, title, style: not the music's business
-            }
+            change.most       = bar->uuid.most_significant;
+            change.least      = bar->uuid.least_significant;
+            change.action     = static_cast<i32>(bar->action);
+            change.flags      = bar->flags;
+            change.title_json = std::move(bar->title_json);
+            change.health     = bar->health;
+            change.color      = bar->color;
+            change.division   = bar->division;
             const std::lock_guard lock(mutex);
-            inbox.boss_bars.push_back(change);
+            inbox.boss_bars.push_back(std::move(change));
             break;
         }
 
@@ -906,8 +896,9 @@ void Client::Impl::handle_play(i32 packet_id, std::span<const u8> body) {
                 return;  // another entity's: nothing here draws it yet
             }
             const std::lock_guard lock(mutex);
-            inbox.own_effects.push_back(
-                ClientEvents::OwnEffect{effect->effect_id, static_cast<i32>(effect->amplifier)});
+            inbox.own_effects.push_back(ClientEvents::OwnEffect{
+                effect->effect_id, static_cast<i32>(effect->amplifier), effect->duration,
+                effect->flags});  // ── hud ── duration and flags
             break;
         }
 
@@ -925,6 +916,63 @@ void Client::Impl::handle_play(i32 packet_id, std::span<const u8> body) {
             break;
         }
         // ── end breaking ──
+
+        // ── hud ── the tab list, attributes, the horse's screen
+        case net::clientbound::kPlayerInfoUpdate: {
+            auto update = net::parse_player_info_update(body);
+            if (!update) {
+                OV_LOG_WARN("malformed Player Info Update ({} bytes)", body.size());
+                return;
+            }
+            const std::lock_guard lock(mutex);
+            inbox.tab_list.emplace_back(std::move(*update));
+            break;
+        }
+
+        case net::clientbound::kPlayerInfoRemove: {
+            auto removed = net::parse_player_info_remove(body);
+            if (!removed) {
+                OV_LOG_WARN("malformed Player Info Remove ({} bytes)", body.size());
+                return;
+            }
+            const std::lock_guard lock(mutex);
+            inbox.tab_list.emplace_back(std::move(*removed));
+            break;
+        }
+
+        case net::clientbound::kSetTabListHeaderFooter: {
+            auto texts = net::parse_tab_list_header_footer(body);
+            if (!texts) {
+                OV_LOG_WARN("malformed Set Tab List Header And Footer ({} bytes)", body.size());
+                return;
+            }
+            const std::lock_guard lock(mutex);
+            inbox.tab_list.emplace_back(std::move(*texts));
+            break;
+        }
+
+        case net::clientbound::kUpdateAttributes: {
+            auto attributes = net::decode_update_attributes(body);
+            if (!attributes) {
+                OV_LOG_WARN("malformed Update Attributes ({} bytes)", body.size());
+                return;
+            }
+            const std::lock_guard lock(mutex);
+            inbox.attributes.push_back(std::move(*attributes));
+            break;
+        }
+
+        case net::clientbound::kOpenHorseScreen: {
+            const auto screen = net::parse_open_horse_screen(body);
+            if (!screen) {
+                OV_LOG_WARN("malformed Open Horse Screen ({} bytes)", body.size());
+                return;
+            }
+            const std::lock_guard lock(mutex);
+            inbox.open_horse_screen = *screen;
+            break;
+        }
+        // ── end hud ──
 
         case net::clientbound::kExplosion: {
             auto explosion = net::parse_explosion(body);
@@ -1315,12 +1363,26 @@ void Client::poll(ClientEvents& out) {
     impl_->inbox.death_message.reset();
     impl_->inbox.respawned = false;
     impl_->inbox.hardcore.reset();
+    // ── hud ──
+    out.tab_list.swap(impl_->inbox.tab_list);
+    out.attributes.swap(impl_->inbox.attributes);
+    out.open_horse_screen = impl_->inbox.open_horse_screen;
+    impl_->inbox.open_horse_screen.reset();
 }
 
 void Client::send_respawn() {  // ── screens ──
     io::ByteWriter writer;
     net::write_varint(writer, 0);  // perform respawn
     impl_->send_raw(net::serverbound::kClientCommand, writer.data());
+}
+
+void Client::send_player_command(i32 action) {  // ── hud ──
+    // Entity id, action, jump boost — three VarInts (the frozen 763 page).
+    io::ByteWriter writer;
+    net::write_varint(writer, impl_->own_entity_id);
+    net::write_varint(writer, action);
+    net::write_varint(writer, 0);
+    impl_->send_raw(net::serverbound::kPlayerCommand, writer.data());
 }
 
 void Client::send_abilities(bool flying) {  // ── flight ──
