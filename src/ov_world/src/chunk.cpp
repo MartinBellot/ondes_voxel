@@ -46,11 +46,23 @@ usize Chunk::section_index_for_y(i32 y) const noexcept {
     return static_cast<usize>((y >> 4) - shape_.min_section());
 }
 
-ChunkSection* Chunk::section_for_y(i32 y) noexcept {
+ChunkSection* Chunk::section_for_y(i32 y) {
     if (!shape_.contains_y(y)) {
         return nullptr;
     }
-    return &sections_[section_index_for_y(y)];
+    // Unshare now rather than on the first write: the relight pass takes
+    // `blocks()` by reference and then writes the light, and if the copy
+    // happened on that write the reference would point into storage only a
+    // snapshot owns — freed by the network thread whenever it is done.
+    ChunkSection& section = sections_[section_index_for_y(y)];
+    section.unshare();
+    return &section;
+}
+
+std::shared_ptr<const Chunk> Chunk::snapshot() const {
+    // Copying the sections marks them shared on both sides (ChunkSection's
+    // copy constructor); nothing else is needed to keep the tick off them.
+    return std::make_shared<const Chunk>(*this);
 }
 
 const ChunkSection* Chunk::section_for_y(i32 y) const noexcept {
