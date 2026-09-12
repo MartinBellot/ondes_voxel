@@ -32,6 +32,7 @@
 #include "ov/protocol/varint.hpp"
 #include "ov/registry/block_states.hpp"
 #include "ov/entity/world.hpp"
+#include "ov/gameplay/block_motion.hpp"  // ── movement physics ──
 #include "ov/gameplay/entity_physics.hpp"
 #include "ov/gameplay/mob_logic.hpp"
 #include "ov/protocol/entity.hpp"
@@ -89,6 +90,7 @@
 #include "projectiles.hpp"  // ── projectiles ──
 #include "brewing_session.hpp"  // ── brewing ──
 #include "husbandry.hpp"    // ── husbandry ──
+#include "taming.hpp"       // ── tame ──
 #include "slimes.hpp"       // ── mobs-2 ──
 #include "nether_mobs.hpp"  // ── nether-2 ──
 #include "drowning.hpp"     // ── mobs-2 ──
@@ -929,6 +931,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     } else {
         OV_LOG_INFO("registry: {} blocks, {} states; codec {} bytes", blocks->block_count(),
                     blocks->state_count(), codec_bytes->size());
+    }
+    // ── movement physics ── what ice, ladders, slime, cobwebs and bubble
+    // columns do to a mob, resolved once from the registry.
+    std::optional<gameplay::BlockMotionTable> block_motion;
+    if (blocks) {
+        block_motion.emplace(*blocks);
     }
 
     // Item ids, needed to turn "the player is holding this" into a block.
@@ -2181,6 +2189,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     std::vector<ChunkPos>      brewing_chunks;  // ── brewing ──
     // ── husbandry ──
     std::optional<Husbandry> husbandry;
+    std::optional<Taming>    taming;  // ── tame ── owners, riders, collars
     // ── mobs-2: slimes — a size each, and the division on death ──
     std::optional<Slimes>             slimes;
     math::LegacyRandomSource          slime_random{0x4f56'534c'494d'4531LL};
@@ -2259,6 +2268,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         if (husbandry && mobs) {
             husbandry->spawn_metadata(*mobs, state, fields);
         }
+        if (taming && mobs) {  // ── tame: owner, sitting, collar, variant, saddle ──
+            taming->spawn_metadata(*mobs, state, fields);
+        }
         if (slimes) {  // ── mobs-2 ──
             slimes->spawn_metadata(state, fields);
         }
@@ -2288,10 +2300,18 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     values.push_back(net::AttributeValue{name, owned.base});
                 }
             }
+            if (taming && mobs) {  // ── tame ── a horse's own drawn stats
+                taming->attributes(*mobs, state, values);
+            }
             if (!values.empty()) {
                 deliver(net::clientbound::kUpdateAttributes,
                         net::encode_update_attributes(state.network_id, values));
             }
+        }
+        if (taming && mobs) {  // ── tame ── a horse's armour, and its rider
+            taming->spawn_extra(*mobs, state, [&](i32 id, std::span<const u8> payload) {
+                deliver(id, payload);
+            });
         }
         // ── mobs-4 ── what its effects set: the colour and bits, then the
         // speed with its modifier — after the bases above, which it overrides
@@ -2793,6 +2813,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         brewing_chunks.reserve(1024);  // ── brewing ──
         // ── husbandry ──
         husbandry.emplace(*registries, *blocks);
+        taming.emplace(*registries);  // ── tame ──
         slimes.emplace(*registries);  // ── mobs-2 ──
         drowning.emplace(*registries);
         mob_attacks.emplace(*registries, mob_combat ? &*mob_combat : nullptr);  // ── mobs-3 ──
@@ -3764,6 +3785,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         if (auto* hit = dynamic_cast<gameplay::Mob*>(mobs->logic(handle)); hit != nullptr) {
             constexpr i32 kLastHurtByMemoryTicks = 100;
             hit->frighten(kLastHurtByMemoryTicks);
+        }
+        if (taming) {  // ── tame ── a wolf pack's anger, a pet standing up, an owner's fight
+            taming->on_player_hit(*mobs, attacker.entity_id, target_id,
+                                  static_cast<i64>(server_tick.load(std::memory_order_relaxed)));
         }
 
         broadcast(nullptr, net::clientbound::kDamageEvent,
@@ -5184,9 +5209,33 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                             rails_session->request_input(
                                 RiderInput{player.entity_id, word(0), word(4), body[8], player.yaw});
                         }
+                        if (body.size() >= 9 && taming) {  // ── tame ── off a horse
+                            taming->queue_input(player.entity_id, body[8]);
+                        }
                         return true;
                     }
                     // ── end rails ──
+                    // ── tame ── Move Vehicle: where a rider's client put its
+                    // horse (x, y, z doubles, then yaw and pitch floats).
+                    case 0x18: {
+                        if (body.size() >= 32 && taming) {
+                            const auto bits = [&](usize at, usize n) {
+                                u64 value = 0;
+                                for (usize i = 0; i < n; ++i) {
+                                    value = (value << 8U) | body[at + i];
+                                }
+                                return value;
+                            };
+                            const auto real = [&](usize at) { return std::bit_cast<f64>(bits(at, 8)); };
+                            const auto flt  = [&](usize at) {
+                                return std::bit_cast<f32>(static_cast<u32>(bits(at, 4)));
+                            };
+                            taming->queue_vehicle_move(player.entity_id,
+                                                       Vec3d{real(0), real(8), real(16)}, flt(24),
+                                                       flt(28));
+                        }
+                        return true;
+                    }
 
                     case net::serverbound::kPlayerCommand: {
                         if (const auto command = net::parse_player_command(body)) {
@@ -5285,6 +5334,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         // ── mobs-3: a golden apple offered to a zombie villager, for the tick ──
                         if (zombie_villagers && interact->kind == net::InteractKind::Interact) {
                             zombie_villagers->queue_interact(player.entity_id, interact->entity_id);
+                        }
+                        // ── tame: a bone, a saddle, an empty hand on a horse ──
+                        if (taming && interact->kind == net::InteractKind::Interact) {
+                            taming->queue_interact(player.entity_id, interact->entity_id,
+                                                   interact->hand.value_or(net::Hand::Main),
+                                                   interact->sneaking);
                         }
                         // ── husbandry: a right-click on an entity, for the tick ──
                         if (husbandry && interact->kind == net::InteractKind::Interact) {
@@ -7395,6 +7450,28 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     };
     husbandry_host.drop_item = tnt_host.drop_item;
     husbandry_host.spawn_orb = projectile_host.spawn_orb;
+    // ── tame ── a pup's owner, a foal's stats; then what taming reaches for
+    husbandry_host.on_birth = [&](entity::EntityHandle mother, entity::EntityHandle father,
+                                  entity::EntityHandle child) {
+        if (taming && mobs) {
+            taming->on_birth(*mobs, mother, father, child);
+        }
+    };
+    TamingHost taming_host;
+    taming_host.with_hand = husbandry_host.with_hand;
+    taming_host.players   = [&](std::vector<TamingPlayer>& out) {
+        for (const auto& [key, who] : players) {
+            if (!who.connection || !who.confirmed || who.survival.awaiting_respawn ||
+                who.dimension != DimensionId::Overworld) {
+                continue;
+            }
+            out.push_back(TamingPlayer{who.entity_id, who.uuid, Vec3d{who.x, who.y, who.z},
+                                       who.on_ground});
+        }
+    };
+    taming_host.carry_rider = rails_host.carry_rider;
+    taming_host.set_down    = rails_host.set_down;
+    // ── end tame ──
     // ── nether-2 ── What the Nether's mobs reach for. Caller holds
     // players_mutex, and chunk_mutex for the block reads.
     nether_mob_host.block_at = [&](BlockPos pos) -> registry::BlockStateId {
@@ -7528,17 +7605,6 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         }
     };
     entity_storage_host.announce   = mobs3_announce;
-    // ── mobs-4 ── `ActiveEffects`, written and read back with the mob
-    entity_storage_host.write_extra = [&](const entity::EntityState& state, nbt::Tag& out) {
-        if (mob_effects) {
-            mob_effects->write(state, out);
-        }
-    };
-    entity_storage_host.read_extra = [&](entity::EntityState& state, const nbt::Tag& compound) {
-        if (mob_effects && mobs) {
-            mob_effects->read(*mobs, state, compound);
-        }
-    };
     entity_storage_host.transient  = mobs3_transient;
     entity_storage_host.slime_size = [&](i32 id) { return slimes ? slimes->size_of(id) : 1; };
     entity_storage_host.set_slime_size = [&](entity::EntityState& state, i32 size) {
@@ -7563,6 +7629,28 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     entity_storage_host.set_conversion_time = [&](i32 id, i32 ticks) {
         if (zombie_villagers) {
             zombie_villagers->set_conversion_time(id, ticks);
+        }
+    };
+    // ── tame ── Owner, Sitting, CollarColor, Tame, Temper, SaddleItem,
+    // ArmorItem, ChestedHorse, Strength, Variant, the drawn Attributes…
+    // ── mobs-4 ── and `ActiveEffects`. One hook for both: each assignment
+    // replaces the last, and two would silently drop one side's keys. On a
+    // read the taming comes first — a horse's drawn maximum is the base a
+    // Health Boost read with it adds to.
+    entity_storage_host.write_extra = [&](const entity::EntityState& state, nbt::Tag& out) {
+        if (taming && mobs) {
+            taming->write_nbt(*mobs, state, out);
+        }
+        if (mob_effects) {
+            mob_effects->write(state, out);
+        }
+    };
+    entity_storage_host.read_extra = [&](entity::EntityState& state, const nbt::Tag& compound) {
+        if (taming && mobs) {
+            taming->read_nbt(*mobs, state, compound);
+        }
+        if (mob_effects && mobs) {
+            mob_effects->read(*mobs, state, compound);
         }
     };
     // ── persistence ── The items and orbs of every level, the Nether's mobs,
@@ -9272,7 +9360,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 // ── end perf ──
                 WorldView              view;
                 view.read = [&](i32 bx, i32 by, i32 bz) { return resident_block(bx, by, bz); };
-                const gameplay::CollisionWorld collisions{*blocks, &WorldView::look_up, &view};
+                const gameplay::CollisionWorld collisions{
+                    *blocks, &WorldView::look_up, &view,
+                    block_motion ? &*block_motion : nullptr};  // ── movement physics ──
 
                 // The behaviour runs here, through the entity world, rather
                 // than being applied to each state by hand: the whole point of
@@ -9370,6 +9460,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     (void)husbandry->before_entity_tick(*mobs, mob_context, husbandry_host,
                                                        husbandry_deliver);
                 }
+                // ── tame: clicks, riders getting off, the owners the goals see ──
+                if (taming) {
+                    (void)taming->before_entity_tick(*mobs, mob_context, taming_host,
+                                                    husbandry_deliver,
+                                                    static_cast<i64>(clock.tick_count()));
+                }
                 // ── rails: shapes, placed carts, touches and riders' controls ──
                 if (rails_session && level && world_ticks) {
                     rails_session->before_entity_tick(*mobs, *level, *world_ticks, rails_host);
@@ -9411,6 +9507,21 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     }
                 }
                 // ── end husbandry ──
+                // ── tame: tamed, thrown, teleported; what hurt an owner; the
+                // riders steered and carried — before the swings resolve ──
+                if (taming) {
+                    const std::span<const gameplay::MobAttack> tame_swings =
+                        mob_attacks ? std::span<const gameplay::MobAttack>{mob_attacks->attacks()}
+                                    : std::span<const gameplay::MobAttack>{};
+                    const TamingStats tamed = taming->after_entity_tick(
+                        *mobs, tame_swings, taming_host, husbandry_deliver,
+                        static_cast<i64>(clock.tick_count()));
+                    if (tamed.tamed + tamed.thrown + tamed.teleported > 0) {
+                        OV_LOG_DEBUG("tick {}: {} tamed, {} thrown, {} teleported",
+                                     clock.tick_count(), tamed.tamed, tamed.thrown,
+                                     tamed.teleported);
+                    }
+                }
                 // ── villagers: what changed on a villager, told ──
                 if (villagers) {
                     (void)villagers->after_entity_tick(*mobs, husbandry_deliver);

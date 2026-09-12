@@ -126,6 +126,11 @@ struct GameOptions {
     std::string language{"en_us"};
     /// Indexed as kSoundCategoryNames.
     std::array<f64, 10> volumes{1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
+    /// ── sound ── `showSubtitles`, Music & Sounds' "Show Subtitles".
+    bool show_subtitles{false};
+    /// ── sound ── `notificationDisplayTime`, 0.5 to 10: how long a subtitle
+    /// line stays, as a multiple of its 3 seconds.
+    f64                     notification_display_time{1.0};
     bool                    pause_on_lost_focus{true};
     /// ── allow-commands ── `operatorItemsTab`, Controls' "Operator Items
     /// Tab". The tab also needs permission level 2 and creative.

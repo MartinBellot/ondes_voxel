@@ -23,6 +23,7 @@ Session::Session(const registry::BlockRegistry& blocks, render::BlockModelCache&
                  const render::TextureAtlas& atlas, const render::BiomeTints& tints,
                  client::TerrainRenderer& terrain)
     : blocks_(&blocks),
+      motion_(blocks),
       models_(&models),
       atlas_(&atlas),
       tints_(&tints),
@@ -120,7 +121,7 @@ gameplay::CollisionWorld Session::collision() const {
     const auto lookup = [](void* context, i32 x, i32 y, i32 z) {
         return static_cast<const Session*>(context)->block_at(x, y, z);
     };
-    return gameplay::CollisionWorld{*blocks_, lookup, const_cast<Session*>(this)};
+    return gameplay::CollisionWorld{*blocks_, lookup, const_cast<Session*>(this), &motion_};
 }
 
 render::ChunkNeighbours Session::neighbours_of(i32 chunk_x, i32 chunk_z) const {

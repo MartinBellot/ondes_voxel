@@ -13,6 +13,7 @@ ov_add_library(ov_gameplay
         src/dig_controller.cpp
         src/combat.cpp
         src/collision.cpp
+        src/block_motion.cpp
         src/damage.cpp
         src/durability.cpp
         src/enchanting.cpp
@@ -23,6 +24,7 @@ ov_add_library(ov_gameplay
         src/primed_tnt.cpp
         src/projectile.cpp
         src/fluid.cpp
+        src/fluid_push.cpp
         src/item_use.cpp
         src/nether_portal.cpp
         src/end_portal.cpp
@@ -34,6 +36,7 @@ ov_add_library(ov_gameplay
         src/mob_attack.cpp  # ── mobs-3 ──
         src/mob_body.cpp  # ── mobs-4 ──
         src/breeding.cpp
+        src/tame.cpp  # ── tame ──
         src/pathfinding.cpp
         src/goals.cpp
         src/spawning.cpp
@@ -97,11 +100,13 @@ ov_add_test(test_ov_gameplay
         tests/test_nether_mobs.cpp  # ── nether-2 ──
         tests/test_mobs3.cpp  # ── mobs-3 ──
         tests/test_breeding.cpp
+        tests/test_tame.cpp  # ── tame ──
         tests/test_pathfinding.cpp
         tests/test_goals.cpp
         tests/test_spawning.cpp
         tests/test_fluid_physics.cpp
         tests/test_physics.cpp
+        tests/test_block_motion.cpp
         tests/test_connections.cpp
         tests/test_redstone.cpp
         tests/test_rails.cpp

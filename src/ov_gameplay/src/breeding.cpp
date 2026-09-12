@@ -20,14 +20,45 @@ constexpr std::array<std::string_view, 6> kSeeds{
     "minecraft:wheat_seeds",    "minecraft:melon_seeds",       "minecraft:pumpkin_seeds",
     "minecraft:beetroot_seeds", "minecraft:torchflower_seeds", "minecraft:pitcher_pod"};
 
+// ── tame ── The simpler species this wave brings: husbandry feeds, breeds and
+// tempts them as it does a cow. The rabbit's list is measured (elevage.md
+// § 4.1); the others are the wiki's, and the bee's is the 1.20.1 datapack's
+// `#minecraft:flowers` (test_tame.cpp checks it against the generated tag).
+constexpr std::array<std::string_view, 3> kRabbitFood{"minecraft:carrot", "minecraft:golden_carrot",
+                                                      "minecraft:dandelion"};
+constexpr std::array<std::string_view, 2> kFoxFood{"minecraft:sweet_berries",
+                                                   "minecraft:glow_berries"};
+constexpr std::array<std::string_view, 1> kTurtleFood{"minecraft:seagrass"};
+constexpr std::array<std::string_view, 1> kCamelFood{"minecraft:cactus"};
+constexpr std::array<std::string_view, 24> kFlowers{
+    "minecraft:dandelion",          "minecraft:poppy",
+    "minecraft:blue_orchid",        "minecraft:allium",
+    "minecraft:azure_bluet",        "minecraft:red_tulip",
+    "minecraft:orange_tulip",       "minecraft:white_tulip",
+    "minecraft:pink_tulip",         "minecraft:oxeye_daisy",
+    "minecraft:cornflower",         "minecraft:lily_of_the_valley",
+    "minecraft:wither_rose",        "minecraft:torchflower",
+    "minecraft:sunflower",          "minecraft:lilac",
+    "minecraft:peony",              "minecraft:rose_bush",
+    "minecraft:pitcher_plant",      "minecraft:flowering_azalea_leaves",
+    "minecraft:flowering_azalea",   "minecraft:mangrove_propagule",
+    "minecraft:cherry_leaves",      "minecraft:pink_petals"};
+
 // Tempt multipliers over the walk speed: measured speeds of a tempted animal
 // divided by its measured attribute halved (docs/provenance/elevage.md § 8).
-const std::array<AnimalKind, 4> kAnimals{{
+// ── tame ── The six added rows tempt at 1.0: not measured, named.
+const std::array<AnimalKind, 10> kAnimals{{
     //  type                food     tempt  eggs   shear  milk   saddle baby eyes
     {"minecraft:cow", kWheat, 1.25, false, false, true, false, 0.665F},
     {"minecraft:sheep", kWheat, 1.1, false, true, false, false, 0.6175F},
     {"minecraft:pig", kPigFood, 1.2, false, false, false, true, 0.3825F},
     {"minecraft:chicken", kSeeds, 1.0, true, false, false, false, 0.2975F},
+    {"minecraft:rabbit", kRabbitFood, 1.0, false, false, false, false, 0.0F},
+    {"minecraft:fox", kFoxFood, 1.0, false, false, false, false, 0.0F},
+    {"minecraft:goat", kWheat, 1.0, false, false, true, false, 0.0F},
+    {"minecraft:turtle", kTurtleFood, 1.0, false, false, false, false, 0.0F},
+    {"minecraft:bee", kFlowers, 1.0, false, false, false, false, 0.0F},
+    {"minecraft:camel", kCamelFood, 1.0, false, false, false, true, 0.0F},
 }};
 
 constexpr std::array<std::string_view, 16> kColours{

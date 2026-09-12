@@ -24,6 +24,8 @@ TAMPERED=(
     "src/ov_math/src/math.cpp"
     "apps/ov_dedicated/src/main.cpp"
     "src/ov_math/CMakeLists.txt"
+    "src/ov_protocol/include/ov/protocol/interaction.hpp"
+    "docs/protocol/763/README.md"
 )
 
 BACKUP="$(mktemp -d)"
@@ -106,6 +108,21 @@ PYEOF
 expect_rejected "a milestone count that drifted" python3 scripts/check_progress.py
 cp "$BACKUP/progress.json" "$ROOT/docs/PROGRESS.json"
 expect_accepted "counts that agree" python3 scripts/check_progress.py
+
+echo
+echo "protocol_matrix.py"
+expect_accepted "the committed matrix is current" python3 scripts/protocol_matrix.py --check
+
+# The bug this guards against was real: Set Cooldown went out as 0x16, which is
+# Chat Suggestions in 763. Planting it back must be refused.
+sed -i.bak 's/kSetCooldown = 0x15;/kSetCooldown = 0x16;/' \
+    src/ov_protocol/include/ov/protocol/interaction.hpp
+rm -f src/ov_protocol/include/ov/protocol/interaction.hpp.bak
+expect_rejected "a packet id constant that contradicts the catalogue" \
+    python3 scripts/protocol_matrix.py --check
+
+printf '\n| `0x00` | edited by hand |\n' >> docs/protocol/763/README.md
+expect_rejected "a matrix edited by hand (stale)" python3 scripts/protocol_matrix.py --check
 
 echo
 echo "check_assets.py"

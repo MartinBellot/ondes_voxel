@@ -14,6 +14,7 @@ ov_add_library(ov_server
         src/generated_world.cpp
         src/generation_check.cpp
         src/husbandry.cpp
+        src/taming.cpp  # ── tame ──
         src/merchant_session.cpp
         src/natural_spawning.cpp
         src/nether_travel.cpp
@@ -114,6 +115,7 @@ ov_add_test(test_ov_server
         tests/test_nether_mobs.cpp  # ── nether-2 ──
         tests/test_mobs3_server.cpp  # ── mobs-3 ──
         tests/test_mob_effects.cpp  # ── mobs-4 ──
+        tests/test_tame_server.cpp  # ── tame ──
         tests/test_world_structures.cpp  # ── structures ──
     DEPS ov_server
     LABELS unit
