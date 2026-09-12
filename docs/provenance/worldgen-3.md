@@ -404,6 +404,23 @@ arborescentes (`java_hash_treeified_bins`, imprimé par le rapport des arbres), 
 sur le monde hors échantillon 987654321, qui a la forêt noire et la vieille taïga d'épicéas, les
 grands arbres.
 
+**Mesure, monde hors échantillon** — 300 chunks de `run/reference-987654321`, même binaire :
+
+| | cases arborescentes | troncs au bon endroit | formes identiques (sur un tronc du jeu) | blocs |
+|---|---:|---:|---:|---:|
+| ancien modèle | 0 | 537 (35,42 %) | 113 (37,17 %) | 33 335 (42,75 %) |
+| modèle arborescent | **54** | 537 (35,42 %) | 113 (37,17 %) | 33 335 (42,75 %) |
+
+Ce monde **exerce** le correctif — 54 cases deviennent des arbres — et la parité des arbres est
+**identique au bloc près**, ligne par ligne (forêt noire 10/109, vieille taïga 14/58, bouleaux
+71/93 des deux côtés). Ce que cela dit : les ensembles qui atteignent neuf entrées dans une case
+ne sont pas ceux dont l'ordre tire. En 1.20.1 le chêne noir n'a pas de décorateur qui parcoure
+ses feuilles, et le décorateur de podzol de l'épicéa géant parcourt de petits ensembles. Le
+correctif n'apporte donc **aucun gain mesurable** aux arbres — il ne coûte rien non plus, et le
+journal n'est plus inondé. Le seul autre appelant, les patchs de végétation des grottes
+luxuriantes (des ensembles de sol jusqu'à ~225 positions), est l'endroit où l'ordre arborescent
+peut encore compter ; il n'est **pas** mesuré ici.
+
 ## 3. Les fluides à réveiller
 
 L'aquifère marquait déjà les fluides que le jeu réveille (`aquiferes.md` § 10.4, règle
