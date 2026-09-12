@@ -12,7 +12,9 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
+#include <string_view>
 #include <limits>
 #include <list>
 #include <unordered_map>
@@ -228,9 +230,363 @@ void note_untreeified_bucket(usize capacity) noexcept {
     return h ^ (h >> 16);
 }
 
-}  // namespace
+/// One entry of the model HashMap: a node of its bin's linked list (`next`,
+/// `prev` — the iteration order) and, once the bin is treeified, of the bin's
+/// red-black tree (`parent`, `left`, `right`, `red`).
+struct JavaNode {
+    BlockPos pos;
+    i32      hash{0};  ///< the spread hash, compared as Java's signed int
+    i32      next{-1};
+    i32      prev{-1};
+    i32      parent{-1};
+    i32      left{-1};
+    i32      right{-1};
+    bool     red{false};
+};
 
-std::vector<BlockPos> java_hash_order(const std::vector<BlockPos>& inserted) {
+/// ── worldgen-3 ── `java.util.HashSet<BlockPos>` as far as its iteration
+/// order goes, treeified bins included — the documented behaviour of the JDK's
+/// HashMap:
+///   * a list bin that an insertion brings to nine entries (eight already
+///     there) is treeified, or, while the table has fewer than 64 bins, the
+///     table is resized instead;
+///   * treeification builds a red-black tree in list order, ordered by hash,
+///     and moves the tree's root to the front of the bin's list;
+///   * an insertion into a tree bin links the new node right after its tree
+///     parent in the list, rebalances, and moves the (new) root to the front;
+///   * a resize splits a tree bin into its low and high halves in list order:
+///     a half of six or fewer goes back to a plain list, a half that kept every
+///     node keeps its tree, and otherwise each half is treeified again.
+/// Two positions of equal full hash would be ordered by Java's identity hash,
+/// which nothing outside that JVM can know; they are counted and, among one
+/// tree's few hundred positions, do not occur.
+class JavaHashSet {
+public:
+    void add(BlockPos pos) {
+        if (table_.empty()) {
+            resize(16);
+        }
+        const i32   h     = static_cast<i32>(java_spread(java_block_pos_hash(pos)));
+        const usize index = static_cast<u32>(h) & (table_.size() - 1);
+        Bin&        bin   = table_[index];
+        if (bin.head < 0) {
+            bin.head = make_node(pos, h);
+        } else {
+            usize count = 0;
+            i32   last  = -1;
+            for (i32 at = bin.head; at >= 0; at = node(at).next) {
+                if (node(at).pos == pos) {
+                    return;  // a set: an equal position is not stored twice
+                }
+                ++count;
+                last = at;
+            }
+            if (bin.tree) {
+                put_tree(index, pos, h);
+            } else {
+                const i32 fresh    = make_node(pos, h);
+                node(last).next  = fresh;
+                node(fresh).prev = last;
+                if (count >= 8) {  // binCount >= TREEIFY_THRESHOLD - 1
+                    if (table_.size() < 64) {
+                        resize(table_.size() * 2);
+                    } else {
+                        treeify(index);
+                    }
+                }
+            }
+        }
+        if (++size_ > table_.size() * 3 / 4) {
+            resize(table_.size() * 2);
+        }
+    }
+
+    [[nodiscard]] std::vector<BlockPos> iteration() const {
+        std::vector<BlockPos> out;
+        out.reserve(size_);
+        for (const Bin& bin : table_) {
+            for (i32 at = bin.head; at >= 0; at = nodes_[static_cast<usize>(at)].next) {
+                out.push_back(nodes_[static_cast<usize>(at)].pos);
+            }
+        }
+        return out;
+    }
+
+private:
+    struct Bin {
+        i32  head{-1};
+        bool tree{false};
+    };
+
+    JavaNode& node(i32 at) { return nodes_[static_cast<usize>(at)]; }
+
+    i32 make_node(BlockPos pos, i32 h) {
+        JavaNode fresh;
+        fresh.pos  = pos;
+        fresh.hash = h;
+        nodes_.push_back(fresh);
+        return static_cast<i32>(nodes_.size() - 1);
+    }
+
+    /// Left when the parent's hash is greater, right when smaller; an equal
+    /// hash goes left, standing in for Java's identity tie-break.
+    [[nodiscard]] i32 direction(i32 h, i32 p) {
+        return node(p).hash < h ? 1 : -1;
+    }
+
+    i32 rotate_left(i32 root, i32 p) {
+        const i32 r = node(p).right;
+        if (r < 0) {
+            return root;
+        }
+        const i32 rl  = node(r).left;
+        node(p).right = rl;
+        if (rl >= 0) {
+            node(rl).parent = p;
+        }
+        const i32 pp   = node(p).parent;
+        node(r).parent = pp;
+        if (pp < 0) {
+            root        = r;
+            node(r).red = false;
+        } else if (node(pp).left == p) {
+            node(pp).left = r;
+        } else {
+            node(pp).right = r;
+        }
+        node(r).left   = p;
+        node(p).parent = r;
+        return root;
+    }
+
+    i32 rotate_right(i32 root, i32 p) {
+        const i32 l = node(p).left;
+        if (l < 0) {
+            return root;
+        }
+        const i32 lr = node(l).right;
+        node(p).left = lr;
+        if (lr >= 0) {
+            node(lr).parent = p;
+        }
+        const i32 pp   = node(p).parent;
+        node(l).parent = pp;
+        if (pp < 0) {
+            root        = l;
+            node(l).red = false;
+        } else if (node(pp).right == p) {
+            node(pp).right = l;
+        } else {
+            node(pp).left = l;
+        }
+        node(l).right  = p;
+        node(p).parent = l;
+        return root;
+    }
+
+    /// The red-black fix-up after an insertion; returns the root.
+    i32 balance_insertion(i32 root, i32 x) {
+        node(x).red = true;
+        for (;;) {
+            i32 xp = node(x).parent;
+            if (xp < 0) {
+                node(x).red = false;
+                return x;
+            }
+            i32 xpp = node(xp).parent;
+            if (!node(xp).red || xpp < 0) {
+                return root;
+            }
+            const i32 xppl = node(xpp).left;
+            if (xp == xppl) {
+                const i32 xppr = node(xpp).right;
+                if (xppr >= 0 && node(xppr).red) {
+                    node(xppr).red = false;
+                    node(xp).red   = false;
+                    node(xpp).red  = true;
+                    x              = xpp;
+                    continue;
+                }
+                if (x == node(xp).right) {
+                    x    = xp;
+                    root = rotate_left(root, x);
+                    xp   = node(x).parent;
+                    xpp  = xp < 0 ? -1 : node(xp).parent;
+                }
+                if (xp >= 0) {
+                    node(xp).red = false;
+                    if (xpp >= 0) {
+                        node(xpp).red = true;
+                        root          = rotate_right(root, xpp);
+                    }
+                }
+            } else {
+                if (xppl >= 0 && node(xppl).red) {
+                    node(xppl).red = false;
+                    node(xp).red   = false;
+                    node(xpp).red  = true;
+                    x              = xpp;
+                    continue;
+                }
+                if (x == node(xp).left) {
+                    x    = xp;
+                    root = rotate_right(root, x);
+                    xp   = node(x).parent;
+                    xpp  = xp < 0 ? -1 : node(xp).parent;
+                }
+                if (xp >= 0) {
+                    node(xp).red = false;
+                    if (xpp >= 0) {
+                        node(xpp).red = true;
+                        root          = rotate_left(root, xpp);
+                    }
+                }
+            }
+        }
+    }
+
+    void move_root_to_front(std::vector<Bin>& table, usize index, i32 root) {
+        Bin&      bin   = table[index];
+        const i32 first = bin.head;
+        if (root < 0 || root == first) {
+            return;
+        }
+        bin.head     = root;
+        const i32 rp = node(root).prev;
+        const i32 rn = node(root).next;
+        if (rn >= 0) {
+            node(rn).prev = rp;
+        }
+        if (rp >= 0) {
+            node(rp).next = rn;
+        }
+        if (first >= 0) {
+            node(first).prev = root;
+        }
+        node(root).next = first;
+        node(root).prev = -1;
+    }
+
+    /// Build a bin's tree from its list, in list order.
+    void treeify_in(std::vector<Bin>& table, usize index) {
+        Bin& bin  = table[index];
+        i32  root = -1;
+        for (i32 x = bin.head; x >= 0; x = node(x).next) {
+            node(x).left  = -1;
+            node(x).right = -1;
+            if (root < 0) {
+                node(x).parent = -1;
+                node(x).red    = false;
+                root           = x;
+                continue;
+            }
+            const i32 h = node(x).hash;
+            for (i32 p = root;;) {
+                const i32 dir = direction(h, p);
+                const i32 xp  = p;
+                p             = dir <= 0 ? node(p).left : node(p).right;
+                if (p < 0) {
+                    node(x).parent = xp;
+                    if (dir <= 0) {
+                        node(xp).left = x;
+                    } else {
+                        node(xp).right = x;
+                    }
+                    root = balance_insertion(root, x);
+                    break;
+                }
+            }
+        }
+        bin.tree = true;
+        move_root_to_front(table, index, root);
+    }
+    void treeify(usize index) { treeify_in(table_, index); }
+
+    /// `putTreeVal` for a position known not to be in the set.
+    void put_tree(usize index, BlockPos pos, i32 h) {
+        const i32 root = table_[index].head;  // a tree bin keeps its root first
+        for (i32 p = root;;) {
+            const i32 dir = direction(h, p);
+            const i32 xp  = p;
+            p             = dir <= 0 ? node(p).left : node(p).right;
+            if (p < 0) {
+                const i32 xpn = node(xp).next;
+                const i32 x   = make_node(pos, h);
+                node(x).next  = xpn;
+                if (dir <= 0) {
+                    node(xp).left = x;
+                } else {
+                    node(xp).right = x;
+                }
+                node(xp).next  = x;
+                node(x).parent = xp;
+                node(x).prev   = xp;
+                if (xpn >= 0) {
+                    node(xpn).prev = x;
+                }
+                move_root_to_front(table_, index, balance_insertion(root, x));
+                return;
+            }
+        }
+    }
+
+    void resize(usize next_capacity) {
+        std::vector<Bin> grown(next_capacity);
+        const usize      old_capacity = table_.size();
+        for (usize j = 0; j < old_capacity; ++j) {
+            const Bin old = table_[j];
+            if (old.head < 0) {
+                continue;
+            }
+            // Split the list in order; the bit the doubling adds decides.
+            i32   lo_head = -1, lo_tail = -1, hi_head = -1, hi_tail = -1;
+            usize lo_count = 0, hi_count = 0;
+            for (i32 e = old.head, next = -1; e >= 0; e = next) {
+                next         = node(e).next;
+                node(e).next = -1;
+                const bool low  = (static_cast<u32>(node(e).hash) & old_capacity) == 0;
+                i32&       head = low ? lo_head : hi_head;
+                i32&       tail = low ? lo_tail : hi_tail;
+                node(e).prev    = tail;
+                if (tail < 0) {
+                    head = e;
+                } else {
+                    node(tail).next = e;
+                }
+                tail = e;
+                ++(low ? lo_count : hi_count);
+            }
+            grown[j].head                = lo_head;
+            grown[j + old_capacity].head = hi_head;
+            if (!old.tree) {
+                continue;
+            }
+            // A tree bin's halves: a plain list at six or fewer, the same tree
+            // when the other half is empty, a new tree otherwise.
+            const auto settle = [&](usize at, i32 head, usize count, bool other_empty) {
+                if (head < 0 || count <= 6) {
+                    return;
+                }
+                if (other_empty) {
+                    grown[at].tree = true;
+                } else {
+                    treeify_in(grown, at);
+                }
+            };
+            settle(j, lo_head, lo_count, hi_head < 0);
+            settle(j + old_capacity, hi_head, hi_count, lo_head < 0);
+        }
+        table_ = std::move(grown);
+    }
+
+    std::vector<JavaNode> nodes_;
+    std::vector<Bin>      table_;
+    usize                 size_{0};
+};
+
+/// The model before treeified bins, kept as the instrument's "before"
+/// (`OV_HASHMAP=legacy`): no tree, and a small table resized one entry early.
+std::vector<BlockPos> java_hash_order_legacy(const std::vector<BlockPos>& inserted) {
     // A faithful little HashMap: buckets of insertion-ordered lists, doubling
     // when the size passes three quarters of the capacity, and splitting each
     // bucket in a way that preserves relative order.
@@ -291,6 +647,25 @@ std::vector<BlockPos> java_hash_order(const std::vector<BlockPos>& inserted) {
     }
     (void)hashes;
     return out;
+}
+
+}  // namespace
+
+std::vector<BlockPos> java_hash_order(const std::vector<BlockPos>& inserted) {
+    // `OV_HASHMAP=legacy` is the instrument that gives the "before" from the
+    // same binary. Read once.
+    static const bool legacy = [] {
+        const char* setting = std::getenv("OV_HASHMAP");
+        return setting != nullptr && std::string_view(setting) == "legacy";
+    }();
+    if (legacy) {
+        return java_hash_order_legacy(inserted);
+    }
+    JavaHashSet set;
+    for (const BlockPos& pos : inserted) {
+        set.add(pos);
+    }
+    return set.iteration();
 }
 
 // ── The writer ──────────────────────────────────────────────────────────────
