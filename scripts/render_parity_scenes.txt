@@ -50,6 +50,42 @@ cmd setblock 48072 91 24 minecraft:stone
 cmd setblock 48071 91 25 minecraft:stone
 cmd setblock 48077 91 28 minecraft:stone
 cmd setblock 48078 91 27 minecraft:stone
+# ── implicit water ── a stone basin east of the platform: seagrass, tall
+# seagrass, kelp, a bubble column, corals and sea pickles waterlogged and dry,
+# a waterlogged stair and a conduit, and lily pads (docs/provenance/
+# eau-implicite.md). The shelf in the north-west corner puts plants in the
+# surface cell, where a plant drawn without its water is a hole in the sea.
+cmd fill 48100 88 20 48114 91 34 minecraft:stone
+cmd fill 48101 89 21 48113 91 33 minecraft:water
+cmd fill 48101 89 21 48106 90 26 minecraft:stone
+cmd setblock 48102 91 22 minecraft:seagrass
+cmd setblock 48104 91 22 minecraft:seagrass
+cmd setblock 48103 91 24 minecraft:seagrass
+cmd setblock 48105 91 23 minecraft:tube_coral_fan[waterlogged=true]
+cmd setblock 48102 91 26 minecraft:sea_pickle[pickles=4,waterlogged=true]
+cmd setblock 48104 91 26 minecraft:brain_coral[waterlogged=true]
+cmd setblock 48106 91 25 minecraft:conduit[waterlogged=true]
+cmd setblock 48101 91 21 minecraft:oak_stairs[waterlogged=true]
+cmd setblock 48109 89 24 minecraft:kelp_plant
+cmd setblock 48109 90 24 minecraft:kelp_plant
+cmd setblock 48109 91 24 minecraft:kelp[age=25]
+cmd setblock 48111 89 27 minecraft:kelp_plant
+cmd setblock 48111 90 27 minecraft:kelp[age=25]
+cmd setblock 48108 89 30 minecraft:tall_seagrass[half=lower]
+cmd setblock 48108 90 30 minecraft:tall_seagrass[half=upper]
+cmd setblock 48110 89 31 minecraft:seagrass
+cmd setblock 48112 88 22 minecraft:soul_sand
+cmd fill 48112 89 22 48112 91 22 minecraft:bubble_column[drag=false]
+cmd setblock 48100 92 28 minecraft:dead_tube_coral_fan[waterlogged=false]
+cmd setblock 48100 92 30 minecraft:sea_pickle[pickles=2,waterlogged=false]
+cmd setblock 48108 92 26 minecraft:lily_pad
+cmd setblock 48110 92 25 minecraft:lily_pad
+cmd setblock 48112 92 29 minecraft:lily_pad
+cmd setblock 48107 92 33 minecraft:lily_pad
+cmd setblock 48111 92 32 minecraft:lily_pad
+# One block under the camera: our client does not fly on its own, and it is
+# below the bottom of the frame.
+cmd setblock 48107 95 15 minecraft:stone
 wait 3000
 
 scene plains        48046.5 68 26.5 -90 15 6000
@@ -109,5 +145,25 @@ scene beach         48.5 68 0.5 -90 20 6000
 scene jungle        48.5 68 0.5 90 5 6000
 scene underwater    70.5 47 4.5 -90 10 6000
 scene desert        14985.5 64 26045.5 90 10 6000
+# ── implicit water ── the basin built with the platform, from above; then a
+# lily pad pool over the spawn's ocean, another biome and another water
+# colour under the same pad colour. Its commands follow the scene before it,
+# so our client's run of `lilypads` sends them standing next to it.
+scene aquatic       48107.5 96 15.5 0 30 6000
+cmd tp @s 63 96 -9
+wait 10000
+cmd fill 58 88 -4 68 89 4 minecraft:stone
+cmd fill 59 89 -3 67 89 3 minecraft:water
+cmd setblock 63 89 0 minecraft:seagrass
+cmd setblock 61 89 2 minecraft:tube_coral[waterlogged=true]
+cmd setblock 60 90 -2 minecraft:lily_pad
+cmd setblock 62 90 -1 minecraft:lily_pad
+cmd setblock 64 90 1 minecraft:lily_pad
+cmd setblock 66 90 -2 minecraft:lily_pad
+cmd setblock 65 90 3 minecraft:lily_pad
+cmd setblock 60 90 2 minecraft:lily_pad
+cmd setblock 63 92 -9 minecraft:stone
+wait 3000
+scene lilypads      63.5 93 -8.5 0 35 6000
 
 sweep

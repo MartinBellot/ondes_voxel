@@ -175,7 +175,6 @@ gameplay::FireContact FireSession::contact(Vec3d feet, f64 width, f64 height) co
                     continue;
                 }
                 const registry::BlockId block = blocks_->block_of(state);
-                const std::string_view  name  = blocks_->block_name(block);
                 if (rules_.is_campfire(state) || rules_.is_soul_campfire(state)) {
                     const auto lit = blocks_->find_property(block, "lit");
                     if (lit && blocks_->property_value(state, *lit) == "true") {
@@ -184,26 +183,17 @@ gameplay::FireContact FireSession::contact(Vec3d feet, f64 width, f64 height) co
                     }
                     continue;
                 }
-                const bool lava  = name == "minecraft:lava";
-                bool       water = name == "minecraft:water";
-                if (!lava && !water) {
-                    if (const auto logged = blocks_->find_property(block, "waterlogged");
-                        logged && blocks_->property_value(state, *logged) == "true") {
-                        water = true;
-                    }
-                }
-                if (!lava && !water) {
+                // ── implicit water ── the one registry query: the fluid block
+                // at its level, a waterlogged block, or seagrass, kelp and a
+                // bubble column, which are always a water source.
+                const registry::BlockRegistry::StateFluid held = blocks_->fluid(state);
+                if (held.empty()) {
                     continue;
                 }
+                const bool lava = held.is_lava();
                 // A source and a falling column stand 8/9 of a block high, a
                 // flowing level n stands (8 - n)/9.
-                i32 level = 0;
-                if (const auto prop = blocks_->find_property(block, "level")) {
-                    const std::string_view text = blocks_->property_value(state, *prop);
-                    for (const char c : text) {
-                        level = level * 10 + (c - '0');
-                    }
-                }
+                const i32 level = held.level;
                 const i32 amount  = level == 0 || level >= 8 ? 8 : 8 - level;
                 const f64 surface = static_cast<f64>(y) + static_cast<f64>(amount) / 9.0;
                 if (surface >= fluid_floor) {

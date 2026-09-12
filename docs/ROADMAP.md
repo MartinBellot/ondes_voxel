@@ -943,6 +943,14 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       n'est encore appelée par personne, la lave n'est pas mesurée, et la
       formation des colonnes au-dessus du sable des âmes et du magma n'est pas
       faite)*
+      *(**2026-09-12** ── implicit water ── herbes marines, grandes herbes
+      marines, kelp, `kelp_plant` et colonnes de bulles sont de l'eau sans
+      propriété `waterlogged` (wiki « Waterlogging » : cinq blocs
+      « Inherent ») : **une** requête de fluide dans le registre, lue par le
+      moteur de fluides, la noyade, les yeux sous l'eau, le feu, les flèches,
+      la physique et le maillage du client, qui dessinait de l'**air** autour
+      d'eux et autour de tout bloc engorgé. Nénuphar teinté `#208030`
+      (wiki « Lily Pad »). Voir `docs/provenance/eau-implicite.md`)*
 - [~] **Fabrication et fonte** : recettes façonnées et informes, fours ×3,
       pierre de taille, forge, livre de recettes
       *(**1174 / 1174 recettes chargées**, 0 refusée, les 30 déclarées sans

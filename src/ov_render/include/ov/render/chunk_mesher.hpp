@@ -81,6 +81,14 @@ public:
         return Vec3i{origin_x_ + local.x, origin_y_ + local.y, origin_z_ + local.z};
     }
 
+    /// ── implicit water ── the water source drawn *with* this block, or air.
+    ///
+    /// A block that holds water — `waterlogged=true`, or seagrass, tall
+    /// seagrass, kelp, kelp_plant and a bubble column, which always do — draws
+    /// its model and the water it stands in. Air for the water block itself,
+    /// which draws its own.
+    [[nodiscard]] registry::BlockStateId held_water(Vec3i local) const noexcept;
+
 private:
     [[nodiscard]] const world::Chunk* chunk_for(i32 world_x, i32 world_z) const noexcept;
 
@@ -91,6 +99,8 @@ private:
     i32                            origin_y_;
     i32                            origin_z_;
     mutable bool                   light_seen_{false};
+    /// ── implicit water ── minecraft:water[level=0], resolved once.
+    registry::BlockStateId water_source_{0};
 };
 
 struct SectionMeshStats {

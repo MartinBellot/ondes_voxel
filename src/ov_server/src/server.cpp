@@ -9267,9 +9267,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 const auto         water = [](const void* context, BlockPos pos) -> bool {
                     const auto& in = *static_cast<const WaterContext*>(context);
                     const registry::BlockStateId state = (*in.read)({pos.x, pos.y, pos.z});
-                    return in.registry->holds_fluid(state) &&
-                           in.registry->block_name(in.registry->block_of(state)) ==
-                               "minecraft:water";
+                    // ── implicit water ── seagrass and kelp drown a zombie too.
+                    return in.registry->fluid(state).is_water();
                 };
                 drowning->tick(*mobs, water, &water_context, drowned_now);
             }
@@ -9972,9 +9971,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                             static_cast<i32>(std::floor(who.x)),
                             static_cast<i32>(std::floor(who.y + 1.62)),
                             static_cast<i32>(std::floor(who.z))};
-                        const std::string_view name = blocks->block_name(
-                            blocks->block_of(block_at_in(who.dimension, eyes)));  // ── nether ──
-                        submerged = name == "minecraft:water";
+                        // ── implicit water ── a waterlogged block, seagrass
+                        // or kelp at eye height is water as much as water is.
+                        submerged = blocks->fluid(block_at_in(who.dimension, eyes))  // ── nether ──
+                                        .is_water();
                     }
                     const SurvivalPlayer view{.entity_id = who.entity_id,
                                               .name      = who.name,
