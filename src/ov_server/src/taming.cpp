@@ -196,12 +196,12 @@ i32 Taming::type_id(std::string_view name) const {
 // ── The network thread ──────────────────────────────────────────────────────
 
 void Taming::queue_interact(i32 player, i32 entity, net::Hand hand, bool sneaking) {
-    const std::scoped_lock lock{mutex_};
+    const std::scoped_lock lock{tick_thread_};
     pending_.push_back(Click{player, entity, hand, sneaking});
 }
 
 void Taming::queue_vehicle_move(i32 player, Vec3d at, f32 yaw, f32 pitch) {
-    const std::scoped_lock lock{mutex_};
+    const std::scoped_lock lock{tick_thread_};
     moves_[player] = Move{at, yaw, pitch};
 }
 
@@ -209,7 +209,7 @@ void Taming::queue_input(i32 player, u8 flags) {
     if ((flags & 0x02U) == 0) {
         return;
     }
-    const std::scoped_lock lock{mutex_};
+    const std::scoped_lock lock{tick_thread_};
     getting_off_.push_back(player);
 }
 
@@ -797,7 +797,7 @@ TamingStats Taming::before_entity_tick(entity::EntityWorld& world, gameplay::Mob
     now_ = tick;
     TamingStats stats;
     {
-        const std::scoped_lock lock{mutex_};
+        const std::scoped_lock lock{tick_thread_};
         working_.swap(pending_);
         off_now_.swap(getting_off_);
     }
@@ -888,7 +888,7 @@ TamingStats Taming::after_entity_tick(entity::EntityWorld& world,
     // every rider is carried along.
     std::unordered_map<i32, Move> moves;
     {
-        const std::scoped_lock lock{mutex_};
+        const std::scoped_lock lock{tick_thread_};
         moves.swap(moves_);
     }
     for (auto it = riding_.begin(); it != riding_.end();) {

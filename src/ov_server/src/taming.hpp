@@ -11,13 +11,16 @@
 //
 // ── Threads ─────────────────────────────────────────────────────────────────
 //
-// The `queue_*` calls run on the network thread and only record. Everything
-// else runs on the tick thread, inside the entity block, with the players'
-// lock held — an animal, a player's inventory and the random source are only
-// ever touched by one thread.
+// Everything here runs on the tick thread, the `queue_*` calls included:
+// packet handlers run there since the chunk-concurrency work
+// (inbound_queue.hpp). What guarded the queues was a mutex; it is now a
+// `TickThreadLock`, which excludes nobody and checks the caller instead — a
+// call from any other thread stops a Debug build, naming the thread
+// (CLAUDE.md principle 3: no lock around world-adjacent state).
 #pragma once
 
 #include "husbandry.hpp"
+#include "tick_thread_lock.hpp"
 
 #include "ov/entity/world.hpp"
 #include "ov/gameplay/mob_attack.hpp"
@@ -180,7 +183,9 @@ private:
     /// husbandry's, so two runs of the same server tame the same wolves.
     math::LegacyRandomSource random_{0x5EED'0000'7A3E'0001LL};
 
-    mutable std::mutex         mutex_;
+    /// Not a mutex: the proof that every caller is the tick thread (see the
+    /// top of this file). Owned by the thread that builds this object.
+    mutable TickThreadLock     tick_thread_;
     std::vector<Click>         pending_;
     std::vector<Click>         working_;
     std::unordered_map<i32, Move> moves_;
