@@ -207,3 +207,53 @@ TEST_CASE("meshing an empty section produces nothing", "[chunk-mesher]") {
     CHECK(stats.blocks_drawn == 0);
     CHECK(mesh.total_vertices() == 0);
 }
+
+// ── implicit water ──────────────────────────────────────────────────────────
+
+TEST_CASE("seagrass stands in water, and the sea draws no face against it", "[chunk-mesher]") {
+    auto blocks = try_load_registry();
+    if (!blocks) {
+        SKIP("no registry pack");
+    }
+
+    const auto shape  = world::WorldShape::overworld();
+    auto       centre = std::make_unique<world::Chunk>(ChunkPos{0, 0}, shape,
+                                                       world::AirStates::from(*blocks), &*blocks);
+    const auto water    = default_state(*blocks, "minecraft:water");
+    const auto seagrass = default_state(*blocks, "minecraft:seagrass");
+    const auto kelp     = default_state(*blocks, "minecraft:kelp_plant");
+    centre->set_block(1, 64, 1, seagrass);
+    centre->set_block(2, 64, 1, water);
+    centre->set_block(8, 64, 8, kelp);
+    ChunkNeighbours around{};
+    around[4] = centre.get();
+
+    const ChunkSectionView view(*blocks, around, 0, 64, 0);
+    // The seagrass cell is the same fluid as the water beside it.
+    CHECK(view.fluid_at(Vec3i{1, 0, 1}) != 0);
+    CHECK(view.fluid_at(Vec3i{1, 0, 1}) == view.fluid_at(Vec3i{2, 0, 1}));
+    CHECK(view.fluid_at(Vec3i{0, 0, 1}) == 0);
+    CHECK(view.held_water(Vec3i{1, 0, 1}) == water);
+    CHECK(view.held_water(Vec3i{8, 0, 8}) == water);
+    // The water block draws its own box; it holds nothing else.
+    CHECK(view.held_water(Vec3i{2, 0, 1}) == registry::kAirState);
+
+    // No assets: the plants draw nothing of their own, and what is left is
+    // the water. Three boxes of six faces, minus the two the seagrass and the
+    // water share.
+    MemoryAssetSource source;
+    BlockModelCache   models(source, *blocks);
+    AtlasBuilder      builder(source);
+    auto              atlas = builder.build();
+    REQUIRE(atlas.has_value());
+    MeshBuffers mesh;
+    (void)mesh_section(view, models, *atlas, mesh);
+    CHECK(mesh[RenderLayer::Translucent].size() == (3 * 6 - 2) * 4);
+    CHECK(mesh.total_vertices() == mesh[RenderLayer::Translucent].size());
+}
+
+TEST_CASE("the lily pad takes its own constant, not the biome's", "[chunk-mesher]") {
+    CHECK(tint_channel_for("minecraft:lily_pad") == TintChannel::LilyPad);
+    CHECK(tint_channel_for("minecraft:seagrass") == TintChannel::None);
+    CHECK(tint_channel_for("minecraft:spruce_leaves") == TintChannel::EvergreenFoliage);
+}

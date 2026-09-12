@@ -362,12 +362,55 @@ public:
     /// scaffolding[waterlogged=false] does not. Both were measured.
     [[nodiscard]] bool holds_fluid(BlockStateId state) const noexcept;
 
+    // ── implicit water ──────────────────────────────────────────────────────
+    //
+    // "Is this cell water?" asked once, here, for every layer: the client's
+    // mesher and physics, the server's fluid engine, drowning, heightmaps.
+    // Three ways a state holds a fluid, and code that knew only the first two
+    // drew air around every seagrass (docs/provenance/eau-implicite.md):
+    //
+    //   * it *is* the fluid — minecraft:water or minecraft:lava, at its level;
+    //   * it is `waterlogged=true` — a water source held by the block;
+    //   * it is one of the five blocks that are **always** water with no
+    //     property to say so: seagrass, tall_seagrass, kelp, kelp_plant and
+    //     bubble_column. Their fluid is a water source, whatever their state.
+
+    enum class FluidType : u8 { None, Water, Lava };
+
+    /// The fluid a state holds.
+    struct StateFluid {
+        FluidType type{FluidType::None};
+        /// Vanilla's `level` for a fluid block: 0 a source, 1..7 flowing, 8..15
+        /// falling. Always 0 for a block that holds a source.
+        u8 level{0};
+        /// The state is the fluid block itself rather than a block holding it.
+        bool is_fluid_block{false};
+
+        [[nodiscard]] constexpr bool empty() const noexcept { return type == FluidType::None; }
+        [[nodiscard]] constexpr bool is_water() const noexcept { return type == FluidType::Water; }
+        [[nodiscard]] constexpr bool is_lava() const noexcept { return type == FluidType::Lava; }
+        [[nodiscard]] constexpr bool is_source() const noexcept {
+            return type != FluidType::None && level == 0;
+        }
+    };
+
+    /// What fluid this state holds, if any. One table lookup.
+    [[nodiscard]] StateFluid fluid(BlockStateId state) const noexcept;
+
+    /// Is this one of the five blocks that hold water with no `waterlogged`
+    /// property? True for every state of seagrass, tall_seagrass, kelp,
+    /// kelp_plant and bubble_column, false everywhere else.
+    [[nodiscard]] bool is_implicitly_water(BlockId block) const noexcept;
+
     [[nodiscard]] bool is_valid(BlockStateId state) const noexcept {
         return state.value() < state_count();
     }
 
 private:
     BlockRegistry() = default;
+
+    /// ── implicit water ── fills fluid_table_, once the names are readable.
+    void build_fluid_table();
 
     struct Impl;
     std::vector<u8> data_;
@@ -388,6 +431,10 @@ private:
     std::span<const u32>          shape_records_;
     std::span<const u16>          state_shapes_;
     std::span<const u8>           emission_;
+    /// ── implicit water ── one byte per state: bits 0-1 the FluidType, bit 2
+    /// the fluid block itself, bits 3-6 the level, bit 7 implicitly water.
+    /// Built at load from the names, the `level` and `waterlogged` properties.
+    std::vector<u8> fluid_table_;
     /// BiomeRecord*, type-erased: the record's layout is private to this
     /// module, and naming it here would put the file format in a public
     /// header. Same reason as header_ below.

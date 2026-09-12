@@ -408,3 +408,27 @@ TEST_CASE("our route through the oracle's maze is the route the game took",
     CHECK(path.steps.size() >= 40);
     CHECK(path.steps.size() <= 60);
 }
+
+// ── implicit water ── kelp and seagrass have no `waterlogged` property and are
+// water all the same: a walker wades through a kelp bed, as through the sea.
+TEST_CASE("a kelp bed is water to a walker", "[gameplay][path]") {
+    if (blocks() == nullptr) {
+        WARN("registry.ovpack missing");
+        return;
+    }
+    TestLevel level{*blocks()};
+    level.set_floor_bounds(-1, 10, -1, 1);
+    level.fill({-1, 0, -1}, {10, 3, -1}, "minecraft:stone");
+    level.fill({-1, 0, 1}, {10, 3, 1}, "minecraft:stone");
+    level.fill({3, 0, 0}, {4, 0, 0}, "minecraft:kelp_plant");
+    level.fill({5, 0, 0}, {6, 0, 0}, "minecraft:seagrass");
+    PathFinder finder;
+    Path       path;
+    REQUIRE(finder.find(WalkNodeEvaluator{}, level, {0, 0, 0}, {9, 0, 0}, zombie_size(), walker(),
+                        32.0F, path));
+    usize wet = 0;
+    for (const PathStep& step : path.steps) {
+        wet += step.type == PathNodeType::Water ? 1 : 0;
+    }
+    CHECK(wet >= 4);
+}

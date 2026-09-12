@@ -164,6 +164,11 @@ TintChannel tint_channel_for(std::string_view block_name) noexcept {
     if (std::ranges::find(kBirch, bare) != std::ranges::end(kBirch)) {
         return TintChannel::BirchFoliage;
     }
+    // ── implicit water ── the lily pad's model declares a tintindex on both
+    // faces and its texture is grey: untinted, it draws a grey pad.
+    if (bare == "lily_pad") {
+        return TintChannel::LilyPad;
+    }
     return TintChannel::None;
 }
 
@@ -281,7 +286,10 @@ const BlockRender& BlockModelCache::resolve(registry::BlockStateId state) {
             is_water ? "minecraft:block/water_still" : "minecraft:block/lava_still", level);
         render.layer    = is_water ? RenderLayer::Translucent : RenderLayer::Solid;
         render.tint     = is_water ? TintChannel::Water : TintChannel::None;
-        render.fluid    = block.value() + 1u;
+        // ── implicit water ── the fluid's type rather than its block, so that
+        // a seagrass or a waterlogged stair (fluid_at) matches the sea.
+        render.fluid = static_cast<u16>(is_water ? registry::BlockRegistry::FluidType::Water
+                                                 : registry::BlockRegistry::FluidType::Lava);
         render.drawable = true;
         render.particle_sprite =  // ── breaking ──
             is_water ? "minecraft:block/water_still" : "minecraft:block/lava_still";

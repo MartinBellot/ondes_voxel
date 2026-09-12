@@ -66,30 +66,21 @@ FluidState FluidRules::fluid_at(registry::BlockStateId state) const noexcept {
     if (blocks_ == nullptr || !blocks_->is_valid(state)) {
         return {};
     }
-    const registry::BlockId block = blocks_->block_of(state);
-
-    if (block == water_ || block == lava_) {
-        const registry::PropertyView& property = block == water_ ? water_level_ : lava_level_;
-        const u16 level = blocks_->property_index(state, property);
-        // Disk stores `level = falling ? 8 : amount`. Anything at or above 8 is
-        // falling; below it, the value is the amount itself.
-        if (level >= 8) {
-            return FluidState{block == water_ ? FluidKind::Water : FluidKind::Lava, 0, true};
-        }
-        return FluidState{block == water_ ? FluidKind::Water : FluidKind::Lava,
-                          static_cast<u8>(level), false};
+    // ── implicit water ── the registry's one answer. A waterlogged block holds
+    // a water **source** (measured: a waterlogged slab alone on a floor grows
+    // the same diamond a source does), and so do seagrass, tall seagrass,
+    // kelp, kelp_plant and a bubble column, which have no property to say so.
+    const registry::BlockRegistry::StateFluid held = blocks_->fluid(state);
+    if (held.empty()) {
+        return {};
     }
-
-    // A waterlogged block holds a water **source**. Measured: a waterlogged
-    // slab alone on a floor grows the same diamond a source does.
-    const u16 stride = waterlogged_stride_[block.value()];
-    if (stride != 0) {
-        const auto property = blocks_->find_property(block, "waterlogged");
-        if (property && blocks_->property_value(state, *property) == "true") {
-            return FluidState{FluidKind::Water, 0, false};
-        }
+    const FluidKind kind = held.is_water() ? FluidKind::Water : FluidKind::Lava;
+    // Disk stores `level = falling ? 8 : amount`. Anything at or above 8 is
+    // falling; below it, the value is the amount itself.
+    if (held.level >= 8) {
+        return FluidState{kind, 0, true};
     }
-    return {};
+    return FluidState{kind, held.level, false};
 }
 
 registry::BlockStateId FluidRules::state_for(FluidState fluid) const noexcept {
@@ -571,12 +562,11 @@ bool FluidRules::releases_water(registry::BlockStateId state) const noexcept {
     if (blocks_ == nullptr || !blocks_->is_valid(state)) {
         return false;
     }
-    const registry::BlockId block = blocks_->block_of(state);
-    if (waterlogged_stride_[block.value()] == 0) {
-        return false;
-    }
-    const auto property = blocks_->find_property(block, "waterlogged");
-    return property && blocks_->property_value(state, *property) == "true";
+    // ── implicit water ── any block holding water that is not the water block
+    // itself: `waterlogged=true`, and seagrass, kelp and a bubble column, whose
+    // water stays behind when they go (the Minecraft Wiki, Seagrass and Kelp).
+    const registry::BlockRegistry::StateFluid held = blocks_->fluid(state);
+    return held.is_water() && !held.is_fluid_block;
 }
 
 registry::BlockStateId FluidRules::state_after_break(registry::BlockStateId state) const noexcept {

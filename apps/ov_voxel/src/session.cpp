@@ -64,31 +64,19 @@ gameplay::FluidSample Session::fluid_at(i32 x, i32 y, i32 z) const {
     if (state == registry::kAirState) {
         return {};
     }
-    const auto block = blocks_->block_of(state);
-
-    if (block == water_block_ || block == lava_block_) {
-        // A fluid's rendered height is its `amount` over nine. Level 0 is a
-        // source and level 1 to 7 are the flowing steps; level 8 and above are
-        // falling, and fill their block.
-        u16 level = 0;
-        for (const auto& property : blocks_->properties(block)) {
-            if (property.name == "level") {
-                level = blocks_->property_index(state, property);
-                break;
-            }
-        }
-        const f64 amount = level >= 8 ? 8.0 : 8.0 - static_cast<f64>(level);
-        return gameplay::FluidSample{
-            block == water_block_ ? gameplay::Fluid::Water : gameplay::Fluid::Lava, amount / 9.0};
+    // ── implicit water ── the registry's one answer: the fluid block at its
+    // level, or a full source held by a waterlogged block — and by seagrass,
+    // kelp and a bubble column, which hold one with no property to say so.
+    const registry::BlockRegistry::StateFluid held = blocks_->fluid(state);
+    if (held.empty()) {
+        return {};
     }
-
-    // A waterlogged block holds a full source. This is why the registry keeps
-    // the flag per state rather than per block: a fence in the sea is wet and
-    // the same fence on land is not.
-    if (blocks_->holds_fluid(state)) {
-        return gameplay::FluidSample{gameplay::Fluid::Water, 8.0 / 9.0};
-    }
-    return {};
+    // A fluid's rendered height is its `amount` over nine. Level 0 is a source
+    // and level 1 to 7 are the flowing steps; level 8 and above are falling,
+    // and fill their block.
+    const f64 amount = held.level >= 8 ? 8.0 : 8.0 - static_cast<f64>(held.level);
+    return gameplay::FluidSample{held.is_water() ? gameplay::Fluid::Water : gameplay::Fluid::Lava,
+                                 amount / 9.0};
 }
 
 bool Session::is_interaction_target(i32 x, i32 y, i32 z) const {
