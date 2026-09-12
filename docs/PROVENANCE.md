@@ -74,6 +74,7 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`interface.md`](provenance/interface.md) | Police, HUD, inventaire : 2414 glyphes validés glyphe par glyphe |
 | [`inventaire-creatif.md`](provenance/inventaire-creatif.md) | Les 14 onglets demandés au jar serveur, 1689 cases, et la géométrie comptée dans les pixels |
 | [`rendu-entites.md`](provenance/rendu-entites.md) | Modèles d'entités, leur source, et le chest refusé faute de source permise |
+| [`serveur-dedie.md`](provenance/serveur-dedie.md) | Le serveur dédié administré comme vanilla : `server.properties` et les quatre listes dans l'ordre même des tables de hachage du JDK 17, la porte, RCON, Query, le chien de garde — et la fermeture côté serveur que l'écouteur ne signalait jamais |
 | [`persistance-entites.md`](provenance/persistance-entites.md) | Objets, orbes, flèches, TNT, sable, nuages, mobs du Nether, dragon et cristaux, et le wagonnet du joueur : sauvés au type près mesuré sur le vrai serveur, un écrivain par dimension |
 
 ---
