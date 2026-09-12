@@ -636,9 +636,14 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       Nether, End) : étage attaché à chaque pile de génération, vidé avec le
       carré (déterminisme), `structures.starts` et `References` écrits au
       format du jeu — l'épave échouée du chunk (9, 5) identique champ pour
-      champ, types compris ; portails et trésor refusés par le serveur tant
-      que leur hauteur n'est pas réglée, tout refus nommé au journal
-      (`structures.md` § 20). Temples du désert et
+      champ, types compris ; tout refus nommé au journal
+      (`structures.md` § 20). **Portails en ruine à la hauteur du jeu** :
+      hauteur et test « froid » décidés à la génération, depuis le bruit,
+      **34/34 départs** exacts (25 Overworld, 9 Nether ; témoins à graine
+      décalée 0/29) — le serveur les place ; **trésor enfoui** : recherche
+      vers le bas à la pose, lue dans les blocs du vrai serveur, **13/13
+      coffres** (dont 9 d'une graine hors échantillon ; témoin 4/13) — placé
+      par le serveur (§ 15). Temples du désert et
       de la jungle, cabane de sorcière : construits en code par le jeu,
       refusés par nom. Jigsaw (villages, avant-postes, bastions…) : autre
       mandat. Voir `docs/provenance/structures.md` §§ 12-20)* :
@@ -813,8 +818,11 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       d'un cheval et de ses poulains à la règle 1.20 (écarts-types à 12 % près
       sur 120 poulains ; la mule hérite sa vitesse) ; tempérament +5 par chute ;
       un cheval dompté, sellé et conduit par `Move Vehicle` de bout en bout, et
-      revenu de `entities/` — dans trois exécutions sur six : dans deux, le
-      cheval monté ne décide pas (ouvert, journalisé). Lapin, renard, tortue,
+      revenu de `entities/`. Un cheval monté qui semblait décider trop tard
+      révélait en fait l'horloge du serveur (le temps du jeu sautait du retard
+      pendant qu'un seul tick tournait) : corrigée, le cheval décide en 43
+      ticks exécutés en moyenne sur 22 montées, pour 50 attendus et 43,8
+      chez vanilla (86 montées chronométrées au tick). Lapin, renard, tortue,
       abeille, chèvre, dromadaire
       et renifleur vivent, se nourrissent, se reproduisent et gardent leur type
       à la sauvegarde. Restent le vol et l'épaule du perroquet, la ruche, la
@@ -976,6 +984,14 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       n'est encore appelée par personne, la lave n'est pas mesurée, et la
       formation des colonnes au-dessus du sable des âmes et du magma n'est pas
       faite)*
+      *(**2026-09-12** ── implicit water ── herbes marines, grandes herbes
+      marines, kelp, `kelp_plant` et colonnes de bulles sont de l'eau sans
+      propriété `waterlogged` (wiki « Waterlogging » : cinq blocs
+      « Inherent ») : **une** requête de fluide dans le registre, lue par le
+      moteur de fluides, la noyade, les yeux sous l'eau, le feu, les flèches,
+      la physique et le maillage du client, qui dessinait de l'**air** autour
+      d'eux et autour de tout bloc engorgé. Nénuphar teinté `#208030`
+      (wiki « Lily Pad »). Voir `docs/provenance/eau-implicite.md`)*
 - [~] **Fabrication et fonte** : recettes façonnées et informes, fours ×3,
       pierre de taille, forge, livre de recettes
       *(**1174 / 1174 recettes chargées**, 0 refusée, les 30 déclarées sans

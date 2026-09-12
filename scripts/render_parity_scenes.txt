@@ -109,5 +109,49 @@ scene beach         48.5 68 0.5 -90 20 6000
 scene jungle        48.5 68 0.5 90 5 6000
 scene underwater    70.5 47 4.5 -90 10 6000
 scene desert        14985.5 64 26045.5 90 10 6000
+# ── implicit water ── seagrass, tall seagrass, kelp, a bubble column, corals
+# and sea pickles waterlogged and dry, a waterlogged stair and a conduit, and
+# lily pads, in a basin cut into a stone platform over the spawn
+# (docs/provenance/eau-implicite.md). The shelf in the north-west corner puts
+# plants in the surface cell, where a plant drawn without its water is a hole
+# in the sea. All of it inside the spawn area (chunks -1..1, x and z -16..31),
+# resident before anyone may join: built farther out, on a loaded machine,
+# most commands met "That position is not loaded". Its commands follow the
+# scene before it, so our client's run of `aquatic` sends them itself; the
+# camera stands on the one-block pillar, which both clients draw.
+cmd tp @s 8.5 130 -2.5
+wait 5000
+cmd fill -16 119 -16 31 119 31 minecraft:stone
+cmd fill 1 116 1 15 119 15 minecraft:stone
+cmd fill 2 117 2 14 119 14 minecraft:water
+cmd fill 2 117 2 7 118 7 minecraft:stone
+cmd setblock 3 119 3 minecraft:seagrass
+cmd setblock 5 119 3 minecraft:seagrass
+cmd setblock 4 119 5 minecraft:seagrass
+cmd setblock 6 119 4 minecraft:tube_coral_fan[waterlogged=true]
+cmd setblock 3 119 7 minecraft:sea_pickle[pickles=4,waterlogged=true]
+cmd setblock 5 119 7 minecraft:brain_coral[waterlogged=true]
+cmd setblock 7 119 6 minecraft:conduit[waterlogged=true]
+cmd setblock 2 119 2 minecraft:oak_stairs[waterlogged=true]
+cmd setblock 10 117 5 minecraft:kelp_plant
+cmd setblock 10 118 5 minecraft:kelp_plant
+cmd setblock 10 119 5 minecraft:kelp[age=25]
+cmd setblock 12 117 9 minecraft:kelp_plant
+cmd setblock 12 118 9 minecraft:kelp[age=25]
+cmd setblock 9 117 11 minecraft:tall_seagrass[half=lower]
+cmd setblock 9 118 11 minecraft:tall_seagrass[half=upper]
+cmd setblock 11 117 12 minecraft:seagrass
+cmd setblock 13 116 3 minecraft:soul_sand
+cmd fill 13 117 3 13 119 3 minecraft:bubble_column[drag=false]
+cmd setblock 0 120 6 minecraft:dead_tube_coral_fan[waterlogged=false]
+cmd setblock 0 120 9 minecraft:sea_pickle[pickles=2,waterlogged=false]
+cmd setblock 9 120 7 minecraft:lily_pad
+cmd setblock 11 120 6 minecraft:lily_pad
+cmd setblock 13 120 10 minecraft:lily_pad
+cmd setblock 8 120 14 minecraft:lily_pad
+cmd setblock 12 120 13 minecraft:lily_pad
+cmd setblock 8 129 -3 minecraft:stone
+wait 3000
+scene aquatic       8.5 130 -2.5 0 55 6000
 
 sweep

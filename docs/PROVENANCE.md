@@ -58,6 +58,7 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`cassage-bloc.md`](provenance/cassage-bloc.md) | Casser un bloc dans notre client : fissures au pixel près, 151 ticks pour la pierre à la main comme le vrai client, et 64 éclats |
 | [`rails-wagonnets.md`](provenance/rails-wagonnets.md) | Les rails (Rail, Powered Rail, Minecart du wiki) : 1536/1536 formes, et 14 trajectoires de wagonnet à moins de 1e-9 du vrai serveur |
 | [`rendu-parite.md`](provenance/rendu-parite.md) | Le rendu mesuré contre le vrai client : 12 800/12 800 texels de lightmap, l'AO du jeu, et un sRGB caché qui délavait l'herbe |
+| [`eau-implicite.md`](provenance/eau-implicite.md) | Herbes marines, kelp et colonnes de bulles toujours dans l'eau (wiki « Waterlogging » : cinq blocs « Inherent ») : une requête de fluide pour tout le jeu, l'eau dessinée autour d'eux, et le nénuphar à `#208030` (wiki « Lily Pad ») |
 | [`villageois.md`](provenance/villageois.md) | Métiers, commerce et niveaux : 4298/4298 offres vanilla retrouvées, et l'ordre d'un `HashSet` Java qui se voit à l'écran |
 | [`dragon.md`](provenance/dragon.md) | Le combat contre l'Ender Dragon : phases, cristaux qui explosent (puissance 6), souffle, 12 000 points en 66 orbes, `DragonFight` aux clés du jeu, réinvocation en 604 ticks — mesurés contre le vrai serveur |
 | [`mobs-2.md`](provenance/mobs-2.md) | La loi de marche, l'apparition par biome, douze espèces, et les monstres qui n'apparaissaient jamais en surface la nuit |

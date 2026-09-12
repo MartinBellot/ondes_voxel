@@ -214,7 +214,7 @@ void Mob::tick(entity::EntityWorld& world, entity::EntityHandle self,
     // The brain runs only when there is a world to read. Without a level a mob
     // still falls — which is the floor `FallingMob` established — but it does
     // not decide anything, because every decision here needs blocks.
-    if (mob->level != nullptr && !rider_controls(brain_.tame)) {
+    if (mob->level != nullptr && !rider_controls(brain_.tame) && !no_ai_) {  // ── noai ──
         brain_.wants_move = false;
         brain_.wants_jump = false;
         brain_.has_look   = false;
@@ -303,6 +303,14 @@ void Mob::tick(entity::EntityWorld& world, entity::EntityHandle self,
         }
     }
 
+    // ── noai ── no physics either: the position stays and the stored velocity
+    // decays by 0.98 a tick, with no gravity added (apprivoisement.md § 8.3).
+    if (no_ai_) {
+        state->velocity.x *= 0.98;
+        state->velocity.y *= 0.98;
+        state->velocity.z *= 0.98;
+        return;
+    }
     *state = step_entity(*state, motion_, *mob->world);
 }
 

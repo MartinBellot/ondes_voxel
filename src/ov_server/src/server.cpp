@@ -8950,6 +8950,28 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     };
     // ── end end ─────────────────────────────────────────────────────────────
 
+    // ── tick accounting ── Sleep until the next tick is due rather than
+    // spinning. A spinning tick thread on a laptop is a battery and thermal
+    // problem, and on a shared host it steals time from the workers.
+    //
+    // ── concurrency ── Waiting on the inbound queue rather than sleeping: a dig
+    // that arrives now is answered now, not up to a tick later. The game's
+    // server does the same, running queued network tasks while it waits for its
+    // next tick. Bounded by the deadline, so a flood of packets cannot hold the
+    // next tick back. No wait at all while ticks are due: those run back to back.
+    const auto wait_for_next_tick = [&] {
+        if (const Duration idle = clock.time_until_next_tick(); idle > Duration::zero()) {
+            const auto wake =
+                std::chrono::steady_clock::now() +
+                std::chrono::duration_cast<std::chrono::steady_clock::duration>(idle);
+            while (std::chrono::steady_clock::now() < wake) {
+                if (inbound.wait_until(wake)) {
+                    (void)inbound.dispatch(inbound_handlers, &perf->network_queue_wait);
+                }
+            }
+        }
+    };
+
     // ── dedicated server administration ─────────────────────────────────────
     // RCON and Query come up with the world, as vanilla's do, and the
     // watchdog starts watching the first tick.
@@ -9052,12 +9074,38 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             continue;
         }
         // ── end screens ──
+        // ── tick accounting ── One pass of this loop is one whole tick. When the
+        // clock is behind, the ticks it yields run back to back, each a full
+        // tick with its own network drain, and no wait between them (vanilla's
+        // catch-up); past the cap they are dropped and never counted, and
+        // `clock.tick_count()`, which logic reads, is the ticks actually run.
+        // Before this, one pass ran for however many ticks were due while the
+        // counter jumped by all of them: wall-clock lag leaking into game time
+        // (principle 5), seen as a ridden horse "deciding late"
+        // (docs/provenance/apprivoisement.md § 8.1).
+        if (clock.pending_ticks() == 0) {
+            (void)clock.advance();
+            if (clock.is_behind()) {
+                ++behind_events;
+                OV_LOG_WARN("can't keep up — is the server overloaded? {} ticks behind: {} run "
+                            "back to back, {} skipped",
+                            clock.pending_ticks() + clock.dropped_ticks(), clock.pending_ticks(),
+                            clock.dropped_ticks());
+            }
+        }
+        if (!clock.take_tick()) {
+            wait_for_next_tick();  // nothing due: no tick without its time
+            continue;
+        }
         perf->begin_tick();  // ── perf ──
         const auto tick_started = std::chrono::steady_clock::now();
-        if (watchdog) {  // ── dedicated server administration ──
+        // ── dedicated server administration ── The watchdog times each tick on
+        // its own: started here, once per executed tick, catch-up ticks
+        // included — never once for a whole catch-up pass, and never on a pass
+        // with no tick due (── tick accounting ──).
+        if (watchdog) {
             watchdog->tick_started();
         }
-        const i32  ticks        = clock.advance();
         server_tick.store(clock.tick_count(), std::memory_order_relaxed);
 
         // ── concurrency ── What the network thread queued while the last tick
@@ -10080,9 +10128,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 const auto         water = [](const void* context, BlockPos pos) -> bool {
                     const auto& in = *static_cast<const WaterContext*>(context);
                     const registry::BlockStateId state = (*in.read)({pos.x, pos.y, pos.z});
-                    return in.registry->holds_fluid(state) &&
-                           in.registry->block_name(in.registry->block_of(state)) ==
-                               "minecraft:water";
+                    // ── implicit water ── seagrass and kelp drown a zombie too.
+                    return in.registry->fluid(state).is_water();
                 };
                 drowning->tick(*mobs, water, &water_context, drowned_now);
             }
@@ -10838,9 +10885,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                             static_cast<i32>(std::floor(who.x)),
                             static_cast<i32>(std::floor(who.y + 1.62)),
                             static_cast<i32>(std::floor(who.z))};
-                        const std::string_view name = blocks->block_name(
-                            blocks->block_of(block_at_in(who.dimension, eyes)));  // ── nether ──
-                        submerged = name == "minecraft:water";
+                        // ── implicit water ── a waterlogged block, seagrass
+                        // or kelp at eye height is water as much as water is.
+                        submerged = blocks->fluid(block_at_in(who.dimension, eyes))  // ── nether ──
+                                        .is_water();
                     }
                     const SurvivalPlayer view{.entity_id = who.entity_id,
                                               .name      = who.name,
@@ -11293,10 +11341,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             }
         }
 
-        for (i32 i = 0; i < ticks; ++i) {
-            // The world tick lives here. Everything inside must be
-            // deterministic, and must not allocate once running: in debug
-            // builds this guard aborts on the first allocation, naming it.
+        {
+            // TODO(no-alloc follow-up): this guard is meant to cover the whole
+            // world tick above — deterministic, and allocation-free once
+            // running; in debug builds it aborts on the first allocation,
+            // naming it. It was the body of an empty per-tick loop and guarded
+            // nothing. Wrapping the real body today would abort Debug builds on
+            // current allocations, so it stays a no-op here until the separate
+            // no-allocation work lands.
             const NoAllocScope no_alloc{"server tick"};
         }
 
@@ -11496,36 +11548,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                   std::chrono::steady_clock::now() - tick_started)
                                   .count());
 
-        if (clock.is_behind()) {
-            ++behind_events;
-            OV_LOG_WARN(
-                "can't keep up — is the server overloaded? (running behind, dropped ticks)");
-        }
-
         if (options.run_ticks >= 0 && clock.tick_count() >= options.run_ticks) {
             OV_LOG_INFO("reached --ticks={}, stopping", options.run_ticks);
             break;
         }
 
-        // Sleep until the next tick is due rather than spinning. A spinning
-        // tick thread on a laptop is a battery and thermal problem, and on a
-        // shared host it steals time from the workers.
-        //
-        // ── concurrency ── Waiting on the inbound queue rather than sleeping:
-        // a dig that arrives now is answered now, not up to a tick later. The
-        // game's server does the same, running queued network tasks while it
-        // waits for its next tick. Bounded by the deadline, so a flood of
-        // packets cannot hold the next tick back.
-        if (const Duration idle = clock.time_until_next_tick(); idle > Duration::zero()) {
-            const auto wake =
-                std::chrono::steady_clock::now() +
-                std::chrono::duration_cast<std::chrono::steady_clock::duration>(idle);
-            while (std::chrono::steady_clock::now() < wake) {
-                if (inbound.wait_until(wake)) {
-                    (void)inbound.dispatch(inbound_handlers, &perf->network_queue_wait);
-                }
-            }
-        }
+        // Until the next tick is due (see `wait_for_next_tick`, above the
+        // loop); no wait while catch-up ticks are pending.
+        wait_for_next_tick();
     }
 
     if constexpr (kAllocationTrackingEnabled) {

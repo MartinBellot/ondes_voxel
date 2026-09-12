@@ -577,6 +577,15 @@ nbt::Tag EntityStorage::encode(entity::EntityWorld& world, entity::EntityHandle 
     (void)out.put("UUID", uuid_tag(state->uuid));
     (void)out.put("Health", nbt::Tag{state->health});
     (void)out.put("OnGround", nbt::Tag::make_bool(state->on_ground));
+    // ── noai ── vanilla writes the key only when it is set (measured: a cow
+    // without it carries no `NoAI`, apprivoisement.md § 8.3).
+    if (const auto* flagged = dynamic_cast<const gameplay::Mob*>(world.logic(handle))) {
+        if (flagged->no_ai()) {
+            (void)out.put("NoAI", nbt::Tag::make_bool(true));
+        } else {
+            (void)out.erase("NoAI");
+        }
+    }
     // What vanilla writes for every mob, when nothing came from disk.
     default_to(out, "FallDistance", nbt::Tag{0.0F});
     default_to(out, "Fire", nbt::Tag{i16{-1}});
@@ -738,6 +747,8 @@ std::optional<entity::EntityHandle> EntityStorage::decode(const nbt::Tag& compou
 
     if (auto* mob = dynamic_cast<gameplay::Mob*>(world.logic(handle))) {
         gameplay::MobBrain& brain = mob->mutable_brain();
+        // ── noai ── read at the vanilla key; absent is false
+        mob->set_no_ai(compound.contains("NoAI") && compound.find("NoAI")->as_bool());
         if (const nbt::Tag* age = compound.find("Age"); age != nullptr && age->as_i64() != 0) {
             mob->set_age(*state, static_cast<i32>(age->as_i64()));
         }
