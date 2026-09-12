@@ -1007,6 +1007,11 @@ void Interface::draw(rhi::CommandList& cmd, u32 framebuffer_width, u32 framebuff
         scoreboard_view_.draw(*gui_, language_);  // ── scoreboard ── under the chat
     }
     chat_.draw(*gui_);  // ── chat ──  over the HUD, under any screen
+    if (subtitles_ != nullptr) {  // ── sound ──
+        subtitles_->draw(
+            *gui_, [this](std::string_view key) { return std::string(language_.translate(key)); },
+            subtitle_ears_);
+    }
 
     if (creative_visible_ && creative_screen_) {
         client::draw_screen_dim(*gui_);

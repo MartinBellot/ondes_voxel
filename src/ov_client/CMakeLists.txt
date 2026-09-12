@@ -25,6 +25,7 @@ ov_add_library(ov_client
         src/scene_target.cpp
         src/sky_renderer.cpp
         src/sound_director.cpp
+        src/subtitles.cpp
         src/terrain_renderer.cpp
         src/text_field.cpp
         src/window.cpp
@@ -54,6 +55,8 @@ ov_add_test(test_ov_client
         tests/test_menu_layouts.cpp
         tests/test_options_file.cpp
         tests/test_sound_director.cpp
+        tests/test_sound_director_music.cpp
+        tests/test_subtitles.cpp
         tests/test_block_particles.cpp  # ── breaking ──
         tests/test_scoreboard_view.cpp  # ── scoreboard ──
     DEPS ov_client
@@ -68,6 +71,8 @@ ov_add_shaders(ov_client_shaders
         shaders/debug_triangle.frag
         shaders/entity.vert
         shaders/entity.frag
+        shaders/entity_additive.frag
+        shaders/entity_translucent.frag
         shaders/crumbling.frag
         shaders/gui.vert
         shaders/gui.frag

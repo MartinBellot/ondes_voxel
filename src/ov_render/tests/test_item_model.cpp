@@ -211,6 +211,47 @@ TEST_CASE("an item with no model file is reported rather than drawn blank",
     CHECK(cache.missing_count() == 1);
 }
 
+TEST_CASE("how an entity holds an item comes down the parent chain", "[item_model]") {
+    // A tool states its own third-person transform; a plain item inherits the
+    // generated one. Translation arrives in blocks, the file's sixteenths
+    // divided out.
+    MemoryAssetSource source;
+    source.add("assets/minecraft/models/item/generated.json", R"({
+        "parent": "builtin/generated",
+        "display": {"thirdperson_righthand": {
+            "rotation": [0, 0, 0], "translation": [0, 3, 1], "scale": [0.55, 0.55, 0.55]}}
+    })");
+    source.add("assets/minecraft/models/item/handheld.json", R"({
+        "parent": "minecraft:item/generated",
+        "display": {"thirdperson_righthand": {
+            "rotation": [0, -90, 55], "translation": [0, 4, 0.5], "scale": [0.85, 0.85, 0.85]}}
+    })");
+    source.add("assets/minecraft/models/item/sword.json",
+               R"({"parent": "minecraft:item/handheld", "textures": {"layer0": "minecraft:item/sword"}})");
+    source.add("assets/minecraft/models/item/plain.json",
+               R"({"parent": "minecraft:item/generated", "textures": {"layer0": "minecraft:item/sword"}})");
+    ItemModelCache cache(source);
+    cache.resolve("minecraft:sword");
+    cache.resolve("minecraft:plain");
+    cache.bake(empty_atlas(source));
+
+    const ItemMesh* sword = cache.mesh("minecraft:sword");
+    REQUIRE(sword != nullptr);
+    REQUIRE(sword->hand.has_value());
+    CHECK(sword->hand->rotation.y == -90.0F);
+    CHECK(sword->hand->rotation.z == 55.0F);
+    CHECK(sword->hand->translation.y == 0.25F);
+    CHECK(sword->hand->scale.x > 0.84F);
+    CHECK(sword->hand->scale.x < 0.86F);
+
+    const ItemMesh* plain = cache.mesh("minecraft:plain");
+    REQUIRE(plain != nullptr);
+    REQUIRE(plain->hand.has_value());
+    CHECK(plain->hand->rotation.y == 0.0F);
+    CHECK(plain->hand->translation.z == 0.0625F);
+    CHECK(plain->hand->scale.x < 0.56F);
+}
+
 TEST_CASE("the sprites an item needs are collected before the atlas is built",
           "[item_model]") {
     const auto     source = pack();
