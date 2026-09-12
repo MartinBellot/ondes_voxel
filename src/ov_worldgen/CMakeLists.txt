@@ -18,6 +18,11 @@ ov_add_library(ov_worldgen
         src/end_features.cpp
         src/end_islands.cpp
         src/feature.cpp
+        # ── jigsaw ──
+        src/jigsaw_assembler.cpp
+        src/jigsaw_nbt.cpp
+        src/jigsaw_place.cpp
+        src/jigsaw_pool.cpp
         src/nether_feature.cpp  # ── nether-2 ──
         src/noise.cpp
         src/ore_feature.cpp
@@ -77,6 +82,7 @@ ov_add_test(test_ov_worldgen
         tests/test_density.cpp
         tests/test_end.cpp
         tests/test_feature.cpp
+        tests/test_jigsaw.cpp  # ── jigsaw ──
         tests/test_nether.cpp
         tests/test_nether_feature.cpp  # ── nether-2 ──
         tests/test_noise.cpp

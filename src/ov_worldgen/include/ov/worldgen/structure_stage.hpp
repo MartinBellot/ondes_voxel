@@ -100,9 +100,11 @@ public:
     [[nodiscard]] const StructureStageStats& stats() const noexcept;
 
     /// How far, in chunks, a start's pieces can reach from its start chunk.
-    /// Three covers every kind this stage builds: a ship is at most 28 blocks
-    /// long and lies from its chunk corner, an ocean ruin cluster is not built.
-    static constexpr i32 kReach = 3;
+    /// Three covered the template kinds (a ship is at most 28 blocks long and
+    /// lies from its chunk corner). ── jigsaw ── A jigsaw start grows inside a
+    /// cube of `max_distance_from_center` about its start piece — 116 blocks
+    /// for the ancient city, whose start piece is 41 long: ten chunks.
+    static constexpr i32 kReach = 10;
 
 private:
     struct Impl;
