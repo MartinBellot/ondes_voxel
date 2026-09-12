@@ -58,7 +58,7 @@ void CommandService::load_world(const world::LevelSettings& settings) {
 
 void CommandService::enqueue(i32 player_entity_id, std::string command, i64 timestamp, i64 salt) {
     const std::scoped_lock lock{queue_mutex_};
-    queue_.push_back(Pending{player_entity_id, std::move(command), timestamp, salt, {}, {}});
+    queue_.push_back(Pending{player_entity_id, std::move(command), timestamp, salt, false, {}, {}});
 }
 
 void CommandService::enqueue_console(std::string command) {
@@ -68,7 +68,7 @@ void CommandService::enqueue_console(std::string command) {
         command.erase(command.begin());
     }
     const std::scoped_lock lock{queue_mutex_};
-    queue_.push_back(Pending{-1, std::move(command), 0, 0, {}, {}});
+    queue_.push_back(Pending{-1, std::move(command), 0, 0, false, {}, {}});
 }
 
 void CommandService::enqueue_captured(std::string command, std::string source_name,
@@ -77,7 +77,7 @@ void CommandService::enqueue_captured(std::string command, std::string source_na
         command.erase(command.begin());
     }
     const std::scoped_lock lock{queue_mutex_};
-    queue_.push_back(Pending{-1, std::move(command), 0, 0, std::move(source_name), std::move(done)});
+    queue_.push_back(Pending{-1, std::move(command), 0, 0, false, std::move(source_name), std::move(done)});
 }
 
 void CommandService::enqueue_kill(std::string killer, std::string victim, bool victim_is_player) {
@@ -87,7 +87,7 @@ void CommandService::enqueue_kill(std::string killer, std::string victim, bool v
 
 void CommandService::enqueue_chat(i32 player_entity_id, std::string message, i64 timestamp, i64 salt) {
     const std::scoped_lock lock{queue_mutex_};
-    queue_.push_back(Pending{player_entity_id, std::move(message), timestamp, salt, true});
+    queue_.push_back(Pending{player_entity_id, std::move(message), timestamp, salt, true, {}, {}});
 }
 
 net::SuggestionsResponse CommandService::suggest(const CommandSource& source, i32 transaction,

@@ -191,7 +191,8 @@ struct Harness {
     Harness()
         : service{ServiceConfig{packs().blocks ? &*packs().blocks : nullptr,
                                 packs().registries ? &*packs().registries : nullptr,
-                                {}, {}, false, 4, "Ondes VOXEL", {}}} {
+                                {}, {}, false, 4, "Ondes VOXEL", {},
+                                nullptr, 4, true, true}} {
         host            = server.host();
         service.console = [this](std::string_view line) { server.console.emplace_back(line); };
         service.world().rules.set(*GameRules::index_of("doDaylightCycle"), 0);
