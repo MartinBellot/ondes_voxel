@@ -31,6 +31,7 @@
 #include "ov/client/hud.hpp"
 #include "ov/client/item_view.hpp"
 #include "ov/client/saved_hotbars.hpp"
+#include "ov/client/scoreboard_view.hpp"  // ── scoreboard ──
 #include "ov/client/subtitles.hpp"  // ── sound ──
 #include "ov/client/window.hpp"
 #include "ov/netclient/client.hpp"
@@ -251,6 +252,7 @@ private:
     client::HudTextures          textures_;
     std::optional<client::ItemRenderer> items_;
     render::Language                    language_;
+    client::ScoreboardView              scoreboard_view_;  // ── scoreboard ── the sidebar
     const registry::Registries*         registries_{nullptr};
     std::optional<registry::RegistryId> item_registry_;
 

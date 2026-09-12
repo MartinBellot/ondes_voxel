@@ -8,6 +8,7 @@
 #include "ov/protocol/survival.hpp"
 
 #include <algorithm>
+#include <cmath>
 
 namespace ov::server::cmd {
 
@@ -69,6 +70,16 @@ void CommandService::enqueue_console(std::string command) {
     queue_.push_back(Pending{-1, std::move(command), 0, 0});
 }
 
+void CommandService::enqueue_kill(std::string killer, std::string victim, bool victim_is_player) {
+    const std::scoped_lock lock{queue_mutex_};
+    kills_.push_back(Kill{std::move(killer), std::move(victim), victim_is_player});
+}
+
+void CommandService::enqueue_chat(i32 player_entity_id, std::string message, i64 timestamp, i64 salt) {
+    const std::scoped_lock lock{queue_mutex_};
+    queue_.push_back(Pending{player_entity_id, std::move(message), timestamp, salt, true});
+}
+
 net::SuggestionsResponse CommandService::suggest(const CommandSource& source, i32 transaction,
                                                  std::string_view             text,
                                                  std::span<const std::string> player_names) const {
@@ -90,7 +101,7 @@ net::SuggestionsResponse CommandService::suggest(const CommandSource& source, i3
 
 std::vector<u8> CommandService::chat_packet(std::string_view name, const net::Uuid& uuid,
                                             std::string_view message, i64 timestamp, i64 salt,
-                                            i32 chat_type, const std::optional<Text>& target) {
+                                            i32 chat_type, const std::optional<Text>& target) const {
     net::PlayerChat chat;
     chat.sender    = uuid;
     chat.index     = 0;
@@ -98,9 +109,9 @@ std::vector<u8> CommandService::chat_packet(std::string_view name, const net::Uu
     chat.timestamp = timestamp;
     chat.salt      = salt;
     chat.chat_type = chat_type;
-    chat.name_json = to_json(player_display_name(name, uuid));
+    chat.name_json = to_json(decorate(player_display_name(name, uuid)));  // ── scoreboard ──
     if (target) {
-        chat.target_json = to_json(*target);
+        chat.target_json = to_json(decorate(*target));
     }
     return net::encode_player_chat(chat);
 }
@@ -167,6 +178,12 @@ void CommandService::welcome(PlayerRef& p) {
         p.send(net::clientbound::kEntityEvent, net::encode_entity_event(p.entity_id, 22));
     }
     p.send(net::clientbound::kUpdateTime, world_.update_time_payload());
+    // ── scoreboard ── every team, and whatever objective a slot shows
+    std::vector<ScoreboardPacket> board;
+    scoreboard_.arrival_packets(board);
+    for (const ScoreboardPacket& packet : board) {
+        p.send(packet.id, packet.payload);
+    }
 }
 
 void CommandService::set_permission(PlayerRef& p, i32 level) {
@@ -211,6 +228,15 @@ std::vector<EntityInfo> CommandService::snapshot() const {
     if (host_ != nullptr && host_->entities) {
         host_->entities(out);
     }
+    for (EntityInfo& e : out) {  // ── scoreboard ── what `team=` and `scores=` read
+        const std::string holder = e.player ? e.name : e.uuid.to_string();
+        const Team*       team   = scoreboard_.team_of(holder);
+        e.team                   = team != nullptr ? team->name : std::string{};
+        e.scores.clear();
+        for (const auto& [objective, score] : scoreboard_.scores_of(holder)) {
+            e.scores.emplace_back(objective->name, score.value);
+        }
+    }
     return out;
 }
 
@@ -224,6 +250,51 @@ void CommandService::run(CommandHost& host) {
             welcomed_.insert(p.entity_id);
         }
     }
+    // ── scoreboard ── The kills other threads saw; each player's step into
+    // death (deathCount counts the edge, not the ticks spent dead); and the
+    // numbers the player criteria read — all of them on a player's first
+    // tick, then only what changed, as the capture's newcomer shows.
+    {
+        std::vector<Kill> kills;
+        {
+            const std::scoped_lock lock{queue_mutex_};
+            kills.swap(kills_);
+        }
+        for (const Kill& kill : kills) {
+            scoreboard_.on_kill(kill.killer, kill.victim, kill.victim_is_player);
+        }
+        for (auto it = criteria_names_.begin(); it != criteria_names_.end();) {
+            if (player(it->first) == nullptr) {
+                scoreboard_.forget_player(it->second);
+                dead_.erase(it->first);
+                it = criteria_names_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        for (const PlayerRef& p : players_) {
+            if (p.survival == nullptr) {
+                continue;
+            }
+            criteria_names_[p.entity_id] = std::string{p.name};
+            const SurvivalSession& s     = *p.survival;
+            if (s.awaiting_respawn || s.health.dead) {
+                if (dead_.insert(p.entity_id).second) {
+                    scoreboard_.on_death(p.name);
+                }
+            } else {
+                dead_.erase(p.entity_id);
+            }
+            PlayerCriteria now;
+            now.health = static_cast<i32>(std::ceil(s.health.health + s.health.absorption));
+            now.food   = s.food.food;
+            now.air    = s.health.air;
+            now.armor  = 0;  // no player armour total exists on this server yet
+            now.xp     = s.experience_total;
+            now.level  = s.experience_level;
+            scoreboard_.update_player(p.name, now);
+        }
+    }
     if (host.broadcast) {
         for (const Broadcast& packet : outbox_) {
             host.broadcast(packet.id, packet.payload);
@@ -235,6 +306,15 @@ void CommandService::run(CommandHost& host) {
         running_.swap(queue_);
     }
     for (const Pending& pending : running_) {
+        if (pending.chat) {  // ── scoreboard ──
+            refresh_players();
+            if (const PlayerRef* p = player(pending.player); p != nullptr && host.broadcast) {
+                host.broadcast(net::clientbound::kPlayerChat,
+                               chat_packet(p->name, p->uuid, pending.command, pending.timestamp,
+                                           pending.salt, kChatTypeChat));
+            }
+            continue;
+        }
         if (pending.player < 0) {
             (void)execute(CommandSource{}, pending.command, host);
             continue;
@@ -247,6 +327,7 @@ void CommandService::run(CommandHost& host) {
         (void)execute(source_for(*p), pending.command, host, pending.timestamp, pending.salt);
     }
     running_.clear();
+    flush_scoreboard();  // ── scoreboard ──
 }
 
 Parsed<i32> CommandService::execute(const CommandSource& source, std::string_view command,
@@ -256,11 +337,13 @@ Parsed<i32> CommandService::execute(const CommandSource& source, std::string_vie
     salt_      = salt;
     refresh_players();
     world_snapshot_ = snapshot();
+    source_shown_   = decorate(source_name(source));  // ── scoreboard ──
     const ParseResults parsed = dispatcher_.parse(command, 0, source);
     auto               result = dispatcher_.execute(parsed, command, source);
     if (!result) {
         failure(source, result.error());
     }
+    flush_scoreboard();  // ── scoreboard ── a command that changed and said nothing
     return result;
 }
 
@@ -275,14 +358,18 @@ std::optional<PersonalSpawn> CommandService::personal_spawn(const net::Uuid& uui
 // ── Feedback ────────────────────────────────────────────────────────────────
 
 void CommandService::reply(const CommandSource& source, const Text& text) {
+    // ── scoreboard ── What a command changed reaches the clients before what
+    // it says, as vanilla's packets do; and a player it names wears its team.
+    flush_scoreboard();
+    const Text shown = decorate(text);
     if (source.is_player()) {
         if (PlayerRef* p = player(source.entity_id)) {
-            p->send(net::clientbound::kSystemChat, net::encode_system_chat(to_json(text), false));
+            p->send(net::clientbound::kSystemChat, net::encode_system_chat(to_json(shown), false));
         }
         return;
     }
     if (console) {
-        console(plain(text, lang()));
+        console(plain(shown, lang()));
     }
 }
 
@@ -299,7 +386,10 @@ void CommandService::success(const CommandSource& source, const Text& text, bool
     if (!broadcast_to_ops) {
         return;
     }
-    Text admin = Text::translatable("chat.type.admin", {source_name(source), text});
+    // ── scoreboard ── The source as it was named when the command began: the
+    // capture logs `team leave @s` under the team just left, and `team join`
+    // under no team yet.
+    Text admin = Text::translatable("chat.type.admin", {source_shown_, decorate(text)});
     admin.style.italic = true;
     admin.color("gray");
     if (feedback) {
@@ -416,7 +506,33 @@ Text CommandService::resolve(const Text& text, const CommandSource& source) {
         }
         return names;
     }
-    if (out.kind == Text::Kind::Score || out.kind == Text::Kind::Nbt) {
+    if (out.kind == Text::Kind::Score) {
+        // ── scoreboard ── The value, as text; nothing when there is none.
+        // `*` is whoever reads it; a selector names its first match.
+        std::string holder = out.text;
+        if (holder == "*") {
+            holder = source.name;
+        } else if (!holder.empty() && holder.front() == '@') {
+            const std::string written = holder;  // the reader keeps a view: not of `holder`
+            StringReader      reader{written};
+            holder.clear();
+            if (auto selector = parse_entity_selector(reader, env_)) {
+                auto found = find_entities(
+                    *selector, source, world_snapshot_,
+                    [this](u32 n) { return static_cast<u32>(random_.next_int(static_cast<i32>(n))); },
+                    &env_);
+                if (found && !found->empty()) {
+                    const EntityInfo& e = *found->front();
+                    holder              = e.player ? e.name : e.uuid.to_string();
+                }
+            }
+        }
+        const auto score = holder.empty() ? std::nullopt : scoreboard_.score(holder, out.key);
+        out.kind         = Text::Kind::Literal;
+        out.text         = score ? std::to_string(score->value) : std::string{};
+        out.key.clear();
+    }
+    if (out.kind == Text::Kind::Nbt) {
         out.kind = Text::Kind::Literal;
         out.text.clear();
     }

@@ -1217,6 +1217,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         level_settings.game_type = 0;
     }
     std::unique_ptr<cmd::CommandService> commands;
+    bool scoreboard_refused = false;  // ── scoreboard ── a scoreboard.dat that did not read
     if (blocks && registries) {
         cmd::ServiceConfig command_config;
         command_config.blocks     = &*blocks;
@@ -1235,6 +1236,15 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         commands = std::make_unique<cmd::CommandService>(std::move(command_config));
         commands->load_world(level_settings);
         commands->console = [](std::string_view line) { OV_LOG_INFO("{}", line); };
+        // ── scoreboard ── data/scoreboard.dat, vanilla's file. A file that
+        // does not read is left alone: a scoreboard that is not loaded is not
+        // saved over it either.
+        if (auto board = read_scoreboard_file(level_dir / "data" / "scoreboard.dat", &*registries)) {
+            commands->scoreboard() = std::move(*board);
+        } else {
+            OV_LOG_ERROR("{}; the scoreboard starts empty and will not be written", board.error());
+            scoreboard_refused = true;
+        }
     }
     // ── end commands ────────────────────────────────────────────────────────
 
@@ -1762,6 +1772,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             }
             (void)end_world->save(server_tick.load(std::memory_order_relaxed), block_snapshot,
                                   fluid_snapshot);
+        }
+        // ── scoreboard ── data/scoreboard.dat, when anything in it changed.
+        if (commands && !scoreboard_refused && commands->scoreboard().dirty()) {
+            if (write_scoreboard_file(level_dir / "data" / "scoreboard.dat", commands->scoreboard())) {
+                commands->scoreboard().mark_clean();
+            } else {
+                OV_LOG_WARN("could not write data/scoreboard.dat");
+            }
         }
         if (dirty_chunks.empty()) {
             // ── commands: level.dat still, when only the rules changed ──
@@ -3961,6 +3979,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         publish_items(dropped);
 
         OV_LOG_INFO("{} killed {} ({} stacks dropped)", attacker.name, victim, drops.size());
+        if (commands) {  // ── scoreboard ── totalKillCount, teamkill.<colour>, killedByTeam.<colour>
+            commands->enqueue_kill(attacker.name, state->uuid.to_string(), false);
+        }
 
         // Flagged, never removed here: the entity world applies removals at the
         // end of its own tick, and taking one out from under the tick's loop is
@@ -6892,10 +6913,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         if (!chat) {
                             return false;
                         }
-                        broadcast(nullptr, net::clientbound::kPlayerChat,
-                                  cmd::CommandService::chat_packet(player.name, player.uuid,
-                                                                   chat->message, chat->timestamp,
-                                                                   chat->salt, cmd::kChatTypeChat));
+                        // ── scoreboard ── broadcast on the tick, where the
+                        // sender's team (colour, prefix, suffix) may be read.
+                        if (commands) {
+                            commands->enqueue_chat(player.entity_id, chat->message, chat->timestamp,
+                                                   chat->salt);
+                        }
                         OV_LOG_INFO("[Not Secure] <{}> {}", player.name, chat->message);
                         return true;
                     }
@@ -7248,6 +7271,25 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 broadcast(who->connection.get(), packet, payload);
             }};
         return who->survival.hurt(kind, amount, io, who->entity_id).applied;
+    };
+    // ── scoreboard ── Friendly fire, and the kill criteria, for the one path
+    // on which a player hurts a player: an arrow. The entity pass runs on the
+    // tick thread, the scoreboard's.
+    projectile_host.may_hurt = [&](i32 owner, i32 target) {
+        const Player* attacker = projectile_player(owner);
+        const Player* victim   = projectile_player(target);
+        if (!commands || attacker == nullptr || victim == nullptr) {
+            return true;
+        }
+        const Scoreboard& board = commands->scoreboard();
+        return Scoreboard::can_hurt(board.team_of(attacker->name), board.team_of(victim->name));
+    };
+    projectile_host.player_struck = [&](i32 owner, i32 target) {
+        const Player* attacker = projectile_player(owner);
+        const Player* victim   = projectile_player(target);
+        if (commands && attacker != nullptr && victim != nullptr && victim->survival.health.dead) {
+            commands->enqueue_kill(attacker->name, victim->name, true);
+        }
     };
     projectile_host.give = [&](i32 id, const net::ItemStack& stack) -> i8 {
         Player* who = projectile_player(id);
