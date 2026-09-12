@@ -126,10 +126,11 @@ TEST_CASE("effects: rows, blink, order", "[hud]") {
         {"minecraft:speed", 567, 1, false, true, true, 4},
     };
     sort_effects(effects);
-    CHECK(effects[0].name == "minecraft:strength");
-    CHECK(effects[1].name == "minecraft:speed");
-    CHECK(effects[2].name == "minecraft:night_vision");
-    CHECK(effects[3].name == "minecraft:luck");
+    // The real client, 11-effects, right to left: luck (infinite) first.
+    CHECK(effects[0].name == "minecraft:luck");
+    CHECK(effects[1].name == "minecraft:strength");
+    CHECK(effects[2].name == "minecraft:speed");
+    CHECK(effects[3].name == "minecraft:night_vision");
 }
 
 TEST_CASE("a boss bar slides over a tenth of a second", "[hud]") {

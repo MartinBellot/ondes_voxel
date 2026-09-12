@@ -175,6 +175,17 @@ pour un effet ambiant, tous les **25 px depuis le bord droit** (829, 804, 779,
 3 px du coin. Un effet donné avec `hideParticles` n'a pas le drapeau d'icône et
 n'est **pas dessiné du tout** (résistance, dans les nombres : `icon false`).
 
+**L'ordre**, lu sur la même capture (chaque icône comparée, par sa couleur
+moyenne, à la texture de chaque effet candidat composée sur la couleur
+intérieure du cadre) : de droite à gauche, chance
+(infinie), force (568 ticks), vitesse (567), vision nocturne (150) ;
+faiblesse (574), lenteur (572). Le temps restant décroissant depuis le bord,
+et **un effet infini compte comme le plus long** — l'hypothèse de départ
+le mettait en dernier, et c'était faux. La vision nocturne clignotait
+(opacité ≈ 0,58 à ce tick) : c'est la seule que la couleur moyenne ne
+reconnaît pas, par élimination. Non mesurés : un effet ambiant après les
+autres, la couleur du tourbillon comme départage.
+
 La catégorie « bénéfique » vient du tableau « Effect » du wiki (1.20.1) ;
 confirmée par les nombres du vrai client pour les huit effets des scènes
 (`beneficial true/false`). Les neutres (lueur, mauvais présage) vont dans la

@@ -37,11 +37,14 @@ bool effect_is_beneficial(std::string_view name) noexcept {
 }
 
 void sort_effects(std::vector<HudEffect>& effects) {
-    // Measured (docs/provenance/hud.md § effets): nearest the right edge the
-    // longest remaining time, an infinite effect after every timed one, and
-    // ambient effects after the others; the swirl colour breaks a tie.
+    // Measured on the real client's 11-effects capture (docs/provenance/hud.md
+    // § 4): nearest the right edge the longest remaining time, and an
+    // infinite effect counts as the longest of all — luck (infinite),
+    // strength 568, speed 567, night vision 150; weakness 574, slowness 572.
+    // Not measured: ambient effects after the others, the swirl colour as the
+    // tie-break.
     const auto key = [](const HudEffect& e) {
-        return e.duration < 0 ? std::numeric_limits<i32>::min() : e.duration;
+        return e.duration < 0 ? std::numeric_limits<i32>::max() : e.duration;
     };
     std::ranges::stable_sort(effects, [&](const HudEffect& a, const HudEffect& b) {
         if (a.ambient != b.ambient) {
