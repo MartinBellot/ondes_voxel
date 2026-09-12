@@ -10,6 +10,7 @@
 // constants below are derived from those traces — see docs/PROVENANCE.md.
 #pragma once
 
+#include "ov/gameplay/block_motion.hpp"
 #include "ov/gameplay/collision.hpp"
 #include "ov/math/vec.hpp"
 
@@ -88,7 +89,11 @@ struct MotionConstants {
     /// Subtracted from the vertical velocity each tick, before drag.
     f64 gravity{0.08};
     /// Multiplies the vertical velocity each tick, after gravity.
-    f64 vertical_drag{0.98};
+    ///
+    /// A float in the game: 0.98000001907…, not 0.98. The real server's trace
+    /// of a falling armor stand stores -0.0784000015 after one tick, which is
+    /// -0.08 × 0.98F and not -0.08 × 0.98 (docs/provenance/physique-blocs.md).
+    f64 vertical_drag{static_cast<f64>(0.98F)};
 
     /// Multiplies the horizontal velocity each tick. The block underfoot
     /// contributes its own slipperiness on top of this.
@@ -129,10 +134,12 @@ struct MotionConstants {
     // 1.97, sprint-swimming 3.920 against 3.918, sinking in lava 0.8 exactly.
 
     /// Horizontal drag in water, and the higher one that swimming gives.
-    f64 water_drag{0.8};
+    /// A float, like the vertical one: an armor stand in a current keeps
+    /// 0.0112000002 of a 0.014 push, 0.014 × 0.8F.
+    f64 water_drag{static_cast<f64>(0.8F)};
     f64 swim_drag{0.9};
     /// Vertical drag in water. Unaffected by sprinting or by Depth Strider.
-    f64 water_vertical_drag{0.8};
+    f64 water_vertical_drag{static_cast<f64>(0.8F)};  // a float: -0.0530000007 in the trace
     /// The push an input gets in a fluid. A fifth of walking, which is why
     /// water is slow rather than merely draggy.
     f64 fluid_acceleration{0.02};
@@ -177,6 +184,10 @@ struct MotionConstants {
     /// who stops walking drifts by ever smaller amounts forever and every
     /// position report carries a different number.
     f64 negligible_speed{0.003};
+
+    /// What blocks do: ladders, slime, honey, bubble columns. Only read when
+    /// the CollisionWorld carries a BlockMotionTable.
+    BlockEffectConstants effects{};
 };
 
 /// Advance one tick.

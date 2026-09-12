@@ -9,14 +9,14 @@
     "pack_format": 15,
     "auth_mode": "offline only — no Mojang authentication (product decision)"
   },
-  "last_updated": "2026-09-10",
+  "last_updated": "2026-09-11",
   "current_milestone": "M6",
   "current_task": "m6-block-interaction",
   "milestones": {
     "M0": {
       "name": "Fondations",
       "status": "in_progress",
-      "done": 48,
+      "done": 49,
       "total": 63,
       "exit_criterion": "Le job CI linux-server-only refuse un include Vulkan planté volontairement ; NBT round-trip sur fichiers vanilla ; run/assets/ peuplé.",
       "blocked": [],
@@ -25,7 +25,7 @@
     "M1": {
       "name": "Protocole 763",
       "status": "in_progress",
-      "done": 13,
+      "done": 15,
       "total": 18,
       "exit_criterion": "Le serveur apparaît dans la liste des serveurs du client vanilla, MOTD et icône corrects ; round-trip octet à octet de tous les paquets ; fuzz du décodeur sans crash.",
       "blocked": [],
@@ -43,11 +43,11 @@
     "M3": {
       "name": "Tranche verticale",
       "status": "in_progress",
-      "done": 20,
+      "done": 21,
       "total": 25,
       "exit_criterion": "Un client Minecraft vanilla 1.20.1 non modifié se connecte, marche, casse et pose un bloc — sans une ligne de Vulkan.",
       "blocked": [],
-      "notes": "La tranche verticale est atteinte depuis le 2026-09-08. Ce qui reste de M3 est devenu le blocage principal du projet : la generation de terrain est correcte mais pas servable, parce qu'elle tourne sur le thread de tick. ChunkMap, tickets, sections copy-on-write et pool de jobs sont ce qui manque."
+      "notes": "La tranche verticale est atteinte depuis le 2026-09-08. 2026-09-11 : les paquets de jeu passent sur le thread de tick, les verrous du monde deviennent des vérifications de thread, et les sections sont copy-on-write (Chunk::snapshot, encodage sur le thread réseau). Casser un bloc sur un monde généré en Debug passe de 4,2 s à 1,8 ms au p50 (16,2 s à 124 ms au pire), 0 génération synchrone. Voir docs/provenance/performance-tick.md § 5.5–5.6."
     },
     "M4": {
       "name": "Monde persistant",
@@ -60,7 +60,7 @@
     "M5": {
       "name": "Client Ondes VOXEL",
       "status": "in_progress",
-      "done": 21,
+      "done": 22,
       "total": 30,
       "exit_criterion": "Deux clients pour un même serveur ; p99 de frame time <= 20 ms à 12 chunks sur M2 ; golden images vertes sur lavapipe.",
       "blocked": []
@@ -156,6 +156,7 @@
     "chunk_send_budget": "l'envoi initial de 289 chunks tenait dans un seul tick et le serveur signalait 'can't keep up' a chaque connexion ; la file est desormais drainee a 8 chunks par tick et l'avertissement ne se produit plus (0 occurrence sur une connexion complete). Les chunks partent du plus proche au plus loin, la ou l'ancien code iterait un unordered_set et les envoyait dans l'ordre de hachage",
     "singleplayer": "ov_voxel --singleplayer heberge ov_server sur un thread du meme processus, qui ouvre une vraie socket ; le client s'y connecte comme a n'importe quel serveur. Verifie de bout en bout : 289 chunks recus, joueur debout, gravier casse et bloc pose, un seul joueur dans la liste",
     "fluid_physics": "eau et lave : six vitesses publiees reproduites — nage 1.96 m/s (publie 1.97), nage sprintee 3.92 (3.918), enfoncement dans la lave 0.8 (0.8 exactement). La vitesse publiee est la distance parcourue par tick, pas la velocite stockee : lue apres la trainee elle est un cinquieme trop basse et ressemble a une constante fausse",
+    "block_physics": "mesuree sur le vrai serveur 1.20.1, 76/76 entites tracees tick par tick (6232 lignes) : friction en float (pierre 0.546000063419 = float(0.6F*0.91F), glace 0.891800045967, glace bleue 0.899990022182, ame/miel x0.4), trainee verticale 0.98F vivant / 0.98 objet, echelle 0.15F et montee 0.1176000023, toile x0.05F, neige x1.5, baies x0.75, rebond slime x1 (objet 0.8), colonnes de bulles 16/16, courant 0.014/tick ; lue par le joueur et les mobs",
     "worldgen_noise": "ImprovedNoise / PerlinNoise / NormalNoise implementes ; une amplitude nulle saute une octave sans decaler les autres, ce qui est verifie. Le hachage de position reproduit le debordement 32 bits de x, qui deplacerait chaque minerai au-dela de ~686 blocs s'il etait fait en 64",
     "worldgen_density": "23 types de fonctions de densite ; 14 des 15 entrees du routeur overworld se construisent depuis les JSON vanilla, dont les six fonctions climatiques. final_density manque : il atteint old_blended_noise. Un type non implemente est refuse et nomme, jamais traite comme zero",
     "worldgen_oracle": "monde de reference genere par le vrai serveur 1.20.1 a la seed 1234567890 (scripts/reference_world.sh, 4 fichiers de region). C'est le seul oracle de la parite de terrain : aucune formule ne peut la prouver, seuls les blocs que le jeu ecrit",
@@ -209,6 +210,8 @@
     "weather_and_sleep": "cycle meteo naturel (durees /weather uniformes, chi2 p=0,88/0,19/0,39) ; glace des oceans geles 11285/11285 colonnes du monde de reference (temoin decale 81,6 %) ; couches de neige chi2 p=0,986 ; foudre 20,0 predits pour 21 vanilla sur 208 chunks, paratonnerre 40/40 ; seuils de sommeil identiques au tick (12541/12542, 23459/23460 ; pluie 12009/12010) ; nuit sautee 18121 -> 24018 de bout en bout ; pluie/neige rendues cote client, 0,45/1,35 ms p50/p99 d'enregistrement pour un orage",
     "nether": "generation du Nether contre le vrai serveur (graine 1234567890) : biomes 3071999/3072000 cellules, carvers 166/166 chunks, blocs bruit+surface+carvers 76,9 -> 99,802 %, chunks finis 99,913 % ; seconde dimension dans le serveur ; portails 2x3 a 21x21, placement 6/6 sur le terrain du jeu et portail construit identique bloc pour bloc ; aller-retour e2e 11/11. old_blended_noise corrige (octaves inversees, graine) : solide/air Overworld 99,141 -> 99,763 %, decalage de surface de ~2 blocs disparu",
     "sound": "sons mesures sur le fil : pose 819/1003 blocs, pas 600, chute 704, 896 blocs aux cinq sons nommes, 0 desaccord de volume/pitch ; 64/64 portes/leviers/boutons ; 79 creatures. Serveur : Sound Effect 0x62 / Stop Sound 0x63 identifies par leur contenu, 24/42 gestes identiques a vanilla (6 ecarts nommes, 12 sans objet). Client ov_audio (miniaudio + stb_vorbis) : cout p50 0,001-0,003 ms, p99 0,006-0,007 ms par frame",
+    "tame": "apprivoisement et montures mesures contre le vrai serveur : os sur un loup 150/435 et morue sur un chat 150/447 (1/3, chi2 geometrique p > 0,05, temoins 1/2 et 1/5 rejetes), loup apprivoise assis et a 20 de vie, colere 414-775 ticks et toute la meute, suivi au-dela de 10 blocs et teleporte des 12 ; 200 chevaux et 280 anes/mules/lamas apparus aux formules du wiki, 132 poulains a la regle 1.20 (ecarts-types a 12 % pres, la mule herite sa vitesse), temperament +5 par chute (cheval sur 100, lama sur 30) ; de bout en bout sur notre serveur : loup apprivoise, debout, teleporte en 0,27 s, collier bleu, cheval dompte a la 9e montee, selle, conduit 10 blocs par Move Vehicle, tous revenus apres redemarrage. Pieges mesures : la force d'un lama n'est pas celle du wiki (11/160 au-dessus de 3 contre 2,6), le perroquet tombe a 60/781 contre 1/10, le vrai serveur n'a enregistre que 15 des 16 mobs du zoo",
+    "sound_client": "panoramique sur regard x haut, invariant au tangage (prouve) ; modele numerique 8/8 positions a 1e-4 dans les echantillons du mixeur ; priorite des voix : 200 sons/frame, mixeur p99 4,9 ms par rappel de 10,7 ms avec 64 voix contre 16,0 ms sans plafond (Debug) ; musique par situation (wiki), 31 biomes lus dans le codec de Login, dragon par Boss Bar 0x02 ; disques World Event 1010/1011 mesures sur le vrai serveur (4/4 gestes, acteur et oreille) ; sous-titres, clic des menus, showSubtitles/notificationDisplayTime dans options.txt ; --sounds par defaut",
     "husbandry": "elevage des quatre especes vivantes (vache, mouton, cochon, poulet) : veau 59-62 ticks apres le repas contre 59-60 chez vanilla, InLove 600 / repos 6000 / Age -24000 identiques, XP 1-7 (chi2 p~0,69 sur 60 naissances), tonte 1-3 laines (150 moutons), couleurs heritees sur 256 paires, EggLayTime 6000-12000, tentation a 10 blocs et pas 11, broutage 1/2060 par tick. Piege mesure : la vitesse de marche suit v = 2,1586 s^2, pas attribut/2 — une vache qui erre va 16 % trop vite chez nous",
     "client_chat": "chat de notre client (T et /) : composants traduits et styles, fondu mesure sur le vrai client 1.20.1 (9 s opaque puis 1 s, courbe 45 points reproduite), 320 px, 10/20 lignes, 100 messages, completion par l'arbre Commands et Command Suggestions ; coincidence au pixel avec le vrai client sur les boites, le champ et les suggestions ; enregistrement 0,17/0,29 ms p50/p99 pour 10 lignes contre 0,08/0,13 vide",
     "spawn_loading": "rejoindre un monde genere echouait toujours en Debug : 0 chunk genere dans la premiere minute (Release : 64), attente de 20 s sur le thread reseau puis refus envoye apres Login Success. Desormais refus immediat avant Login Success avec menu.preparingSpawn et la progression ; notre client reste sur l'ecran de chargement vanilla et se reconnecte. Release, monde neuf : refuse a 0 % a 3 s, zone de spawn prete en 18,2 s, accepte ensuite",

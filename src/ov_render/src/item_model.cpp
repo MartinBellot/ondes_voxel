@@ -120,6 +120,8 @@ void ItemModelCache::bake(const TextureAtlas& atlas) {
             continue;
         }
 
+        mesh.hand = model->hand_display;
+
         // A generated model is a picture, not a solid. Vanilla extrudes the
         // icon into a thin slab so it has sides in the hand; in a GUI cell
         // nothing but the front face is ever visible, so the icon is the front

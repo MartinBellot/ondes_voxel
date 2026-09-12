@@ -25,6 +25,13 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] `bench_headers.py` — poids préprocessé, **déterministe**, seuil à 10 % (risque R5) 🔒
 - [x] `bench_build.sh` — temps mural, informatif (trop bruité pour un seuil)
 - [ ] Brancher `bench_headers.py` en CI
+      *(2026-09-11 : **volontairement pas branché**. Mesuré tel quel, la porte
+      échoue d'emblée : +19,3 % par unité de compilation, et la base de
+      référence date de 40 unités quand le projet en compte 445. Un seuil
+      global sur une moyenne ne dit rien de l'en-tête qui a grossi. Avant
+      d'activer : une comparaison **par fichier** et une référence
+      rafraîchie — sinon la CI passe au rouge au premier commit et on apprend
+      à l'ignorer)*
 - [ ] En-têtes précompilées — **mesuré comme inutile à 30 TU**, à revoir vers 200
 
 ### Verrous d'architecture 🔒
@@ -86,7 +93,10 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] Message d'erreur actionnable si la version est absente
 - [x] Extraction du jar client : `models/`, `blockstates/`, `font/`, `lang/`
 - [x] Résolution via `assets/indexes/*.json` → `objects/<hash>` (142 langues)
-- [ ] Sons : `--sounds` implémenté, non activé par défaut (inutile avant M9)
+- [x] Sons : `--sounds` implémenté, **activé par défaut** depuis que le client les joue
+      *(**2026-09-11** : 152 Mo d'effets dans `run/assets/`, gitignoré ; `--no-sounds`
+      les écarte, `--music` ajoute musique et disques, 432 Mo. Voir
+      `docs/provenance/son-client.md`)*
 - [x] Empilage des packs selon la priorité vanilla, dossiers **et** zips
 - [x] Manifeste de provenance par fichier → `run/assets/PROVENANCE.tsv`
 - [ ] `ov-assetgen` : atlas procédural (démarrage sans aucun asset externe)
@@ -96,7 +106,12 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 
 ## M1 — Protocole 763
 
-- [ ] `data/protocol/763.json` — schéma des paquets (dérivé de minecraft-data, MIT) 🔒
+- [~] `data/protocol/763.json` — schéma des paquets (dérivé de minecraft-data, MIT) 🔒
+      *(2026-09-11 : le **catalogue** — état, sens, id, noms des 176 paquets —
+      dérivé de minecraft-data **et** de l'archive figée, qui s'accordent sur
+      176/176 ids ; il sert de vérité à la matrice. Les **champs** n'y sont pas :
+      tant qu'`ov-pktgen` n'existe pas, ils seraient une seconde copie de ce que
+      le C++ spécifie et teste octet à octet)*
 - [ ] `ov-pktgen` : **génération** des encodeurs, décodeurs, dumps de debug et
       harnais de fuzz. Écrire 250 paquets à la main est 2 mois de dette 🔒
 - [x] VarInt (≤ 5 o) et VarLong (≤ 10 o) — table de la spec vérifiée 🔒
@@ -126,6 +141,13 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [~] Les ~130 paquets Play, round-trip octet à octet
       *(44 identifiants implémentés — ceux dont la tranche verticale a besoin.
       Le reste arrive avec les entités, l'inventaire complet et le son)*
+      *(2026-09-11 : **+14 paquets d'interface**, encodeur et décodeur, dans
+      `ov/protocol/hud.hpp` — Boss Bar, les six paquets de bordure, Display
+      Objective, Update Objectives, Update Teams, Update Score, Award
+      Statistics, Select Advancements Tab, Seen Advancements. Octets attendus
+      écrits à la main depuis l'archive ; la matrice passe à 125/176 paquets
+      couverts, 33 en aller-retour. Pas encore émis par le serveur, et Update
+      Advancements reste à faire)*
 - [x] Métadonnées d'entité (index / type / valeur)
       *(`MetadataWriter` couvre les 28 types de valeur de 763, et la table
       d'indices est **dérivée** plutôt que recopiée : un champ NBT à la fois sur
@@ -136,8 +158,21 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       *(et **relu** : `parse_chunk_data` est le miroir exact de l'encodeur, testé
       sur 24 chunks réels comparés cellule par cellule — blocs, biomes, les deux
       lumières et les heightmaps)*
-- [ ] Cibles de fuzz sur le décodeur, aucun crash sur entrée malveillante
-- [ ] Matrice de conformité `docs/protocol/763/`
+- [x] Cibles de fuzz sur le décodeur, aucun crash sur entrée malveillante
+      *(2026-09-11 : `fuzz_ov_protocol`, **déterministe à graine fixe** — pas
+      libFuzzer, que les trois OS de CI ne partagent pas. 72 points d'entrée
+      (tous les décodeurs d'octets de socket, framer compris) nourris de préfixes,
+      de mutations de paquets valides, d'octets aléatoires et de flux coupés au
+      hasard. Vert sous ASan + UBSan ; le job CI *Sanitizers* le lance avec le
+      reste. `OV_FUZZ_SEED` / `OV_FUZZ_ITERATIONS` pour une campagne longue —
+      voir `docs/provenance/protocole-763.md`)*
+- [x] Matrice de conformité `docs/protocol/763/`
+      *(2026-09-11 : **générée depuis le code** par `scripts/protocol_matrix.py` —
+      les 176 paquets, par état et par sens, avec constante, encodeur, décodeur,
+      test, aller-retour, octets vanilla, usage serveur/client. Chaque constante
+      d'id est comparée au catalogue ; `--check` en CI. Elle a trouvé **Set
+      Cooldown envoyé en 0x16** (Chat Suggestions) au lieu de 0x15 — voir
+      `docs/provenance/protocole-763.md`)*
 
 ---
 
@@ -221,11 +256,19 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       quatre étages de terrain ont un rayon nul, et paralléliser exigerait un
       cache de chunks partagé entre threads, exactement la structure mutable
       partagée que le principe 3 interdit. De la géométrie, jamais un mutex)*
-- [ ] Sections copy-on-write en `shared_ptr<const>` 🔒
-      *(pas encore nécessaire : rien ne demande d'instantané sans verrou. Le
-      `chunk_mutex` du serveur protège toujours la carte — ce qui l'a quittée
-      est la génération de 0,2 s, pas le verrou — et le retirer demande de
-      router le réseau vers le thread de tick, c'est-à-dire `ov_sim`)*
+- [x] Sections copy-on-write en `shared_ptr<const>` 🔒
+      *(**2026-09-11** : les paquets de jeu sont traités sur le thread de tick,
+      et `chunk_mutex` / `players_mutex` ne sont plus des mutex mais une
+      vérification que l'appelant est ce thread — 0 accès étranger sur une
+      série de 60 s. Une section garde blocs, biomes et lumière dans un
+      stockage partagé : copier une section marque les deux côtés, et le
+      premier qui écrit prend sa copie — **un stockage vu par deux sections
+      n'est plus jamais écrit**, sans lire `use_count()` d'un thread à l'autre.
+      `Chunk::snapshot()` coûte 24 pointeurs ; le thread réseau encode le
+      `Chunk Data` dans l'ordre d'envoi (`Connection::send_chunk`). Vérifié
+      sous TSan, dont un test sur socket réel où le réseau encode pendant que
+      le tick écrit (20 passes sur 20). Voir `docs/provenance/performance-tick.md`
+      § 5.5–5.6)*
 - [x] Pool de jobs : `std::jthread` et une file, **pas enkiTS**
       *(rien ici n'a besoin de vol de travail ni de graphe de tâches, et une
       dépendance vcpkg coûte plus sur cette machine qu'elle ne rapporte. Ce qui
@@ -259,6 +302,17 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       lave, poussée de 0,04 vers le haut, seuil de 0,4 qui distingue une flaque
       d'une piscine. Les six vitesses publiées sont reproduites. Échelles,
       glace et slime restent)*
+      *(**2026-09-11** : une table par bloc, lue par le joueur **et** les mobs
+      — glissance par bloc porteur (glace 0,98, glace bleue 0,989, slime 0,8)
+      et poussée en (0,6/f)³, 9 grimpables + trappe sur échelle (borne 0,15,
+      montée 0,2, accroupi tenu), rebond du slime, glissade du miel, sable des
+      âmes, toile, baies, neige poudreuse. **Mesuré** sur le vrai serveur,
+      76/76 entités tracées tick par tick : la friction est un produit en
+      float (0,546 000 063 419 sur pierre = float(0,6F × 0,91F), le double
+      échoue à la 8e décimale), traînée verticale 0,98F pour le vivant et 0,98
+      pour l'objet, échelle 0,15F / 0,1176, toile ×0,05F, rebond du slime
+      ×1. Restent les règles propres au joueur (oracle client) et le décalage
+      d'un tick du pas des mobs. Voir `docs/provenance/physique-blocs.md`)*
 - [x] Gestion des joueurs, keep-alive, liste des joueurs
 - [x] Entités joueur : apparition, mouvement, rotation de tête, retrait
 - [x] `ov_netclient` + `ClientLevel` (réplique séparée)
@@ -407,7 +461,16 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       un seul processus, et les octets restent ceux du protocole)*
 - [ ] Prédiction de mouvement et réconciliation
 - [ ] Interpolation d'entités
-- [ ] Mixeur audio, sons 3D atténués, catégories de volume
+- [x] Mixeur audio, sons 3D atténués, catégories de volume
+      *(**2026-09-11** : atténuation linéaire à `attenuation_distance` × max(1,
+      volume), panoramique sur l'axe droit `regard × haut` de la tête —
+      invariant au tangage, prouvé —, **8/8 positions** du modèle numérique
+      retrouvées dans les échantillons du mixeur à 10⁻⁴ ; priorité des voix
+      (le plus faible aux oreilles cède) : 200 sons/frame tiennent en **4,9 ms
+      p99** par rappel de 10,7 ms, contre 16,0 ms sans plafond ; dix catégories
+      et `showSubtitles` dans `options.txt` aux clés du vrai client. Bornes de
+      voix et loi de panoramique : les nôtres, non comparées au vrai client.
+      Voir `docs/provenance/son-client.md`)*
 - [~] **Deux clients pour un serveur · p99 ≤ 20 ms à 12 chunks** ⭐
       *(le p99 est tenu : 17,77 ms avec vsync, dont 0,41 ms d'enregistrement
       CPU et 10,91 ms de GPU, à 12 chunks sur M2 en 2560×1440. Les deux
@@ -710,14 +773,33 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       **dragon** et les **cristaux** dans `DIM1/entities` : santé, phase et position
       revenues, un cristal détruit ne revient pas, le combat ne redémarre plus. Voir
       `docs/provenance/persistance-entites.md`)*
-- [ ] **Passifs (32)** : allay, axolotl, bat, camel, cat, chicken, cod, cow,
+- [~] **Passifs (32)** : allay, axolotl, bat, camel, cat, chicken, cod, cow,
       donkey, fox, frog, glow_squid, horse, mooshroom, mule, ocelot, parrot,
       pig, pufferfish, rabbit, salmon, sheep, skeleton_horse, sniffer,
       snow_golem, squid, strider, tadpole, tropical_fish, turtle, villager,
       wandering_trader
-- [ ] **Neutres (14)** : bee, cave_spider, dolphin, enderman, goat, iron_golem,
+      *(**2026-09-11 — apprivoisement et montures**, mesuré contre le vrai
+      serveur : chat, ocelot, perroquet, cheval, âne, mule apprivoisables,
+      montables ou dignes de confiance ; un essai sur trois apprivoise un chat
+      (447 morues, χ² p > 0,05, témoins 1/2 et 1/5 rejetés) ; statistiques
+      d'un cheval et de ses poulains à la règle 1.20 (écarts-types à 12 % près
+      sur 120 poulains ; la mule hérite sa vitesse) ; tempérament +5 par chute ;
+      un cheval dompté, sellé et conduit par `Move Vehicle` de bout en bout, et
+      revenu de `entities/`. Lapin, renard, tortue, abeille, chèvre, dromadaire
+      et renifleur vivent, se nourrissent, se reproduisent et gardent leur type
+      à la sauvegarde. Restent le vol et l'épaule du perroquet, la ruche, la
+      mule née d'un croisement, l'inventaire du cheval. Voir
+      `docs/provenance/apprivoisement.md`)*
+- [~] **Neutres (14)** : bee, cave_spider, dolphin, enderman, goat, iron_golem,
       llama, trader_llama, panda, piglin, polar_bear, spider, wolf,
       zombified_piglin
+      *(**2026-09-11** : le loup — un os sur trois l'apprivoise (435 os), assis
+      et à 20 de vie ; colère de 20 à 39 s et toute la meute ; il suit son maître
+      au-delà de 10 blocs, est téléporté dès 12, défend son maître et ne mord
+      jamais un creeper ; collier, propriétaire et colère sur le fil et sur
+      disque. Le lama et le lama marchand se montent et s'apprivoisent
+      (tempérament sur 30) ; la chèvre et l'abeille vivent sans leurs attaques.
+      Voir `docs/provenance/apprivoisement.md`)*
 - [ ] **Hostiles (29)** : blaze, creeper, drowned, elder_guardian, endermite,
       evoker, ghast, guardian, hoglin, husk, magma_cube, phantom, piglin_brute,
       pillager, ravager, shulker, silverfish, skeleton, slime, stray, vex,
@@ -856,6 +938,14 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       Nether ; le rayon de recherche du trou est exactement 5 ; l'eau qui coule
       ne waterlogue jamais. Restent les colonnes de bulles et la **magnitude**
       de la poussée, non mesurée — la direction l'est)*
+      *(**2026-09-11** : colonnes de bulles appliquées au joueur et aux mobs,
+      **une fois par bloc touché** — 16/16 vitesses d'un support d'armure
+      tracé reproduites (+0,06 / max 0,7, surface +0,1 ; −0,03 / min −0,3).
+      **Magnitude de la poussée mesurée** : 0,014 par tick, 0,011 200 000 2 =
+      0,014 × 0,8F au premier tick (`current_push`). Restent : la poussée
+      n'est encore appelée par personne, la lave n'est pas mesurée, et la
+      formation des colonnes au-dessus du sable des âmes et du magma n'est pas
+      faite)*
 - [~] **Fabrication et fonte** : recettes façonnées et informes, fours ×3,
       pierre de taille, forge, livre de recettes
       *(**1174 / 1174 recettes chargées**, 0 refusée, les 30 déclarées sans
@@ -891,6 +981,12 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       lancé qui fait éclore un poussin. Restent les autres espèces (lapin,
       équidés, loup, chat), l'apprivoisement, et la persistance des mobs.
       Voir `docs/provenance/elevage.md`)*
+      *(**2026-09-11 — apprivoisement et croisement des chevaux et lamas** :
+      loup, chat, perroquet, ocelot, cheval, âne, lama ; poulains à la règle
+      1.20 mesurée sur 132 naissances, louveteaux à leur maître, et l'élevage
+      des lapins, renards, chèvres (traite), tortues, abeilles et dromadaires.
+      La force d'un lama, que le wiki donne à 1 sur 25, est ajustée sur 160
+      mesures. Voir `docs/provenance/apprivoisement.md`)*
 - [~] **Enchantement**
       *(**2026-09-11**, mesuré contre le vrai serveur : table **512/512 offres**
       (56 graines, 0-15 étagères, 46 objets) et **57/57 enchantements appliqués**,
@@ -1064,8 +1160,19 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       forme, calendrier local identique au tick près (pierre à la main 151).
       Restent la main à la première personne et la prédiction locale du bloc
       cassé. Voir `docs/provenance/cassage-bloc.md`)*
-- [ ] Audio : tous les événements sonores, musique adaptative par biome et
+- [~] Audio : tous les événements sonores, musique adaptative par biome et
       dimension, disques, sous-titres
+      *(**2026-09-11** : musique par situation dans l'ordre du wiki (menu,
+      crédits, dragon, End, sous l'eau, créatif, biome, jeu), dimension lue
+      dans Login et Respawn, musique des **31 biomes** lue dans le codec de
+      Login, barre du dragon par le drapeau 0x02 de Boss Bar ; disques par
+      World Event **1010/1011 mesurés** sur le vrai serveur (id d'objet, reçus
+      par l'acteur aussi), « Now Playing » en barre d'action, musique qui
+      s'efface sous un disque ; sous-titres en bas à droite avec flèches et
+      fondu ; clic des boutons des menus. Restent : éclaboussures, crédits,
+      Update Tags (liste « sous l'eau » en table), arc-en-ciel de « Now
+      Playing », sous-titres non comparés au pixel ; notre serveur n'émet pas
+      encore 1010. Voir `docs/provenance/son-client.md`)*
 - [ ] Resource packs empilables, i18n, options persistées, captures d'écran
 
 ### Commandes et progression

@@ -19,6 +19,10 @@
 #include <string>
 #include <vector>
 
+namespace ov::world {
+class Chunk;
+}  // namespace ov::world
+
 namespace ov::net {
 
 /// One client connection, from the server's point of view.
@@ -33,6 +37,19 @@ public:
     /// Queue bytes for sending. Returns immediately; the write completes on the
     /// event loop.
     virtual void send(std::span<const u8> bytes) = 0;
+
+    /// Queue a chunk as `Chunk Data and Update Light`, from a snapshot
+    /// (`world::Chunk::snapshot`) rather than from encoded bytes.
+    ///
+    /// Encoding a chunk is the largest piece of work in a packet, and the
+    /// caller is the tick thread. The TCP connection encodes on its own thread,
+    /// **in the same queue as `send`**: a packet sent after the chunk — a
+    /// `Block Update` inside it — cannot overtake it. The default encodes here,
+    /// on the calling thread, and calls `send`: what a connection without a
+    /// thread of its own (a test double, an in-process channel) wants. Either
+    /// way the bytes are those of `encode_chunk_data`, uncompressed, as the
+    /// server framed them before.
+    virtual void send_chunk(std::shared_ptr<const world::Chunk> chunk);
 
     /// Close after everything queued has been written.
     virtual void close() = 0;

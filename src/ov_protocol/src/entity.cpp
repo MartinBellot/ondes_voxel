@@ -160,6 +160,12 @@ MetadataWriter& MetadataWriter::optional_block_state_value(u8 index, i32 state) 
     return *this;
 }
 
+MetadataWriter& MetadataWriter::cat_variant_value(u8 index, i32 variant) {
+    header(index, MetadataType::CatVariant);
+    write_varint(writer_, variant);
+    return *this;
+}
+
 MetadataWriter& MetadataWriter::villager_data_value(u8 index, i32 type, i32 profession,
                                                     i32 level) {
     header(index, MetadataType::VillagerData);

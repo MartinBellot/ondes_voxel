@@ -27,6 +27,7 @@
 #include "ov/render/atlas.hpp"
 #include "ov/render/biome_colours.hpp"
 #include "ov/render/block_models.hpp"
+#include "ov/gameplay/block_motion.hpp"
 #include "ov/render/chunk_mesher.hpp"
 #include "ov/world/chunk.hpp"
 
@@ -126,6 +127,9 @@ private:
     [[nodiscard]] render::ChunkNeighbours neighbours_of(i32 chunk_x, i32 chunk_z) const;
 
     const registry::BlockRegistry* blocks_;
+    /// ── movement physics ── ice, ladders, slime, cobwebs, bubble columns:
+    /// resolved once from the registry, read by the player's physics.
+    gameplay::BlockMotionTable     motion_;
     render::BlockModelCache*       models_;
     const render::TextureAtlas*    atlas_;
     const render::BiomeTints*      tints_;

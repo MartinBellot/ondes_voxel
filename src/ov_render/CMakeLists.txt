@@ -29,6 +29,8 @@ ov_add_library(ov_render
         src/biome_colours.cpp
         src/block_models.cpp
         src/camera.cpp
+        src/entity_atlas.cpp
+        src/entity_look.cpp
         src/entity_mesh.cpp
         src/entity_model.cpp
         src/entity_pose.cpp
@@ -75,6 +77,8 @@ ov_add_test(test_ov_render
         tests/test_biome_colours.cpp
         tests/test_block_state_model.cpp
         tests/test_camera.cpp
+        tests/test_entity_atlas.cpp
+        tests/test_entity_look.cpp
         tests/test_entity_model.cpp
         tests/test_environment.cpp
         tests/test_font.cpp
