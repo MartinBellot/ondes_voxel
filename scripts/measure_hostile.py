@@ -779,6 +779,63 @@ def campaign_slime(server, rec: Recorder) -> dict:
     return out
 
 
+def rhythm_field(server, kind: str, sizes: tuple[int, ...], per: int, seconds: float,
+                 probe_mode: str = "creative") -> list[dict]:
+    mm2.reset(server, probe_mode)
+    field = mm2.Field(server)
+    for i, size in enumerate(sizes):
+        for k in range(per):
+            field.summon(kind, -20.5 + k * 12.0, -20.5 + i * 16.0, f"Size:{size}")
+    time.sleep(1.0)
+    field.run(seconds)
+    return field.dump()
+
+
+def campaign_slime2(server, rec: Recorder) -> dict:
+    """The slime's size on the wire, the magma cube's contact and rhythm, and a
+    slime's rhythm while it chases."""
+    out: dict = {}
+    # (a) The size on the wire: one slime of each size, their spawn metadata.
+    fresh(server)
+    rec.take()
+    for size, x in ((0, 4.5), (1, 8.5), (3, 14.5)):
+        server.batch([f"summon minecraft:slime {x} {Y} 0.5 "
+                      "{NoAI:1b,PersistenceRequired:1b,Silent:1b,Size:" + str(size) + "}"])
+    time.sleep(1.5)
+    got = rec.take()
+    spawns = []
+    for _, pid, p in got:
+        if pid == SPAWN_ENTITY:
+            eid, i = read_varint(p, 0)
+            kind, _ = read_varint(p, i + 16)
+            if kind == tid("slime"):
+                spawns.append(eid)
+    out["size_metadata"] = {eid: metadata_hex(got, eid) for eid in spawns}
+
+    # (b) The magma cube's contact, size by size, on Normal.
+    out["magma_contact"] = {}
+    for size in (0, 1, 3):
+        print(f"   magma contact size {size}", flush=True)
+        out["magma_contact"][size] = hits_of(server, f"Size:{size}", wanted=4, limit=12.0,
+                                             kind="magma_cube", dx=1.5,
+                                             setup=["time set midnight"])
+    # (c) The magma cube's rhythm, nobody to chase.
+    out["magma_rhythm"] = rhythm_field(server, "magma_cube", (0, 1, 3), 3, 40.0)
+
+    # (d) A slime's rhythm while it chases a survival probe out of reach.
+    mm2.reset(server, "survival")
+    server.batch(["difficulty normal", f"tp {PROBE} 0.5 {Y} 0.5",
+                  f"effect give {PROBE} minecraft:resistance 999999 4 true",
+                  f"effect give {PROBE} minecraft:regeneration 999999 4 true"])
+    field = mm2.Field(server)
+    for k in range(4):
+        field.summon("slime", 12.5 + k * 3.0, 12.5, "Size:1")
+    time.sleep(0.5)
+    field.run(30.0)
+    out["chase_rhythm"] = field.dump()
+    return out
+
+
 def campaign_witch(server, rec: Recorder) -> dict:
     out = {}
     for label, d in (("far", 9.0), ("near", 2.5)):
@@ -809,7 +866,7 @@ CAMPAIGNS = {"packets": campaign_packets, "speed": campaign_speed, "strength": c
              "splash": campaign_splash, "arrow": campaign_arrow, "anvil": campaign_anvil,
              "enderman": campaign_enderman, "enderman2": campaign_enderman2,
              "enderman3": campaign_enderman3,
-             "spider": campaign_spider, "slime": campaign_slime,
+             "spider": campaign_spider, "slime": campaign_slime, "slime2": campaign_slime2,
              "witch": campaign_witch, "anvil_back": campaign_anvil_back}
 
 
