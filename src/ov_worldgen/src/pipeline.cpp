@@ -200,6 +200,7 @@ struct ChunkPipeline::Impl {
     const StructurePlacer*       placer{nullptr};
     const StructureWorldSampler* sampler{nullptr};
     StructureStage*              structure_stage{nullptr};  // ── structures ──
+    TerrainCache*                terrain_cache{nullptr};    // ── streaming ──
 
     /// Node-based on purpose: `promote()` holds a reference to one entry while
     /// driving its neighbours, and `unordered_map` keeps references valid
@@ -232,11 +233,23 @@ struct ChunkPipeline::Impl {
     /// *lower* status than the one being reached.
     Entry& advance(i32 chunk_x, i32 chunk_z, ChunkStatus target) {  // NOLINT(misc-no-recursion)
         Entry& entry = entry_for(chunk_x, chunk_z);
+        // ── streaming ── Terrain is a pure function of the seed and the
+        // position up to and including the carvers (TerrainCache), so a chunk
+        // another pipeline has already carved is copied, not carved again.
+        if (terrain_cache != nullptr && entry.status == ChunkStatus::Empty &&
+            target >= ChunkStatus::Carvers &&
+            terrain_cache->fetch(chunk_x, chunk_z, entry.chunk, entry.starts)) {
+            entry.status = ChunkStatus::Carvers;
+            stats.terrain_hits += 1;
+        }
         while (entry.status < target) {
             const auto next = static_cast<ChunkStatus>(static_cast<u8>(entry.status) + 1);
             step(chunk_x, chunk_z, entry, next);
             entry.status = next;
             note(next);
+            if (next == ChunkStatus::Carvers && terrain_cache != nullptr) {  // ── streaming ──
+                terrain_cache->offer(chunk_x, chunk_z, entry.chunk, entry.starts);
+            }
         }
         return entry;
     }
@@ -424,6 +437,11 @@ std::vector<std::string_view> ChunkPipeline::structure_starts(i32 chunk_x, i32 c
 // ── structures ──
 void ChunkPipeline::set_structure_stage(StructureStage* stage) noexcept {
     impl_->structure_stage = stage;
+}
+
+// ── streaming ──
+void ChunkPipeline::set_terrain_cache(TerrainCache* cache) noexcept {
+    impl_->terrain_cache = cache;
 }
 
 const PipelineStats& ChunkPipeline::stats() const noexcept { return impl_->stats; }

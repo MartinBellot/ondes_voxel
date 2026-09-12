@@ -26,6 +26,7 @@
 // world it hands over has already left its producer for good.
 #pragma once
 
+#include "ov/base/thread.hpp"
 #include "ov/base/types.hpp"
 
 #include <functional>
@@ -43,7 +44,9 @@ public:
     /// Start `workers` threads. Zero is accepted and means "run every job on
     /// the calling thread inside `submit`" — the shape a test wants when it is
     /// comparing a parallel run against a serial one.
-    explicit JobPool(usize workers);
+    ///
+    /// `role` is the scheduling class of the threads (thread.hpp).
+    explicit JobPool(usize workers, ThreadRole role = ThreadRole::Worker);
 
     JobPool(const JobPool&)            = delete;
     JobPool& operator=(const JobPool&) = delete;

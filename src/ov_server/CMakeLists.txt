@@ -10,9 +10,11 @@ ov_add_library(ov_server
         src/async_chunk_source.cpp
         src/block_container.cpp
         src/brewing_session.cpp  # ── brewing ──
+        src/chunk_saver.cpp  # ── streaming ──
         src/item_transport.cpp
         src/generated_world.cpp
         src/generation_check.cpp
+        src/terrain_cache.cpp  # ── streaming ──
         src/husbandry.cpp
         src/inbound_queue.cpp  # ── concurrency ──
         src/tick_thread_lock.cpp  # ── concurrency ──
@@ -119,6 +121,8 @@ ov_add_test(test_ov_server
         tests/test_mobs3_server.cpp  # ── mobs-3 ──
         tests/test_tame_server.cpp  # ── tame ──
         tests/test_world_structures.cpp  # ── structures ──
+        tests/test_streaming.cpp  # ── streaming ──
+        tests/test_chunk_saver.cpp  # ── streaming ──
     DEPS ov_server
     LABELS unit
 )

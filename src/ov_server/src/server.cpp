@@ -71,6 +71,7 @@
 #include "ov/protocol/survival.hpp"
 #include "ov/world/level_dat.hpp"
 #include "async_chunk_source.hpp"
+#include "chunk_saver.hpp"  // ── streaming ──
 #include "generated_world.hpp"
 #include "survival_session.hpp"
 #include "effect_session.hpp"  // ── effects ──
@@ -1203,7 +1204,16 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             OV_LOG_ERROR("OV_WORLDGEN_SEED was set but the generator could not be built");
             return 1;
         }
-        chunk_source = std::make_unique<AsyncChunkSource>(*generated, generation_workers);
+        // ── streaming ── The workers' scheduling class. `Generation`
+        // (USER_INITIATED) by default; `OV_WORKER_QOS=utility` gives back the
+        // old UTILITY class, for the comparison in chargement-terrain.md.
+        ThreadRole generation_role = ThreadRole::Generation;
+        if (const char* qos = std::getenv("OV_WORKER_QOS");
+            qos != nullptr && std::string_view{qos} == "utility") {
+            generation_role = ThreadRole::Worker;
+        }
+        chunk_source =
+            std::make_unique<AsyncChunkSource>(*generated, generation_workers, generation_role);
     }
     // ────────────────────────────────────────────────────────────────────────
 
@@ -1350,6 +1360,16 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         registries ? &*registries : nullptr,
         superflat.air,
     };
+
+    // ── streaming ── Autosave's writer, off the tick thread (chunk_saver.hpp).
+    // Declared after `codec_context`, whose registries and names every job
+    // borrows, so it is destroyed first — and its destructor writes whatever is
+    // still queued. `saving_chunks` counts the saves of each chunk still in
+    // flight: a chunk with one is not evicted, or it could be read back from
+    // disk before its bytes arrived.
+    ChunkSaver                   chunk_saver;
+    std::unordered_map<i64, u32> saving_chunks;
+    std::vector<ChunkPos>        saved_scratch;
 
     // ── nether ──────────────────────────────────────────────────────────────
     //
@@ -1710,50 +1730,40 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             return;
         }
 
-        std::map<std::pair<i32, i32>, std::vector<i64>> by_region;
+        // ── streaming ── Snapshots, handed to the saver's thread
+        // (chunk_saver.hpp). What was here encoded every chunk and rewrote
+        // every region on the tick thread — the worst tick of
+        // performance-tick.md § 5.5. The tick now pays a section pointer per
+        // chunk; the same bytes are written, grouped the same way, by the
+        // saver, which logs what it wrote and how long it took.
+        ChunkSaveJob job;
+        job.region_dir        = world_dir;
+        job.context           = codec_context;
+        job.context.game_time = server_tick.load(std::memory_order_relaxed);
+        if (level) {
+            // Once for the whole job. The per-chunk copies this replaces were
+            // all taken in this same tick, of the same two queues; `to_nbt`
+            // keeps each chunk's own share (`ticks_to_nbt` filters by column).
+            job.block_ticks = level->queue(world::TickQueue::Block).snapshot();
+            job.fluid_ticks = level->queue(world::TickQueue::Fluid).snapshot();
+        }
+        job.chunks.reserve(dirty_chunks.size());
         for (const i64 key : dirty_chunks) {
             if (read_only_chunks.contains(key)) {
                 continue;
             }
-            const auto cx = static_cast<i32>(key >> 32);
-            const auto cz = static_cast<i32>(static_cast<u32>(key & 0xFFFFFFFF));
-            by_region[{cx >> 5, cz >> 5}].push_back(key);
+            const auto  cx   = static_cast<i32>(key >> 32);
+            const auto  cz   = static_cast<i32>(static_cast<u32>(key & 0xFFFFFFFF));
+            const auto* held = chunks.find(ChunkPos{cx, cz});
+            if (held == nullptr) {
+                continue;
+            }
+            job.chunks.push_back(held->snapshot());
+            ++saving_chunks[key];  // pinned until the saver says it has landed
         }
+        const usize handed = job.chunks.size();
+        chunk_saver.submit(std::move(job));
 
-        usize written = 0;
-        for (const auto& [region_pos, keys] : by_region) {
-            const auto path =
-                world_dir / fmt::format("r.{}.{}.mca", region_pos.first, region_pos.second);
-            auto writer = nbt::RegionWriter::open_or_empty(path);
-            for (const i64 key : keys) {
-                const auto cx    = static_cast<i32>(key >> 32);
-                const auto cz    = static_cast<i32>(static_cast<u32>(key & 0xFFFFFFFF));
-                const auto* held = chunks.find(ChunkPos{cx, cz});
-                if (held == nullptr) {
-                    continue;
-                }
-                // The chunk's own pending ticks. A copy of the context per
-                // chunk rather than one shared: the two spans and `game_time`
-                // are the only fields that differ, and `ticks_to_nbt` filters
-                // the level's queue down to this column.
-                world::ChunkCodecContext with_ticks = codec_context;
-                with_ticks.game_time                = server_tick.load(std::memory_order_relaxed);
-                std::vector<world::ScheduledTick> block_snapshot;
-                std::vector<world::ScheduledTick> fluid_snapshot;
-                if (level) {
-                    block_snapshot = level->queue(world::TickQueue::Block).snapshot();
-                    fluid_snapshot = level->queue(world::TickQueue::Fluid).snapshot();
-                    with_ticks.block_ticks = block_snapshot;
-                    with_ticks.fluid_ticks = fluid_snapshot;
-                }
-                writer.set_chunk(static_cast<u32>(cx & 31), static_cast<u32>(cz & 31),
-                                 world::to_nbt(*held, with_ticks), 0);
-                ++written;
-            }
-            if (!writer.write(path)) {
-                OV_LOG_WARN("could not write {}", path.string());
-            }
-        }
         // level.dat every time, not once at creation: it is small, and a world
         // whose regions are newer than its level.dat is the state a crash
         // leaves behind.
@@ -1766,7 +1776,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             OV_LOG_WARN("could not write level.dat");
         }
 
-        OV_LOG_INFO("saved {} chunks across {} regions", written, by_region.size());
+        OV_LOG_DEBUG("handed {} chunks to the saver", handed);
         dirty_chunks.clear();
     };
 
@@ -4450,7 +4460,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             }
         }
     };
-    command_host.save = [&] { save_world(); };
+    // ── streaming ── /save-all promises the world is on disk when it answers:
+    // wait for the saver's thread, which an autosave never does.
+    command_host.save = [&] {
+        save_world();
+        chunk_saver.flush();
+    };
     command_host.stop = [] { g_stop_requested.store(true, std::memory_order_relaxed); };
     command_host.set_world_spawn = [&](i32 x, i32 y, i32 z, f32 angle) {
         level_settings.spawn_x     = x;
@@ -4618,8 +4633,15 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
 
             case ConnectionState::Status: {
                 if (packet_id == static_cast<i32>(net::StatusPacket::Request)) {
+                    // ── streaming ── with the spawn preparation while it runs:
+                    // our client polls this rather than being refused a login
+                    net::ServerStatus answer = status;
+                    if (chunk_source) {
+                        const i32 ready = spawn_ready_percent.load(std::memory_order_relaxed);
+                        answer.spawn_progress = ready < 100 ? ready : -1;
+                    }
                     send_packet(static_cast<i32>(net::StatusPacket::Response),
-                                net::encode_status_response(status));
+                                net::encode_status_response(answer));
                     return true;
                 }
                 if (packet_id == static_cast<i32>(net::StatusPacket::Ping)) {
@@ -8366,18 +8388,19 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // player watched.
         //
         // `wanted_chunks` comes back ordered by level, which is nearest-first
-        // without the map having to know where anybody is. The source refuses
-        // once its queue is full and the scan simply continues; next tick asks
-        // again, from where the player is then.
+        // without the map having to know where anybody is.
+        //
+        // ── streaming ── What is wanted and not here goes over whole, every
+        // tick: a free worker takes the best block *when it starts*, and a
+        // block nobody wants any more is never started (async_chunk_source.hpp).
+        // The per-chunk `request` this replaces queued blocks in the order they
+        // were first asked for and never withdrew one — a player who flew on
+        // waited behind the terrain they had left. In place, so no allocation.
         if (chunk_source) {
             const std::scoped_lock lock{chunk_mutex};
             chunks.wanted_chunks(wanted_scratch);
-            for (const ChunkPos pos : wanted_scratch) {
-                if (chunks.contains(pos)) {
-                    continue;
-                }
-                (void)chunk_source->request(pos);
-            }
+            std::erase_if(wanted_scratch, [&](ChunkPos pos) { return chunks.contains(pos); });
+            chunk_source->prioritise(wanted_scratch);
         }
 
         perf->enter(TickPhase::ChunkEviction);  // ── perf ──
@@ -8390,13 +8413,24 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // somebody's building.
         if (clock.tick_count() % 100 == 0) {
             const std::scoped_lock lock{chunk_mutex};
+            // ── streaming ── Saves that have reached the disk release their
+            // chunk; one still in flight keeps it here (chunk_saver.hpp).
+            saved_scratch.clear();
+            chunk_saver.drain_saved(saved_scratch);
+            for (const ChunkPos pos : saved_scratch) {
+                const auto pinned = saving_chunks.find(chunk_key(pos.x, pos.z));
+                if (pinned != saving_chunks.end() && --pinned->second == 0) {
+                    saving_chunks.erase(pinned);
+                }
+            }
             to_evict.clear();
             chunks.for_each([&](ChunkPos pos, const world::Chunk&) {
                 if (chunks.is_wanted(pos)) {
                     return;
                 }
                 const i64 key = chunk_key(pos.x, pos.z);
-                if (dirty_chunks.contains(key) || read_only_chunks.contains(key)) {
+                if (dirty_chunks.contains(key) || read_only_chunks.contains(key) ||
+                    saving_chunks.contains(key)) {
                     return;
                 }
                 to_evict.push_back(pos);
@@ -10768,6 +10802,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         const std::scoped_lock persist_lock{players_mutex};  // ── persistence ──
         save_world();
     }
+    chunk_saver.flush();  // ── streaming ── the last save on disk before the stop report
 
     listener->stop();
     network_thread.join();
@@ -10819,6 +10854,18 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             "tick thread, {} on other threads",  // ── perf ── the network thread too
             chunk_source->blocks_done(), chunk_source->chunks_done(), chunks_published,
             synchronous_generations, synchronous_generations_elsewhere);
+        // ── streaming ── what a chunk cost the workers, and what the shared
+        // terrain cache spared them (docs/provenance/chargement-terrain.md)
+        const u64 made = chunk_source->chunks_done();
+        OV_LOG_INFO("chunk source: {:.1f} s of worker time on {} workers, {:.1f} ms per chunk",
+                    chunk_source->busy_seconds(), chunk_source->worker_count(),
+                    made == 0 ? 0.0
+                              : chunk_source->busy_seconds() * 1000.0 / static_cast<f64>(made));
+        if (generated) {
+            if (const std::string line = generated->terrain_cache_report(); !line.empty()) {
+                OV_LOG_INFO("{}", line);
+            }
+        }
     }
     // ── concurrency ── the claims of docs/provenance/concurrence.md, counted
     OV_LOG_INFO("concurrency: {} packets handled on the tick thread ({} refused), {} world "

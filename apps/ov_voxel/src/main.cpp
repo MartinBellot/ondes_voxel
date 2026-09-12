@@ -2000,6 +2000,12 @@ int main(int argc, char** argv) {
     // The line vanilla's loading screen would show this frame, or empty.
     std::string loading_line;
     auto        next_knock = std::chrono::steady_clock::now();
+    // ── streaming ── On the way into a level (join, respawn, dimension
+    // change) until the chunk under the player has arrived: the only time
+    // "Loading terrain" is shown. See the ground check in the frame loop.
+    bool awaiting_terrain = true;
+    // ── streaming ── The spawn preparation a status ping last reported, or -1.
+    i32 spawn_progress_seen = -1;
     bool             captured         = false;
 
     // ── screens ─────────────────────────────────────────────────────────────
@@ -2039,6 +2045,8 @@ int main(int argc, char** argv) {
         last_drawn.clear();
         events.clear();
         spawned     = false;
+        awaiting_terrain    = true;  // ── streaming ── the next world is entered anew
+        spawn_progress_seen = -1;
         player      = gameplay::MotionState{};
         flying      = false;
         abilities   = netclient::ClientEvents::Abilities{};
@@ -2352,22 +2360,42 @@ int main(int argc, char** argv) {
                     percent = why.substr(open + 2, close - open - 2);
                 }
             }
+            // ── streaming ── After that one refusal, ask how far the server
+            // has got — a status ping of its own, four times a second, bytes on
+            // a socket like everything else between the two (CLAUDE.md,
+            // principle 2) — and knock at the login door only once it says the
+            // spawn is ready. Before, the client knocked every second and the
+            // server logged a refusal for every knock.
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= next_knock) {
+                next_knock          = now + std::chrono::milliseconds{250};
+                const auto progress = netclient::Client::query_spawn_progress(login.host, login.port);
+                if (progress) {
+                    spawn_progress_seen = *progress;
+                }
+                if (progress && *progress >= 100) {
+                    if (auto again = netclient::Client::connect(login); again) {
+                        client = std::move(*again);
+                        events.clear();
+                    }
+                }
+            }
+            if (spawn_progress_seen >= 0) {
+                percent = std::to_string(std::min(spawn_progress_seen, 100));
+            }
             const std::array<std::string, 1> arguments{percent};
             loading_line = render::format_translation(
                 (*interface)->translate("menu.preparingSpawn"), arguments);
-            const auto now = std::chrono::steady_clock::now();
-            if (now >= next_knock) {
-                next_knock = now + std::chrono::seconds{1};
-                if (auto again = netclient::Client::connect(login); again) {
-                    client = std::move(*again);
-                    events.clear();
-                }
-            }
             }  // ── end render-parity ──
         }
         if (online && client->connected()) {
 
             client->poll(events);
+            // ── streaming ── Login and Respawn both carry the dimension: they
+            // are the way into a level, and the only time Loading terrain shows.
+            if (events.dimension || events.respawned) {
+                awaiting_terrain = true;
+            }
             // The interface first: Login (play) carries the game mode, and the
             // creative-slot branch below reads it. Applying it after would make
             // the first frame's decision on a default rather than on what the
@@ -2588,8 +2616,18 @@ int main(int argc, char** argv) {
                 spawned && session->chunk_at(static_cast<i32>(std::floor(player.position.x)) >> 4,
                                              static_cast<i32>(std::floor(player.position.z)) >> 4) !=
                                nullptr;
-            if (!ground_ready) {  // ── loading ──
+            // ── streaming ── The screen is vanilla's "Loading terrain", and
+            // vanilla shows it on the way *into* a level — the join, a
+            // respawn, a change of dimension — until the chunk under the player
+            // has arrived. Never while exploring: a player who outruns the
+            // terrain keeps the world on screen and simply does not move until
+            // the ground is there (the pause just below), where showing the
+            // screen turned every hole at the edge of the view into a blackout.
+            if (!ground_ready && awaiting_terrain) {  // ── loading ──
                 loading_line = (*interface)->translate("multiplayer.downloadingTerrain");
+            }
+            if (ground_ready) {
+                awaiting_terrain = false;
             }
             if (spawned && !ground_ready) {
                 tick_accumulator = 0.0;

@@ -18,6 +18,8 @@ struct Options {
     ov::i32               origin_z{0};
     ov::i32               side{1};
     ov::usize             workers{4};
+    // ── streaming ── the serial arm alone: its digest and its time
+    bool                  serial_only{false};
     // ── structures ── --export mode
     std::filesystem::path export_dir;
     std::string           dimension{"overworld"};
@@ -33,8 +35,12 @@ void usage() {
         "  --origin=<x>,<z>   first generation block (default: 0,0)\n"
         "  --side=<n>         generation blocks per side (default: 1)\n"
         "  --workers=<n>      threads in the parallel arm (default: 4)\n"
+        "  --serial-only      generate the serial arm only (digest and timing)\n"
         "\n"
         "A generation block is 4x4 chunks, so --side=2 compares 64 chunks.\n"
+        "The digest covers every block, biome cell, stored heightmap and block\n"
+        "entity of the serial arm: two binaries that generate the same world\n"
+        "print the same digest.\n"
         "\n"
         "  --export=<dir>             instead: generate and write region files there\n"
         "  --dimension=<name>         overworld (default), nether or end\n"
@@ -61,6 +67,8 @@ int main(int argc, char** argv) {
         } else if (arg.starts_with("--workers=")) {
             options.workers = static_cast<ov::usize>(
                 std::strtoul(std::string{arg.substr(10)}.c_str(), nullptr, 10));
+        } else if (arg == "--serial-only") {
+            options.serial_only = true;
         } else if (arg.starts_with("--origin=")) {
             const std::string value{arg.substr(9)};
             const auto        comma = value.find(',');
@@ -107,11 +115,25 @@ int main(int argc, char** argv) {
 
     const auto report = ov::server::check_generation_determinism(
         options.data, options.seed, options.origin_x, options.origin_z, options.side,
-        options.workers);
+        options.workers, !options.serial_only);
 
     if (!report.loaded) {
         fmt::print("the generator could not be loaded — nothing was compared\n");
         return 1;
+    }
+
+    if (options.serial_only) {
+        fmt::print(
+            "\n"
+            "seed {}   blocks {}   chunks {}   origin {},{}\n"
+            "serial   {:.3f} s   ({:.1f} ms per chunk)\n"
+            "digest   {:016x}\n",
+            options.seed, report.blocks, report.chunks, options.origin_x, options.origin_z,
+            report.serial_seconds,
+            report.chunks > 0 ? report.serial_seconds * 1000.0 / static_cast<double>(report.chunks)
+                              : 0.0,
+            report.digest);
+        return 0;
     }
 
     fmt::print(
@@ -119,6 +141,7 @@ int main(int argc, char** argv) {
         "seed {}   blocks {}   chunks {}   workers {}\n"
         "serial   {:.3f} s\n"
         "parallel {:.3f} s   ({:.2f}x)\n"
+        "digest   {:016x}\n"
         "\n"
         "chunks only one arm produced : {}\n"
         "block cells compared         : {}\n"
@@ -130,8 +153,8 @@ int main(int argc, char** argv) {
         options.seed, report.blocks, report.chunks, options.workers, report.serial_seconds,
         report.parallel_seconds,
         report.parallel_seconds > 0.0 ? report.serial_seconds / report.parallel_seconds : 0.0,
-        report.missing, report.block_cells, report.block_cells_differing, report.biome_cells,
-        report.biome_cells_differing,
+        report.digest, report.missing, report.block_cells, report.block_cells_differing,
+        report.biome_cells, report.biome_cells_differing,
         report.identical() ? "IDENTICAL — the parallel world is the serial world"
                            : "DIFFERENT — the parallel world is not the serial world");
 

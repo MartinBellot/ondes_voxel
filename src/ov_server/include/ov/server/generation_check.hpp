@@ -46,6 +46,13 @@ struct GenerationCheck {
     f64 serial_seconds{0.0};
     f64 parallel_seconds{0.0};
 
+    /// ── streaming ── FNV-1a over the serial arm, chunk by chunk in key order:
+    /// every block, every biome cell, the four stored heightmaps and the block
+    /// entities. The comparison above proves the two arms of *one* binary
+    /// agree; this is what proves two binaries agree — an optimisation of the
+    /// generator must leave it unchanged (docs/provenance/chargement-terrain.md).
+    u64 digest{0};
+
     [[nodiscard]] bool identical() const noexcept {
         return loaded && missing == 0 && block_cells_differing == 0 && biome_cells_differing == 0;
     }
@@ -57,10 +64,11 @@ struct GenerationCheck {
 /// `AsyncChunkSource::kBlockChunks`. `workers` is how many threads the parallel
 /// arm uses; one is a legitimate value and still exercises the queue, and zero
 /// makes the pool run inline, which is the degenerate case worth being able to
-/// ask for.
+/// ask for. `parallel_arm = false` generates the serial arm only — for the
+/// digest and for profiling a single thread.
 [[nodiscard]] GenerationCheck check_generation_determinism(
     const std::filesystem::path& data_root, i64 seed, i32 origin_block_x, i32 origin_block_z,
-    i32 side, usize workers);
+    i32 side, usize workers, bool parallel_arm = true);
 
 // ── structures ──
 /// What an export wrote.

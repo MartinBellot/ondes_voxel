@@ -29,6 +29,13 @@ enum class ThreadRole {
     Network,
     /// Job pool workers: worldgen, meshing, lighting, decompression.
     Worker,
+    /// ── streaming ── Job pool work a player is waiting for right now: the
+    /// terrain around them. Scheduled like `Network` (USER_INITIATED on
+    /// macOS: work the user started and needs the result of to go on) rather
+    /// than like `Worker` (UTILITY: no immediate result needed), which on a
+    /// loaded machine was measured at ~2 % of a core per worker for minutes.
+    /// See docs/provenance/chargement-terrain.md.
+    Generation,
     /// Blocking disk I/O.
     Io,
     /// Best effort, yields to everything.

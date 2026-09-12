@@ -12,6 +12,7 @@
 #include "ov/worldgen/pipeline.hpp"
 #include "ov/worldgen/structure_stage.hpp"  // ── structures ──
 #include "ov/worldgen/surface_system.hpp"
+#include "terrain_cache.hpp"     // ── streaming ──
 #include "world_structures.hpp"  // ── structures ──
 
 #include <cstdlib>
@@ -88,6 +89,11 @@ struct GeneratedWorld::Impl {
     /// stacks' stages borrow its placer and builder.
     std::string                      settings;
     std::unique_ptr<WorldStructures> structures;
+
+    /// ── streaming ── Carved terrain every stack copies from and offers to.
+    /// Declared before the stacks, whose pipelines borrow it, so it outlives
+    /// them. Null when `OV_TERRAIN_CACHE=0`.
+    std::unique_ptr<SharedTerrainCache> terrain;
 
     /// One per generating thread. `stacks[0]` belongs to whoever calls
     /// `generate` directly — the tick thread's fallback path.
@@ -188,6 +194,23 @@ std::unique_ptr<GeneratedWorld> GeneratedWorld::load(
             return nullptr;
         }
         impl->stacks.push_back(std::move(stack));
+    }
+
+    // ── streaming ── One terrain cache for every stack of this world, on
+    // unless OV_TERRAIN_CACHE=0; its size is a count of carved chunks. It
+    // changes how often terrain is generated, never what it is
+    // (terrain_cache.hpp; ov_gendet's digest is the proof).
+    {
+        usize capacity = 1024;
+        if (const char* text = std::getenv("OV_TERRAIN_CACHE")) {
+            capacity = static_cast<usize>(std::strtoul(text, nullptr, 10));
+        }
+        if (capacity != 0) {
+            impl->terrain = std::make_unique<SharedTerrainCache>(capacity);
+            for (auto& stack : impl->stacks) {
+                stack->pipeline->set_terrain_cache(impl->terrain.get());
+            }
+        }
     }
 
     // ── structures ── Loaded once, a stage per stack. Without the jar the
@@ -334,5 +357,22 @@ void GeneratedWorld::generate_square(usize stack_index, i32 origin_x, i32 origin
 }
 
 i64 GeneratedWorld::seed() const noexcept { return impl_->seed; }
+
+std::string GeneratedWorld::terrain_cache_report() const {  // ── streaming ──
+    return impl_->terrain ? impl_->terrain->report() : std::string{};
+}
+
+void GeneratedWorld::clear_terrain_cache() {  // ── streaming ──
+    if (!impl_->terrain) {
+        return;
+    }
+    // The new cache first, every pipeline pointed at it, and only then the old
+    // one dropped: no pipeline ever holds a pointer to a destroyed cache.
+    auto fresh = std::make_unique<SharedTerrainCache>(impl_->terrain->capacity());
+    for (auto& stack : impl_->stacks) {
+        stack->pipeline->set_terrain_cache(fresh.get());
+    }
+    impl_->terrain = std::move(fresh);
+}
 
 }  // namespace ov::server

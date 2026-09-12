@@ -40,6 +40,7 @@ qos_class_t to_qos(ThreadRole role) noexcept {
         // which reads as unexplained TPS loss.
         case ThreadRole::Interactive:
         case ThreadRole::Tick: return QOS_CLASS_USER_INTERACTIVE;
+        case ThreadRole::Generation:  // ── streaming ── see thread.hpp
         case ThreadRole::Network: return QOS_CLASS_USER_INITIATED;
         case ThreadRole::Worker:
         case ThreadRole::Io: return QOS_CLASS_UTILITY;
@@ -54,6 +55,7 @@ int to_nice(ThreadRole role) noexcept {
     switch (role) {
         case ThreadRole::Interactive:
         case ThreadRole::Tick: return -5;
+        case ThreadRole::Generation:  // ── streaming ── see thread.hpp
         case ThreadRole::Network: return -2;
         case ThreadRole::Worker:
         case ThreadRole::Io: return 0;
@@ -68,6 +70,7 @@ int to_priority(ThreadRole role) noexcept {
     switch (role) {
         case ThreadRole::Interactive:
         case ThreadRole::Tick: return THREAD_PRIORITY_ABOVE_NORMAL;
+        case ThreadRole::Generation:  // ── streaming ── see thread.hpp
         case ThreadRole::Network: return THREAD_PRIORITY_NORMAL;
         case ThreadRole::Worker:
         case ThreadRole::Io: return THREAD_PRIORITY_NORMAL;
