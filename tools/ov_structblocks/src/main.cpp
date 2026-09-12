@@ -832,8 +832,10 @@ private:
         // Our world, generated around it.
         worldgen::ChunkPipeline  pipeline{generator, options.features ? &*decorator : nullptr,
                                           blocks, world::WorldShape::overworld(), options.seed};
+        // ── great pyramid ── a parity instrument: vanilla structures only.
         worldgen::StructureStage stage{*placer, builder,     &sampler,
-                                       blocks,  &registries, options.seed};
+                                       blocks,  &registries, options.seed,
+                                       worldgen::OriginalStructures::vanilla_parity()};
         pipeline.set_structure_stage(&stage);
         for (i32 chunk_x = box.min_x >> 4; chunk_x <= box.max_x >> 4; ++chunk_x) {
             for (i32 chunk_z = box.min_z >> 4; chunk_z <= box.max_z >> 4; ++chunk_z) {

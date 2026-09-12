@@ -1,0 +1,39 @@
+{
+  "_comment": "Ondes VOXEL original structure, not Minecraft content. Descriptive only: this folder is not a vanilla resource type, so a vanilla server given this datapack ignores it (a worldgen/structure_set naming an unknown structure would refuse the whole pack). The generator's constants are src/ov_worldgen/src/great_pyramid_plan.cpp, and test_great_pyramid keeps the two equal. See docs/provenance/grande-pyramide.md.",
+  "structure": "ondes_voxel:great_pyramid",
+  "structure_set": "ondes_voxel:great_pyramids",
+  "structures": [
+    {
+      "structure": "ondes_voxel:great_pyramid",
+      "weight": 1
+    }
+  ],
+  "placement": {
+    "type": "minecraft:random_spread",
+    "spacing": 48,
+    "separation": 24,
+    "spread_type": "minecraft:linear",
+    "salt": 20260911
+  },
+  "biomes": "minecraft:desert",
+  "footprint": {
+    "base": 101,
+    "layers": 51,
+    "plinth": 105,
+    "desert_samples_required": "22 of 25",
+    "max_terrain_spread": 14
+  },
+  "exclusion": {
+    "minecraft:villages": 10,
+    "minecraft:desert_pyramids": 10,
+    "minecraft:mineshafts": 4,
+    "any_other_set": 6
+  },
+  "loot_tables": [
+    "ondes_voxel:chests/great_pyramid/treasure",
+    "ondes_voxel:chests/great_pyramid/queen",
+    "ondes_voxel:chests/great_pyramid/corridor",
+    "ondes_voxel:chests/great_pyramid/crypt",
+    "ondes_voxel:archaeology/great_pyramid"
+  ]
+}
