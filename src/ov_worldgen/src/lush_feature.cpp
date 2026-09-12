@@ -546,7 +546,15 @@ ClaimedFeature parse_lush_feature(std::string_view kind, Json config,
         c.block = *block;
         if (blocks.block_name(c.block) == "minecraft:sculk_vein") {
             // ── worldgen-3 ── The vein grows like the lichen and spreads by its
-            // own rule (see GrowthConfig).
+            // own rule (see GrowthConfig) — and measured against a probe of the
+            // real server that is not enough: 2 241 veins where the game has
+            // 977, 340 in common (control 28). Refused until that is found;
+            // docs/provenance/worldgen-3.md § 2.7 has the numbers.
+            OV_LOG_ERROR("worldgen: multiface_growth of minecraft:sculk_vein places 2.3x the game's "
+                         "veins; refused");
+            return std::unexpected(FeatureError::Unsupported);
+        }
+        if (blocks.block_name(c.block) == "minecraft:sculk_vein") {
             auto sculk       = named_block(blocks, "minecraft:sculk");
             auto catalyst    = named_block(blocks, "minecraft:sculk_catalyst");
             auto piston      = named_block(blocks, "minecraft:moving_piston");

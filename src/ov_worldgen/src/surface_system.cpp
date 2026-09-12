@@ -4,6 +4,9 @@
 
 #include "surface_extension.hpp"  // ── worldgen-3 ──
 
+#include "ov/worldgen/biome_source.hpp"  // ── worldgen-3 ── the zoom's neighbours
+#include "ov/worldgen/biome_zoom.hpp"
+
 #include "ov/base/log.hpp"
 
 #include <simdjson.h>
@@ -68,6 +71,11 @@ struct SurfaceSystem::Impl final : public SurfaceResources {
     /// ── worldgen-3 ── The pillar and iceberg passes; inert when a noise or
     /// the Xoroshiro factory is missing.
     SurfaceExtension extension;
+
+    /// ── worldgen-3 ── The biome zoom's seed, and whether the rules ask
+    /// through it (`OV_BIOME_ZOOM=0`, the instrument, says no).
+    i64  zoom_seed{0};
+    bool fuzzy_biomes{true};
 
     registry::BlockStateId default_block{};
 
@@ -204,6 +212,42 @@ std::expected<std::shared_ptr<const NormalNoise>, SurfaceError> SurfaceSystem::I
 
 namespace {
 
+/// ── worldgen-3 ── The rules' biome questions, asked the way the game asks
+/// them: through `BiomeManager`'s zoom (biome_zoom.hpp). The inner queries must
+/// answer for a cell one step outside the chunk.
+class ZoomedQueries final : public SurfaceQueries {
+public:
+    ZoomedQueries(const SurfaceQueries& inner, i64 seed, i32 min_y, i32 height)
+        : inner_(&inner), seed_(seed), min_quart_(min_y >> 2), max_quart_(((min_y + height) >> 2) - 1) {}
+
+    [[nodiscard]] std::string_view biome_at(i32 x, i32 y, i32 z) const override {
+        const BiomeCell cell = zoomed(x, y, z);
+        return inner_->biome_at(cell.x * 4, cell.y * 4, cell.z * 4);
+    }
+    [[nodiscard]] f64 temperature_at(i32 x, i32 y, i32 z) const override {
+        const BiomeCell cell = zoomed(x, y, z);
+        return inner_->temperature_at(cell.x * 4, cell.y * 4, cell.z * 4);
+    }
+    [[nodiscard]] i32 surface_height(i32 x, i32 z) const override {
+        return inner_->surface_height(x, z);
+    }
+    [[nodiscard]] i32 preliminary_surface(i32 x, i32 z) const override {
+        return inner_->preliminary_surface(x, z);
+    }
+
+private:
+    [[nodiscard]] BiomeCell zoomed(i32 x, i32 y, i32 z) const noexcept {
+        BiomeCell cell = fuzzy_biome_cell(seed_, x, y, z);
+        cell.y         = std::clamp(cell.y, min_quart_, max_quart_);
+        return cell;
+    }
+
+    const SurfaceQueries* inner_;
+    i64                   seed_;
+    i32                   min_quart_;
+    i32                   max_quart_;
+};
+
 /// What the rules are told about a chunk of ours.
 ///
 /// The heights are taken from the column contents rather than from a stored
@@ -214,9 +258,12 @@ namespace {
 class ChunkQueries final : public SurfaceQueries {
 public:
     ChunkQueries(const world::Chunk& chunk, const registry::BlockRegistry& blocks,
-                 const NoiseRouter& router, const std::array<i32, 256>& heights)
+                 const NoiseRouter& router, const std::array<i32, 256>& heights,
+                 const BiomeSource* source = nullptr)
         : chunk_(&chunk),
           blocks_(&blocks),
+          router_(&router),
+          source_(source),
           initial_density_(router.entry("initial_density_without_jaggedness")),
           heights_(&heights),
           origin_x_(chunk.position().x * 16),
@@ -232,15 +279,26 @@ public:
     }
 
     [[nodiscard]] std::string_view biome_at(i32 x, i32 y, i32 z) const override {
-        const auto local_x = static_cast<usize>(x - origin_x_);
-        const auto local_z = static_cast<usize>(z - origin_z_);
-        return blocks_->biome_name(chunk_->get_biome(local_x, y, local_z));
+        const i32 local_x = x - origin_x_;
+        const i32 local_z = z - origin_z_;
+        if (local_x >= 0 && local_x < 16 && local_z >= 0 && local_z < 16) {
+            return blocks_->biome_name(chunk_->get_biome(static_cast<usize>(local_x), y,
+                                                         static_cast<usize>(local_z)));
+        }
+        // ── worldgen-3 ── A cell of a neighbour, which the zoom reaches: the
+        // biome source answers it exactly. The End's rule is per chunk and has
+        // no cell of its own to ask; the chunk's edge answers there.
+        if (source_ != nullptr && !source_->is_end_rule()) {
+            const i32 quart_y = std::clamp(y, min_y_, min_y_ + height_ - 1) >> 2;
+            return source_->biome_at(source_->sample(*router_, x >> 2, quart_y, z >> 2));
+        }
+        return blocks_->biome_name(chunk_->get_biome(static_cast<usize>(std::clamp(local_x, 0, 15)), y,
+                                                     static_cast<usize>(std::clamp(local_z, 0, 15))));
     }
 
     [[nodiscard]] f64 temperature_at(i32 x, i32 y, i32 z) const override {
-        const auto local_x = static_cast<usize>(x - origin_x_);
-        const auto local_z = static_cast<usize>(z - origin_z_);
-        return blocks_->biome(chunk_->get_biome(local_x, y, local_z)).temperature;
+        const auto index = blocks_->find_biome(biome_at(x, y, z));
+        return index ? blocks_->biome(*index).temperature : 0.8;
     }
 
     [[nodiscard]] i32 surface_height(i32 x, i32 z) const override {
@@ -279,6 +337,8 @@ public:
 private:
     const world::Chunk*            chunk_;
     const registry::BlockRegistry* blocks_;
+    const NoiseRouter*             router_;
+    const BiomeSource*             source_;
     const DensityFunction*         initial_density_;
     const std::array<i32, 256>*    heights_;
     i32                            origin_x_;
@@ -310,6 +370,10 @@ std::expected<SurfaceSystem, SurfaceError> SurfaceSystem::load(
     }
     if (const char* setting = std::getenv("OV_CEILING_FROM_RUN"); setting != nullptr) {
         impl.ceiling_depth_from_run = std::string_view(setting) != "0";
+    }
+    impl.zoom_seed = obfuscate_biome_seed(seed);  // ── worldgen-3 ──
+    if (const char* setting = std::getenv("OV_BIOME_ZOOM"); setting != nullptr) {
+        impl.fuzzy_biomes = std::string_view(setting) != "0";
     }
 
     const auto settings_file =
@@ -487,12 +551,17 @@ registry::BlockStateId SurfaceSystem::clay_band(i32 x, i32 y, i32 z) const {
 }
 
 void SurfaceSystem::build_column(std::span<registry::BlockStateId> column, i32 world_x,
-                                 i32 world_z, const SurfaceQueries& queries,
+                                 i32 world_z, const SurfaceQueries& raw_queries,
                                  const registry::BlockRegistry& blocks) const {
     const Impl& impl = *impl_;
     if (impl.rule == nullptr || column.empty()) {
         return;
     }
+    // ── worldgen-3 ── Every biome question below — the rules', the two passes'
+    // — goes through the game's zoom unless the instrument says otherwise.
+    const ZoomedQueries   zoomed{raw_queries, impl.zoom_seed, impl.min_y, impl.height};
+    const SurfaceQueries& queries =
+        impl.fuzzy_biomes ? static_cast<const SurfaceQueries&>(zoomed) : raw_queries;
 
     SurfaceContext at;
     at.queries         = &queries;
@@ -609,12 +678,18 @@ void SurfaceSystem::build_column(std::span<registry::BlockStateId> column, i32 w
             minimum = static_cast<i32>(std::floor(both)) + at.surface_depth - 8;
         }
         impl.extension.frozen_ocean(column, world_x, world_z, above_top, minimum,
-                                    static_cast<f32>(queries.temperature_at(world_x, 63, world_z)));
+                                    [&] {
+                                        // The column biome's own temperature: the
+                                        // game asks that biome, not a new lookup.
+                                        const auto index = blocks.find_biome(column_biome);
+                                        return index ? static_cast<f32>(blocks.biome(*index).temperature)
+                                                     : 0.5F;
+                                    }());
     }
 }
 
-void SurfaceSystem::build(world::Chunk& chunk, const NoiseRouter& router, const BiomeSource&,
-                          const registry::BlockRegistry& blocks) const {
+void SurfaceSystem::build(world::Chunk& chunk, const NoiseRouter& router,
+                          const BiomeSource& biome_source, const registry::BlockRegistry& blocks) const {
     const Impl& impl = *impl_;
     if (impl.rule == nullptr) {
         return;
@@ -645,7 +720,7 @@ void SurfaceSystem::build(world::Chunk& chunk, const NoiseRouter& router, const 
         }
     }
 
-    const ChunkQueries queries{chunk, blocks, router, heights};
+    const ChunkQueries queries{chunk, blocks, router, heights, &biome_source};
 
     for (usize local_z = 0; local_z < 16; ++local_z) {
         for (usize local_x = 0; local_x < 16; ++local_x) {
