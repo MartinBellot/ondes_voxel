@@ -543,12 +543,13 @@ TEST_CASE("terrain copied out of the cache is the terrain carved in place",
     // and the next copy, as they were (copy-on-write sections).
     world::Chunk                  mine{ChunkPos{0, 0}, shape, air, &*blocks};
     std::vector<std::string_view> starts;
-    REQUIRE(cache.fetch(0, 0, mine, starts));
+    std::vector<BlockPos>         wakeups;
+    REQUIRE(cache.fetch(0, 0, mine, starts, wakeups));
     const auto original = mine.get_block(1, 0, 1);
     mine.set_block(1, 0, 1,
                    original == registry::kAirState ? registry::BlockStateId{1} : registry::kAirState);
     world::Chunk again{ChunkPos{0, 0}, shape, air, &*blocks};
-    REQUIRE(cache.fetch(0, 0, again, starts));
+    REQUIRE(cache.fetch(0, 0, again, starts, wakeups));
     CHECK(again.get_block(1, 0, 1) == original);
     CHECK(differences(again, reference.promote(0, 0, ChunkStatus::Carvers)) == 0);
 }
