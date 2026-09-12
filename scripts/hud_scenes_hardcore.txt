@@ -1,0 +1,27 @@
+# The hardcore hearts: the same vanilla server with hardcore=true
+# (scripts/measure_hud.py --hardcore --scenes scripts/hud_scenes_hardcore.txt).
+# Login (play)'s hardcore flag moves every heart to the sheet's row y = 45.
+
+look 0 -90
+cmd gamerule sendCommandFeedback false
+cmd gamerule naturalRegeneration false
+cmd gamerule doDaylightCycle false
+cmd gamerule doMobSpawning false
+cmd time set 6000
+cmd weather clear
+cmd effect clear @s
+cmd clear @s
+wait 60
+cmd damage @s 7 minecraft:generic
+wait 60
+shot h1-hurt
+cmd effect give @s absorption infinite 1 true
+wait 20
+shot h2-absorption
+cmd effect clear @s absorption
+cmd effect give @s resistance infinite 4 true
+cmd effect give @s poison infinite 0 true
+wait 30
+shot h3-poison
+cmd effect clear @s
+wait 10

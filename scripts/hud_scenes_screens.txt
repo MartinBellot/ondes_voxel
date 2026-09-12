@@ -1,0 +1,82 @@
+# The container screens the server opens: each block set under the player's
+# feet, looked at straight down, right-clicked with the sword in hand.
+# scripts/measure_hud.py <which> --tag screens --scenes scripts/hud_scenes_screens.txt
+# The screens are compared whole: scripts/compare_hud.py compare … --region screen
+
+look 0 90
+cmd gamerule sendCommandFeedback false
+cmd gamerule naturalRegeneration false
+cmd gamerule doDaylightCycle false
+cmd gamerule doMobSpawning false
+cmd time set 6000
+cmd weather clear
+cmd effect clear @s
+cmd clear @s
+cmd item replace entity @s hotbar.0 with minecraft:diamond_sword
+cmd item replace entity @s hotbar.1 with minecraft:cobblestone 37
+cmd item replace entity @s inventory.0 with minecraft:oak_log 12
+wait 60
+
+cmd execute at @s run setblock ~ ~-1 ~ minecraft:hopper
+wait 20
+use
+wait 20
+shot 30-hopper
+key esc tap
+wait 10
+cmd execute at @s run setblock ~ ~-1 ~ minecraft:dispenser[facing=up]
+wait 20
+use
+wait 20
+shot 31-dispenser
+key esc tap
+wait 10
+cmd execute at @s run setblock ~ ~-1 ~ minecraft:shulker_box
+wait 20
+use
+wait 30
+shot 32-shulker
+key esc tap
+wait 10
+cmd execute at @s run setblock ~ ~-1 ~ minecraft:anvil
+wait 20
+use
+wait 20
+shot 33-anvil
+key esc tap
+wait 10
+cmd execute at @s run setblock ~ ~-1 ~ minecraft:grindstone[face=floor]
+wait 20
+use
+wait 20
+shot 34-grindstone
+key esc tap
+wait 10
+cmd execute at @s run setblock ~ ~-1 ~ minecraft:enchanting_table
+wait 30
+use
+wait 20
+shot 35-enchanting
+key esc tap
+wait 10
+cmd execute at @s run setblock ~ ~-1 ~ minecraft:brewing_stand
+wait 30
+use
+wait 20
+shot 36-brewing
+key esc tap
+wait 10
+cmd execute at @s run setblock ~ ~-1 ~ minecraft:crafting_table
+wait 20
+use
+wait 20
+shot 37-crafting
+key esc tap
+wait 10
+cmd execute at @s run setblock ~ ~-1 ~ minecraft:chest
+wait 20
+use
+wait 20
+shot 38-chest
+key esc tap
+wait 10

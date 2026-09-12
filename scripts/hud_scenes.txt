@@ -1,0 +1,255 @@
+# The HUD scenes, played by both clients against the same fresh vanilla server
+# (scripts/measure_hud.py): the real 1.20.1 client through
+# scripts/hud_oracle.java, ours through `ov_voxel --hud-script`. Both read this
+# file, so both see the same commands in the same order.
+#
+#   cmd <command>        a Chat Command, without its slash
+#   wait <ticks>         client ticks
+#   shot <name>          <name>.png with the HUD, <name>-nohud.png without it
+#                        (the exact background, so the HUD's ink is a
+#                        difference and not a guess), then the facts
+#   key <tab|f3> <press|release|tap>
+#   look <yaw> <pitch>   the camera, in degrees
+#   tabfoot <header json> | <footer json>
+#                        Set Tab List Header And Footer, which no vanilla
+#                        command sends: the real client gets it through its own
+#                        setters, ours through its own decoder (docs/provenance/hud.md)
+#
+# Straight up at a noon sky with clouds off: every pixel that is not sky is the
+# interface's.
+
+look 0 -90
+cmd gamerule sendCommandFeedback false
+cmd gamerule naturalRegeneration false
+cmd gamerule doDaylightCycle false
+cmd gamerule doWeatherCycle false
+cmd gamerule doMobSpawning false
+cmd gamerule doImmediateRespawn true
+cmd time set 6000
+cmd weather clear
+cmd effect clear @s
+cmd xp set @s 0 levels
+cmd xp set @s 0 points
+cmd clear @s
+wait 60
+shot 01-plain
+
+# ── Experience ──
+cmd xp set @s 30 levels
+cmd xp add @s 50 points
+wait 20
+shot 02-xp
+
+# ── Damage: the blink, then settled ──
+cmd damage @s 7 minecraft:generic
+wait 2
+shot 03-hurt-blink
+wait 60
+shot 04-hurt
+
+# ── Armour, and something in the hotbar ──
+cmd item replace entity @s armor.chest with minecraft:diamond_chestplate
+cmd item replace entity @s armor.head with minecraft:iron_helmet
+cmd item replace entity @s hotbar.0 with minecraft:diamond_sword
+cmd item replace entity @s hotbar.1 with minecraft:cobblestone 37
+wait 20
+shot 05-armour
+
+# ── The heart families ──
+cmd effect give @s absorption infinite 1 true
+wait 20
+shot 06-absorption
+cmd effect clear @s absorption
+cmd effect give @s resistance infinite 4 true
+cmd effect give @s poison infinite 0 true
+wait 30
+shot 07-poison
+cmd effect clear @s poison
+cmd effect give @s wither infinite 0 true
+wait 30
+shot 08-wither
+cmd effect clear @s wither
+cmd effect give @s hunger infinite 0 true
+wait 30
+shot 09-hunger
+cmd effect clear @s hunger
+
+# ── Regeneration at full health: the wave alone, sampled ──
+cmd effect give @s instant_health 1 5 true
+wait 30
+cmd effect give @s regeneration infinite 0 true
+wait 20
+shot 10-regen-a
+wait 3
+shot 10-regen-b
+wait 3
+shot 10-regen-c
+wait 4
+shot 10-regen-d
+cmd effect clear @s regeneration
+
+# ── Status effect icons: three beneficial, two harmful, one blinking ──
+cmd effect give @s speed 30 1
+cmd effect give @s strength 30 0
+cmd effect give @s night_vision 9 0
+cmd effect give @s slowness 30 0
+cmd effect give @s weakness 30 0
+cmd effect give @s luck infinite 0
+wait 20
+shot 11-effects
+wait 5
+shot 11-effects-b
+wait 5
+shot 11-effects-c
+wait 5
+shot 11-effects-d
+cmd effect clear @s
+cmd effect give @s resistance infinite 4 true
+
+# ── Frozen: seven seconds in powder snow ──
+cmd execute at @s run setblock ~ ~ ~ minecraft:powder_snow
+wait 170
+shot 12-frozen
+cmd execute at @s run setblock ~ ~ ~ minecraft:air
+wait 100
+
+# ── Air: under water ──
+cmd execute at @s run fill ~ ~ ~ ~ ~1 ~ minecraft:water
+wait 110
+shot 13-air
+cmd execute at @s run fill ~ ~ ~ ~ ~1 ~ minecraft:air
+wait 60
+
+# ── A mount: its hearts instead of the haunches, the jump bar ──
+cmd summon minecraft:horse ~ ~ ~ {Tame:1b,SaddleItem:{id:"minecraft:saddle",Count:1b},Attributes:[{Name:"minecraft:generic.max_health",Base:30.0d}],Health:23.0f}
+wait 10
+cmd ride @s mount @e[type=minecraft:horse,limit=1,sort=nearest]
+wait 30
+look 0 -90
+wait 5
+shot 14-mount
+cmd ride @s dismount
+cmd kill @e[type=minecraft:horse]
+wait 40
+look 0 -90
+
+# ── Boss bars: the seven colours, the five styles ──
+cmd bossbar add ov:a {"text":"Pink progress"}
+cmd bossbar set ov:a color pink
+cmd bossbar set ov:a value 50
+cmd bossbar set ov:a players @s
+cmd bossbar add ov:b {"text":"Blue notched 6"}
+cmd bossbar set ov:b color blue
+cmd bossbar set ov:b style notched_6
+cmd bossbar set ov:b value 25
+cmd bossbar set ov:b players @s
+cmd bossbar add ov:c {"text":"Red notched 10"}
+cmd bossbar set ov:c color red
+cmd bossbar set ov:c style notched_10
+cmd bossbar set ov:c value 75
+cmd bossbar set ov:c players @s
+cmd bossbar add ov:d {"text":"Green notched 12"}
+cmd bossbar set ov:d color green
+cmd bossbar set ov:d style notched_12
+cmd bossbar set ov:d value 100
+cmd bossbar set ov:d players @s
+cmd bossbar add ov:e {"text":"Yellow notched 20"}
+cmd bossbar set ov:e color yellow
+cmd bossbar set ov:e style notched_20
+cmd bossbar set ov:e value 10
+cmd bossbar set ov:e players @s
+cmd bossbar add ov:f {"text":"Purple"}
+cmd bossbar set ov:f color purple
+cmd bossbar set ov:f value 0
+cmd bossbar set ov:f players @s
+cmd bossbar add ov:g {"text":"White","color":"gold"}
+cmd bossbar set ov:g color white
+cmd bossbar set ov:g style notched_6
+cmd bossbar set ov:g value 60
+cmd bossbar set ov:g players @s
+wait 40
+shot 15-bossbars
+cmd bossbar remove ov:a
+cmd bossbar remove ov:b
+cmd bossbar remove ov:c
+cmd bossbar remove ov:d
+cmd bossbar remove ov:e
+cmd bossbar remove ov:f
+cmd bossbar remove ov:g
+wait 10
+
+# ── Titles and the action bar ──
+cmd title @s times 10 40 10
+cmd title @s subtitle {"text":"Subtitle","color":"yellow"}
+cmd title @s title {"text":"Title"}
+wait 4
+shot 16-title-in
+wait 25
+shot 16-title-stay
+wait 27
+shot 16-title-out
+wait 20
+cmd title @s actionbar {"text":"Action bar in survival"}
+wait 10
+shot 17-actionbar
+wait 42
+shot 17-actionbar-fade
+wait 20
+
+# ── The tab list ──
+cmd team add red
+cmd team modify red color red
+cmd team modify red prefix {"text":"[R] "}
+cmd team join red @s
+wait 10
+key tab press
+wait 5
+shot 18-tab
+key tab release
+cmd scoreboard objectives add kills dummy
+cmd scoreboard objectives setdisplay list kills
+cmd scoreboard players set @s kills 42
+wait 10
+key tab press
+wait 5
+shot 18-tab-score
+key tab release
+cmd scoreboard objectives remove kills
+cmd team leave @s
+tabfoot {"text":"A header"} | {"text":"A footer, longer than the names","color":"gold"}
+wait 5
+key tab press
+wait 5
+shot 18-tab-header
+key tab release
+tabfoot {"text":""} | {"text":""}
+cmd gamemode spectator
+wait 10
+key tab press
+wait 5
+shot 18-tab-spectator
+key tab release
+cmd gamemode survival
+wait 10
+look 0 -90
+
+# ── F3 ──
+key f3 tap
+wait 10
+shot 19-f3
+key f3 tap
+wait 5
+
+# ── Low health: the shaking hearts, sampled ──
+cmd effect clear @s
+cmd damage @s 17 minecraft:out_of_world
+wait 30
+shot 20-low-a
+wait 1
+shot 20-low-b
+wait 1
+shot 20-low-c
+wait 1
+shot 20-low-d
+cmd effect give @s instant_health 1 5 true
+wait 20
