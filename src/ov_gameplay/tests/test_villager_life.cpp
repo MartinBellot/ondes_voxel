@@ -166,7 +166,29 @@ TEST_CASE("a villager claims a bed and a bell, sleeps at rest and wakes after da
         v.step(1, true);
         ++ticks;
     }
-    CHECK(v.state_of(villager).sleeping);
+    {
+        // What the brain was doing, printed if it never lay down.
+        auto* held = dynamic_cast<b::BrainGoal*>(
+            const_cast<GoalSelector&>(dynamic_cast<Mob*>(v.world.logic(villager))->goals())
+                .find("brain"));
+        std::vector<std::string_view> running;
+        if (held != nullptr) {
+            held->brain().running(running);
+        }
+        std::string doing;
+        for (const std::string_view name : running) {
+            doing += std::string{name} + " ";
+        }
+        const auto  walk_to = mind.memories.pos(b::MemoryType::WalkTarget);
+        const Vec3d at      = v.body(villager).position;
+        INFO("activity " << (held ? b::activity_name(held->brain().current()) : "?")
+                         << ", running: " << doing << ", at " << at.x << " " << at.y << " "
+                         << at.z << ", walk target "
+                         << (walk_to ? std::to_string(walk_to->x) + " " + std::to_string(walk_to->y) +
+                                           " " + std::to_string(walk_to->z)
+                                     : std::string{"none"}));
+        CHECK(v.state_of(villager).sleeping);
+    }
     CHECK(v.time.day_time >= 12000);
     CHECK(mind.memories.has(b::MemoryType::LastSlept));
     CHECK(v.brain_of(villager).memories.number(b::MemoryType::LastSlept).value() <= v.tick);
@@ -315,7 +337,10 @@ TEST_CASE("breeding: 12 food points and a free bed make a baby", "[villager][bra
     for (const entity::EntityHandle h : v.world.handles()) {
         if (MobBrain* mind = mob_brain_of(v.world, h); mind != nullptr && mind->villager.active) {
             CHECK(mind->villager.inventory[0].count == 0);  // measured: all 3 bread eaten
-            CHECK(mind->animal.age == kParentCooldown);
+            // Set to 6000 at the birth, then counting down a tick at a time
+            // like any animal's age (measured: the parents read 3342 later on).
+            CHECK(mind->animal.age > 0);
+            CHECK(mind->animal.age <= kParentCooldown);
         }
     }
     // Controls: 8 points, and no free bed (two beds for two villagers). The

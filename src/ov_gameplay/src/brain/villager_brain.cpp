@@ -435,10 +435,14 @@ private:
         if (target == nullptr || c.goal.brain == nullptr) {
             return;
         }
-        if (c.goal.brain->follower.done() &&
-            !move_to(c.goal, target->pos, static_cast<f64>(target->speed), 64.0F) &&
-            c.goal.brain->follower.done() && c.goal.tick >= c.goal.brain->next_path_tick - 1) {
-            // No route at all: remembered, and the target given up.
+        // A search only when the finder may run (`move_to` searches at most once
+        // in four ticks and says "no" in between): a "no" from a real search is
+        // no route at all — remembered, and the target given up. Before, the
+        // test compared against the tick `move_to` had just pushed forward, so
+        // an unreachable target was never dropped and blocked every behaviour
+        // that waits for no walk target.
+        if (c.goal.brain->follower.done() && c.goal.tick >= c.goal.brain->next_path_tick &&
+            !move_to(c.goal, target->pos, static_cast<f64>(target->speed), 64.0F)) {
             c.memories().set(MT::CantReachWalkTargetSince, MemoryValue::of_number(c.game_time));
             c.memories().erase(MT::WalkTarget);
             return;
@@ -514,7 +518,7 @@ protected:
             return;
         }
         if (!c.memories().has(MT::WalkTarget)) {
-            walk_to(c, approach(c.goal.level, site), walk(0.5), 1);
+            walk_to(c, approach(c.goal.level, site), walk(0.5), 0);  // the cell beside it
         }
     }
 };
@@ -589,7 +593,14 @@ protected:
     void start(BrainContext& c) override {
         next_ = c.game_time + 20;
         const BlockPos poi = *c.memories().pos(memory_);
-        walk_to(c, close_ <= 1 ? approach(c.goal.level, poi) : poi, walk(0.5), close_);
+        // Beside the block, the cell itself (close enough 0): "within one of
+        // the neighbour" left a villager two blocks from its bed, out of the
+        // 2 it sleeps within, re-arriving every tick without moving.
+        if (close_ <= 1) {
+            walk_to(c, approach(c.goal.level, poi), walk(0.5), 0);
+        } else {
+            walk_to(c, poi, walk(0.5), close_);
+        }
     }
 
 private:
