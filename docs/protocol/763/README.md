@@ -125,7 +125,7 @@ Statut : le plus fort atteint — `vanilla` > `aller-retour` > `testé` > `codé
 | `0x21` | Hurt Animation | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | · | ✓ |
 | `0x22` | Initialize World Border | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | · | · |
 | `0x23` | Keep Alive | codé | ✓ | ✓ | · | · | · | · | ✓ | ✓ |
-| `0x24` | Chunk Data and Update Light | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | ✓ | ✓ |
+| `0x24` | Chunk Data and Update Light | aller-retour | ✓ | ✓ | ✓ | ✓ | ✓ | · | · | ✓ |
 | `0x25` | World Event | vanilla | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `0x26` | Particle | absent | · | · | · | · | · | · | · | · |
 | `0x27` | Update Light | absent | · | · | · | · | · | · | · | · |

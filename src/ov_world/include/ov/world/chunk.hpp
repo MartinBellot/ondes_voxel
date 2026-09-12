@@ -17,6 +17,7 @@
 #include "ov/world/heightmap.hpp"
 
 #include <array>
+#include <memory>
 #include <vector>
 
 namespace ov::world {
@@ -102,8 +103,22 @@ public:
     [[nodiscard]] std::span<const ChunkSection> sections() const noexcept { return sections_; }
 
     /// The section holding world y, or nullptr outside the world.
-    [[nodiscard]] ChunkSection*       section_for_y(i32 y) noexcept;
+    ///
+    /// The writable overload hands out a section this chunk alone owns: it
+    /// unshares first (chunk_section.hpp, copy-on-write), so it may copy the
+    /// section's storage once after a snapshot, and any reference taken from
+    /// the section afterwards stays valid while the caller writes it.
+    [[nodiscard]] ChunkSection*       section_for_y(i32 y);
     [[nodiscard]] const ChunkSection* section_for_y(i32 y) const noexcept;
+
+    /// A frozen copy for another thread: what the network thread encodes
+    /// while the tick keeps writing this chunk.
+    ///
+    /// Sections are shared, not copied — 24 pointers for the Overworld — and
+    /// whichever side writes a section first takes its own storage. Heightmaps
+    /// (4 x 37 longs), block entities and structure starts are copied: they are
+    /// small, and not what a chunk weighs. CLAUDE.md principle 3.
+    [[nodiscard]] std::shared_ptr<const Chunk> snapshot() const;
 
     /// Read a block at chunk-local x and z, world y.
     [[nodiscard]] registry::BlockStateId get_block(usize x, i32 y, usize z) const noexcept;
