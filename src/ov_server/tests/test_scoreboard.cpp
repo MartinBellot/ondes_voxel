@@ -8,11 +8,15 @@
 //
 // The rest pins what the capture cannot: the file's round trip (unknown keys
 // kept), the criteria, and the friendly-fire and collision rules.
+#include "../src/combat_session.hpp"  // ── pvp ── hurt_direction
 #include "../src/commands/service.hpp"
 #include "../src/scoreboard/scoreboard.hpp"
 
+#include <bit>
+
 #include "ov/nbt/binary.hpp"
 #include "ov/protocol/chat.hpp"
+#include "ov/protocol/entity.hpp"  // ── pvp ── kDamageEvent
 #include "ov/protocol/scoreboard_packets.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -772,6 +776,45 @@ TEST_CASE("scoreboard.dat reads back what it wrote, and keeps what it does not m
     nbt::Tag newer = board.save();
     newer.put("DataVersion", nbt::Tag{i32{9999}});
     CHECK_FALSE(Scoreboard::load(newer, nullptr).has_value());
+}
+
+// ── pvp ─────────────────────────────────────────────────────────────────────
+
+TEST_CASE("a player's blow: the Damage Event names the attacker, the flinch turns to it",
+          "[pvp][vanilla]") {
+    // The real server's Damage Event for ovprobe (1) hitting ovother (2):
+    // player_attack (31), cause and direct source both 1 (sent as 2).
+    SurvivalSession            victim;
+    std::vector<std::string>   sent;
+    const SurvivalIo           io{.send = [&](i32 id, std::span<const u8> payload) {
+                        if (id == net::clientbound::kDamageEvent) {
+                            sent.push_back(hex(payload));
+                        }
+                    }};
+    (void)victim.hurt(gameplay::DamageKind::PlayerAttack, 1.0F, io, 2, nullptr, 1);
+    CHECK(sent == std::vector<std::string>{"021f020200"});
+    // Its Hurt Animation: 179.99998, the float-rounded degrees, not 180.
+    CHECK(std::bit_cast<u32>(hurt_direction(-1.0, 0.0, 0.0F)) == 0x4333FFFFU);
+}
+
+TEST_CASE("death.attack.player names both, each dressed by their team", "[pvp][teams][vanilla]") {
+    if (!have_packs()) {
+        SKIP("registry.ovpack not generated");
+    }
+    Harness h;
+    h.add_player("ovother", 0);
+    for (const char* command :
+         {"team add red", "team modify red color red", R"(team modify red prefix {"text":"[R] "})",
+          R"(team modify red suffix " !")", "team join red ovprobe", "team add blue",
+          "team modify blue color blue", "team join blue ovother"}) {
+        (void)h.run(command);
+    }
+    // The capture's line, the same in the victim's Combat Death and in the
+    // chat both players got.
+    CHECK(to_json(h.service.death_message("death.attack.player", "ovother",
+                                          net::Uuid::offline_player("ovother"), "ovprobe",
+                                          net::Uuid::offline_player("ovprobe"))) ==
+          R"({"translate":"death.attack.player","with":[{"color":"blue","insertion":"ovother","clickEvent":{"action":"suggest_command","value":"/tell ovother "},"hoverEvent":{"action":"show_entity","contents":{"type":"minecraft:player","id":"b9f7eccb-2811-315a-b021-ad90d0ea6877","name":{"text":"ovother"}}},"extra":[{"text":""},{"text":"ovother"},{"text":""}],"text":""},{"color":"red","insertion":"ovprobe","clickEvent":{"action":"suggest_command","value":"/tell ovprobe "},"hoverEvent":{"action":"show_entity","contents":{"type":"minecraft:player","id":"f3f20367-e988-37d8-ac20-1a1929fd1e59","name":{"text":"ovprobe"}}},"extra":[{"text":"[R] "},{"text":"ovprobe"},{"text":" !"}],"text":""}]})");
 }
 
 TEST_CASE("a newcomer is sent the teams, then what the slots show", "[scoreboard][packets][vanilla]") {

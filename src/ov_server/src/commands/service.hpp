@@ -214,6 +214,11 @@ public:
     /// ── scoreboard ── A kill, for the kill criteria on the next tick: the
     /// holder names (a player's name, anything else's UUID). Any thread.
     void enqueue_kill(std::string killer, std::string victim, bool victim_is_player);
+    /// ── scoreboard ── One player's criteria (health, food, air, armour,
+    /// experience, level) and the step into death, right after that player's
+    /// survival tick: the real server sends Set Health, then the score, on the
+    /// same tick. Tick thread; flush_scoreboard after.
+    void update_player_criteria(i32 entity_id, std::string_view name, const SurvivalSession& survival);
     /// ── dedicated server administration ── A console-like source with its own
     /// name ("Rcon"): what it would print is collected and handed to `done`
     /// on the tick thread once the command has run.
@@ -256,6 +261,11 @@ public:
     /// dressed in its team: colour, prefix, suffix. What vanilla's display
     /// name is, and what every feedback line naming a player shows.
     [[nodiscard]] Text decorate(Text text) const;
+    /// ── pvp ── A death message: `key` with the victim's name, and the
+    /// killer's when a player is to blame, each dressed by its team.
+    [[nodiscard]] Text death_message(std::string_view key, std::string_view victim,
+                                     const net::Uuid& victim_uuid, std::string_view killer = {},
+                                     const net::Uuid& killer_uuid = {}) const;
     /// Send what the scoreboard queued. The server calls it after feeding the
     /// criteria; commands flush on their own, before each line they answer.
     void flush_scoreboard(const std::function<void(i32, std::span<const u8>)>& send);

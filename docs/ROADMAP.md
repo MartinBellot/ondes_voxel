@@ -1100,7 +1100,9 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       pas —, 15/15 fenêtres d'invulnérabilité, 41/41 coûts de niveau, 12/12
       lâchers d'XP, 44/44 dans l'ordre du codec `damage_type`. Deux corrections
       de protocole : Combat Death **ne porte pas** l'id du tueur en 1.20.1, et
-      il n'y a **pas** de Hurt Animation. Restent les sources de dégâts au
+      il n'y a **pas** de Hurt Animation pour les coups mesurés (environnement,
+      mob) — un coup de joueur à joueur en envoie une à la victime, mesuré par la
+      vague scoreboard le 2026-09-12. Restent les sources de dégâts au
       corps à corps, projectile et feu, la réapparition au lit, l'armure, et
       l'XP de minage dont la sonde est intermittente)*
       *(**2026-09-11 — mobs-3** : **les mobs hostiles frappent** — ils ne
@@ -1284,9 +1286,11 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       l'ordre d'identité du jar), arrivée identique paquet pour paquet, console **5/5**,
       journal des opérateurs **120/120** ; fichier du jar relu et réécrit **43/43 faits**,
       notre fichier relu par le jar : **39/39 faits conservés**, 19/19 paquets d'arrivée
-      identiques. Restent : le coup d'épée entre joueurs (absent du serveur, donc le tir
-      ami et `playerKillCount` ne jouent que pour la flèche), `armor` à 0, la barre
-      latérale de notre client non mesurée, belowName non dessiné. Voir
+      identiques. **2026-09-12** : le coup d'épée entre joueurs (même chemin de dégâts,
+      `pvp`, tir ami, mort qui nomme le tueur) : phase à deux sondes **103/108** + 3 dans un
+      autre ordre, les 2 écarts étant un paquet dont le jar ne fixe pas lui-même l'étape.
+      Restent : la barre latérale de notre client non mesurée, belowName non dessiné,
+      `deathMessageVisibility` non appliquée. Voir
       `docs/provenance/scoreboard.md`)*
 - [ ] **Tous les succès** (story, nether, end, adventure, husbandry) et leurs
       déclencheurs

@@ -90,14 +90,23 @@ de longueur (2 octets) et 312 octets de composant de chat. Interprétée avec un
 `Int` d'id de tueur entre les deux, la chaîne annoncée fait 116 octets et le
 paquet en déborde de 193. Il n'y a pas de place pour ce champ.
 
-### Il n'y a pas de Hurt Animation
+### Pas de Hurt Animation sur ces coups-là — mais une sur le coup d'un joueur
 
 Deux fenêtres capturées autour de deux frappes de types différents contenaient,
 chacune : Damage Event (`0x18`), Set Entity Metadata (santé), Set Entity
 Velocity (le recul) et Set Health. Aucune Hurt Animation. Le client 1.20.1
 déduit le tressaillement, le flash rouge et la direction du recul de Damage
 Event seul. L'encodeur de Hurt Animation existe dans `entity.hpp` parce que le
-paquet existe dans le protocole ; le système de survie ne doit pas l'envoyer.
+paquet existe dans le protocole ; `SurvivalSession::hurt` ne l'envoie pas pour
+ces coups.
+
+**Nuance, 2026-09-12 (vague scoreboard).** La règle vaut pour les coups mesurés
+ci-dessus, pas pour tous. La capture à deux sondes du vrai serveur
+(`scripts/capture_scoreboard.py`, phase deux) montre, **à chaque coup d'un
+joueur sur un joueur**, une Hurt Animation envoyée à la seule victime, juste
+après le Damage Event : `0x21 024333ffff` (angle 179,99998). Le chemin du combat
+entre joueurs de `server.cpp` l'envoie ; voir `docs/provenance/scoreboard.md`,
+§ 6 bis.
 
 ### Les ids de type de dégât sont les nôtres, et ils sont alphabétiques
 

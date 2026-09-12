@@ -138,6 +138,13 @@ struct CombatPlayer {
 };
 
 /// What one swing or one use asked the server to do beyond the packets.
+/// ── pvp ── Hurt Animation's angle: where a blow came from, relative to where
+/// the victim faces, in degrees. `dx`, `dz` run from the victim to the
+/// attacker. The degrees are the float-rounded conversion, 57.2957763671875
+/// per radian: the real server sent 179.99998 (0x4333FFFF), not 180, for the
+/// capture's blow from straight along -x on a victim facing 0.
+[[nodiscard]] f32 hurt_direction(f64 dx, f64 dz, f32 victim_yaw) noexcept;
+
 struct CombatOutcome {
     /// How the interaction ended, for the caller that has a chain to continue.
     ///

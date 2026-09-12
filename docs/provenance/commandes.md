@@ -244,8 +244,11 @@ de ces cas répond « Ondes VOXEL does not … yet » :
 * **les messages d'erreur JSON de Gson** : le cas « malformed » (nom non quoté)
   est reproduit mot pour mot ; les autres (« Unterminated object », …) ont la
   bonne forme mais pas forcément le même texte ;
-* **la rareté des objets** n'est pas connue du serveur : tout objet s'affiche en
-  blanc (commun) dans le survol de `/give`, là où vanilla colore un objet rare ;
+* **la rareté des objets** n'est pas connue du serveur : tout objet est pris pour
+  commun (blanc) dans le survol de `/give`, sauf un objet **enchanté**, affiché un
+  cran plus haut — rare, aqua — comme la capture du scoreboard le montre pour
+  `give … diamond_sword{Enchantments:[…]}`. Un objet qui n'est pas commun, enchanté
+  ou non, reste approximé ;
 * **la clé `item.` ou `block.`** d'un nom d'objet se décide par la table de
   langue quand elle est présente (le cas du serveur de l'utilisateur), sinon par
   « existe-t-il un bloc de ce nom » ;

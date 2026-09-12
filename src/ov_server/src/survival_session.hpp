@@ -19,11 +19,14 @@
 #include "ov/gameplay/experience.hpp"
 #include "ov/gameplay/fire.hpp"  // ── fire ──
 #include "ov/gameplay/food.hpp"
+#include "ov/protocol/types.hpp"  // ── pvp ── net::Uuid, whom to blame
 
 #include <array>
 #include <functional>
+#include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 
 namespace ov::server {
 
@@ -35,6 +38,13 @@ struct SurvivalIo {
     std::function<void(i32 packet_id, std::span<const u8> payload)> send;
     /// To every other client.
     std::function<void(i32 packet_id, std::span<const u8> payload)> broadcast;
+    /// ── pvp ── The death message the dying player is shown, as JSON, given
+    /// its translation key — names dressed by their teams, the killer named.
+    /// Empty or unset: the plain message.
+    std::function<std::string(std::string_view key)> death_message;
+    /// ── pvp ── Everyone's line of the same message, after the death screen's
+    /// (the capture's order). Unset: nobody is told.
+    std::function<void(const std::string& json)> announce_death;
 };
 
 /// What the tick needs to know about the player it is ticking.
@@ -153,9 +163,18 @@ public:
     /// `window` replaces the damage constants for this one hit — an effect's
     /// periodic damage is measured against a window entered at more than ten
     /// rather than ten or more (see gameplay::effect_damage_constants).
+    /// `source`: ── pvp ── the entity that dealt it, named in the Damage Event
+    /// as its cause and direct source (the real server's `021f020200`).
     [[nodiscard]] gameplay::DamageResult hurt(gameplay::DamageKind kind, f32 amount,
                                               const SurvivalIo& io, i32 entity_id,
-                                              const gameplay::DamageConstants* window = nullptr);
+                                              const gameplay::DamageConstants* window = nullptr,
+                                              std::optional<i32> source = std::nullopt);
+
+    /// ── pvp ── The player to blame for a death by a player's hand, with the
+    /// uuid their name is displayed with. Set by whoever lands such a hit;
+    /// forgotten at respawn.
+    std::string blamed;
+    net::Uuid   blamed_uuid{};
 
     /// Resistance, kept current by the effect session.
     gameplay::DamageMitigation mitigation{};

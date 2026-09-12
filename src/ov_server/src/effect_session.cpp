@@ -53,7 +53,7 @@ public:
         }
         // Built only when something hurts, which is at most once per effect
         // per tick: two std::function copies are not free.
-        const SurvivalIo io{io_.send, io_.broadcast};
+        const SurvivalIo io{io_.send, io_.broadcast, {}, {}};  // no death here: an effect's tick
         (void)survival_.hurt(kind, amount, io, bearer_.entity_id, &constants);
     }
 

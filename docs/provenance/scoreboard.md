@@ -15,7 +15,7 @@ nôtre, et les réponses sont comparées octet pour octet.
 | Ce qu'un joueur qui arrive reçoit (équipes, objectifs, emplacements, scores triés, puis ses critères) | **identique**, paquet pour paquet |
 | Console du serveur dédié (réponses des commandes tapées à la console) | **5 / 5** |
 | Journal des opérateurs (`[ovprobe: …]`, toute la capture) | **120 / 120** |
-| Phase 2 — deux sondes : chat d'équipe, `/trigger` au niveau 0, critères, ce que chacune voit | **88 / 108** ; les 20 écarts sont **tous** le coup d'épée d'un joueur à un joueur, qui n'existe pas sur ce serveur (§ 6), et ce qu'il aurait compté (`kills`, `total`, `tkblue`, `kbred`, `deaths`), plus la rareté d'objet de `/give` (connue, § 6 de `commandes.md`) |
+| Phase 2 — deux sondes : chat d'équipe, `/trigger` au niveau 0, critères, coups d'épée entre joueurs et leur mort, ce que chacune voit | **103 / 108**, 3 dans un autre ordre, 2 écarts qui sont un seul paquet dont le jar ne fixe pas lui-même l'étape (§ 6 bis) ; 88 / 108 avant le coup d'épée |
 | Témoin : le jar contre **lui-même**, deux captures | 184/185, 101/108, 5/5, 120/120 — ses propres écarts sont aux coups et à l'ordre d'identité : ce qui bouge d'une exécution à l'autre du jar |
 | Arbre Commands et `/help` des cinq commandes nouvelles, par la sonde générale (`check_commands.py`) | `/help` : **39 / 39** lignes identiques ; `tp` : 26/26 ; réponses de la sonde générale **279 / 282** (les trois écarts préexistent : la ligne de progrès de `/give`, le nombre de mobs tués par `/kill`, le `/help` complet de vanilla) — aucune régression des 34 commandes existantes |
 | Tests unitaires `test_ov_scoreboard`, `test_scoreboard_packets` (dans `test_ov_protocol`), `test_scoreboard_view` (dans `test_ov_client`) | verts ; `test_ov_commands` mis à jour (l'arbre de niveau 0 est désormais celui de vanilla, entier) |
@@ -190,15 +190,53 @@ tenue sur ce serveur : le crochet est posé, personne ne l'appelle encore.
 | Effet | Où | État |
 |---|---|---|
 | **Le nom d'un joueur dans son équipe** (couleur, préfixe, suffixe) | `CommandService::decorate`, appliqué à chaque ligne qu'une commande envoie ou journalise, au chat, à `/say`, `/me`, `/msg`, `/teammsg`, `/tellraw`, `/title`, au message de mort de `/kill` | ✅ forme exacte de la capture |
-| **Tir ami** (`friendlyFire false`) | le seul chemin où un joueur blesse un joueur sur ce serveur : **la flèche**. `ProjectileHost::may_hurt` refuse le coup, la flèche rebondit comme sur un joueur en créatif | ✅ ; le coup d'épée d'un joueur à un joueur **n'existe pas** sur ce serveur (`hurt_entity` ne vise que les mobs) : il n'y a pas de dégât à refuser, et ce n'est pas le mandat de cette vague de l'ajouter |
-| **Critères de meurtre** | `enqueue_kill` depuis la mort d'un mob tué par un joueur et depuis une flèche de joueur qui tue un joueur ; `deathCount` au passage de vivant à mort, quelle qu'en soit la cause | ✅ ; `playerKillCount` et `teamkill` par un coup d'épée attendent le combat entre joueurs |
+| **Tir ami** (`friendlyFire false`) | les deux chemins où un joueur blesse un joueur : **le coup d'épée** (§ 6 bis, rien n'est envoyé — la capture) et **la flèche** (`ProjectileHost::may_hurt`, elle rebondit comme sur un joueur en créatif) | ✅ |
+| **Critères de meurtre** | `enqueue_kill` depuis la mort d'un mob tué par un joueur, d'un joueur tué d'un coup d'épée ou d'une flèche de joueur ; `deathCount` au passage de vivant à mort, quelle qu'en soit la cause | ✅ mesuré : `kills`, `total`, `tkblue`, `kbred`, `deaths` de la capture |
 | **Règle de collision** | `Scoreboard::can_push` écrit et testé ; le serveur ne pousse **aucune** entité (pas de poussée joueur–mob ni mob–mob côté serveur) : la règle n'a rien à régir ici. Les clients vanilla l'appliquent entre joueurs, depuis Update Teams | ⚠️ rien à brancher côté serveur |
 | **Visibilité des étiquettes, invisibles alliés** | côté client, depuis Update Teams | ✅ envoyé ; notre client ne dessine pas encore d'étiquette de nom |
-| **Visibilité des messages de mort** | le serveur n'envoie à tous que le message de `/kill` ; les autres morts n'ont que l'écran de mort du joueur | ⚠️ non appliquée : il n'y a pas de diffusion à filtrer |
+| **Messages de mort** | toute mort est annoncée à tous (`showDeathMessages`), noms habillés, tueur nommé — § 6 bis | ✅ ; la **visibilité par équipe** (`deathMessageVisibility`) n'est pas encore appliquée à cette diffusion |
 | **Couleur dans la liste des joueurs** | vanilla ne l'envoie pas dans Player Info : le client la tire des équipes | ✅ côté serveur ; la liste de notre client est l'affaire d'une autre vague |
 | **Barre latérale de notre client** | `ov_client/scoreboard_view` (modèle tenu depuis les quatre paquets, lignes, noms habillés) et deux lignes dans `Interface` | ⚠️ dessinée ; **mise en page non mesurée** contre le vrai client |
 
 ---
+
+## 6 bis. Le coup d'épée d'un joueur à un joueur
+
+Absent du serveur jusqu'ici : `hurt_entity` ne visait que les mobs, et la phase à deux sondes le
+montrait (20 écarts sur 108, tous là). Il passe maintenant par **le même chemin** que le coup d'un
+mob sur un joueur, sans second calcul de dégâts :
+
+* la frappe est celle de `CombatSession` (jauge `0,2 + 0,8·f²`, critique ×1,5, élan et
+  Recul, balayage — qui touche aussi les joueurs de la boîte —, arme et enchantements) ;
+* la victime la reçoit dans **sa** `SurvivalSession::hurt` : armure, robustesse, Résistance,
+  Protection et fenêtre d'invulnérabilité s'y appliquent déjà, tenus à jour à chaque tick ;
+* refusée, elle n'atteint rien que les clients voient : `pvp` éteint (`--no-pvp`, l'équivalent
+  de `pvp=false` de `server.properties`), victime en créatif ou morte, coéquipier sans tir ami ;
+* le Damage Event **nomme la source** (`021f020200` : victime 2, `player_attack`, cause et
+  source directe 1) ;
+* **Hurt Animation** à la seule victime. Une mesure antérieure
+  (`protocol_corrections_1201`) n'en trouvait aucune sur des coups d'autres types ; la capture à
+  deux sondes en montre une **à chaque coup de joueur à joueur**, `024333ffff`. C'est elle qui
+  décide. L'angle vaut 179,99998 et non 180 : la conversion en degrés est celle arrondie en
+  float, 57,2957763671875 par radian (testé au bit près) ;
+* à la mort, `death.attack.player` **nomme le tueur**, les deux noms habillés de leurs équipes,
+  dans l'écran de mort de la victime (Combat Death, sans identifiant de tueur en 1.20.1) puis
+  dans le chat de tous tant que `showDeathMessages` est vrai. Toutes les morts sont désormais
+  annoncées à tous, comme chez le jar ; seul le message de `/kill` l'était ;
+* `playerKillCount`, `totalKillCount`, `teamkill.<couleur>`, `killedByTeam.<couleur>` et
+  `deathCount` suivent.
+
+**Mesuré (2026-09-12, `check_scoreboard.py`, la même phase à deux sondes)** : **103 / 108**
+identiques, 3 aux mêmes lignes dans un autre ordre (l'ordre d'identité du § 4), et **2** écarts —
+qui sont **un seul paquet vu deux fois** : le score `hp` à 0 de la victime, que l'attaquant reçoit
+dans l'étape du coup mortel chez nous, dans l'étape suivante chez le jar. Ce n'est pas une
+différence de comportement : **les deux captures du jar lui-même se contredisent exactement là**.
+Comparé à l'autre exécution du jar, nous sommes aussi à 103 + 3, et l'écart restant est l'autre
+paquet que le jar ne place pas deux fois au même pas (le score `hp` à 20 après la régénération).
+La capture ne date pas les paquets : elle ne peut pas départager plus finement qu'une étape.
+Parti de 88 / 108 : le coup d'épée, puis les critères du joueur mis à jour **après** son tick de
+survie (Set Health puis le score, comme le jar — ils l'étaient une phase trop tôt), et la couleur
+d'un objet enchanté dans `/give`.
 
 ## 7. Refusé, approximé, non fait
 
@@ -210,9 +248,8 @@ d'argument que le jar répond.
 
 **Approximé, et dit :**
 
-* **`armor` vaut toujours 0** : ce serveur ne totalise pas les points d'armure d'un joueur (le
-  calcul existe côté client, au-dessus de la frontière de rendu, où le serveur ne peut pas le
-  prendre). C'est la valeur de la capture pour un joueur sans armure.
+* **`armor`** lit les points des pièces portées que le serveur tient à jour à chaque tick pour
+  les dégâts (`mitigation.armour`, mobs-3) ; la capture n'a que des joueurs sans armure (0).
 * **`health` est `⌈santé + absorption⌉`** : la capture n'a pas d'absorption ; sans elle, 20, 19
   et 0 sont mesurés.
 * **Un emplacement remplacé** par un objectif déjà montré ailleurs envoie ici un seul Display

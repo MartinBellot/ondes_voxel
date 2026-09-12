@@ -136,7 +136,8 @@ void SurvivalSession::note_movement(f64 y, bool on_ground, f64 horizontal_distan
 
 gameplay::DamageResult SurvivalSession::hurt(gameplay::DamageKind kind, f32 amount,
                                              const SurvivalIo& io, i32 entity_id,
-                                             const gameplay::DamageConstants* window) {
+                                             const gameplay::DamageConstants* window,
+                                             std::optional<i32> source) {
     const gameplay::DamageResult result = gameplay::apply_damage(
         health, kind, amount, window != nullptr ? *window : constants_damage, mitigation);
     if (!result.applied) {
@@ -150,11 +151,14 @@ gameplay::DamageResult SurvivalSession::hurt(gameplay::DamageKind kind, f32 amou
     // the damage type that says how much.
     gameplay::add_exhaustion(food, gameplay::damage_type(kind).exhaustion, constants_food);
 
-    // Damage Event and nothing else. There is no Hurt Animation packet in
-    // 1.20.1 — the client derives the flinch from this one. Measured: two hits
-    // of different types produced exactly one packet each.
+    // Damage Event and nothing else, for the hits measured here: two
+    // environmental and mob hits of different types produced exactly one packet
+    // each, and the client derives the flinch from it. A player's blow is the
+    // exception — the real server then also sends the victim a Hurt Animation
+    // (the scoreboard wave's two-probe capture) — and server.cpp's PvP path
+    // sends it; this function does not.
     const std::vector<u8> payload =
-        net::encode_damage_event(entity_id, damage_type_id(kind), std::nullopt, std::nullopt);
+        net::encode_damage_event(entity_id, damage_type_id(kind), source, source);
     if (io.send) {
         io.send(net::clientbound::kDamageEvent, payload);
     }
@@ -276,10 +280,18 @@ SurvivalOutcome SurvivalSession::tick(const SurvivalPlayer& player, const Surviv
             std::array<char, 64> key{};
             const usize          length =
                 gameplay::death_message_key(last_kill_, key.data(), key.size());
-            const std::string message = net::death_message_json(
-                std::string_view{key.data(), length}, player.name);
+            // ── pvp ── the server's own message when it has one: names dressed
+            // by their teams, a killer named. Then everyone's line of it.
+            const std::string_view key_view{key.data(), length};
+            std::string message = io.death_message ? io.death_message(key_view) : std::string{};
+            if (message.empty()) {
+                message = net::death_message_json(key_view, player.name);
+            }
             io.send(net::clientbound::kCombatDeath,
                     net::encode_combat_death(player.entity_id, message));
+            if (io.announce_death) {
+                io.announce_death(message);
+            }
         }
         send_state(io);
         return outcome;
@@ -296,6 +308,8 @@ bool SurvivalSession::perform_respawn(const SurvivalPlayer& player, const Surviv
         return false;
     }
     awaiting_respawn = false;
+    blamed.clear();  // ── pvp ── a new life owes nobody
+    blamed_uuid = {};
 
     health              = gameplay::HealthState{};
     food                = gameplay::FoodState{};
