@@ -27,6 +27,7 @@
 #include "ov/gameplay/pathfinding.hpp"
 #include "ov/gameplay/villager_state.hpp"  // ── villagers ──
 #include "ov/gameplay/mob_attack.hpp"      // ── mobs-3 ──
+#include "ov/gameplay/tame_state.hpp"      // ── tame ──
 #include "ov/math/random.hpp"
 #include "ov/math/vec.hpp"
 #include "ov/world/level.hpp"
@@ -111,6 +112,10 @@ struct GoalContext {
     /// no villager is ever a target.
     i32 villager_type{-1};
 
+    // ── tame ── the owners, the decisions' sink and the types a tame animal's
+    // goals need (tame_state.hpp). Null: no animal has an owner in reach.
+    const TameWorld* tame_world{nullptr};
+
     [[nodiscard]] entity::EntityState*       state() noexcept;
     [[nodiscard]] const entity::EntityState* state() const noexcept;
 };
@@ -164,6 +169,10 @@ struct MobBrain {
     /// Type, profession, level, claims, offers: see villager_state.hpp.
     /// `active` is false on every mob that is not a villager.
     VillagerState villager{};
+    // ── tame ──
+    /// Owner, sitting, collar, temper, saddle, stats: see tame_state.hpp.
+    /// `family` is None on every mob that is not tame-able.
+    TameState tame{};
 
     explicit MobBrain(usize path_capacity = 2048) : finder{path_capacity} {
         path.steps.reserve(256);

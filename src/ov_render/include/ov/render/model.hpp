@@ -126,6 +126,9 @@ struct Model {
     /// `display.gui`, merged down the chain. Absent when nothing declared it,
     /// which for an item model means the identity — a flat icon.
     std::optional<DisplayTransform> gui_display;
+    /// `display.thirdperson_righthand`, merged down the chain the same way:
+    /// how an entity holds the item in its right hand (the left mirrors it).
+    std::optional<DisplayTransform> hand_display;
 
     /// `gui_light: front`. The item is lit flat rather than as a solid, which
     /// is what every generated icon asks for.
