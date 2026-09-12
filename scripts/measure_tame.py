@@ -657,6 +657,45 @@ def campaign_temper(rig: Oracle) -> dict:
     return out
 
 
+def campaign_ride_timing(rig: Oracle) -> dict:
+    """How long a ridden wild horse takes to decide, to the tick.
+
+    `temper` read the game time from the probe's copy, which the server only
+    sends once a second: both ends of a ride were up to 19 ticks stale, and its
+    mean of 78 carries that. Here the server is asked itself (`time query
+    gametime`, run on its next tick) as soon as the probe is seated and as
+    soon as the throw or the hearts arrive: good to about a tick at each end.
+    Only each fresh horse's first ride counts — at temper 0 it always ends in
+    a throw, and a fresh horse is a fresh sample.
+    """
+    hand: Rider = rig.hand  # type: ignore[assignment]
+    rides = []
+    for _ in range(30):
+        rig.server.batch([f"tp {PROBE} -0.5 {Y} 0.5 -90 0",
+                          f"fill 0 {Y} -2 4 {Y + 2} 2 minecraft:glass",
+                          f"fill 1 {Y} -1 3 {Y + 2} 1 minecraft:air",
+                          "item replace entity ovhand weapon.mainhand with minecraft:air"])
+        n, eid = rig.summon_near("horse", "Silent:1b,Variant:0", (2.0, Y, 0.0))
+        time.sleep(0.3)
+        since = time.monotonic()
+        hand.interact(eid)
+        mounted = hand.wait_passengers(eid, since, True, 3.0)
+        t0 = rig.gametime() if mounted is not None else None
+        got = hand.wait_event(eid, {6, 7}, since, timeout=60.0) if mounted is not None else None
+        t1 = rig.gametime() if got else None
+        ticks = (t1 - t0) if (t0 is not None and t1 is not None) else None
+        rides.append({"status": got[0] if got else None, "ticks": ticks})
+        print(f"  horse {len(rides)}: status {rides[-1]['status']}, {ticks} ticks", flush=True)
+        rig.server.batch([f"ride {PROBE} dismount"])
+        rig.kill(n)
+    rig.server.batch([f"fill 0 {Y} -2 4 {Y + 2} 2 minecraft:air", f"tp {PROBE} -0.5 {Y} 0.5 -90 0"])
+    delays = [r["ticks"] for r in rides if r["ticks"] is not None]
+    if delays:
+        print(f"  {len(delays)} decisions: mean {sum(delays) / len(delays):.1f}, "
+              f"sorted {sorted(delays)}", flush=True)
+    return {"rides": rides}
+
+
 # ── zoo ─────────────────────────────────────────────────────────────────────
 
 ZOO = [
@@ -810,7 +849,8 @@ CAMPAIGNS = {"meta": campaign_meta, "tame": campaign_tame, "parrot": campaign_pa
              "ocelot": campaign_ocelot,
              "anger": campaign_anger, "wolf": campaign_wolf, "follow": campaign_follow,
              "spawn": campaign_spawn, "breed": campaign_breed, "temper": campaign_temper,
-             "zoo": campaign_zoo, "zoo_back": campaign_zoo_back, "noai": campaign_noai}
+             "zoo": campaign_zoo, "zoo_back": campaign_zoo_back, "noai": campaign_noai,
+             "ride_timing": campaign_ride_timing}
 
 
 def main(argv: list[str]) -> int:
