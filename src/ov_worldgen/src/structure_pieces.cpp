@@ -5,7 +5,9 @@
 #include "ov/base/log.hpp"
 #include "ov/math/random.hpp"
 #include "ov/worldgen/structure_set.hpp"
-#include "ruined_portal.hpp"  // ── portals ──
+#include "buried_treasure.hpp"  // ── treasure ──
+#include "ruined_portal.hpp"    // ── portals ──
+#include "scattered.hpp"      // ── temples ──
 
 #include <simdjson.h>
 
@@ -153,6 +155,7 @@ std::string_view to_string(PieceKind kind) noexcept {
         case PieceKind::RuinedPortal: return "ruined_portal";
         case PieceKind::BuriedTreasure: return "buried_treasure";
         case PieceKind::NetherFossil: return "nether_fossil";  // ── nether-2 ──
+        case PieceKind::Scattered: return "scattered";         // ── temples ──
     }
     return "?";
 }
@@ -179,6 +182,8 @@ struct StructureBuilder::Impl {
                                                            "minecraft:air"};
     ProcessorRef                  structure_and_air;
     ProcessorRef                  jigsaw_replacement;
+    /// ── treasure ── The states a buried treasure's chest rests on.
+    std::vector<registry::BlockStateId> treasure_support;
 
     registry::BlockStateId chest_default{};
     registry::BlockStateId water_default{};
@@ -278,6 +283,13 @@ std::expected<StructureBuilder, TemplateError> StructureBuilder::load(
             parsed.push_back(std::move(setup));
         }
         builder.impl_->portal_setups.emplace("minecraft:" + stem, std::move(parsed));
+    }
+
+    // ── treasure ── the support blocks, resolved once
+    for (const std::string_view name : kTreasureSupport) {
+        if (const auto block = blocks.find_block(name)) {
+            builder.impl_->treasure_support.push_back(blocks.default_state(*block));
+        }
     }
 
     // ── nether-2 ── the fossil's biome tag, read like every other tag
@@ -593,6 +605,14 @@ std::expected<StructureStart, std::string> StructureBuilder::generate(
             }
             break;
         }
+        case StructureKind::DesertPyramid:
+        case StructureKind::JungleTemple:
+        case StructureKind::SwampHut: {  // ── temples ── scattered.cpp
+            start.pieces.push_back(make_scattered_piece(*scattered_kind_for(definition.kind),
+                                                        chunk_x, chunk_z, random));
+            start.incomplete = std::string{to_string(definition.kind)} + ": the layout is not built";
+            break;
+        }
         default:
             return std::unexpected(std::string{to_string(definition.kind)} +
                                    ": not a structure this builder makes");
@@ -627,6 +647,9 @@ std::expected<StructurePiece, std::string> StructureBuilder::piece_from_nbt(
         piece.kind = PieceKind::BuriedTreasure;
     } else if (kind == "minecraft:nefos") {  // ── nether-2 ──
         piece.kind = PieceKind::NetherFossil;
+    } else if (const auto scattered = scattered_kind_of(kind)) {  // ── temples ──
+        piece.kind           = PieceKind::Scattered;
+        piece.scattered.kind = *scattered;
     } else {
         return std::unexpected("piece type " + std::string{kind} +
                                " is not one this builder makes");
@@ -642,6 +665,12 @@ std::expected<StructurePiece, std::string> StructureBuilder::piece_from_nbt(
 
     if (piece.kind == PieceKind::BuriedTreasure) {
         piece.origin = {piece.box.min_x, piece.box.min_y, piece.box.min_z};
+        return piece;
+    }
+    if (piece.kind == PieceKind::Scattered) {  // ── temples ──
+        if (auto read = scattered_from_nbt(child, piece); !read) {
+            return std::unexpected(read.error());
+        }
         return piece;
     }
 
@@ -716,7 +745,8 @@ std::expected<StructurePiece, std::string> StructureBuilder::piece_from_nbt(
             break;
         }
         case PieceKind::BuriedTreasure:
-        case PieceKind::NetherFossil: break;  // ── nether-2 ──
+        case PieceKind::NetherFossil:  // ── nether-2 ──
+        case PieceKind::Scattered: break;  // ── temples ── read above
     }
 
     // The stored origin keeps the placeholder height for the igloo while the
@@ -776,9 +806,14 @@ void StructureBuilder::settle_height(const StructureLevel& level, StructurePiece
                  piece.origin.y;
             break;
         }
-        case PieceKind::BuriedTreasure:
-        case PieceKind::RuinedPortal:
+        case PieceKind::BuriedTreasure:  // ── treasure ── down to its support
+            dy = buried_treasure_height(level, impl_->treasure_support, piece.origin.x,
+                                        piece.origin.z) -
+                 piece.origin.y;
+            break;
+        case PieceKind::RuinedPortal:  // ── portals ── settled at generation
         case PieceKind::NetherFossil: break;  // ── nether-2 ── settled by its search
+        case PieceKind::Scattered: break;     // ── temples ── not settled yet: refused
     }
     piece.origin.y += dy;
     piece.box.move(0, dy, 0);
@@ -806,6 +841,11 @@ PiecePlaceResult StructureBuilder::place(StructureLevel& level, const StructureP
         impl_->set_loot(level, at, "minecraft:chests/buried_treasure", random);
         result.written = 1;
         result.chests  = 1;
+        return result;
+    }
+
+    if (piece.kind == PieceKind::Scattered) {  // ── temples ── nothing to place yet
+        result.unknown_markers.push_back("scattered piece: the layout is not built");
         return result;
     }
 
@@ -876,6 +916,7 @@ PiecePlaceResult StructureBuilder::place(StructureLevel& level, const StructureP
         case PieceKind::BuriedTreasure: break;
         // ── nether-2 ── the fossil's air and structure blocks are not written
         case PieceKind::NetherFossil: settings.processors.push_back(impl_->structure_and_air); break;
+        case PieceKind::Scattered: break;  // ── temples ── returned above
     }
 
     // A beached ship settles on its lowest column minus a random 0 to 2, and
@@ -937,7 +978,8 @@ PiecePlaceResult StructureBuilder::place(StructureLevel& level, const StructureP
                 break;
             case PieceKind::RuinedPortal:
             case PieceKind::BuriedTreasure:
-            case PieceKind::NetherFossil: break;  // ── nether-2 ──
+            case PieceKind::NetherFossil:  // ── nether-2 ──
+            case PieceKind::Scattered: break;  // ── temples ──
         }
         result.unknown_markers.push_back(marker.metadata);
     }

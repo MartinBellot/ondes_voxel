@@ -30,6 +30,7 @@
 #include "ov/nbt/tag.hpp"
 #include "ov/registry/block_states.hpp"
 #include "ov/worldgen/placement.hpp"
+#include "ov/worldgen/scattered_piece.hpp"  // ── temples ──
 #include "ov/worldgen/structure.hpp"
 #include "ov/worldgen/structure_template.hpp"
 
@@ -50,6 +51,9 @@ enum class PieceKind : u8 {
     RuinedPortal,
     BuriedTreasure,
     NetherFossil,  // ── nether-2 ──
+    /// ── temples ── Built in code: the swamp hut, the desert pyramid, the
+    /// jungle temple. Which one is `StructurePiece::scattered.kind`.
+    Scattered,
 };
 
 [[nodiscard]] std::string_view to_string(PieceKind kind) noexcept;
@@ -83,6 +87,8 @@ struct StructurePiece {
     bool                   warm{false};
     bool                   beached{false};
     RuinedPortalProperties portal;
+    /// ── temples ── A scattered piece's stored state.
+    ScatteredPiece scattered;
     /// Whether the height has been settled. A piece fresh from `generate` sits
     /// at a placeholder y (90 for most kinds) and moves to the terrain the
     /// first time it is placed; a piece read from a finished chunk of the

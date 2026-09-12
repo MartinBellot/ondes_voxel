@@ -634,6 +634,96 @@ froid au milieu) sont les témoins propres à la hauteur : aucune n'atteint 25/2
 Le serveur ne refuse plus les portails (§ 20.2) : ses départs portent leur vraie hauteur, et le
 test `test_world_structures` vérifie celui du chunk (4571, 3940), `portal_4` à y = 64.
 
+### 15.2 Le trésor enfoui — 13 coffres sur 13 (2026-09-12)
+
+Au contraire du portail, le départ du trésor ne dit rien de sa hauteur : il garde y = 90 tant que
+son chunk n'est pas décoré, et le coffre trouve sa place **à la pose, dans les blocs réels**
+(`src/ov_worldgen/src/buried_treasure.cpp`, appelé par `settle_height`). La page *Buried Treasure*
+du wiki ne donne que la colonne (9, 9 dans le chunk) et l'orientation (est) ; la recherche a été
+**lue dans ce que le vrai serveur écrit**.
+
+**L'oracle.** Les trésors des mondes de référence étaient presque tous inachevés (1 fini sur 10).
+Le vrai serveur 1.20.1 a fini, zone par zone, les chunks autour des départs
+(`.scratch/java_zones.sh`, non commité : chaque zone est chargée, sauvée, réduite à ses chunks et
+supprimée), sur les trois graines de référence et sur une **graine hors échantillon**, 20260911,
+dont les départs ont été trouvés par `locate`. Treize trésors finis : 1 de reference-1234567890,
+3 de struct-locate-1234567890, 9 de 20260911.
+
+**La règle.** Depuis le premier bloc libre de la colonne du fond marin (air et fluides libres ; la
+glace de surface vient après les structures), descendre jusqu'à la première position dont le bloc
+du dessous est un **support** : grès, pierre, granite, diorite, andésite. Le coffre s'y pose, à la
+place du sable ou du gravier qui s'y trouvait. Sur les blocs finis du jeu, la recherche doit
+s'arrêter exactement sur le coffre (`.scratch/treasure_rule.py`) :
+
+| variante | coffres trouvés |
+|---|---|
+| **la règle** | **13/13** |
+| témoin : sans le grès parmi les supports | 4/13 |
+| départ au premier bloc *occupé* au lieu du premier libre | 13/13 |
+
+**Non départagé, nommé.** Le départ au premier libre ou au premier occupé ne diffère que si le fond
+lui-même est un support sous l'eau ; aucun des treize n'est dans ce cas. Le premier libre est retenu
+parce que le wiki note qu'un coffre « exposé à l'eau » est engorgé, ce que seul ce départ permet.
+Seuls le grès et le granite sont exercés parmi les supports. Aucun voisin du coffre n'est de l'air ou
+de l'eau dans les treize : un éventuel remplacement des voisins n'est **pas observé**.
+
+Le serveur ne refuse plus le trésor (§ 20.2).
+
+### 15.3 Cabane de sorcière, pyramide du désert, temple de la jungle — le départ (2026-09-12)
+
+Ces trois structures sont **construites en code** par le jeu, pas depuis des gabarits : leur
+disposition n'existe nulle part sous forme de données. Elles sont reconstruites **en boîte noire,
+depuis les blocs que le vrai serveur 1.20.1 écrit** (décision du coordinateur, 2026-09-12), avec
+ces garde-fous : aucun code décompilé, les mappings seulement pour nommer ; la disposition écrite
+comme notre propre générateur (boucles, remplissages, choix aléatoires de la pièce), jamais comme un
+vidage de blocs — toute référence extraite reste dans `.scratch` et n'est jamais commitée ; prouvée
+sur plusieurs départs finis, dont une graine hors échantillon, avec un témoin décalé qui échoue ; les
+parties aléatoires (graines de butin, pièges, lianes, sorcière et chat) prises des champs du départ
+et des tables de butin documentées, pas d'un monde observé.
+
+**Ce que le départ décide** (`src/ov_worldgen/src/scattered.cpp`), mesuré sur les **22 départs**
+stockés de trois graines (reference-1234567890, struct-locate-1234567890, reference-987654321 et
+la graine hors échantillon 20260911 ; `.scratch/orient_fit.py`) :
+
+* l'orientation `O` est le **premier tirage** après la graine de grande structure,
+  `nextInt(4)` sur nord, est, sud, ouest, rangée comme sa valeur 2D (sud 0, ouest 1, nord 2, est 3) :
+  **22/22** ; les ordres témoins sud-ouest-nord-est, nord-sud-ouest-est et est-sud-ouest-nord
+  donnent **0, 6 et 0/22** ;
+* la boîte est au **coin du chunk**, à y = 64 jusqu'à la pose (22/22), de la taille stockée
+  (cabane 7 × 7 × 9, pyramide 21 × 15 × 21, temple 12 × 10 × 15), profondeur le long de x quand la
+  pièce regarde vers l'est ou l'ouest ;
+* les champs de la pièce sont ceux du jeu, types compris : `Width`, `Height`, `Depth`, `HPos`
+  (−1 avant la pose), `Witch` et `Cat` ; `hasPlacedChest0..3` ; `placedMainChest`,
+  `placedHiddenChest`, `placedTrap1`, `placedTrap2`.
+
+En C++, le niveau B (orientation, taille, emprise en x et z) sur les mondes de référence :
+pyramides 2/2, temples 3/3, cabanes 2/2, **7/7** ; les départs de 20260911 sont dans les 22 du
+rejeu ci-dessus.
+
+**Le repère local de la cabane**, pour la suite : sur les **5 cabanes finies** (1 de struct-locate,
+4 de 20260911 ; orientations ouest, nord, est ×3), un repère par orientation rend leurs dispositions
+identiques, **665/665** cellules de structure (`.scratch/piece_local.py`) ; le deuxième meilleur
+repère de chaque cabane n'en garde que 98/102. Est : x = minX + z local, z = minZ + x local ; ouest :
+x = maxX − z local ; nord : x = minX + x local, z = maxZ − z local.
+
+Les mêmes ajustements sur les deux autres pièces, avec leurs choix aléatoires repliés (pierre
+moussue → pierre, lianes → air) et le terrain de la boîte écarté (feuilles, troncs, plantes) :
+
+| pièce | départs finis | orientations | cellules de structure identiques |
+|---|---|---|---|
+| cabane de sorcière | 5 | ouest, nord, est | **665/665** |
+| temple de la jungle | 9 (dont 6 de 20260911) | les quatre | **6 282/6 282** |
+| pyramide du désert | 5 (dont 4 de 20260911) | nord, est | **7 249/7 295** (99,4 %) |
+
+Le temple est symétrique par noms de blocs le long de sa largeur : son repère se départagera sur les
+états (leviers, distributeurs, escaliers). Dans la pyramide, **aucune** cellule ne change d'un bloc
+de structure à un autre : les cellules qui diffèrent sont du grès dans une pyramide et du terrain
+dans les autres, le sol du désert (en grès) dans la boîte d'une pyramide posée à une autre hauteur —
+la disposition est la même, le terrain de la boîte non.
+
+**Pas fait, nommé** : la disposition des blocs, la hauteur de pose (`HPos`), les pilotis de la
+cabane, les coffres et les pièges. Le serveur refuse donc les trois par leur nom (§ 20.2).
+
 ## 16. Niveau A — les pièces du jeu, notre code : le tableau
 
 `tools/ov_structblocks --level=a` : chaque départ d'un chunk `full`, pièces lues dans le NBT du jeu,
@@ -822,16 +912,16 @@ placed — …`). Refusés parce que non construits : villages, avant-postes, ci
 sentiers, bastions (jigsaw), forteresse, puits de mine, fort, monument, manoir, temples du désert et
 de la jungle, cabane de sorcière, cité de l'End.
 
-**Un genre que le constructeur sait faire est refusé aussi dans le serveur**
-(`StructureStage::refuse`), parce que ce qu'il en fait aujourd'hui n'est pas la structure du jeu mais
-une invention à une hauteur de remplacement : le **trésor enfoui** (sans sa recherche vers le bas, son
-coffre flotterait à y = 90). Les outils de parité, eux, continuent de le poser pour le mesurer. Les
-**portails en ruine** étaient refusés pour la même raison jusqu'à leur hauteur (§ 15.1, 34/34) ; ils
-sont placés depuis.
+Les **portails en ruine** et le **trésor enfoui** étaient refusés aussi dans le serveur
+(`StructureStage::refuse`), parce que ce qu'il en faisait n'était pas la structure du jeu mais une
+invention à une hauteur de remplacement (y = 0, y = 90). Ils sont placés depuis leur hauteur
+(§ 15.1, 34/34 ; § 15.2, 13/13). Sont refusés à leur place, par leur nom, la **cabane de sorcière**,
+la **pyramide du désert** et le **temple de la jungle** : leurs départs sont générés depuis la graine,
+leurs blocs pas encore, et un départ sans ses blocs ne doit pas entrer dans un chunk.
 
 Placés : igloo, épave (en mer et échouée), ruines océaniques (froides et chaudes — la grande ruine
 sans l'amas de petites, § 13), fossiles du Nether, portails en ruine (les sept, sans l'étalement de
-netherrack).
+netherrack), trésor enfoui.
 
 ### 20.3 `structures.starts` et `References` dans le chunk
 

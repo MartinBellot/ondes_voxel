@@ -127,7 +127,10 @@ struct Options {
 [[nodiscard]] bool in_scope(std::string_view name) {
     return name == "minecraft:igloo" || name.starts_with("minecraft:shipwreck") ||
            name.starts_with("minecraft:ocean_ruin") ||
-           name.starts_with("minecraft:ruined_portal") || name == "minecraft:buried_treasure";
+           name.starts_with("minecraft:ruined_portal") || name == "minecraft:buried_treasure" ||
+           // ── temples ── the scattered pieces: facing and footprint so far
+           name == "minecraft:swamp_hut" || name == "minecraft:desert_pyramid" ||
+           name == "minecraft:jungle_pyramid";
 }
 
 [[nodiscard]] std::string label(const registry::BlockRegistry& blocks,
@@ -780,6 +783,18 @@ private:
                 } else if (a.kind == worldgen::PieceKind::RuinedPortal &&
                            a.portal.cold != b.portal.cold) {
                     why = fmt::format("cold {} vs {}", a.portal.cold, b.portal.cold);
+                } else if (a.kind == worldgen::PieceKind::Scattered &&
+                           (a.scattered.kind != b.scattered.kind ||
+                            a.scattered.orientation != b.scattered.orientation ||
+                            a.scattered.width != b.scattered.width ||
+                            a.scattered.height != b.scattered.height ||
+                            a.scattered.depth != b.scattered.depth ||
+                            a.box.max_x != b.box.max_x || a.box.max_z != b.box.max_z)) {
+                    // ── temples ── The stored y is the placeholder until the
+                    // piece is placed; the facing and the footprint are the start's.
+                    why = fmt::format("scattered: facing {} vs {}, box x {} vs {}, z {} vs {}",
+                                      a.scattered.orientation, b.scattered.orientation, a.box.max_x,
+                                      b.box.max_x, a.box.max_z, b.box.max_z);
                 } else if (std::abs(a.integrity - b.integrity) > 1e-6F) {
                     why = "integrity";
                 } else if (a.kind == worldgen::PieceKind::RuinedPortal &&

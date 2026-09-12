@@ -161,7 +161,7 @@ TEST_CASE("a start with terrain adaptation is referenced 12 blocks wider", "[str
     CHECK(references(far, "minecraft:nether_fossil").empty());
 }
 
-TEST_CASE("the server places the portals and refuses the treasure by name",
+TEST_CASE("the server places the portals and the treasure, and refuses the temples by name",
           "[structures][server]") {
     const auto jar = server::WorldStructures::default_jar(data_dir());
     if (!std::filesystem::is_regular_file(pack()) || !std::filesystem::exists(jar)) {
@@ -183,20 +183,23 @@ TEST_CASE("the server places the portals and refuses the treasure by name",
     auto stack = structures->make_stage(generator, *blocks, *registries, kSeed);
     REQUIRE(stack);
 
-    // The game's buried treasure of reference-1234567890 starts in chunk
-    // (4571, 3937): the placer says yes, the server refuses it and says why.
-    const auto& starts = stack->stage->starts_at(4571, 3937);
-    for (const auto& start : starts) {
-        CHECK(start.structure != "minecraft:buried_treasure");
-    }
-    bool named = false;
-    for (const auto& [reason, count] : stack->stage->stats().refused) {
-        if (reason.starts_with("minecraft:buried_treasure: buried treasure:")) {
-            named = count > 0;
+    // ── treasure ── The game's buried treasure of reference-1234567890 starts
+    // in chunk (4571, 3937): the server keeps it, at the placeholder y 90 its
+    // downward search replaces when the chunk is decorated.
+    bool treasure = false;
+    for (const auto& start : stack->stage->starts_at(4571, 3937)) {
+        if (start.structure == "minecraft:buried_treasure") {
+            REQUIRE(start.pieces.size() == 1);
+            CHECK(start.pieces.front().origin.x == 73145);
+            CHECK(start.pieces.front().origin.z == 63001);
+            treasure = true;
         }
+    }
+    CHECK(treasure);
+    for (const auto& [reason, count] : stack->stage->stats().refused) {
+        CHECK_FALSE(reason.starts_with("minecraft:buried_treasure"));
         CHECK_FALSE(reason.starts_with("minecraft:ruined_portal"));
     }
-    CHECK(named);
 
     // ── portals ── Its portal of chunk (4571, 3940) is placed, where the game
     // put it: portal_4, on the land surface, its box's bottom at y 64.

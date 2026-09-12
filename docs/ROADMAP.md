@@ -564,8 +564,10 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       (`structures.md` § 20). **Portails en ruine à la hauteur du jeu** :
       hauteur et test « froid » décidés à la génération, depuis le bruit,
       **34/34 départs** exacts (25 Overworld, 9 Nether ; témoins à graine
-      décalée 0/29) — le serveur les place ; trésor enfoui encore refusé
-      tant que sa recherche vers le bas n'est pas réglée (§ 15.1). Temples du désert et
+      décalée 0/29) — le serveur les place ; **trésor enfoui** : recherche
+      vers le bas à la pose, lue dans les blocs du vrai serveur, **13/13
+      coffres** (dont 9 d'une graine hors échantillon ; témoin 4/13) — placé
+      par le serveur (§ 15). Temples du désert et
       de la jungle, cabane de sorcière : construits en code par le jeu,
       refusés par nom. Jigsaw (villages, avant-postes, bastions…) : autre
       mandat. Voir `docs/provenance/structures.md` §§ 12-20)* :

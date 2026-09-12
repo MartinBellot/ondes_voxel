@@ -188,9 +188,13 @@ std::unique_ptr<WorldStructures::StackStage> WorldStructures::make_stage(
     out->stage   = std::make_unique<worldgen::StructureStage>(*impl_->placer, *impl_->builder,
                                                             out->sampler.get(), blocks,
                                                             &registries, seed);
-    out->stage->refuse(
-        worldgen::StructureKind::BuriedTreasure,
-        "buried treasure: its downward search is not implemented, its chest would hang at y 90");
+    // ── temples ── Their starts are generated, their blocks are not yet: a start
+    // without its blocks must not reach a chunk.
+    for (const auto kind : {worldgen::StructureKind::SwampHut, worldgen::StructureKind::DesertPyramid,
+                            worldgen::StructureKind::JungleTemple}) {
+        out->stage->refuse(kind, std::string{worldgen::to_string(kind)} +
+                                     ": its layout is not built yet");
+    }
     return out;
 }
 
