@@ -324,6 +324,9 @@ HusbandryStats Husbandry::after_entity_tick(entity::EntityWorld& world, world::L
                 calf_mob->mutable_brain().animal.colour =
                     gameplay::offspring_colour(mother, father, random_);
             }
+            if (host.on_birth) {  // ── tame ──
+                host.on_birth(event.self, event.other, calf);
+            }
             if (host.announce) {
                 host.announce(*calf_state);
             }

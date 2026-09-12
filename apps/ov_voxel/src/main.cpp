@@ -38,6 +38,7 @@
 #include "ov/audio/sound_catalog.hpp"   // ── sound ──
 #include "ov/audio/sound_engine.hpp"    // ── sound ──
 #include "ov/client/sound_director.hpp" // ── sound ──
+#include "ov/client/subtitles.hpp"      // ── sound ──
 #include "ov/client/terrain_renderer.hpp"
 #include "ov/client/window.hpp"
 #include "ov/registry/block_states.hpp"
@@ -1651,6 +1652,8 @@ int main(int argc, char** argv) {
     // engine into the catalogue, and destruction runs the other way.
     std::optional<audio::SoundCatalog>     sound_catalog;
     std::unique_ptr<audio::SoundEngine>    sound_engine;
+    client::SubtitleOverlay                subtitles;  // the director points into it
+    f64                                    menu_music_clock = 0.0;
     std::unique_ptr<client::SoundDirector> sound_director;
     std::optional<BlockPos>                pending_place;
     i32                                    pending_place_frames = 0;
@@ -1776,6 +1779,7 @@ int main(int argc, char** argv) {
                         }
                         sound_director = std::make_unique<client::SoundDirector>(
                             *sound_engine, *blocks, *registries, i64{0x5EED});
+                        sound_director->set_subtitles(&subtitles);
                         OV_LOG_INFO("sound: {} events, {} variants", sound_catalog->event_count(),
                                     sound_catalog->entry_count());
                     }
@@ -2266,6 +2270,24 @@ int main(int argc, char** argv) {
         }
         ui_took_input = menus->any_open();
         // ── end screens ──
+        if (sound_director) {  // ── sound ── the click, and the music with no world
+            if (menus->take_click()) {
+                sound_director->clicked();
+            }
+            if (!(online && spawned)) {
+                // The menu's music before a world; the game's situation while
+                // one loads, which stops the menu's track as the wiki says it
+                // stops "when the player enters the loading world screen".
+                menu_music_clock += ui_delta;
+                while (menu_music_clock >= 0.05) {
+                    menu_music_clock -= 0.05;
+                    client::MusicContext context;
+                    context.menu = !online;
+                    sound_director->tick(context);
+                }
+                sound_engine->update();
+            }
+        }
         if (online && !ui_took_input) {
             ui_took_input = (*interface)->update(input, *client, **window, ui_delta);
         }
@@ -2461,6 +2483,15 @@ int main(int argc, char** argv) {
                             it->second.to,
                             it->second.orb ? netclient::ClientEvents::kSpawnedAsExperienceOrb : 0};
                     });
+                // A record started: "Now Playing", on the action bar.
+                if (auto now_playing = sound_director->take_now_playing()) {
+                    netclient::ClientEvents               bar;
+                    netclient::ClientEvents::ChatEvent line;
+                    line.kind = netclient::ClientEvents::ChatEvent::Kind::ActionBar;
+                    line.json = std::move(*now_playing);
+                    bar.chat.push_back(std::move(line));
+                    (*interface)->apply(bar);
+                }
                 // The server leaves this player out of its own placing and of the
                 // door it opened: the answer it does send is the Block Update, so
                 // that is when this client plays them.
@@ -2651,7 +2682,19 @@ int main(int argc, char** argv) {
                                                    under, player.position);
                         }
                     }
-                    sound_director->tick((*interface)->hud().creative);
+                    // The music's situation: creative, the eyes in water, the
+                    // biome at the eyes.
+                    client::MusicContext music_context;
+                    music_context.creative = (*interface)->hud().creative;
+                    const f64  ear_y       = player.position.y + 1.62;
+                    const auto ear_x       = static_cast<i32>(std::floor(player.position.x));
+                    const auto ear_z       = static_cast<i32>(std::floor(player.position.z));
+                    const auto ear_fluid   = session->fluid_at(ear_x, static_cast<i32>(std::floor(ear_y)), ear_z);
+                    music_context.underwater = ear_fluid.fluid == gameplay::Fluid::Water &&
+                                               ear_y < std::floor(ear_y) + ear_fluid.height;
+                    music_context.biome = blocks->biome_name(
+                        session->biome_at(ear_x, static_cast<i32>(std::floor(ear_y)), ear_z));
+                    sound_director->tick(music_context);
                 }
 
                 // Touching the ground ends flight — except for a spectator, who
@@ -2720,10 +2763,16 @@ int main(int argc, char** argv) {
             }
             if (sound_director) {  // ── sound ── the ears are the camera
                 const auto listen_started = std::chrono::steady_clock::now();
-                sound_director->listen(
-                    Vec3d{player.position.x, player.position.y + 1.62, player.position.z},
-                    camera.yaw_degrees);
+                const Vec3d ears{player.position.x, player.position.y + 1.62, player.position.z};
+                sound_director->listen(ears, camera.yaw_degrees, camera.pitch_degrees);
                 sound_engine->update();
+                // The subtitles, on the interface's clock: a line is text, not game.
+                subtitles.advance(ui_delta);
+                subtitles.set_display_time(menus->options().notification_display_time);
+                subtitles.prune();
+                (*interface)->set_subtitles(
+                    menus->options().show_subtitles ? &subtitles : nullptr,
+                    audio::Listener{ears, camera.yaw_degrees, camera.pitch_degrees});
                 audio_ms += std::chrono::duration<f64, std::milli>(
                                 std::chrono::steady_clock::now() - listen_started)
                                 .count();

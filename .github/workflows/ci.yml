@@ -38,6 +38,12 @@ jobs:
       - name: ROADMAP and PROGRESS agree
         run: python3 scripts/check_progress.py
 
+      - name: Protocol 763 conformity matrix is current, and every id is right
+        # Regenerated from the code and compared with docs/protocol/763/. It
+        # also checks every packet id constant against data/protocol/763.json —
+        # the check that found Set Cooldown sent as 0x16 (Chat Suggestions).
+        run: python3 scripts/protocol_matrix.py --check
+
   # Layering lock #3, and the reason it is the only one that cannot be worked
   # around: this image has no Vulkan SDK, so a rendering include in the server
   # does not fail a policy check — it fails to compile.
