@@ -1013,13 +1013,24 @@ nbt::Tag Scoreboard::save() const {
 
     nbt::Tag teams = nbt::Tag::make_list(nbt::TagType::Compound);
     for (const Team* t : this->teams()) {
-        nbt::Tag players = nbt::Tag::make_list(nbt::TagType::String);
+        // An empty list declares no element type — TAG_End, as the jar
+        // writes it (the last byte our rewrite of its file differed by).
+        nbt::Tag players = nbt::Tag::make_list(t->member_count() == 0 ? nbt::TagType::End
+                                                                       : nbt::TagType::String);
         for (const std::string& member : t->members()) {
             players.push(nbt::Tag{member});
         }
-        std::vector<nbt::CompoundEntry> entries{
-            {"Name", nbt::Tag{t->name}},
-            {"DisplayName", nbt::Tag{t->display_json}},
+        // The game's insertion order: it decides the order inside a hash
+        // bucket, and TeamColor shares one with MemberNamePrefix — written
+        // last, it came out one key late (48 bytes off the jar's file).
+        std::vector<nbt::CompoundEntry> entries{{"Name", nbt::Tag{t->name}},
+                                                {"DisplayName", nbt::Tag{t->display_json}}};
+        // A team with no colour has no TeamColor at all (the capture's
+        // `abcdefghijklmnopqrstuvwxyz`), not "reset".
+        if (t->color < kColorCount) {
+            entries.push_back({"TeamColor", nbt::Tag{std::string{color_name(t->color)}}});
+        }
+        for (auto& entry : std::vector<nbt::CompoundEntry>{
             {"AllowFriendlyFire", nbt::Tag::make_bool(t->friendly_fire)},
             {"SeeFriendlyInvisibles", nbt::Tag::make_bool(t->see_friendly_invisibles)},
             {"MemberNamePrefix", nbt::Tag{t->prefix_json}},
@@ -1027,11 +1038,8 @@ nbt::Tag Scoreboard::save() const {
             {"NameTagVisibility", nbt::Tag{std::string{visibility_name(t->name_tag)}}},
             {"DeathMessageVisibility", nbt::Tag{std::string{visibility_name(t->death_message)}}},
             {"CollisionRule", nbt::Tag{std::string{collision_rule_name(t->collision)}}},
-            {"Players", std::move(players)}};
-        // A team with no colour has no TeamColor at all (the capture's
-        // `abcdefghijklmnopqrstuvwxyz`), not "reset".
-        if (t->color < kColorCount) {
-            entries.push_back({"TeamColor", nbt::Tag{std::string{color_name(t->color)}}});
+            {"Players", std::move(players)}}) {
+            entries.push_back(std::move(entry));
         }
         teams.push(java_compound(std::move(entries)));
     }

@@ -335,6 +335,7 @@ private:
     std::vector<EntityInfo> world_snapshot_;
     i64                     timestamp_{0};
     i64                     salt_{0};
+    Text                    source_shown_;  // ── scoreboard ── the source's name, at the start
 };
 
 }  // namespace ov::server::cmd

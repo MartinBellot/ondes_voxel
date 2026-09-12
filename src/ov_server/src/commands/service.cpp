@@ -337,6 +337,7 @@ Parsed<i32> CommandService::execute(const CommandSource& source, std::string_vie
     salt_      = salt;
     refresh_players();
     world_snapshot_ = snapshot();
+    source_shown_   = decorate(source_name(source));  // ── scoreboard ──
     const ParseResults parsed = dispatcher_.parse(command, 0, source);
     auto               result = dispatcher_.execute(parsed, command, source);
     if (!result) {
@@ -385,7 +386,10 @@ void CommandService::success(const CommandSource& source, const Text& text, bool
     if (!broadcast_to_ops) {
         return;
     }
-    Text admin = decorate(Text::translatable("chat.type.admin", {source_name(source), text}));
+    // ── scoreboard ── The source as it was named when the command began: the
+    // capture logs `team leave @s` under the team just left, and `team join`
+    // under no team yet.
+    Text admin = Text::translatable("chat.type.admin", {source_shown_, decorate(text)});
     admin.style.italic = true;
     admin.color("gray");
     if (feedback) {

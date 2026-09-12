@@ -724,6 +724,9 @@ TEST_CASE("scoreboard.dat reads back what it wrote, and keeps what it does not m
     CHECK(red.find("AllowFriendlyFire")->as_i64() == 0);
     CHECK(red.find("CollisionRule")->as_string() == "pushOwnTeam");
     CHECK(plain.find("TeamColor") == nullptr);
+    // No members: an empty list of TAG_End, byte for byte the jar's.
+    CHECK(plain.find("Players")->list_element_type() == nbt::TagType::End);
+    CHECK(red.find("Players")->list_element_type() == nbt::TagType::String);
     CHECK(plain.find("MemberNamePrefix")->as_string() == R"({"text":""})");
 
     // Keys this server does not know, and an objective whose criterion it
