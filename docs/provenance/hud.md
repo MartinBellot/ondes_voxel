@@ -248,6 +248,13 @@ d'emplacement), chaque compte tenu contre le protocole :
 | alambic | 10 | fioles (56, 51) (79, 58) (102, 51), ingrédient (79, 17), poudre (17, 17) |
 | cheval, âne, lama | Open Horse Screen | selle (8, 18), armure (8, 36), coffre à (80, 18) sur `nb/3` colonnes |
 
+Les titres, lus dans les fenêtres du vrai client (encre gris foncé dans la
+rangée du titre, bordure exclue) : « Item Hopper » et « Repair &
+Disenchant » à x 8 comme toutes les fenêtres ; « Dispenser » de 63 à 111,
+**centré** (176 − 50) / 2 ; « Repair & Name » à **x 60**, après le marteau
+que la texture de l'enclume dessine de 25 à 40. Nos deux exceptions (titre
+centré du distributeur, x 60 de l'enclume) sont celles-là.
+
 Tailleur de pierre, table de forge, métier à tisser, table de cartographie,
 balise et pupitre **ne sont pas ouverts par notre serveur** : leurs écrans
 restent refusés et nommés, comme avant.
