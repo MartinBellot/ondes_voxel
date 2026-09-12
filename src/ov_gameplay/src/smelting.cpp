@@ -145,9 +145,12 @@ FurnaceTick furnace_tick(const RecipeBook& book, FurnaceKind kind, FurnaceSlots&
     //    again at twice the speed, which is what stops a player from cooking
     //    an item on a series of single sticks.
     if (state.lit() && can_cook) {
-        state.cook_total = static_cast<i32>(book.recipe(*recipe).cook_time);
+        // `CookTimeTotal` is not read again here. Vanilla sets it when the
+        // input slot changes and after each item; a furnace whose total is 0
+        // — placed by hand without one — counts up for ever and never
+        // finishes (measured: `CookTime` 1202 with nothing produced).
         ++state.cook_time;
-        if (state.cook_time >= state.cook_total && state.cook_total > 0) {
+        if (state.cook_time == state.cook_total) {
             state.cook_time = 0;
             if (slots.output.empty()) {
                 slots.output = produced;
@@ -161,17 +164,43 @@ FurnaceTick furnace_tick(const RecipeBook& book, FurnaceKind kind, FurnaceSlots&
             state.stored_experience += book.recipe(*recipe).experience;
             report.produced      = true;
             report.slots_changed = true;
+            // The next item's total, read again after each one. An input used
+            // up keeps the total it had (measured: 200 on a furnace that has
+            // just finished its eighth and last ingot).
+            if (!slots.input.empty()) {
+                if (const auto next = match_cooking(book, kind, slots.input.item)) {
+                    state.cook_total = static_cast<i32>(book.recipe(*next).cook_time);
+                }
+            }
         }
     } else if (state.cook_time > 0) {
-        state.cook_time = std::max(0, state.cook_time - 2);
+        // Lost at twice the speed, and never above the total: the furnace
+        // placed without one reads `CookTime` 0 once its fire is out.
+        state.cook_time = std::clamp(state.cook_time - 2, 0, std::max(state.cook_total, 0));
     }
 
-    if (!can_cook) {
-        state.cook_total = 0;
-    }
+    // A furnace that cannot cook keeps its `CookTimeTotal`: measured on the
+    // real server (`scripts/measure_furnaces.py ticks`), a blocked output, a
+    // smoker given ore and a furnace whose input ran out all still read 200
+    // or 100 thousands of ticks later. Zeroing it here wrote a different NBT.
 
     report.lit_changed = was_lit != state.lit();
     return report;
+}
+
+void furnace_input_changed(const RecipeBook& book, FurnaceKind kind, const FurnaceSlots& slots,
+                           FurnaceState& state) {
+    state.cook_time = 0;
+    if (!slots.input.empty()) {
+        if (const auto recipe = match_cooking(book, kind, slots.input.item)) {
+            state.cook_total = static_cast<i32>(book.recipe(*recipe).cook_time);
+            return;
+        }
+    }
+    // Nothing this furnace cooks, or nothing at all: the total stays. Measured
+    // on the real server: dirt or an empty slot in place of iron ore leaves
+    // 200. Whether vanilla keeps it or falls back to 200 is not told apart by
+    // that measurement — a blast furnace (100) given dirt was not measured.
 }
 
 }  // namespace ov::gameplay

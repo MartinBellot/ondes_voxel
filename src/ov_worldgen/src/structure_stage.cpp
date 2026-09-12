@@ -283,6 +283,9 @@ struct StructureStage::Impl {
     std::map<StructureKind, std::string> refused_kinds;
     /// ── jigsaw ── `sampler` points here when there is one to wrap.
     std::unique_ptr<CountingSampler> counting;
+    /// ── great pyramid ── Our own structure, after the game's; null when the
+    /// generator-level switch is off.
+    std::unique_ptr<GreatPyramidStage> pyramid;
 
     [[nodiscard]] bool is_candidate(usize set_index, i32 chunk_x, i32 chunk_z) const {
         const StructureSet& set = *sets[set_index].set;
@@ -396,7 +399,8 @@ struct StructureStage::Impl {
 StructureStage::StructureStage(const StructurePlacer& placer, const StructureBuilder& builder,
                                const StructureWorldSampler*   sampler,
                                const registry::BlockRegistry& blocks,
-                               const registry::Registries* registries, i64 level_seed)
+                               const registry::Registries* registries, i64 level_seed,
+                               OriginalStructures originals)
     : impl_(std::make_unique<Impl>()) {
     impl_->placer      = &placer;
     impl_->builder     = &builder;
@@ -435,6 +439,10 @@ StructureStage::StructureStage(const StructurePlacer& placer, const StructureBui
         impl_->sets.push_back(info);
     }
     impl_->by_set.resize(impl_->sets.size());
+
+    if (originals.great_pyramid) {  // ── great pyramid ──
+        impl_->pyramid = std::make_unique<GreatPyramidStage>(blocks, &placer, sampler, level_seed);
+    }
 }
 
 StructureStage::~StructureStage() {
@@ -550,6 +558,13 @@ void StructureStage::place(std::span<world::Chunk* const, 9> neighbourhood, i32 
         }
     }
 
+    // ── great pyramid ── Our own structure, written after the game's: its
+    // placement refuses any site a vanilla start could share, so the order
+    // between the two never decides a block.
+    if (impl_->pyramid) {
+        impl_->pyramid->place(level, chunk_x, chunk_z);
+    }
+
     // The neighbour-shape update, again, for every recorded position in the
     // neighbourhood: this chunk's blocks may be the neighbours those were
     // waiting for. Writes land in the neighbours too, which is what the
@@ -582,6 +597,9 @@ void StructureStage::trim(i32 centre_x, i32 centre_z, i32 keep) {
     std::erase_if(impl_->manual, [&](const auto& entry) { return far(entry.first); });
     std::erase_if(impl_->answers, [&](const auto& entry) { return far(entry.first); });
     std::erase_if(impl_->shaped, [&](const auto& entry) { return far(entry.first); });
+    if (impl_->pyramid) {  // ── great pyramid ── it reaches further than kReach
+        impl_->pyramid->trim(centre_x, centre_z, keep + GreatPyramid::kReach - kReach);
+    }
 }
 
 // ── structures ──
@@ -605,7 +623,13 @@ void StructureStage::clear() {
     impl_->manual.clear();
     impl_->answers.clear();
     impl_->shaped.clear();
+    if (impl_->pyramid) {  // ── great pyramid ──
+        impl_->pyramid->clear();
+    }
 }
+
+// ── great pyramid ──
+GreatPyramidStage* StructureStage::great_pyramid() noexcept { return impl_->pyramid.get(); }
 
 void StructureStage::refuse(StructureKind kind, std::string reason) {
     impl_->refused_kinds[kind] = std::move(reason);

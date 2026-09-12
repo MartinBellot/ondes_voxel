@@ -114,6 +114,13 @@ public:
     /// biome's feature list standing between the measurement and the placer.
     [[nodiscard]] const Feature* configured(std::string_view name) const;
 
+    /// ── worldgen-3 ── One placed feature from a JSON body that is not in the
+    /// datapack: a probe's own pipeline (`rarity_filter(2) → in_square →
+    /// heightmap`) around a vanilla feature named or held inline. Names inside
+    /// resolve against what `load` built; nothing is added to the registry.
+    [[nodiscard]] std::expected<std::shared_ptr<const PlacedFeature>, FeatureError> parse_placed(
+        std::string_view json, std::string name, const registry::BlockRegistry& blocks) const;
+
     [[nodiscard]] usize placed_count() const noexcept;
     [[nodiscard]] usize configured_count() const noexcept;
 

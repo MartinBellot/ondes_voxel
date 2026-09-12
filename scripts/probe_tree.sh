@@ -41,6 +41,7 @@ python3 "$ROOT/scripts/probe_tree.py" pack \
 cat > "$OUT/server.properties" <<PROPERTIES
 level-seed=$SEED
 level-type=probe\:probe
+server-port=${PORT:-25565}
 online-mode=false
 spawn-protection=0
 max-players=1
@@ -59,7 +60,15 @@ PROPERTIES
 PATCHES="${PATCHES:-0,0 10000,-10000}"
 
 (
-    sleep 25
+    # Wait for the server to be ready rather than for a fixed time: on a loaded
+    # machine it took 73 s to start, every command below arrived first, and
+    # the far patch's `forceload` failed — a probe world of the spawn area
+    # alone, and nothing said so but one line in the log.
+    for _ in $(seq 1 120); do
+        grep -q 'Done (' "$OUT/logs/latest.log" 2>/dev/null && break
+        sleep 5
+    done
+    sleep 2
     for patch in $PATCHES; do
         x="${patch%,*}"
         z="${patch#*,}"

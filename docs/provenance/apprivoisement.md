@@ -16,7 +16,7 @@ Le résultat court :
 |---|---|---|
 | os sur un loup, 150 loups | 150 apprivoisés en 435 essais (1/3 : 145 ± 10) | `next_int(3) == 0`, χ² géométrique p > 0,05, témoins 1/2 et 1/5 rejetés |
 | morue sur un chat, 150 chats | 150 en 447 (et saumon, 30 en 87) | 1/3 |
-| graines sur un perroquet, 60 perroquets | 60 en **781** (1/10 : 78 ± 8, z = −2,2) | 1/10 documenté — **écart nommé** (§ 3) |
+| graines sur un perroquet, 210 perroquets | 210 en 2134 (1/10 : z = −0,25 ; 1/13 rejeté, z = +3,7) | `next_int(10) == 0` |
 | loup apprivoisé | assis, santé 20 (6 → 20), max 8 → 20 | idem |
 | colère d'un loup frappé | 414 à 775 lus 1–2 ticks après (38 coups) ; la meute entière (4/4, 6 fois) | 400 + `next_int(381)`, meute à 16 blocs |
 | cheval apparu, 200 | santé 15..29 (moy. 21,9), vitesse 0,127..0,309 (σ 0,0389), saut 0,455..0,988 (σ 0,1016) | formules du wiki, moyennes à 2 σ |
@@ -91,13 +91,17 @@ Chaque animal reçoit un objet à la fois jusqu'aux cœurs ; chaque essai répon
 | chat | morue | 150 | 447 | 55 32 17 17 9 4 6 2 3 2 2 0 1 |
 | chat | saumon | 30 | 87 | 11 4 5 4 2 1 3 |
 | perroquet | graines de blé | 60 | 781 | de 1 à 48 essais, moyenne 13,0 |
+| perroquet, campagne refaite | graines de blé | 150 | 1353 | 9 19 15 14 13 12 5 7 5 5 3 5 4 5 5… (jusqu'à 43), moyenne 9,0 |
 
 `test_tame.cpp` passe les deux premiers histogrammes à un χ² contre une loi géométrique de 1/3
 (p > 0,05) **et** contre les témoins 1/2 et 1/5, rejetés à p < 10⁻³ : le test sait dire non.
 
-**Le perroquet ne tombe pas sur son 1/10 documenté** : 60 apprivoisés où 78,1 ± 8,4 étaient
-attendus (z = −2,2, p ≈ 0,03). Ce n'est ni franchement le 1/10 ni un 1/13 établi : la valeur
-documentée est gardée et l'écart est nommé, avec la campagne à relancer sur 150 perroquets.
+**Le perroquet a d'abord semblé tomber sous son 1/10 documenté** : 60 apprivoisés où 78,1 ± 8,4
+étaient attendus (z = −2,2, p ≈ 0,03). La campagne refaite sur 150 perroquets (`measure_tame.py
+parrot`) le tranche : 150 en 1353 essais (z = +1,33), soit **210 en 2134 à eux deux, 0,098 —
+z = −0,25 contre 1/10**. Le premier lot était un écart de hasard. Le témoin 1/13, qu'il semblait
+indiquer, est rejeté (z = +3,7 sur les deux lots ; χ² de l'histogramme refait 27,6 sur 14 degrés
+contre 12,0 pour 1/10).
 
 Ce que fait un essai réussi, relu par `data get` : `Owner` (la sonde), `Sitting: 1b`,
 `Health: 20.0f` pour un loup invoqué à 6 — l'apprivoisement **remet la santé au maximum**, qui
@@ -246,12 +250,63 @@ passe, deux fois de suite à l'identique :**
 | remonter, 40 `Move Vehicle` de 0,25 bloc | le cheval avance de **10,0 blocs** sur le fil ; descendu |
 | `stop`, redémarrage | le cheval revient apprivoisé et sellé (0x06) |
 
-Le journal du serveur date chaque montée et chaque chute : **116, 159, 80, 33, 93, 153 et 43
-ticks** de la montée à la décision, 97 en moyenne sur sept — plus que les 50 d'un tirage de 1 sur
-50, que `test_tame.cpp` retrouve sur 40 chevaux, mais dans l'écart de la mesure vanilla (moyenne 78
-sur 63, lue à 20 ticks près). **Une exécution précédente** avait vu 370 et 600 ticks sans que rien
-ne l'explique ; elle ne s'est pas reproduite, et c'est pour la reconnaître si elle revient que
-chaque montée et chaque descente sont désormais journalisées avec leur raison.
+**Mais pas à tous les coups.** Six exécutions : la première ne met pas la sonde en selle (la
+version d'alors du script), trois passent, et **deux calent** — le cheval garde la sonde 279 puis
+plus de 506 ticks sans décider, et les étapes suivantes échouent faute d'un cheval apprivoisé.
+Le journal du serveur date chaque montée, chaque chute et chaque descente avec sa raison, et, tous
+les 40 ticks, dit pour chaque animal monté depuis combien de ticks son cerveau le porte et quels
+buts tournent. Sur les trois exécutions qui passent, **15 montées : 116, 159, 80, 33, 93, 153, 43,
+83, 28, 96, 36, 36, 181, 30 et 191 ticks** de la montée à la décision, **90,5 en moyenne**.
+
+Ce que le journal écarte : la sonde n'est jamais descendue avant la décision ; le cerveau du
+cheval tourne à chaque tick du serveur (149 ticks portés au tick 400, 160 ticks après la montée,
+sous surcharge) ; le but `tantrum` tourne à chaque relevé ; et aucune décision ne se perd — chaque
+chute ajoute exactement 5 au tempérament, jamais sans chute.
+
+**La cause était l'horloge du serveur, pas le cheval.** Le journal de chaque tirage (valeur, rang,
+tick) le montre : le but tire exactement une fois par tick où le cheval tourne (57 tirages pour 57
+ticks portés, 28 pour 28), les valeurs sont uniformes (χ² 56,4 pour 49 degrés), et les décisions
+tombent après 85, 15, 58, 29 et 25 tirages — le 1 sur 50 attendu. Mais les numéros de tick du
+serveur couraient plus vite que ses ticks : une montée du tick 420 au tick 489 (69) pour 58
+tirages. `TickClock::advance()` ajoutait au compteur tous les ticks dus, jusqu'à 10 après un tick
+de plus de 50 ms, alors que le corps de la boucle ne s'exécutait qu'une fois par passage (la seule
+boucle par tick était vide) : le temps du jeu sautait du retard de l'horloge murale. Les 90,5 ticks
+étaient donc des ticks de compteur, gonflés. Les deux calages, sur des versions d'avant la
+concurrence, avaient une cause de plus : le bloc des entités prenait le verrou des joueurs en
+`try_to_lock`, et sautait tous les mobs chaque fois que le fil réseau le tenait.
+
+C'est corrigé (commit « run catch-up ticks back to back, and count only the ticks that ran »),
+comme chez vanilla : les ticks dus s'exécutent l'un après l'autre, chacun complet, et le compteur
+que lit la logique ne compte que ceux qui ont tourné. La nouvelle mesure, en ticks exécutés, est
+au paragraphe suivant.
+
+**Remesuré en ticks exécutés**, après le correctif : trois exécutions de bout en bout complètes,
+**22 décisions** — 0, 8, 8, 13, 16, 20, 22, 26, 26, 31, 31, 34, 38, 46, 56, 59, 71, 72, 87, 87, 87
+et 107 ticks, moyenne 43,0, médiane 32,5 — et **aucun tick sans tirage** dans aucune montée. Les
+exécutions ne sont pas tout à fait indépendantes : notre serveur est déterministe, et le cheval de
+`--mobs` reçoit le même identifiant, donc la même graine, dans chaque monde neuf ; la première
+montée dure 87 ticks les trois fois, la deuxième 31 deux fois. Sans ces trois répétitions : **19
+décisions distinctes, moyenne 38,9, z = −0,97** contre les 50 d'un tirage de 1 sur 50 par tick.
+Les valeurs tirées sont uniformes exécution par exécution (χ² 47,3, 56,1 et 56,5 pour 49 degrés ;
+mises en commun, les répétitions font monter le χ² à 128,6 sans rien dire de la règle).
+**Vanilla, chronométré au tick près** (`measure_tame.py ride_timing` : le temps du jeu demandé au
+serveur dès que la sonde est en selle, puis dès la chute — là où `temper` lisait la copie de la
+sonde, envoyée une fois par seconde, et datait donc chaque bout d'une montée à 19 ticks près) :
+trente premières montées de chevaux neufs, **moyenne 72,0, médiane 39,5**, et une traîne — cinq
+montées de 197 à 294 ticks. Sans ces cinq, les vingt-cinq autres font **39,0** en moyenne, ce que
+font nos 19 montées distinctes (38,9). Mais ces trente montées ont lieu dans l'enclos de verre de
+l'ancienne campagne, dont le sol fait 3 × 3 : un cheval de 1,4 bloc de large y court à peine, et
+son emportement, tel qu'on le comprend, ne tire que pendant qu'il court vers un point — la traîne
+ressemble à cela. Nos montées ont lieu en terrain ouvert.
+
+**En terrain ouvert** (`ride_timing_open`, puis `ride_timing_open60` : sans l'enclos, les mêmes
+premières montées chronométrées au tick), **86 montées : moyenne 43,8, médiane 30,5**, la plus
+longue 198 ticks. La loi qui les ajuste le mieux est **un tirage sur 44 par tick**. **Un sur 50
+tient** (χ² 6,0 pour 7 degrés sur des classes de délai) ; **un sur 25 est rejeté** (χ² 61,1, et le
+rapport de vraisemblance donne 32,7 en faveur d'un sur 50). Les vingt-sept premières montées,
+seules, avaient donné 31,6 et fait douter de la constante : un tirage bas, que les soixante
+suivantes (49,4) ont corrigé. **Nos 19 montées distinctes (38,9) sont dans l'écart de vanilla** :
+`kTantrumOdds` reste à 50. Le seul défaut du cheval était l'horloge du serveur.
 
 ### 8.2 Le zoo du vrai serveur, relu par le nôtre
 
@@ -273,6 +328,34 @@ arrivent sur le fil avec leurs indices — chat 0x05, UUID de la sonde, variante
 0x20) ; perroquet 0x05, variante 2 ; tortue à l'œuf ; abeille 0x08 ; chèvre hurleuse, corne droite
 fausse ; dromadaire sellé (0x04). `save-all`, et le monde réécrit par notre serveur est gardé pour
 `measure_tame.py zoo_back`.
+
+Et **le vrai serveur relit ce monde réécrit** (`measure_tame.py zoo_back`) : **les 15 mobs
+chargés, les 14 recherches (par type) retrouvent chacune tous les champs attendus** —
+propriétaire, assis, collier, variante `minecraft:calico`, confiance, `Variant: 515`, `Tame`,
+`Temper: 15`, selle, armure dorée, `Bred`, coffre et pomme de l'âne, force et tapis du lama, type
+de lapin, renard des neiges endormi, variante et propriétaire du perroquet, œuf de tortue, nectar,
+chèvre hurleuse à une corne, selle du dromadaire. L'aller-retour vanilla → nous → vanilla est
+fermé. Deux faux départs de la mesure elle-même, corrigés et gardés dans l'historique : sa mise en
+place tuait tout le zoo avant de le lire, et sa première recherche par position ne trouvait que
+les mobs assis, les autres ayant marché (§ 9, `NoAI`).
+
+### 8.3 `NoAI`, mesuré sur le vrai serveur
+
+Le zoo relu a montré que notre serveur ne respecte pas `NoAI` (§ 9). Avant de le corriger, la
+règle est mesurée (`measure_tame.py noai`, trois vaches — pas des zombies : le banc de mesure est
+en paisible, où le vrai serveur supprime un mob hostile dès qu'il apparaît) :
+
+| cas | vu par `data get` |
+|---|---|
+| vache `NoAI` invoquée six blocs en l'air | reste à y = −54 pendant 85 ticks, `Motion` à **exactement 0** : aucune gravité, pas même dans la vitesse stockée |
+| vache `NoAI` avec `Motion:[0.5,0,0]` | ne bouge pas (x = 44,5 du début à la fin) ; `Motion` x = 0,49 puis 0,3619 quinze ticks plus tard, **0,49 × 0,98¹⁵** exactement |
+| vache sans `NoAI` | **aucune clé `NoAI`** dans ses données : vanilla ne l'écrit que vraie |
+
+C'est ce que `explosions.md` (§ 4) avait vu sur des zombies repoussés, et ce que la métrique
+`entity_gravity` de `PROGRESS.json` appelle « NoAI coupe la physique d'un Mob » : ni cerveau, ni
+déplacement, ni gravité — la vitesse est seulement multipliée par 0,98 à chaque tick. Ce qui,
+lui, continue : l'âge et la ponte (`elevage.md`), et le décompte de la colère d'un loup (§ 2 : 400,
+399, 398… sur un loup `NoAI`).
 
 ---
 
@@ -304,11 +387,15 @@ fausse ; dromadaire sellé (0x04). `save-all`, et le monde réécrit par notre s
   **la chèvre** ne charge pas et ne perd pas ses cornes ; **le renifleur** ne creuse pas.
   Tous vivent, se nourrissent, se reproduisent et gardent leur type ou leur drapeau à la sauvegarde.
 * **Le crachat du lama** (le projectile `llama_spit`) et les **caravanes** (la laisse) : non faits.
-* **`NoAI` n'est pas respecté par notre serveur**, pour aucun mob : le drapeau est relu et
-  réécrit tel quel, mais le cerveau tourne. Vu sur le zoo relu (§ 8.2) : pendant les 45 s où
-  `ov_dedicated` l'avait chargé, les mobs debout ont quitté leur place, et seuls le loup, le chat
-  et le perroquet assis y étaient encore. C'est un manque de tous les mobs, pas de
-  l'apprivoisement ; il n'est pas corrigé ici.
+* **`NoAI` était ignoré par notre serveur**, pour tous les mobs : le drapeau était relu et réécrit
+  tel quel, mais le cerveau tournait. Vu sur le zoo relu (§ 8.2) : pendant les 45 s où
+  `ov_dedicated` l'avait chargé, les mobs debout avaient quitté leur place, et seuls le loup, le
+  chat et le perroquet assis y étaient encore. **C'est corrigé**, d'après la mesure du § 8.3 : un
+  mob `NoAI` n'a plus ni cerveau ni physique (position figée, aucune gravité, vitesse × 0,98 par
+  tick), tandis que l'âge, l'amour, la ponte et la colère d'un loup continuent. La clé est lue
+  à `NoAI` et écrite seulement quand elle est vraie, comme vanilla. Tests :
+  `test_mob_logic.cpp` (`[noai]`) et `test_tame_server.cpp` (aller-retour par `entities/`, et
+  les quinze mobs du zoo vanilla relus `NoAI`).
 
 **Non mesuré, et appliqué d'après la documentation.**
 
@@ -324,7 +411,12 @@ fausse ; dromadaire sellé (0x04). `save-all`, et le monde réécrit par notre s
 
 **Mesuré, et pas tout à fait conforme.**
 
-* **Le perroquet** : 60 apprivoisés en 781 essais, z = −2,2 contre le 1/10 documenté (§ 3). Une
-  campagne de 150 perroquets (`measure_tame.py parrot`) le tranchera.
+* **Le délai de décision d'un cheval monté, sur notre serveur** : mesuré d'abord à 90,5 ticks sur
+  15 montées, avec deux exécutions sur six calées au-delà de 279 et 506 ticks. **Ce n'était pas le
+  cheval** : le journal de chaque tirage montre la règle juste, une fois par tick exécuté ; c'était
+  le compteur de ticks du serveur, qui sautait du retard de l'horloge murale pendant qu'un seul tick
+  était simulé, plus, avant la concurrence, un bloc des entités sauté quand le fil réseau tenait
+  le verrou des joueurs (§ 8.1). Corrigé dans la boucle du serveur ; la mesure refaite en ticks
+  exécutés est au § 8.1.
 * **La santé d'un cheval apparu** : 22,13 sur 480 animaux pour 22,5 attendus (z ≈ −2,3, § 5.1).
 * **La force d'un lama** : ajustée sur la mesure, pas lue dans une règle (§ 5.1).

@@ -83,6 +83,7 @@ struct FakeServer {
     std::vector<std::pair<i32, std::vector<u8>>> broadcast;
     std::map<std::tuple<i32, i32, i32>, registry::BlockStateId> blocks;
     std::vector<EntityInfo>                                     mobs;
+    std::map<i32, std::vector<gameplay::Effect>>                mob_effects;  // ── mobs-4 ──
     std::vector<std::string>                                    console;
     i32  next_id{100};
     bool stopped{false};
@@ -139,6 +140,34 @@ struct FakeServer {
         h.kill_entity = [this](i32 id) {
             return std::erase_if(mobs, [&](const EntityInfo& e) { return e.id == id; }) > 0;
         };
+        // ── mobs-4 ── a mob bears effects; an item does not
+        const auto is_mob = [this](i32 id) {
+            return std::ranges::any_of(mobs, [&](const EntityInfo& e) {
+                return e.id == id && e.type != "minecraft:item";
+            });
+        };
+        h.give_mob_effect = [this, is_mob](i32 id, const gameplay::EffectInstance& instance)
+            -> std::optional<gameplay::AddResult> {
+            if (!is_mob(id)) {
+                return std::nullopt;
+            }
+            mob_effects[id].push_back(instance.effect);
+            return gameplay::AddResult::Added;
+        };
+        h.clear_mob_effect = [this, is_mob](i32 id, std::optional<gameplay::Effect> effect)
+            -> std::optional<usize> {
+            if (!is_mob(id)) {
+                return std::nullopt;
+            }
+            std::vector<gameplay::Effect>& on = mob_effects[id];
+            const usize before = on.size();
+            if (effect) {
+                std::erase(on, *effect);
+            } else {
+                on.clear();
+            }
+            return before - on.size();
+        };
         h.summon = [this](std::string_view type, Vec3d p) -> std::optional<EntityInfo> {
             EntityInfo e;
             e.id       = next_id++;
@@ -191,7 +220,8 @@ struct Harness {
     Harness()
         : service{ServiceConfig{packs().blocks ? &*packs().blocks : nullptr,
                                 packs().registries ? &*packs().registries : nullptr,
-                                {}, {}, false, 4, "Ondes VOXEL", {}}} {
+                                {}, {}, false, 4, "Ondes VOXEL", {},
+                                nullptr, 4, true, true}} {
         host            = server.host();
         service.console = [this](std::string_view line) { server.console.emplace_back(line); };
         service.world().rules.set(*GameRules::index_of("doDaylightCycle"), 0);
@@ -685,6 +715,30 @@ TEST_CASE("effect answers with vanilla's three arguments", "[commands][vanilla]"
           std::vector<std::string>{R"({"color":"red","extra":[{"translate":"argument.resource.not_found","with":["minecraft:nosuch","minecraft:mob_effect"]}],"text":""})"});
 }
 
+// ── mobs-4 ──
+TEST_CASE("effect reaches a mob, and names it by its type", "[commands][mobs4]") {
+    if (!have_packs()) {
+        SKIP("no registry pack");
+    }
+    Harness h;
+    (void)h.run("summon minecraft:cow 0.5 -60 3.5");
+    const auto given = h.run("effect give @e[type=cow] speed 10 1");
+    REQUIRE(given.size() == 1);
+    CHECK(given[0].find("commands.effect.give.success.single") != std::string::npos);
+    CHECK(given[0].find("entity.minecraft.cow") != std::string::npos);
+    REQUIRE(h.server.mob_effects.size() == 1);
+    CHECK(h.server.mob_effects.begin()->second ==
+          std::vector<gameplay::Effect>{gameplay::Effect::Speed});
+
+    const auto cleared = h.run("effect clear @e[type=cow]");
+    REQUIRE(cleared.size() == 1);
+    CHECK(cleared[0].find("commands.effect.clear.everything.success.single") != std::string::npos);
+    CHECK(h.server.mob_effects.begin()->second.empty());
+    // Nothing left to clear: vanilla's failure, not a refusal.
+    CHECK(h.run("effect clear @e[type=cow]")[0].find("commands.effect.clear.everything.failed") !=
+          std::string::npos);
+}
+
 TEST_CASE("killing a player announces the death first, and @e forgets the dead", "[commands][vanilla]") {
     if (!have_packs()) {
         SKIP("no registry pack");
@@ -713,6 +767,9 @@ TEST_CASE("help prints vanilla's smart usage", "[commands][vanilla]") {
     // Every usage vanilla's `/help` printed for a command this server has.
     const std::vector<std::string> expected{
         "/clear [<targets>]",
+        // ── dedicated server administration ── vanilla prints
+        // "(start|stop|function)"; `debug function` waits for functions.
+        "/debug (start|stop)",
         "/defaultgamemode <gamemode>",
         "/difficulty [peaceful|easy|normal|hard]",
         "/effect (clear|give)",
@@ -730,16 +787,21 @@ TEST_CASE("help prints vanilla's smart usage", "[commands][vanilla]") {
         "/tell -> msg",
         "/w -> msg",
         "/say <message>",
+        "/scoreboard (objectives|players)",  // ── scoreboard ──
         "/seed",
         "/setblock <pos> <block> [destroy|keep|replace]",
         "/spawnpoint [<targets>]",
         "/setworldspawn [<pos>]",
         "/summon <entity> [<pos>]",
+        "/team (list|add|remove|empty|join|leave|modify)",  // ── scoreboard ──
+        "/teammsg <message>",
+        "/tm -> teammsg",
         "/teleport (<location>|<destination>|<targets>)",
         "/tp -> teleport",
         "/tellraw <targets> <message>",
         "/time (set|add|query)",
         "/title <targets> (clear|reset|title|subtitle|actionbar|times)",
+        "/trigger <objective> [add|set]",  // ── scoreboard ──
         "/weather (clear|rain|thunder)",
         "/deop <targets>",
         "/op <targets>",
@@ -751,7 +813,7 @@ TEST_CASE("help prints vanilla's smart usage", "[commands][vanilla]") {
         gamerule += (i == 0 ? "" : "|") + std::string{kGameRules[i].name};
     }
     std::vector<std::string> with_rules = expected;
-    with_rules.insert(with_rules.begin() + 9, gamerule + ")");
+    with_rules.insert(with_rules.begin() + 10, gamerule + ")");  // before /give
     std::vector<std::string> printed;
     for (const std::string& line : h.run("help")) {
         printed.push_back(line.substr(9, line.size() - 11));  // {"text":"…"}
@@ -779,8 +841,10 @@ TEST_CASE("the Commands packet reads back and gates by permission", "[commands][
     for (const i32 child : everyone->nodes[static_cast<usize>(everyone->root)].children) {
         open.push_back(everyone->nodes[static_cast<usize>(child)].name);
     }
-    // Vanilla's level-0 tree, less teammsg/tm/trigger which this server lacks.
-    CHECK(open == std::vector<std::string>{"me", "help", "list", "msg", "tell", "w"});
+    // Vanilla's level-0 tree, whole since the scoreboard wave brought
+    // teammsg, tm and trigger.
+    CHECK(open == std::vector<std::string>{"me", "help", "list", "msg", "tell", "w", "teammsg", "tm",
+                                           "trigger"});
 }
 
 TEST_CASE("suggestions answer with vanilla's ranges", "[commands][suggest]") {

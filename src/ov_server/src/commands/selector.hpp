@@ -80,6 +80,9 @@ struct EntitySelector {
     std::vector<Match> tags;
     std::vector<Match> teams;
     std::vector<Match> game_modes;
+    /// ── scoreboard ── `scores={obj=range,…}`: every objective named must hold
+    /// a score in its range.
+    std::vector<std::pair<std::string, IntBounds>> scores;
 
     /// The options that parsed and that this server does not evaluate.
     std::vector<std::string> unsupported;

@@ -106,6 +106,10 @@ public:
     /// Returns how many features actually placed something.
     usize decorate(FeatureLevel& level, i32 chunk_x, i32 chunk_z, i64 level_seed) const;
 
+    /// ── worldgen-3 ── The templates the `fossil` feature is built from, or
+    /// null. Borrowed: the library must outlive the decorator.
+    void set_templates(const TemplateLibrary* templates) noexcept;
+
     /// The names of the placed features at one step, in the order the sorter
     /// put them. Exposed because the order is the answer: a parity harness that
     /// wants to know why a vein moved needs to see the index, not deduce it.

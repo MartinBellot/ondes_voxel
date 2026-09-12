@@ -3,6 +3,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <thread>
+#include <vector>
 
 using namespace ov;
 
@@ -31,6 +32,11 @@ TEST_CASE("TickClock yields ticks as real time elapses", "[time]") {
     // a range rather than an equality.
     REQUIRE(ticks >= 2);
     REQUIRE(ticks <= TickClock::max_catch_up_ticks());
+    // Due is not run: the count moves only as the ticks are taken.
+    REQUIRE(clock.pending_ticks() == ticks);
+    REQUIRE(clock.tick_count() == 0);
+    while (clock.take_tick()) {
+    }
     REQUIRE(clock.tick_count() == ticks);
 }
 
@@ -80,5 +86,63 @@ TEST_CASE("reset clears the accumulator and the behind flag", "[time]") {
 
     fast.reset();
     REQUIRE_FALSE(fast.is_behind());
+    REQUIRE(fast.pending_ticks() == 0);  // a pause is not caught up afterwards
     REQUIRE(fast.advance() == 0);
+}
+
+// ── tick accounting ── Driven by hand: the loop the server runs, one whole
+// tick per take_tick(), against a clock whose time the test sets.
+
+TEST_CASE("TickClock: three ticks due run three bodies, back to back, and count three",
+          "[time]") {
+    const TimePoint start{};
+    TickClock       clock{20, start};
+    REQUIRE(clock.advance(start + std::chrono::milliseconds{150}) == 3);
+    REQUIRE(clock.tick_count() == 0);                           // due is not run
+    REQUIRE(clock.time_until_next_tick() == Duration::zero());  // no wait between them
+
+    std::vector<i64> seen;  // the tick each body sees
+    while (clock.take_tick()) {
+        seen.push_back(clock.tick_count());
+    }
+    REQUIRE(seen == std::vector<i64>{1, 2, 3});
+    REQUIRE(clock.tick_count() == 3);
+    REQUIRE_FALSE(clock.is_behind());
+    REQUIRE_FALSE(clock.take_tick());  // no body without a tick due
+}
+
+TEST_CASE("TickClock: past the cap the surplus is dropped, and only what ran is counted",
+          "[time]") {
+    const TimePoint start{};
+    TickClock       clock{20, start};
+    // Twenty-five ticks of lag: ten run (the cap), fifteen are dropped.
+    REQUIRE(clock.advance(start + std::chrono::milliseconds{25 * 50}) ==
+            TickClock::max_catch_up_ticks());
+    REQUIRE(clock.is_behind());
+    REQUIRE(clock.dropped_ticks() == 15);
+
+    i32 bodies = 0;
+    while (clock.take_tick()) {
+        ++bodies;
+    }
+    REQUIRE(bodies == TickClock::max_catch_up_ticks());
+    REQUIRE(clock.tick_count() == TickClock::max_catch_up_ticks());
+
+    // The next tick starts clean: one more tick of time, one more tick.
+    REQUIRE(clock.advance(start + std::chrono::milliseconds{26 * 50}) == 1);
+    REQUIRE_FALSE(clock.is_behind());
+    REQUIRE(clock.dropped_ticks() == 0);
+    REQUIRE(clock.take_tick());
+    REQUIRE(clock.tick_count() == TickClock::max_catch_up_ticks() + 1);
+}
+
+TEST_CASE("TickClock: ticks already pending count against the cap", "[time]") {
+    const TimePoint start{};
+    TickClock       clock{20, start};
+    REQUIRE(clock.advance(start + std::chrono::milliseconds{8 * 50}) == 8);
+    // Eight still pending: only two more fit under the cap of ten.
+    REQUIRE(clock.advance(start + std::chrono::milliseconds{13 * 50}) == 2);
+    REQUIRE(clock.pending_ticks() == TickClock::max_catch_up_ticks());
+    REQUIRE(clock.is_behind());
+    REQUIRE(clock.dropped_ticks() == 3);
 }

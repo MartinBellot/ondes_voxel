@@ -13,6 +13,7 @@ ov_add_executable(ov_structblocks
         src/main.cpp
     DEPS
         ov_worldgen
+        ov_gameplay  # ── portals ── the climate noise, for the cold test
         ov_registry
         ov_world
         ov_nbt

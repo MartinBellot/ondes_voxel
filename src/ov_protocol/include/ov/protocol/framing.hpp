@@ -102,4 +102,12 @@ private:
                                                    std::span<const u8> body,
                                                    i32                 threshold = kNoCompression);
 
+/// Re-frame a run of uncompressed frames (what `encode_packet` produces with
+/// no threshold, one or several back to back) for a connection that has
+/// compression on. How a server that builds its packets before it knows the
+/// connection's threshold honours Set Compression: the socket re-frames them
+/// on its own thread. Fails on bytes that are not whole frames.
+[[nodiscard]] FrameResult<std::vector<u8>> compress_frames(std::span<const u8> frames,
+                                                           i32                 threshold);
+
 }  // namespace ov::net

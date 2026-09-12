@@ -282,13 +282,26 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] Lumière du ciel : sunlight direct + propagation par flood fill *(intra-chunk)*
 - [x] Propagation de lumière inter-chunks *(voisinage 3×3 chargé)*
 - [x] Lumière de bloc : émission mesurée par état, propagation depuis les sources
-- [ ] Suppression incrémentale de la lumière (aujourd'hui le voisinage est refait en entier)
-      *(**2026-09-11** : le recalcul n'est plus fait sur le thread réseau avant
-      chaque Block Update mais sur le tick, une fois par chunk touché — un bloc
-      cassé coûtait ~11-88 ms au thread qui écrit tous les paquets, ~10-40 µs
-      maintenant ; casser un bloc sur un monde généré en Release passe de 5,2 s
-      à **62 ms au p99**. Le voisinage est toujours refait en entier : ce qui
-      manque ici reste l'incrémental. Voir `docs/provenance/performance-tick.md`)*
+- [x] Suppression incrémentale de la lumière (aujourd'hui le voisinage est refait en entier)
+      *(**2026-09-11** : `ov_world::LightEngine` — augmentation en largeur,
+      suppression à deux files, chunk éclairé seul puis cousu à son arrivée.
+      **0 différence** contre un recalcul complet indépendant après 8 000 lots
+      de gestes aléatoires sur `ov_lab` et un vrai monde 1.20.1 (et 1 200 sur
+      terrain plat, comparés à chaque lot) ; le témoin sans passe de
+      suppression est faux. Un geste coûte p50 40,6 ms → **30 µs** (Debug), la
+      phase `relight` du tick 4,2-4,7 s → 16-23 ms par minute de jeu (p99
+      ~35 ms → < 1 ms) ; le p99 du tick entier, fait par les autres phases, ne
+      bouge pas. Les chunks générés arrivent éclairés, la lumière de bloc
+      traverse les frontières, le Nether et l'End passent au même moteur, et le
+      client `ov_voxel` éclaire ses propres gestes. Contre le vrai serveur :
+      lumière de bloc **1 497/1 497** cases changées par 515 gestes identiques et
+      99,87 % du stocké, ciel 98,9 % du stocké ; le jeu ne filtre pas l'eau et
+      les feuilles au premier éclairage d'un chunk mais les filtre ensuite
+      (ciel après un geste 844/1 241, 1 182 en filtrant) — deux régimes, un seul
+      point fixe ici, réglé sur le terrain naturel. Un chunk lu est rééclairé en
+      entier : vanilla ne stocke le ciel que dans 297 sections sur 1 536.
+      Restent les formes directionnelles (dalles, escaliers). Voir
+      `docs/provenance/incremental-light.md`)*
 - [x] Tableaux de lumière nullables à valeur uniforme (divise l'empreinte par 2)
 - [x] Heightmaps : stockage, packing 9 bits, sémantique vérifiée sur monde réel
 - [x] `WORLD_SURFACE` calculé et maintenu incrémentalement *(air suffit)*
@@ -623,9 +636,14 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       Nether, End) : étage attaché à chaque pile de génération, vidé avec le
       carré (déterminisme), `structures.starts` et `References` écrits au
       format du jeu — l'épave échouée du chunk (9, 5) identique champ pour
-      champ, types compris ; portails et trésor refusés par le serveur tant
-      que leur hauteur n'est pas réglée, tout refus nommé au journal
-      (`structures.md` § 20). Temples du désert et
+      champ, types compris ; tout refus nommé au journal
+      (`structures.md` § 20). **Portails en ruine à la hauteur du jeu** :
+      hauteur et test « froid » décidés à la génération, depuis le bruit,
+      **34/34 départs** exacts (25 Overworld, 9 Nether ; témoins à graine
+      décalée 0/29) — le serveur les place ; **trésor enfoui** : recherche
+      vers le bas à la pose, lue dans les blocs du vrai serveur, **13/13
+      coffres** (dont 9 d'une graine hors échantillon ; témoin 4/13) — placé
+      par le serveur (§ 15). Temples du désert et
       de la jungle, cabane de sorcière : construits en code par le jeu,
       refusés par nom. Jigsaw (villages, avant-postes, bastions…) : autre
       mandat. Voir `docs/provenance/structures.md` §§ 12-20)* :
@@ -720,7 +738,21 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       manger, lait, miel, mort, cassage, mêlée, chute, souffle. **Restent** les
       effets sur les mobs, la persistance (le serveur n'écrit aucun fichier
       joueur), et les effets sans règle serveur — nausée, lévitation, dolphin's
-      grace, bad omen, hero of the village. Voir `docs/provenance/effets.md`)* :
+      grace, bad omen, hero of the village. Voir `docs/provenance/effets.md`)*
+      *(**2026-09-11 — mobs-4** : **les mobs portent leurs effets**. Table par
+      mob à côté de la fenêtre de dégâts ; corps mort-vivant / arthropode par
+      espèce ; vigueur sur la santé max, vitesse et lenteur sur la marche
+      (`(valeur / base)²`), force et faiblesse sur le coup ; `/effect` sur un
+      mob, potions jetées, nuages et flèches trempées ; `ActiveEffects` dans
+      `entities/`. **Mesuré** : aux observateurs d'un mob, métadonnées et
+      Update Attributes (`movement_speed`), **jamais** d'Entity Effect ; jet
+      `1 − r/4` et instantanés `(int)(p × base + 0,5)` sur les 40 cases ;
+      marche sous vitesse I / II / lenteur I à **1,4397 / 1,9596 / 0,7228** du
+      témoin pour 1,44 / 1,96 / 0,7225 prédits ; un effet donné en NBT de
+      `summon` ne porte pas son modificateur (1,0003) ; force I / II → 6 / 9
+      par coup de zombie (témoin 3), faiblesse I → aucun coup. De bout en bout
+      4/4. Flèches trempées sur un mob **non mesurées** (la flèche rebondit sur
+      la vache). Voir `docs/provenance/mobs-4.md`)* :
       speed, slowness, haste, mining_fatigue, strength,
       instant_health, instant_damage, jump_boost, nausea, regeneration,
       resistance, fire_resistance, water_breathing, invisibility, blindness,
@@ -796,7 +828,12 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       d'un cheval et de ses poulains à la règle 1.20 (écarts-types à 12 % près
       sur 120 poulains ; la mule hérite sa vitesse) ; tempérament +5 par chute ;
       un cheval dompté, sellé et conduit par `Move Vehicle` de bout en bout, et
-      revenu de `entities/`. Lapin, renard, tortue, abeille, chèvre, dromadaire
+      revenu de `entities/`. Un cheval monté qui semblait décider trop tard
+      révélait en fait l'horloge du serveur (le temps du jeu sautait du retard
+      pendant qu'un seul tick tournait) : corrigée, le cheval décide en 43
+      ticks exécutés en moyenne sur 22 montées, pour 50 attendus et 43,8
+      chez vanilla (86 montées chronométrées au tick). Lapin, renard, tortue,
+      abeille, chèvre, dromadaire
       et renifleur vivent, se nourrissent, se reproduisent et gardent leur type
       à la sauvegarde. Restent le vol et l'épaule du perroquet, la ruche, la
       mule née d'un croisement, l'inventaire du cheval. Voir
@@ -963,9 +1000,11 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       appariement nommées ; **2885 grilles posées, 2885 identiques** au vrai
       serveur — dont 120 arrangements qui doivent ne rien produire, le groupe
       qu'un apparieur trop gourmand rate. 248 combustibles mesurés sur 1254 ;
-      trois tables de cuisson et non une avec un diviseur. Restent la fenêtre
-      2×2 du joueur, les écrans de forge et de pierre de taille,
-      `Place Recipe`, et un four qui ne tourne que pendant qu'on le regarde)*
+      trois tables de cuisson et non une avec un diviseur. La fenêtre 2×2 du
+      joueur est mesurée (13 cas) et alignée. Restent les écrans de forge et
+      de pierre de taille, et `Place Recipe`. Les fours tournent comme bloc-entités, regardés ou
+      non, dans les trois dimensions ; `RecipesUsed` est payé en orbes à
+      l'extraction)*
 - [~] **Agriculture et élevage** : toutes les cultures, terre labourée,
       hydratation, os, composteur, abeilles et pollinisation, mode amour,
       croissance, croisement de chevaux et lamas, apprivoisement, tonte, traite,
@@ -1226,7 +1265,18 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       nous ne modélisons pas repartent intactes. Bout en bout 45/45 à travers
       un redémarrage. Le solo écrit aussi `level.dat` → `Data.Player`. Voir
       `docs/provenance/donnees-joueur.md`)*
-- [ ] Scoreboard, équipes, objectifs, critères
+- [~] Scoreboard, équipes, objectifs, critères
+      *(**2026-09-11** : modèle, quatre paquets, `data/scoreboard.dat`, `/scoreboard`,
+      `/team`, `/trigger`, `/teammsg`/`tm`, les treize critères et le crochet des
+      statistiques, `team=` et `scores=`, composant `score`, nom dans son équipe partout.
+      Contre le vrai serveur : **189/189** réponses de l'opérateur (1 dans un autre ordre,
+      l'ordre d'identité du jar), arrivée identique paquet pour paquet, console **5/5**,
+      journal des opérateurs **120/120** ; fichier du jar relu et réécrit **43/43 faits**,
+      notre fichier relu par le jar : **39/39 faits conservés**, 19/19 paquets d'arrivée
+      identiques. Restent : le coup d'épée entre joueurs (absent du serveur, donc le tir
+      ami et `playerKillCount` ne jouent que pour la flèche), `armor` à 0, la barre
+      latérale de notre client non mesurée, belowName non dessiné. Voir
+      `docs/provenance/scoreboard.md`)*
 - [ ] **Tous les succès** (story, nether, end, adventure, husbandry) et leurs
       déclencheurs
 - [ ] **Toutes les statistiques** (custom, mined, crafted, used, broken,
@@ -1234,9 +1284,24 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [ ] Fonctions `.mcfunction`, `/function`, tags de fonction
 - [ ] Loot tables : tous les prédicats, fonctions et conditions
 - [ ] Prédicats, item modifiers
-- [ ] Serveur dédié : `server.properties`, whitelist, ops, bans, RCON, query,
+- [~] Serveur dédié : `server.properties`, whitelist, ops, bans, RCON, query,
       MOTD et icône, permissions, sauvegarde automatique, arrêt propre,
       watchdog, console et complétion
+      *(**2026-09-11** : `server.properties` écrit comme le jar — les 56 clés
+      de 1.20.1, l'ordre de sa propre table au démarrage (**57/57** lignes,
+      tranché par OpenJDK 17) et celui d'une copie quand une commande le
+      réécrit (**57/57**), les clés inconnues gardées ; `online-mode=true`
+      refusé (hors ligne seulement). Les quatre listes au format de vanilla,
+      la porte dans son ordre et ses mots, ban/ban-ip/banlist/pardon/
+      pardon-ip/whitelist/setidletimeout/save-on/save-off/debug, RCON, Query,
+      icône, Set Compression, chien de garde, arrêt propre, sauvegarde toutes
+      les 6000 ticks, complétion à la console. Contre le vrai serveur sur la
+      même campagne : commandes **64/64**, console **26/26**, connexions et
+      renvois **11/11**, RCON **14/14**, Query **5/5**. Deux bugs de
+      l'écouteur trouvés par la mesure et corrigés. Restent, nommés :
+      `debug function`, `perf`, `jfr`, `publish` (refusé), l'icône ré-encodée
+      par ImageIO, `usercache.json`, `pvp`. Voir
+      `docs/provenance/serveur-dedie.md`)*
 
 ---
 
