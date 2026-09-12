@@ -277,9 +277,14 @@ void AsioConnection::send_chunk(std::shared_ptr<const world::Chunk> chunk) {
     // queued around it; encoded in the handler, so the tick thread only paid
     // for the snapshot. The snapshot is released here, on the loop, once the
     // bytes exist — that is the moment the tick's sections stop being shared.
-    asio::post(socket_.get_executor(), [self = shared_from_this(), chunk = std::move(chunk)] {
+    // The threshold in force now, as send() takes it: a chunk queued after Set
+    // Compression goes out compressed, like every packet around it.
+    const i32 threshold = write_threshold_.load(std::memory_order_acquire);
+    asio::post(socket_.get_executor(),
+               [self = shared_from_this(), chunk = std::move(chunk), threshold] {
         const auto payload = encode_chunk_data(*chunk);
-        auto       framed  = encode_packet(clientbound::kChunkDataAndLight, payload);
+        auto       framed  = encode_packet(clientbound::kChunkDataAndLight, payload,
+                                           threshold >= 0 ? threshold : kNoCompression);
         if (!framed) {
             OV_LOG_WARN("{}: chunk ({}, {}) not sent: {}", self->peer_address(),
                         chunk->position().x, chunk->position().z, to_string(framed.error()));

@@ -7434,21 +7434,26 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     // ── commands: the dedicated server's console ────────────────────────────
     // Lines typed on stdin run at level 4. Only when nobody else owns the
     // process — an integrated server's window has no console.
+    // ── dedicated server administration ── Who is on, for the threads that
+    // are not the tick's — Query's answers and the console's Tab. The player
+    // table is the tick thread's alone (tick_thread_lock.hpp); these read a
+    // copy of the names, which the tick thread refreshes once a second in the
+    // keep-alive pass. The mutex guards a vector of strings, never the world.
+    struct OnlineNames {
+        std::mutex               mutex;
+        std::vector<std::string> names;
+    } online_names;
     std::optional<cmd::ConsoleReader> console;
     if (external_stop == nullptr && commands) {
         console.emplace(
             [&commands](std::string line) { commands->enqueue_console(std::move(line)); },
             // ── dedicated server administration ── Tab in a terminal: the
             // engine's suggestions for the console, at level 4.
-            [&commands, &players, &players_mutex](std::string_view text) {
+            [&commands, &online_names](std::string_view text) {
                 std::vector<std::string> names;
                 {
-                    const std::scoped_lock lock{players_mutex};
-                    for (const auto& [key, who] : players) {
-                        if (who.connection) {
-                            names.push_back(who.name);
-                        }
-                    }
+                    const std::scoped_lock lock{online_names.mutex};
+                    names = online_names.names;
                 }
                 const net::SuggestionsResponse r =
                     commands->suggest(cmd::CommandSource{}, 0, text, names);
@@ -8628,12 +8633,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     info.max_players = options.max_players;
                     info.host_port   = options.port;
                     info.host_ip     = query_ip;
-                    const std::scoped_lock lock{players_mutex};
-                    for (const auto& [key, who] : players) {
-                        if (who.connection) {
-                            info.players.push_back(who.name);
-                        }
-                    }
+                    // The tick thread's copy: this is Query's thread.
+                    const std::scoped_lock lock{online_names.mutex};
+                    info.players = online_names.names;
                     return info;
                 });
             if (query) {
@@ -10879,6 +10881,18 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             // the map without the lock would be a race of its own.
             std::unique_lock lock{players_mutex, std::try_to_lock};
             if (lock.owns_lock()) {
+                // ── dedicated server administration ── the names Query and
+                // the console read, once a second, from this thread.
+                if (static_cast<i64>(clock.tick_count()) % 20 == 0) {
+                    std::vector<std::string> names;
+                    for (const auto& [names_key, who] : players) {
+                        if (who.connection) {
+                            names.push_back(who.name);
+                        }
+                    }
+                    const std::scoped_lock names_lock{online_names.mutex};
+                    online_names.names.swap(names);
+                }
                 // The chunk queue, drained under a budget.
                 //
                 // Sending the whole square at once overran the tick and the
