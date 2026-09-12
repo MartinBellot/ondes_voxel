@@ -49,7 +49,21 @@ ChunkSectionView::ChunkSectionView(const registry::BlockRegistry& blocks,
       chunks_(chunks),
       origin_x_(origin_x),
       origin_y_(origin_y),
-      origin_z_(origin_z) {}
+      origin_z_(origin_z) {
+    // ── implicit water ── water's default state is its source, level 0.
+    if (const auto water = blocks.find_block("minecraft:water")) {
+        water_source_ = blocks.default_state(*water);
+    }
+}
+
+registry::BlockStateId ChunkSectionView::held_water(Vec3i local) const noexcept {
+    const auto state = state_at(local);
+    if (state == registry::kAirState) {
+        return registry::kAirState;
+    }
+    const registry::BlockRegistry::StateFluid held = blocks_->fluid(state);
+    return held.is_water() && !held.is_fluid_block ? water_source_ : registry::kAirState;
+}
 
 const world::Chunk* ChunkSectionView::chunk_for(i32 world_x, i32 world_z) const noexcept {
     const world::Chunk* centre = chunks_[4];
@@ -186,15 +200,10 @@ u16 ChunkSectionView::fluid_at(Vec3i position) const {
     if (state == registry::kAirState) {
         return 0;
     }
-    const auto block = blocks_->block_of(state);
-    const auto name  = blocks_->block_name(block);
-    // Waterlogged blocks hold water too, which is why the registry keeps
-    // holds_fluid per state rather than per block. A fence in the sea should
-    // not make the sea draw a face against it.
-    if (name == "minecraft:water" || name == "minecraft:lava") {
-        return static_cast<u16>(block.value() + 1u);
-    }
-    return 0;
+    // ── implicit water ── the fluid's type, from the registry's one answer:
+    // water, a waterlogged stair and a seagrass all say Water, so the sea
+    // draws no face against the plant in it (BlockRender::fluid matches).
+    return static_cast<u16>(blocks_->fluid(state).type);
 }
 
 Rgb BiomeTints::colour(u16 world_biome, TintChannel channel) const noexcept {
@@ -216,6 +225,10 @@ Rgb BiomeTints::colour(u16 world_biome, TintChannel channel) const noexcept {
             return 0x619961;
         case TintChannel::BirchFoliage:
             return 0x80A755;
+        // ── implicit water ── the lily pad in a level: a constant, not the
+        // biome's (docs/provenance/eau-implicite.md).
+        case TintChannel::LilyPad:
+            return 0x208030;
         case TintChannel::None:
             break;
     }
@@ -281,12 +294,29 @@ SectionMeshStats mesh_section(const ChunkSectionView& view, BlockModelCache& mod
                     continue;
                 }
 
+                const usize before = out.total_vertices();
+                // ── implicit water ── the water a seagrass, a kelp, a bubble
+                // column or a waterlogged block stands in, drawn as the sea's
+                // own source is: without it each of them is a bubble of air.
+                if (const auto water = view.held_water(local); water != registry::kAirState) {
+                    const BlockRender& fluid = models.resolve(water);
+                    if (fluid.drawable) {
+                        const BlockRenderInfo fluid_info{fluid.layer,
+                                                         view.biome_colour(local, fluid.tint),
+                                                         fluid.fluid};
+                        emit_block(fluid.model, local, fluid_info, atlas, view, out);
+                    }
+                }
+
                 const BlockRender& render = models.resolve(state);
                 if (!render.drawable) {
+                    if (out.total_vertices() > before) {
+                        ++stats.blocks_drawn;
+                        stats.quads += (out.total_vertices() - before) / 4;
+                    }
                     continue;
                 }
 
-                const usize before = out.total_vertices();
                 // Resolved once per block rather than once per quad: the tint
                 // is a property of the position, and a grass block has six
                 // faces that share it.

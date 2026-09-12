@@ -39,8 +39,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import measure_creative_screen as creative  # noqa: E402  (classpath, mappings)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT = os.path.join(ROOT, "run", "render-parity")
-CACHE = os.path.join(ROOT, "data", "vanilla", "1.20.1", "generated", "render-parity")
+# ── implicit water ── OV_RENDER_PARITY_OUT / _CACHE / _PORT move a measurement
+# out of run/ (shared, read-only for a worktree) into a scratch directory.
+OUT = os.environ.get("OV_RENDER_PARITY_OUT", os.path.join(ROOT, "run", "render-parity"))
+CACHE = os.environ.get("OV_RENDER_PARITY_CACHE",
+                       os.path.join(ROOT, "data", "vanilla", "1.20.1", "generated",
+                                    "render-parity"))
 REFERENCE = os.path.join(ROOT, "run", "reference-1234567890", "world")
 SCENES = os.path.join(ROOT, "scripts", "render_parity_scenes.txt")
 BUILD = os.path.join(ROOT, "build", "macos-debug", "bin")
@@ -51,7 +55,9 @@ BUILD = os.path.join(ROOT, "build", "macos-debug", "bin")
 REGIONS = ["r.0.0", "r.-1.0", "r.0.-1", "r.-1.-1", "r.93.0", "r.93.-1", "r.94.0", "r.94.-1",
            "r.29.50", "r.29.51"]
 
-PORT = 25671
+PORT = int(os.environ.get("OV_RENDER_PARITY_PORT", "25671"))
+# Our client's server listens on PORT + this (1 by default).
+PORT_STEP = int(os.environ.get("OV_RENDER_PARITY_PORT_STEP", "1"))
 WIDTH, HEIGHT = 854, 480
 RENDER_DISTANCE = 8
 # The server streams a square of 17 x 17 chunks around a player: a capture
@@ -99,6 +105,19 @@ def start_server(name, port):
                             cwd=OUT, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.PIPE)
     for _ in range(600):
         if port_open(port):
+            # ── implicit water ── the port opens before the spawn area is
+            # ready, and a player who knocks then is refused ("spawn area 0%
+            # ready — refused for now"): the oracle then waits for a player
+            # that never comes and captures nothing. Wait for the line that
+            # says players may join — capped, for a server that never prints it.
+            log_path = os.path.join(OUT, name + ".log")
+            for _ in range(1200):
+                with open(log_path, errors="replace") as f:
+                    if "players may join" in f.read():
+                        break
+                if proc.poll() is not None:
+                    raise SystemExit("ov_dedicated s'est arrêté — voir %s" % log_path)
+                time.sleep(0.5)
             return proc
         if proc.poll() is not None:
             raise SystemExit("ov_dedicated s'est arrêté — voir %s/%s.log" % (OUT, name))
@@ -204,22 +223,40 @@ def scenes():
     return out
 
 
-def setup_commands():
-    """The scenes file's commands, minus the teleport the oracle needs to reach
-    the chunks: our client already stands there when it sends them."""
-    out = []
+def scene_commands():
+    """The scenes file's commands, minus the teleports the oracle needs to reach
+    the chunks: our client already stands there when it sends them.
+
+    Returns the preamble — every command before the first scene, which the
+    first run of a session sends — and, per scene, the commands between the
+    previous scene and it, which that scene's own run sends. ── implicit water ──
+    a structure far from the preamble's (the spawn's lily pad pool) is built by
+    the run that stands next to it, where its chunks are loaded.
+    """
+    preamble = None
+    own = {}
+    pending = []
     with open(SCENES) as f:
         for line in f:
             p = line.split()
-            if p and p[0] == "cmd" and p[1] != "tp":
-                out.append("/" + line.strip()[4:].strip())
-    return out
+            if not p:
+                continue
+            if p[0] == "cmd" and p[1] != "tp":
+                pending.append("/" + line.strip()[4:].strip())
+            elif p[0] == "scene":
+                if preamble is None:
+                    preamble, own[p[1]] = pending, []
+                else:
+                    own[p[1]] = pending
+                pending = []
+    return preamble or [], own
 
 
 def run_ours(tag, only, extra, binary):
     shots = os.path.join(OUT, "ours-" + tag)
     os.makedirs(shots, exist_ok=True)
     first = True
+    preamble, own = scene_commands()
     for name, x, y, z, yaw, pitch, t in scenes():
         if only and name not in only:
             continue
@@ -228,13 +265,13 @@ def run_ours(tag, only, extra, binary):
         # The first run of a session builds the scenes' structures, the way
         # the oracle does, so that either client can go first on a fresh
         # world. /fill is idempotent; running it twice changes nothing.
-        chat = (setup_commands() if first else []) + ["/time set %s" % t]
+        chat = (preamble if first else []) + own.get(name, []) + ["/time set %s" % t]
         first = False
         # The eye is where vanilla's is: --stand-at takes the feet, the client
         # adds 1.62. The chat lines set the time the scene is taken at; the
         # capture waits for every section in range to be meshed (see
         # --settle-shot in apps/ov_voxel).
-        command = [binary, "--connect=127.0.0.1:%d" % (PORT + 1),
+        command = [binary, "--connect=127.0.0.1:%d" % (PORT + PORT_STEP),
                    "--username=OvOurs", "--width=%d" % WIDTH, "--height=%d" % HEIGHT,
                    "--radius=%d" % RENDER_DISTANCE, "--no-hud", "--no-sound",
                    # The vanilla scenes hold no entity (regions copied without
@@ -348,7 +385,7 @@ def main():
         finally:
             stop(server)
     if args.what in ("ours", "all"):
-        server = start_server("world-ours", PORT + 1)
+        server = start_server("world-ours", PORT + PORT_STEP)
         try:
             run_ours(args.tag, [s for s in args.only.split(",") if s],
                      [e for e in args.extra.split(";") if e], os.path.abspath(args.binary))

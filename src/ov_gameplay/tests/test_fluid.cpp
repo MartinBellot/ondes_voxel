@@ -1179,3 +1179,79 @@ TEST_CASE("a maze nobody designed comes out the same", "[fluid][parity]") {
         require_identical(slice(level, -60, 9), want);
     }
 }
+
+// ── implicit water ──────────────────────────────────────────────────────────
+//
+// Seagrass, tall seagrass, kelp, kelp_plant and a bubble column hold a water
+// source with no `waterlogged` property to say so (the Minecraft Wiki:
+// Waterlogging, Seagrass, Kelp, Bubble Column; docs/provenance/eau-implicite.md).
+
+TEST_CASE("seagrass, kelp and bubble columns are water sources", "[gameplay][fluid][implicit]") {
+    for (const std::string_view name : {"minecraft:seagrass", "minecraft:tall_seagrass",
+                                        "minecraft:kelp", "minecraft:kelp_plant",
+                                        "minecraft:bubble_column"}) {
+        INFO(name);
+        const FluidState fluid = rules().fluid_at(state_of(name));
+        CHECK(fluid.kind == FluidKind::Water);
+        CHECK(fluid.is_source());
+        // Broken, it leaves its water behind.
+        CHECK(rules().releases_water(state_of(name)));
+        CHECK(rules().state_after_break(state_of(name)) == state_of("minecraft:water"));
+    }
+    CHECK(rules().fluid_at(state_of("minecraft:lily_pad")).empty());
+}
+
+TEST_CASE("fluid next to kelp does not flow into it", "[gameplay][fluid][implicit]") {
+    TestLevel level;
+    level.floor(-1, 6, state_of("minecraft:stone"));
+    const auto kelp = state_of("minecraft:kelp_plant");
+    // A kelp stalk east of a source: the stalk stays kelp — it is water
+    // already, not a place to put more.
+    level.set_block(BlockPos{1, 0, 0}, kelp);
+    place(level, BlockPos{0, 0, 0}, state_of("minecraft:water"));
+    REQUIRE(level.settle(rules()) >= 0);
+    CHECK(level.block_at(BlockPos{1, 0, 0}) == kelp);
+    // And it is a source to its neighbours: the cell east of it is level 1,
+    // not the 2 the far source alone would give.
+    CHECK(rules().fluid_at(level.block_at(BlockPos{2, 0, 0})).amount == 1);
+}
+
+TEST_CASE("a seagrass alone on a floor spreads as a source and keeps its water",
+          "[gameplay][fluid][implicit]") {
+    TestLevel level;
+    level.floor(-1, 9, state_of("minecraft:stone"));
+    const auto seagrass = state_of("minecraft:seagrass");
+    place(level, BlockPos{0, 0, 0}, seagrass);
+    REQUIRE(level.settle(rules()) >= 0);
+    CHECK(level.block_at(BlockPos{0, 0, 0}) == seagrass);
+    // The same diamond a source makes: level = Manhattan distance, out to 7.
+    CHECK(rules().fluid_at(level.block_at(BlockPos{3, 0, 0})).amount == 3);
+    CHECK(rules().fluid_at(level.block_at(BlockPos{2, 0, -2})).amount == 4);
+    CHECK(rules().fluid_at(level.block_at(BlockPos{8, 0, 0})).empty());
+}
+
+TEST_CASE("a bucket takes nothing from seagrass and pours nothing into it",
+          "[gameplay][fluid][implicit]") {
+    TestLevel level;
+    const auto seagrass = state_of("minecraft:seagrass");
+    level.set_block(BlockPos{0, 0, 0}, seagrass);
+    CHECK_FALSE(rules().pick_up_fluid(level, BlockPos{0, 0, 0}).has_value());
+    CHECK_FALSE(rules().place_fluid(level, BlockPos{0, 0, 0}, FluidKind::Water));
+    CHECK(level.block_at(BlockPos{0, 0, 0}) == seagrass);
+}
+
+TEST_CASE("an entity in a kelp forest is pushed by nothing: still water",
+          "[gameplay][fluid][implicit]") {
+    TestLevel level;
+    level.floor(-1, 4, state_of("minecraft:stone"));
+    for (i32 x = -2; x <= 2; ++x) {
+        for (i32 z = -2; z <= 2; ++z) {
+            level.set_block(BlockPos{x, 0, z}, state_of("minecraft:kelp_plant"));
+            level.set_block(BlockPos{x, 1, z}, state_of("minecraft:seagrass"));
+        }
+    }
+    // Every cell a source: no drop in height anywhere, so no current.
+    const Vec3d flow = rules().flow_vector(level, BlockPos{0, 0, 0});
+    CHECK(flow.x == 0.0);
+    CHECK(flow.z == 0.0);
+}

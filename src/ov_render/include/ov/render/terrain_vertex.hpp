@@ -71,6 +71,9 @@ enum class TintChannel : u8 {
     /// the colours.
     EvergreenFoliage = 4,
     BirchFoliage     = 5,
+    /// ── implicit water ── a lily pad in a level: one constant, whatever the
+    /// biome (the inventory item takes another).
+    LilyPad = 6,
 };
 
 /// A vertex before packing. Never stored in a buffer; it exists so the packing

@@ -209,7 +209,98 @@ std::expected<BlockRegistry, RegistryError> BlockRegistry::from_bytes(std::vecto
     }
 
     registry.header_ = registry.data_.data();
+    registry.build_fluid_table();  // ── implicit water ──
     return registry;
+}
+
+// ── implicit water ──────────────────────────────────────────────────────────
+
+namespace {
+
+/// The blocks whose fluid is always a water source, with no property to say
+/// so. The Minecraft Wiki (Waterlogging, Seagrass, Kelp, Bubble Column) names
+/// them; four were also measured on a real 1.20.1 server, raising
+/// MOTION_BLOCKING as only a fluid does (the `fluid` bit of motion.json). The
+/// fifth, kelp_plant, is the body of a kelp column and can never be a column's
+/// top, so that oracle could not see it. docs/provenance/eau-implicite.md.
+constexpr std::string_view kImplicitWater[] = {"minecraft:seagrass", "minecraft:tall_seagrass",
+                                               "minecraft:kelp", "minecraft:kelp_plant",
+                                               "minecraft:bubble_column"};
+
+constexpr u8 kFluidTypeMask  = 0b11;
+constexpr u8 kFluidBlockBit  = 1U << 2;
+constexpr u8 kFluidLevelShift = 3;
+constexpr u8 kImplicitBit    = 1U << 7;
+
+}  // namespace
+
+void BlockRegistry::build_fluid_table() {
+    const usize states = state_count();
+    fluid_table_.assign(states, 0);
+
+    const auto set_block = [&](BlockId block, u8 value) {
+        const u16 first = first_state(block).value();
+        const u16 count = state_count(block);
+        for (u16 offset = 0; offset < count && first + offset < states; ++offset) {
+            fluid_table_[first + offset] = value;
+        }
+    };
+
+    // The fluid blocks, at their own level. `level` is 0..15 as the blockstate
+    // file spells it, which is also its index.
+    for (const auto [name, type] : {std::pair{std::string_view{"minecraft:water"}, FluidType::Water},
+                                    std::pair{std::string_view{"minecraft:lava"}, FluidType::Lava}}) {
+        const auto block = find_block(name);
+        if (!block) {
+            continue;
+        }
+        const auto level = find_property(*block, "level");
+        const u16  first = first_state(*block).value();
+        for (u16 offset = 0; offset < state_count(*block); ++offset) {
+            const BlockStateId state{static_cast<u16>(first + offset)};
+            const u16 value = level ? property_index(state, *level) : 0;
+            fluid_table_[state.value()] =
+                static_cast<u8>(static_cast<u8>(type) | kFluidBlockBit |
+                                ((value & 0xFU) << kFluidLevelShift));
+        }
+    }
+
+    for (const std::string_view name : kImplicitWater) {
+        if (const auto block = find_block(name)) {
+            set_block(*block, static_cast<u8>(static_cast<u8>(FluidType::Water) | kImplicitBit));
+        }
+    }
+
+    // waterlogged=true: a water source held by the block.
+    for (usize i = 0; i < block_count(); ++i) {
+        const BlockId block{static_cast<u16>(i)};
+        const auto    property = find_property(block, "waterlogged");
+        if (!property) {
+            continue;
+        }
+        const u16 first = first_state(block).value();
+        for (u16 offset = 0; offset < state_count(block); ++offset) {
+            const BlockStateId state{static_cast<u16>(first + offset)};
+            if (property_value(state, *property) == "true") {
+                fluid_table_[state.value()] = static_cast<u8>(FluidType::Water);
+            }
+        }
+    }
+}
+
+BlockRegistry::StateFluid BlockRegistry::fluid(BlockStateId state) const noexcept {
+    if (state.value() >= fluid_table_.size()) {
+        return {};
+    }
+    const u8 packed = fluid_table_[state.value()];
+    return StateFluid{static_cast<FluidType>(packed & kFluidTypeMask),
+                      static_cast<u8>((packed >> kFluidLevelShift) & 0xFU),
+                      (packed & kFluidBlockBit) != 0};
+}
+
+bool BlockRegistry::is_implicitly_water(BlockId block) const noexcept {
+    const BlockStateId first = first_state(block);
+    return first.value() < fluid_table_.size() && (fluid_table_[first.value()] & kImplicitBit) != 0;
 }
 
 std::expected<BlockRegistry, RegistryError> BlockRegistry::load(const std::filesystem::path& path) {
@@ -442,6 +533,11 @@ bool BlockRegistry::requires_correct_tool(BlockId block) const noexcept {
 }
 
 bool BlockRegistry::holds_fluid(BlockStateId state) const noexcept {
+    // ── implicit water ── the measured bit, or the fluid table: kelp_plant is
+    // water and the heightmap oracle could never see it (see fluid()).
+    if (state.value() < fluid_table_.size() && (fluid_table_[state.value()] & kFluidTypeMask) != 0) {
+        return true;
+    }
     const usize index = state.value() >> 3;
     if (index >= fluid_bits_.size()) {
         return false;

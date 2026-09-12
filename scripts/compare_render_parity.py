@@ -28,10 +28,17 @@ import sys
 import zlib
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OURS = os.path.join(ROOT, "run", "render-parity")
-VANILLA = os.path.join(ROOT, "data", "vanilla", "1.20.1", "generated", "render-parity", "client",
+# ── implicit water ── the same overrides as measure_render_parity.py, plus the
+# scenes file (OV_RENDER_PARITY_SCENES), for a measurement kept in a scratch
+# directory.
+OURS = os.environ.get("OV_RENDER_PARITY_OUT", os.path.join(ROOT, "run", "render-parity"))
+VANILLA = os.path.join(os.environ.get("OV_RENDER_PARITY_CACHE",
+                                      os.path.join(ROOT, "data", "vanilla", "1.20.1", "generated",
+                                                   "render-parity")),
+                       "client",
                        "screenshots")
-SCENES = os.path.join(ROOT, "scripts", "render_parity_scenes.txt")
+SCENES = os.environ.get("OV_RENDER_PARITY_SCENES",
+                        os.path.join(ROOT, "scripts", "render_parity_scenes.txt"))
 
 
 def read_png(path):

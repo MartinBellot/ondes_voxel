@@ -535,3 +535,82 @@ TEST_CASE("light emission is per state", "[registry][blocks][light]") {
         REQUIRE(with_lit(candles, "false") == 0);
     }
 }
+
+// ── implicit water ──────────────────────────────────────────────────────────
+
+TEST_CASE("one fluid answer for every state: fluid blocks, waterlogged, implicitly water",
+          "[registry][blocks][fluid]") {
+    const BlockRegistry* r = loaded_registry();
+    if (r == nullptr) {
+        SKIP("no registry pack");
+    }
+    using FluidType = BlockRegistry::FluidType;
+    constexpr std::array<std::string_view, 5> kImplicit{
+        "minecraft:seagrass", "minecraft:tall_seagrass", "minecraft:kelp",
+        "minecraft:kelp_plant", "minecraft:bubble_column"};
+
+    usize fluid_states = 0;
+    usize implicit     = 0;
+    usize logged       = 0;
+    for (usize i = 0; i < r->block_count(); ++i) {
+        const BlockId          block{static_cast<u16>(i)};
+        const std::string_view name        = r->block_name(block);
+        const auto             waterlogged = r->find_property(block, "waterlogged");
+        const auto             level       = r->find_property(block, "level");
+        const bool is_implicit = std::ranges::find(kImplicit, name) != kImplicit.end();
+        CHECK(r->is_implicitly_water(block) == is_implicit);
+        for (u16 offset = 0; offset < r->state_count(block); ++offset) {
+            const BlockStateId state{static_cast<u16>(r->first_state(block).value() + offset)};
+            const auto         fluid = r->fluid(state);
+            INFO(name << " state " << state.value());
+            if (name == "minecraft:water" || name == "minecraft:lava") {
+                REQUIRE(level.has_value());
+                CHECK(fluid.type ==
+                      (name == "minecraft:water" ? FluidType::Water : FluidType::Lava));
+                CHECK(fluid.is_fluid_block);
+                CHECK(fluid.level == r->property_index(state, *level));
+                ++fluid_states;
+            } else if (is_implicit) {
+                // Whatever the age of the kelp or the drag of the column.
+                CHECK(fluid.is_water());
+                CHECK(fluid.is_source());
+                CHECK_FALSE(fluid.is_fluid_block);
+                ++implicit;
+            } else if (waterlogged && r->property_value(state, *waterlogged) == "true") {
+                CHECK(fluid.is_water());
+                CHECK(fluid.is_source());
+                CHECK_FALSE(fluid.is_fluid_block);
+                ++logged;
+            } else {
+                CHECK(fluid.empty());
+            }
+            // The measured MOTION_BLOCKING bit never disagrees with the rule.
+            CHECK(r->holds_fluid(state) == !fluid.empty());
+        }
+    }
+    CHECK(fluid_states == 32);
+    CHECK(implicit > 5);
+    CHECK(logged > 1000);
+
+    const auto state = [&](std::string_view name, std::string_view value) {
+        const auto block = r->find_block(name);
+        REQUIRE(block.has_value());
+        const std::array<std::pair<std::string_view, std::string_view>, 1> props{
+            {{"waterlogged", value}}};
+        const auto id = r->state_for(*block, props);
+        REQUIRE(id.has_value());
+        return *id;
+    };
+    // The ones the bug report named, one by one.
+    for (const std::string_view name : {"minecraft:sea_pickle", "minecraft:tube_coral_fan",
+                                        "minecraft:brain_coral", "minecraft:dead_bubble_coral",
+                                        "minecraft:fire_coral_wall_fan", "minecraft:conduit"}) {
+        INFO(name);
+        CHECK(r->fluid(state(name, "true")).is_water());
+        CHECK(r->fluid(state(name, "false")).empty());
+    }
+    // Coral *blocks* are full cubes, never waterlogged, never water.
+    CHECK(r->fluid(r->default_state(*r->find_block("minecraft:tube_coral_block"))).empty());
+    CHECK(r->fluid(r->default_state(*r->find_block("minecraft:lily_pad"))).empty());
+    CHECK(r->fluid(r->default_state(*r->find_block("minecraft:air"))).empty());
+}

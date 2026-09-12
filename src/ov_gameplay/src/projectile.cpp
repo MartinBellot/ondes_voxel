@@ -244,7 +244,9 @@ bool box_in_water(const world::LevelView& level, const AABB& box, registry::Bloc
     for (i32 x = aabb_min_block(box.min.x); x <= aabb_max_block(box.max.x); ++x) {
         for (i32 y = aabb_min_block(box.min.y); y <= aabb_max_block(box.max.y); ++y) {
             for (i32 z = aabb_min_block(box.min.z); z <= aabb_max_block(box.max.z); ++z) {
-                if (blocks.block_of(level.block_at(BlockPos{x, y, z})) == water) {
+                // ── implicit water ── a waterlogged block, seagrass or kelp
+                // puts an arrow out as water does.
+                if (blocks.fluid(level.block_at(BlockPos{x, y, z})).is_water()) {
                     return true;
                 }
             }
