@@ -453,7 +453,7 @@ void ServerProperties::fill_defaults() {
     }
 }
 
-std::vector<std::string> ServerProperties::write_order() const {
+std::vector<std::string> ServerProperties::write_order(bool through_copy) const {
     // The Properties object: filled by load() in file order, then each
     // setting's get() puts its key — and stored as it is. Measured: the
     // 1.20.1 jar's file is the iteration of that very table, grown by the
@@ -470,10 +470,13 @@ std::vector<std::string> ServerProperties::write_order() const {
     for (const auto& [key, value] : entries_) {
         map.put(key);
     }
-    return map.keys();
+    // A rewrite after a command goes through a putAll copy of that table
+    // (presized to 256 buckets), as the jar's update does: the file it
+    // leaves after the run is in the copy's order.
+    return through_copy ? map.copied(8).keys() : map.keys();
 }
 
-std::string ServerProperties::render(std::string_view date_line) const {
+std::string ServerProperties::render(std::string_view date_line, bool through_copy) const {
 #if defined(_WIN32)
     constexpr std::string_view kEol = "\r\n";
 #else
@@ -486,7 +489,7 @@ std::string ServerProperties::render(std::string_view date_line) const {
     out += kEol;
     // The Writer form of Properties.store, the jar's: backslash escapes only,
     // every other character as it is (measured: "motd=Café \: \= x").
-    for (const std::string& key : write_order()) {
+    for (const std::string& key : write_order(through_copy)) {
         out += escape_property(key, true, false);
         out += '=';
         out += escape_property(*get(key), false, false);
@@ -613,8 +616,8 @@ PropertiesFile load_properties_file(const std::filesystem::path& path,
 }
 
 bool save_properties_file(const std::filesystem::path& path, const ServerProperties& properties,
-                          std::string_view date_line) {
-    const std::string text = properties.render(date_line);
+                          std::string_view date_line, bool through_copy) {
+    const std::string text = properties.render(date_line, through_copy);
     return io::write_file_atomic(
                path, std::span<const u8>{reinterpret_cast<const u8*>(text.data()), text.size()})
         .has_value();

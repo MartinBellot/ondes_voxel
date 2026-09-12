@@ -67,16 +67,20 @@ public:
     void fill_defaults();
 
     /// The file as vanilla writes it: `#Minecraft server properties`, the
-    /// date, then every key in the JDK map's order.
-    [[nodiscard]] std::string render(std::string_view date_line) const;
+    /// date, then every key in the JDK map's order. `through_copy`: the order
+    /// of a rewrite after a command changed a key — the jar then stores a
+    /// putAll copy of its table, not the table itself (measured: the file it
+    /// leaves after `/setidletimeout` is in the copy's order).
+    [[nodiscard]] std::string render(std::string_view date_line, bool through_copy = false) const;
 
     /// Keys in the order they were first met: the file's, then the defaults'.
     [[nodiscard]] const std::vector<std::pair<std::string, std::string>>& entries() const noexcept {
         return entries_;
     }
 
-    /// Keys in the order vanilla would write them.
-    [[nodiscard]] std::vector<std::string> write_order() const;
+    /// Keys in the order vanilla would write them: at start, or (with
+    /// `through_copy`) when a command rewrites the file.
+    [[nodiscard]] std::vector<std::string> write_order(bool through_copy = false) const;
 
 private:
     std::vector<std::pair<std::string, std::string>> entries_;
@@ -149,9 +153,9 @@ struct PropertiesFile {
 [[nodiscard]] PropertiesFile load_properties_file(const std::filesystem::path& path,
                                                   std::string_view             date_line);
 
-/// Write the file again after a command changed a key.
+/// Write the file again — after a command changed a key, `through_copy`.
 bool save_properties_file(const std::filesystem::path& path, const ServerProperties& properties,
-                          std::string_view date_line);
+                          std::string_view date_line, bool through_copy = false);
 
 /// The name vanilla writes a game mode or a difficulty under.
 [[nodiscard]] std::string_view game_mode_name(u8 mode) noexcept;

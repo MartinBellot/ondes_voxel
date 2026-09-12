@@ -504,6 +504,37 @@ TEST_CASE("server.properties is written in the order of the jar's own table",
     CHECK(capture.write_order() == expected);
 }
 
+TEST_CASE("a command's rewrite of server.properties goes through a copy", "[admin][java][jdk]") {
+    // The starting file of scripts/capture_admin.py's round, key order as
+    // written; values do not move keys.
+    ServerProperties p = ServerProperties::from_text(
+        "server-port=25610\nonline-mode=false\nlevel-type=minecraft\\:flat\n"
+        "generate-structures=false\nmax-players=3\nmotd=x\nenable-rcon=true\nrcon.port=25710\n"
+        "rcon.password=x\nenable-query=true\nquery.port=25610\nspawn-protection=0\n"
+        "view-distance=4\nsimulation-distance=4\nsync-chunk-writes=true\nov-unknown-key=kept\n");
+    (void)DedicatedSettings::read(p);
+    p.set("player-idle-timeout", "7");  // what /setidletimeout does
+    // The file the real 1.20.1 server left after that round: a putAll copy of
+    // its table, not the table its first start wrote (57/57 lines).
+    CHECK(p.write_order(true) ==
+          split_commas(
+              "rcon.port,gamemode,enable-command-block,pvp,max-chained-neighbor-updates,"
+              "network-compression-threshold,ov-unknown-key,max-tick-time,max-players,online-mode,"
+              "resource-pack-prompt,allow-nether,hide-online-players,rcon.password,force-gamemode,"
+              "white-list,spawn-npcs,function-permission-level,initial-enabled-packs,level-type,"
+              "text-filtering-config,max-world-size,enable-jmx-monitoring,level-seed,enable-query,"
+              "generator-settings,enforce-secure-profile,level-name,motd,query.port,"
+              "generate-structures,difficulty,require-resource-pack,use-native-transport,"
+              "enable-status,allow-flight,initial-disabled-packs,broadcast-rcon-to-ops,"
+              "view-distance,server-ip,server-port,enable-rcon,sync-chunk-writes,"
+              "op-permission-level,prevent-proxy-connections,resource-pack,"
+              "entity-broadcast-range-percentage,simulation-distance,player-idle-timeout,"
+              "rate-limit,hardcore,broadcast-console-to-ops,spawn-animals,spawn-monsters,"
+              "enforce-whitelist,spawn-protection,resource-pack-sha1"));
+    // …and the first start's order is another one.
+    CHECK(p.write_order(false) != p.write_order(true));
+}
+
 TEST_CASE("HashMap iterates as JDK 17's does", "[admin][java][jdk]") {
     std::vector<std::string> uuids;
     for (const char* name : {"Ovq_tempban", "Ovq_oldban", "Ovq_alice", "Ovq_bobby", "ovprobe",

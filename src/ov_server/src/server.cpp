@@ -4588,7 +4588,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     command_host.set_property = [&](std::string_view key, std::string value) {
         if (properties) {
             properties->properties.set(key, std::move(value));
-            (void)admin::save_properties_file(properties_path, properties->properties, date_line());
+            // A command's rewrite: the jar stores a copy of its table then.
+            (void)admin::save_properties_file(properties_path, properties->properties, date_line(),
+                                              true);
         }
     };
     command_host.tick_count = [&server_tick] { return server_tick.load(std::memory_order_relaxed); };
