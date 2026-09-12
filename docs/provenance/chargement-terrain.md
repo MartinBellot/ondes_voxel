@@ -242,6 +242,14 @@ n'est pas le code qui change entre les deux tableaux, c'est la part de la machin
 serveur ; les deux sont donnés, parce que la promesse « le vol créatif ne voit plus de trou »
 ne vaut que sur une machine qui laisse ses cœurs au jeu.
 
+**Non mesuré, et dit comme tel.** Le binaire « avant » n'a pas été repris sur la machine
+saturée : ce tableau-ci n'a donc pas de colonne « avant » comparable, et il ne mesure pas un
+gain, seulement ce que le binaire « après » tient sous cette charge. Le profil de la génération
+**après** les changements n'a pas été pris non plus (la première tentative s'est terminée avant
+l'échantillonnage, la seconde a été annulée pour laisser la file de construction à
+l'intégration) : où part le temps aujourd'hui n'est pas mesuré. Les deux sont les premières
+mesures à reprendre sur une machine calme.
+
 Le tick p50 monte, et c'est le prix du débit : trois fois plus de monde arrive par seconde
 (3 280 chunks en 3 min 20 contre 2 144 en 14 min), et avec lui la lumière de chaque chunk
 publié (phase `relight`), l'apparition naturelle et les ticks aléatoires sur un monde chargé
