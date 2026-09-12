@@ -42,6 +42,8 @@ struct DebugInfo {
     f32         pitch{0.0F};
     /// The biome under the player, as a registry name.
     std::string biome;
+    /// ── hud ── Login (play) and Respawn's dimension.
+    std::string dimension{"minecraft:overworld"};
     /// Light at the feet, when the chunk carries it.
     std::optional<i32> sky_light;
     std::optional<i32> block_light;
@@ -65,7 +67,11 @@ struct DebugInfo {
 /// Vanilla's cardinal name for a yaw, and the axis it faces: south is +Z.
 [[nodiscard]] std::string facing_line(f32 yaw, f32 pitch);
 
-/// The left and right columns, as vanilla orders them.
+/// The left and right columns, **on the real client's own line numbers**
+/// (scripts/measure_hud.py, scene 19-f3: 19 lines left, 10 right before the
+/// targeted block). A line this client has no value for is an empty line —
+/// vanilla draws no box for one — so every line it does know sits at the
+/// height vanilla puts it. See docs/provenance/hud.md § F3.
 [[nodiscard]] std::vector<std::string> debug_left_lines(const DebugInfo& info);
 [[nodiscard]] std::vector<std::string> debug_right_lines(const DebugInfo& info);
 

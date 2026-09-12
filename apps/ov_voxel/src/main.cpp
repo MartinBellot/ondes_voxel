@@ -39,6 +39,9 @@
 #include "ov/audio/sound_engine.hpp"    // ── sound ──
 #include "ov/client/sound_director.hpp" // ── sound ──
 #include "ov/client/subtitles.hpp"      // ── sound ──
+#include "hud_script.hpp"               // ── hud ──
+#include <cstdio>                       // ── hud ── the shots' facts
+#include <filesystem>                   // ── hud ── the shots' directory
 #include "ov/client/terrain_renderer.hpp"
 #include "ov/client/window.hpp"
 #include "ov/registry/block_states.hpp"
@@ -327,6 +330,11 @@ struct Options {
     bool                     dump_menu{false};
     /// Start with F3 open.
     bool debug_overlay{false};
+    // ── hud ── play scripts/hud_scenes.txt (scripts/measure_hud.py): each shot
+    // writes <hud_shots>/<name>.ppm, <name>-nohud.ppm, and the HUD's numbers
+    // to facts.txt beside the directory.
+    std::string hud_script;
+    std::string hud_shots{"run/hud-shots"};
     /// What the command line set, so options.txt only fills in the rest.
     bool world_given{false};
     bool lang_given{false};
@@ -532,6 +540,10 @@ struct Options {
             options.dump_menu = true;
         } else if (argument == "--f3") {
             options.debug_overlay = true;  // ── end screens ──
+        } else if (argument.starts_with("--hud-script=")) {  // ── hud ──
+            options.hud_script = value("--hud-script=");
+        } else if (argument.starts_with("--hud-shots=")) {
+            options.hud_shots = value("--hud-shots=");
         } else if (argument == "--singleplayer") {
             options.singleplayer = true;
         } else if (argument.starts_with("--singleplayer-port=")) {
@@ -554,7 +566,7 @@ struct Options {
 
 // ── screens ──
 /// The client's keys that options.txt can rebind, by vanilla's option names.
-constexpr std::array<std::pair<std::string_view, client::Key>, 12> kRebindable{{
+constexpr std::array<std::pair<std::string_view, client::Key>, 13> kRebindable{{
     {"key.forward", client::Key::Forward},
     {"key.back", client::Key::Back},
     {"key.left", client::Key::Left},
@@ -567,6 +579,7 @@ constexpr std::array<std::pair<std::string_view, client::Key>, 12> kRebindable{{
     {"key.chat", client::Key::Chat},
     {"key.saveToolbarActivator", client::Key::SaveToolbar},
     {"key.loadToolbarActivator", client::Key::LoadToolbar},
+    {"key.playerlist", client::Key::PlayerList},  // ── hud ──
 }};
 
 void apply_key_bindings(const client::GameOptions& game, client::Window& window) {
@@ -1721,6 +1734,11 @@ int main(int argc, char** argv) {
     if (online && !open_connection(options.connect, options.singleplayer ? 200 : 1)) {
         return 1;
     }
+    if (online) {
+        // ── hud ── A world joined from the command line is a game too: F3
+        // draws only in game, and --connect never told the menus so.
+        menus->set_in_game(true, options.singleplayer);
+    }
     {  // ── screens ── the sound starts whether or not a world is joined yet
 
         // ── sound ── sounds.json, the device, and what decides what is heard.
@@ -1850,7 +1868,7 @@ int main(int argc, char** argv) {
     (*window)->set_cursor_captured(options.frames == 0 && !menu_mode);  // ── screens ──
 
     rhi::BufferHandle readback;
-    if (!options.screenshot.empty()) {
+    if (!options.screenshot.empty() || !options.hud_script.empty()) {  // ── hud ── or scenes
         const usize bytes =
             static_cast<usize>(device.swapchain_width()) * device.swapchain_height() * 4;
         auto buffer = device.create_buffer(
@@ -1860,6 +1878,54 @@ int main(int argc, char** argv) {
         }
         readback = *buffer;
     }
+
+    // ── hud ── the scenes, and the two-frame shot each of them takes: the
+    // frame with the interface, then the same world with it hidden (F1).
+    std::optional<demo::HudScript> hud_script;
+    std::string                    hud_shot_name;
+    i32                            hud_shot_phase = 0;
+    bool                           hud_shot_f3    = false;
+    bool                           hud_use        = false;  // a right click on what is aimed at
+    const auto                     hud_start      = std::chrono::steady_clock::now();
+    if (!options.hud_script.empty()) {
+        auto loaded = demo::HudScript::load(options.hud_script);
+        if (!loaded) {
+            OV_LOG_ERROR("{}", loaded.error());
+            return 1;
+        }
+        hud_script = std::move(*loaded);
+        std::error_code ignored;
+        std::filesystem::create_directories(options.hud_shots, ignored);
+        OV_LOG_INFO("hud scenes: {} steps from {}", hud_script->size(), options.hud_script);
+    }
+    // The copy out of the mapped buffer is the only part on the frame; the
+    // swizzle and the 11 MB write go to a thread, as the real client writes
+    // its screenshots on an I/O pool. Written synchronously, each shot held
+    // the frame loop half a second longer than the real client's, and the
+    // title of the next scene was a dozen ticks further into its fade.
+    std::vector<std::thread> hud_writers;
+    const auto write_hud_shot = [&](const std::string& path) {
+        const u32   w      = device.swapchain_width();
+        const u32   h      = device.swapchain_height();
+        const auto* mapped = static_cast<const u8*>(device.map(readback));
+        if (mapped == nullptr) {
+            return;
+        }
+        std::vector<u8> pixels(mapped, mapped + static_cast<usize>(w) * h * 4);
+        const bool      swizzle = device.swapchain_format() == rhi::Format::Bgra8Srgb ||
+                             device.swapchain_format() == rhi::Format::Bgra8Unorm;
+        hud_writers.emplace_back([path, w, h, swizzle, pixels = std::move(pixels)]() mutable {
+            if (swizzle) {
+                for (usize i = 0; i + 3 < pixels.size(); i += 4) {
+                    std::swap(pixels[i], pixels[i + 2]);
+                }
+            }
+            if (!write_ppm(path, pixels, w, h)) {
+                OV_LOG_ERROR("could not write {}", path);
+            }
+        });
+    };
+    // ── end hud ──
 
     // The scripted half of the round trip: right-click a block, then make two
     // clicks in the window that opens. Every one of them goes through the same
@@ -2401,6 +2467,7 @@ int main(int argc, char** argv) {
             // the first frame's decision on a default rather than on what the
             // server said.
             (*interface)->apply(events);
+            (*interface)->set_integrated(server_thread.joinable());  // ── hud ── Tab's rule
             breaking.on_events(events);  // ── breaking ── others' cracks and bursts, own effects
             // ── screens ── death is Combat Death's arrival; Respawn ends it
             if (events.hardcore) {
@@ -2976,6 +3043,49 @@ int main(int argc, char** argv) {
                 options.frames = rendered + 1;  // this frame's successor is the last, and captured
             }
             // ── end chat ────────────────────────────────────────────────────
+            // ── hud ── the scenes, once the game has begun, through the paths
+            // a hand takes: the chat's Enter, Tab, F3.
+            if (hud_script && chat_ready && hud_shot_phase == 0) {
+                const f64 hud_now =
+                    std::chrono::duration<f64>(std::chrono::steady_clock::now() - hud_start).count();
+                while (auto step = hud_script->next(hud_now)) {
+                    using Step = demo::HudStep::Kind;
+                    if (step->kind == Step::Command) {
+                        (*interface)->chat().submit("/" + step->text, *client, nullptr);
+                    } else if (step->kind == Step::Look) {
+                        camera.yaw_degrees   = step->yaw;
+                        camera.pitch_degrees = step->pitch;
+                    } else if (step->kind == Step::Key && step->text == "tab") {
+                        if (step->second != "tap") {
+                            (*interface)->set_tab_forced(step->second == "press");
+                        }
+                    } else if (step->kind == Step::Key && step->text == "e") {
+                        if (step->second != "release") {
+                            (*interface)->press_inventory(**window, *client);
+                        }
+                    } else if (step->kind == Step::Key && step->text == "esc") {
+                        if (step->second != "release") {
+                            (*interface)->close(**window, *client);
+                        }
+                    } else if (step->kind == Step::Key) {
+                        if (step->second != "press") {
+                            menus->toggle_debug();  // F3 alone acts on its release
+                        }
+                    } else if (step->kind == Step::Use) {
+                        hud_use = true;
+                    } else if (step->kind == Step::TabFoot) {
+                        (*interface)->inject_tab_header_footer(step->text, step->second);
+                    } else if (step->kind == Step::Shot) {
+                        hud_shot_name  = step->text;
+                        hud_shot_phase = 1;
+                        break;
+                    }
+                }
+                if (hud_script->done() && hud_shot_phase == 0) {
+                    running = false;
+                }
+            }
+            // ── end hud ──
             // ── render-parity ── --settle-shot. The clock is sent every
             // second, so three quiet seconds after the last chat line include
             // the answer to "/time set"; and three seconds without a chunk
@@ -3021,7 +3131,8 @@ int main(int argc, char** argv) {
 
             // Breaking and placing use exactly what the outline showed — and
             // only when no screen swallowed the click.
-            if (!ui_took_input && (input.attack_pressed || input.use_pressed)) {
+            if (!ui_took_input && (input.attack_pressed || input.use_pressed || hud_use)) {
+                hud_use         = false;  // ── hud ── the scenes' `use`, a right click
                 const auto& hit = aimed;
                 if (hit) {
                     const i32 face = static_cast<i32>(hit->face);
@@ -3513,6 +3624,7 @@ int main(int argc, char** argv) {
             info.yaw               = camera.yaw_degrees;
             info.pitch             = camera.pitch_degrees;
             info.biome             = std::string(blocks->biome_name(biome));
+            info.dimension         = (*interface)->dimension();  // ── hud ──
             const i32 fx = static_cast<i32>(std::floor(player.position.x));
             const i32 fy = static_cast<i32>(std::floor(player.position.y));
             const i32 fz = static_cast<i32>(std::floor(player.position.z));
@@ -3557,13 +3669,17 @@ int main(int argc, char** argv) {
         }
 
         const bool last_frame = options.frames != 0 && rendered + 1 >= options.frames;
-        if (readback.valid() && last_frame) {
+        // ── hud ── the final --screenshot only when one was asked for: the
+        // readback also exists for the scenes, and a run with a script and a
+        // frame count otherwise failed on its last frame writing to "".
+        const bool final_shot = last_frame && !options.screenshot.empty();
+        if (readback.valid() && (final_shot || hud_shot_phase != 0)) {
             cmd.transition_swapchain(rhi::ResourceState::ColourAttachment,
                                      rhi::ResourceState::TransferSource);
             cmd.copy_swapchain_to_buffer(readback);
             cmd.transition_swapchain(rhi::ResourceState::TransferSource,
                                      rhi::ResourceState::Present);
-            captured = true;
+            captured = captured || final_shot;
         } else {
             cmd.transition_swapchain(rhi::ResourceState::ColourAttachment,
                                      rhi::ResourceState::Present);
@@ -3575,6 +3691,32 @@ int main(int argc, char** argv) {
 
         auto presented = device.end_frame();
         ++rendered;
+        if (hud_shot_phase != 0 && readback.valid()) {  // ── hud ── a scene's two frames
+            device.wait_idle();
+            write_hud_shot(options.hud_shots + "/" + hud_shot_name +
+                           (hud_shot_phase == 2 ? "-nohud" : "") + ".ppm");
+            if (hud_shot_phase == 1) {
+                const auto facts = std::filesystem::path(options.hud_shots).parent_path() / "facts.txt";
+                if (std::FILE* f = std::fopen(facts.string().c_str(), "a")) {
+                    const std::string text = fmt::format("── shot {}\n{}", hud_shot_name,
+                                                         (*interface)->describe_hud());
+                    std::fwrite(text.data(), 1, text.size(), f);
+                    std::fclose(f);
+                }
+                (*interface)->set_hud_visible(false);
+                hud_shot_f3 = menus->debug();
+                if (hud_shot_f3) {
+                    menus->toggle_debug();
+                }
+                hud_shot_phase = 2;
+            } else {
+                (*interface)->set_hud_visible(options.hud);
+                if (hud_shot_f3) {
+                    menus->toggle_debug();
+                }
+                hud_shot_phase = 0;
+            }
+        }
         if (!presented && presented.error() == rhi::RhiError::SwapchainOutOfDate) {
             (void)device.resize((*window)->framebuffer_width(), (*window)->framebuffer_height());
             if (!ensure_depth()) {
@@ -3598,6 +3740,10 @@ int main(int argc, char** argv) {
     }
 
     device.wait_idle();
+
+    for (std::thread& writer : hud_writers) {  // ── hud ── every scene's file on disk
+        writer.join();
+    }
 
     // The client goes first: a server torn down under a live connection logs a
     // disconnection that did not happen.

@@ -1,0 +1,66 @@
+# Mounts: a horse (its hearts instead of the haunches, the jump bar instead of
+# the experience bar) and a saddled pig (hearts, but the experience bar
+# stays). scripts/measure_hud.py <which> --tag mount --scenes scripts/hud_scenes_mount.txt
+
+look 0 -90
+cmd gamerule sendCommandFeedback false
+cmd gamerule naturalRegeneration false
+cmd gamerule doDaylightCycle false
+cmd gamerule doMobSpawning false
+cmd time set 6000
+cmd weather clear
+cmd effect clear @s
+cmd clear @s
+cmd xp set @s 30 levels
+wait 60
+cmd summon minecraft:horse ~ ~ ~ {Tame:1b,SaddleItem:{id:"minecraft:saddle",Count:1b},Attributes:[{Name:"minecraft:generic.max_health",Base:30.0d}],Health:23.0f}
+wait 10
+cmd ride @s mount @e[type=minecraft:horse,limit=1,sort=nearest]
+wait 30
+look 0 -90
+wait 5
+shot 14-mount
+key e tap
+wait 20
+shot 39-horse-inventory
+key esc tap
+wait 10
+look 0 -90
+cmd ride @s dismount
+cmd kill @e[type=minecraft:horse]
+wait 40
+cmd summon minecraft:donkey ~ ~ ~ {Tame:1b,ChestedHorse:1b,SaddleItem:{id:"minecraft:saddle",Count:1b}}
+wait 10
+cmd ride @s mount @e[type=minecraft:donkey,limit=1,sort=nearest]
+wait 30
+key e tap
+wait 20
+shot 40-donkey-inventory
+key esc tap
+wait 10
+cmd ride @s dismount
+cmd kill @e[type=minecraft:donkey]
+wait 20
+cmd summon minecraft:llama ~ ~ ~ {Tame:1b,ChestedHorse:1b,Strength:3}
+wait 10
+cmd ride @s mount @e[type=minecraft:llama,limit=1,sort=nearest]
+wait 30
+key e tap
+wait 20
+shot 41-llama-inventory
+key esc tap
+wait 10
+cmd ride @s dismount
+cmd kill @e[type=minecraft:llama]
+wait 20
+look 0 -90
+cmd summon minecraft:pig ~ ~ ~ {Saddle:1b,Health:7.0f}
+wait 10
+cmd ride @s mount @e[type=minecraft:pig,limit=1,sort=nearest]
+wait 30
+look 0 -90
+wait 5
+shot 14-mount-pig
+cmd ride @s dismount
+cmd kill @e[type=minecraft:pig]
+wait 20

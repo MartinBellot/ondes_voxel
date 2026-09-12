@@ -1218,7 +1218,12 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       persistées dans `options.txt` — un fichier écrit par le vrai client, 137
       lignes, relu et réécrit à l'octet —, F3. Non mesurés contre le vrai
       client : options, pause, mort, F3 ; l'écran de mort n'a pas été vu de bout
-      en bout. Voir `docs/provenance/ecrans.md`)* : menu principal, création et sélection de monde, options
+      en bout. Voir `docs/provenance/ecrans.md`. **2026-09-12** : les
+      fenêtres que le serveur ouvrait et que le client refusait —
+      distributeur, trémie, boîte de Shulker, enclume, meule, table
+      d'enchantement, alambic — et l'inventaire du cheval, de l'âne et du lama
+      (Open Horse Screen, Player Command 7), emplacements lus dans les textures
+      et comparés au vrai client ; voir `docs/provenance/hud.md` § 7)* : menu principal, création et sélection de monde, options
       (contrôles, vidéo, son, langue, accessibilité, packs), pause, mort,
       inventaire, établi, fours ×3, coffres ×4, entonnoir, distributeur,
       enclume, enchantement, brassage, balise, métier à tisser, pierre de
@@ -1226,9 +1231,23 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       villageois, cheval et lama, wagonnet-coffre, blocs de commande, structure,
       jigsaw, chat et autocomplétion, liste de serveurs, téléchargement de
       terrain, statistiques, succès, livre de recettes
-- [ ] HUD : barre d'action, cœurs (+ absorption, gel, monture), faim, XP,
+- [~] HUD : barre d'action, cœurs (+ absorption, gel, monture), faim, XP,
       armure, oxygène, viseur, effets, boss bar, scoreboard, tab list, titres,
       sous-titres, **écran F3 complet**
+      *(**2026-09-12** : les deux clients jouent les mêmes scènes contre le
+      même serveur vanilla neuf (`scripts/measure_hud.py`), chaque capture
+      doublée sans HUD pour isoler l'encre. Mesuré sur le vrai client :
+      l'absorption **après** les cœurs sur sa propre rangée (et non dessus),
+      empoisonné, flétri, gelé à 140 ticks, hardcore, clignotement
+      (+20/+10 ticks, santé affichée une seconde en retard), vague de
+      régénération, cœurs qui tremblent sous 4 points reproduits **dix sur
+      dix** ; cœurs de monture à la place des haunches, barre de saut pour un
+      cheval mais pas pour un lama ni un cochon ; bulles, armure par
+      l'attribut, haunches vertes sous la faim ; icônes d'effets (une seule
+      texture), barres de boss (7 couleurs, 5 styles, glissement de 100 ms),
+      liste des joueurs (Player Info Update/Remove, en-tête et pied,
+      latence, couleurs d'équipe), F3 sur les numéros de ligne du vrai
+      client. Voir `docs/provenance/hud.md`)*
 - [ ] Rendu : entités et modèles animés, joueur et skins, **~90 types de
       particules**, entités d'affichage, cadres d'item, tableaux, bannières,
       cartes, texte et police, premier plan (main, blocs, armes), GUI 3D des

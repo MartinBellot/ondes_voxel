@@ -47,6 +47,25 @@ enum class ScreenKind : u8 {
     /// menu types 9, 13 and 21 — blast furnace, furnace, smoker. The same
     /// three slots and the same background, different textures.
     Furnace,
+    // ── hud ── the windows the server opens and this client did not draw,
+    // laid out from their textures' own slot squares (docs/provenance/hud.md).
+    /// generic_3x3 (6): dispenser and dropper.
+    Dispenser,
+    /// hopper (15): five in a row, a window 133 high.
+    Hopper,
+    /// shulker_box (19): three rows of nine, its own texture.
+    ShulkerBox,
+    /// anvil (7): two inputs and a result.
+    Anvil,
+    /// grindstone (14): two inputs and a result.
+    Grindstone,
+    /// enchantment (12): the item and the lapis.
+    Enchanting,
+    /// brewing_stand (10): three bottles, the ingredient, the blaze powder.
+    BrewingStand,
+    /// Open Horse Screen, not a menu type: saddle, armour, and a chest of
+    /// three rows when the animal carries one.
+    Horse,
 };
 
 /// One slot: where it is, and what number the server calls it.
@@ -56,6 +75,18 @@ struct SlotRect {
     /// The cell's top-left, relative to the window's, in GUI pixels.
     f32 x{0.0F};
     f32 y{0.0F};
+    /// ── hud ── On the wire but not on the screen: a donkey's armour slot, a
+    /// llama's saddle. Neither drawn nor clickable, as in vanilla.
+    bool hidden{false};
+};
+
+/// ── hud ── What a horse-like window shows besides its chest, by animal
+/// (measured on the real client: 39–41-*-inventory).
+struct HorseParts {
+    /// Horse, donkey, mule, skeleton and zombie horses, camel — not a llama.
+    bool saddle{true};
+    /// 0 none (donkey, mule…), 1 horse armour, 2 a llama's carpet.
+    i32 armour{1};
 };
 
 /// What a click on a screen means, in the protocol's own terms.
@@ -87,6 +118,14 @@ public:
     /// the wrong one.
     [[nodiscard]] static std::optional<ContainerScreen> from_menu(i32 menu_type, u8 window_id,
                                                                   std::string title);
+
+    /// ── hud ── Build from an Open Horse Screen: `container_slots` is the
+    /// packet's slot count — 2 for a horse, 2 + 3 × columns with a chest.
+    [[nodiscard]] static ContainerScreen from_horse(u8 window_id, i32 container_slots,
+                                                    std::string title, HorseParts parts = {});
+
+    /// Chest columns of a horse-like window; 0 without a chest.
+    [[nodiscard]] i32 horse_columns() const noexcept { return horse_columns_; }
 
     [[nodiscard]] ScreenKind kind() const noexcept { return kind_; }
     [[nodiscard]] u8         window_id() const noexcept { return window_id_; }
@@ -137,6 +176,8 @@ private:
     f32                   height_{166.0F};
     /// Chest rows, for the two-part background blit.
     i32 rows_{0};
+    i32        horse_columns_{0};  // ── hud ──
+    HorseParts horse_parts_{};
 };
 
 /// Vanilla's dim behind an open screen: a vertical gradient from 0x10101010 to

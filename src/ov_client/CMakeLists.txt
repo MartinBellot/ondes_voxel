@@ -15,6 +15,9 @@ ov_add_library(ov_client
         src/block_particles.cpp  # ── breaking ──
         src/gui.cpp
         src/hud.cpp
+        src/boss_bar_view.cpp   # ── hud ──
+        src/status_effects.cpp  # ── hud ──
+        src/tab_list_view.cpp   # ── hud ──
         src/scoreboard_view.cpp  # ── scoreboard ──
         src/item_view.cpp
         src/menu_layouts.cpp
@@ -51,6 +54,7 @@ ov_add_test(test_ov_client
         tests/test_chat.cpp
         tests/test_creative_gestures.cpp
         tests/test_creative_screen.cpp
+        tests/test_hud.cpp  # ── hud ──
         tests/test_interface.cpp
         tests/test_menu_layouts.cpp
         tests/test_options_file.cpp

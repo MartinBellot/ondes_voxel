@@ -134,6 +134,72 @@ std::optional<ContainerScreen> ContainerScreen::from_menu(i32 menu_type, u8 wind
         return screen;
     }
 
+    // ── hud ── The windows the server opens beside those. Every corner is a
+    // 16×16 square of slot grey in the pack's own texture (the `slots`
+    // report of docs/provenance/hud.md), in the protocol's slot order.
+    screen.height_ = 166.0F;
+    const auto rest = [&] { add_player_section(screen.slots_, kMainY, kHotbarY); };
+    switch (menu_type) {
+        case 6:  // generic_3x3
+            screen.kind_ = ScreenKind::Dispenser;
+            for (i32 row = 0; row < 3; ++row) {
+                for (i32 col = 0; col < 3; ++col) {
+                    add(screen.slots_, 62.0F + static_cast<f32>(col) * kSlotPitch,
+                        17.0F + static_cast<f32>(row) * kSlotPitch);
+                }
+            }
+            rest();
+            return screen;
+        case 15:  // hopper
+            screen.kind_   = ScreenKind::Hopper;
+            screen.height_ = 133.0F;
+            for (i32 col = 0; col < 5; ++col) {
+                add(screen.slots_, 44.0F + static_cast<f32>(col) * kSlotPitch, 20.0F);
+            }
+            add_player_section(screen.slots_, 51.0F, 109.0F);
+            return screen;
+        case 19:  // shulker_box
+            screen.kind_ = ScreenKind::ShulkerBox;
+            for (i32 row = 0; row < 3; ++row) {
+                for (i32 col = 0; col < 9; ++col) {
+                    add(screen.slots_, kMainX + static_cast<f32>(col) * kSlotPitch,
+                        18.0F + static_cast<f32>(row) * kSlotPitch);
+                }
+            }
+            rest();
+            return screen;
+        case 7:  // anvil
+            screen.kind_ = ScreenKind::Anvil;
+            add(screen.slots_, 27.0F, 47.0F);
+            add(screen.slots_, 76.0F, 47.0F);
+            add(screen.slots_, 134.0F, 47.0F);
+            rest();
+            return screen;
+        case 14:  // grindstone
+            screen.kind_ = ScreenKind::Grindstone;
+            add(screen.slots_, 49.0F, 19.0F);
+            add(screen.slots_, 49.0F, 40.0F);
+            add(screen.slots_, 129.0F, 34.0F);
+            rest();
+            return screen;
+        case 12:  // enchantment
+            screen.kind_ = ScreenKind::Enchanting;
+            add(screen.slots_, 15.0F, 47.0F);
+            add(screen.slots_, 35.0F, 47.0F);
+            rest();
+            return screen;
+        case 10:  // brewing_stand: bottles 0..2, ingredient 3, blaze powder 4
+            screen.kind_ = ScreenKind::BrewingStand;
+            add(screen.slots_, 56.0F, 51.0F);
+            add(screen.slots_, 79.0F, 58.0F);
+            add(screen.slots_, 102.0F, 51.0F);
+            add(screen.slots_, 79.0F, 17.0F);
+            add(screen.slots_, 17.0F, 17.0F);
+            rest();
+            return screen;
+        default: break;
+    }
+
     // Refused and named. Drawing an anvil as a chest would put its slots where
     // the player's inventory is, and every click would name a slot that means
     // something else on the server.
@@ -141,8 +207,43 @@ std::optional<ContainerScreen> ContainerScreen::from_menu(i32 menu_type, u8 wind
     return std::nullopt;
 }
 
+ContainerScreen ContainerScreen::from_horse(u8 window_id, i32 container_slots, std::string title,
+                                            HorseParts parts) {
+    ContainerScreen screen;
+    screen.kind_        = ScreenKind::Horse;
+    screen.window_id_   = window_id;
+    screen.title_       = std::move(title);
+    screen.width_       = kWindowW;
+    screen.height_      = 166.0F;
+    screen.horse_parts_ = parts;
+    // Saddle, then armour (a llama's carpet), then the chest by rows. Both
+    // first slots are always on the wire; the animal decides which show.
+    add(screen.slots_, 8.0F, 18.0F);
+    screen.slots_.back().hidden = !parts.saddle;
+    add(screen.slots_, 8.0F, 36.0F);
+    screen.slots_.back().hidden = parts.armour == 0;
+    screen.horse_columns_ = std::max(0, container_slots - 2) / 3;
+    for (i32 row = 0; row < 3 && screen.horse_columns_ > 0; ++row) {
+        for (i32 col = 0; col < screen.horse_columns_; ++col) {
+            add(screen.slots_, 80.0F + static_cast<f32>(col) * kSlotPitch,
+                18.0F + static_cast<f32>(row) * kSlotPitch);
+        }
+    }
+    add_player_section(screen.slots_, kMainY, kHotbarY);
+    return screen;
+}
+
 std::string_view ContainerScreen::background_texture() const noexcept {
     switch (kind_) {
+        // ── hud ──
+        case ScreenKind::Dispenser: return "minecraft:gui/container/dispenser";
+        case ScreenKind::Hopper: return "minecraft:gui/container/hopper";
+        case ScreenKind::ShulkerBox: return "minecraft:gui/container/shulker_box";
+        case ScreenKind::Anvil: return "minecraft:gui/container/anvil";
+        case ScreenKind::Grindstone: return "minecraft:gui/container/grindstone";
+        case ScreenKind::Enchanting: return "minecraft:gui/container/enchanting_table";
+        case ScreenKind::BrewingStand: return "minecraft:gui/container/brewing_stand";
+        case ScreenKind::Horse: return "minecraft:gui/container/horse";
         case ScreenKind::PlayerInventory:
             return "minecraft:gui/container/inventory";
         case ScreenKind::Chest:
@@ -168,6 +269,9 @@ const SlotRect* ContainerScreen::slot_at(f32 screen_width, f32 screen_height, f3
     const f32 ox = origin_x(screen_width);
     const f32 oy = origin_y(screen_height);
     for (const SlotRect& slot : slots_) {
+        if (slot.hidden) {
+            continue;  // ── hud ──
+        }
         const f32 x = ox + slot.x;
         const f32 y = oy + slot.y;
         if (mouse_x >= x && mouse_x < x + kSlotSize && mouse_y >= y && mouse_y < y + kSlotSize) {
@@ -214,6 +318,25 @@ void ContainerScreen::draw(Gui& gui, const ItemRenderer& items, GuiTexture backg
         gui.blit(background, ox, oy, width_, height_, 0.0F, 0.0F, width_, height_, kSheet,
                  kSheet);
     }
+    // ── hud ── a chested animal's grid: the sheet's cells below the window,
+    // (0, 166), as many columns as the chest has, over the panel at (79, 17).
+    if (kind_ == ScreenKind::Horse && horse_columns_ > 0) {
+        const f32 w = static_cast<f32>(horse_columns_) * kSlotPitch;
+        gui.blit(background, ox + 79.0F, oy + 17.0F, w, 54.0F, 0.0F, 166.0F, w, 54.0F, kSheet,
+                 kSheet);
+    }
+    // The saddle's and the armour's frames, from the sheet's row at 220:
+    // armour 0, saddle 18, a llama's carpet 36.
+    if (kind_ == ScreenKind::Horse) {
+        if (horse_parts_.saddle) {
+            gui.blit(background, ox + 7.0F, oy + 17.0F, 18.0F, 18.0F, 18.0F, 220.0F, 18.0F, 18.0F,
+                     kSheet, kSheet);
+        }
+        if (horse_parts_.armour != 0) {
+            gui.blit(background, ox + 7.0F, oy + 35.0F, 18.0F, 18.0F,
+                     horse_parts_.armour == 2 ? 36.0F : 0.0F, 220.0F, 18.0F, 18.0F, kSheet, kSheet);
+        }
+    }
 
     // The title, where vanilla puts it: eight pixels in, six down, in the dark
     // grey the backgrounds are drawn for, and with no shadow.
@@ -222,7 +345,14 @@ void ContainerScreen::draw(Gui& gui, const ItemRenderer& items, GuiTexture backg
     // word "Crafting" is painted into the texture — and adding one puts a
     // second label over the panel where the player model goes.
     if (kind_ != ScreenKind::PlayerInventory) {
-        (void)gui.text(ox + 8.0F, oy + 6.0F, title_, 0xFF404040U, false);
+        // ── hud ── a dispenser centres its title, an anvil starts it at 60.
+        f32 title_x = 8.0F;
+        if (kind_ == ScreenKind::Dispenser) {
+            title_x = std::floor((width_ - gui.font().width(title_)) / 2.0F);
+        } else if (kind_ == ScreenKind::Anvil) {
+            title_x = 60.0F;
+        }
+        (void)gui.text(ox + title_x, oy + 6.0F, title_, 0xFF404040U, false);
         // "Inventory", over the player's own section. Vanilla labels it in
         // every container screen and not in the inventory screen itself.
         (void)gui.text(ox + 8.0F, oy + height_ - 94.0F, "Inventory", 0xFF404040U, false);
@@ -233,14 +363,14 @@ void ContainerScreen::draw(Gui& gui, const ItemRenderer& items, GuiTexture backg
     // under the next slot's quads.
     for (const SlotRect& slot : slots_) {
         const auto index = static_cast<usize>(slot.index);
-        if (index >= contents.size()) {
+        if (index >= contents.size() || slot.hidden) {
             continue;
         }
         items.draw(gui, ox + slot.x, oy + slot.y, contents[index]);
     }
     for (const SlotRect& slot : slots_) {
         const auto index = static_cast<usize>(slot.index);
-        if (index >= contents.size()) {
+        if (index >= contents.size() || slot.hidden) {
             continue;
         }
         items.draw_count(gui, ox + slot.x, oy + slot.y, contents[index]);

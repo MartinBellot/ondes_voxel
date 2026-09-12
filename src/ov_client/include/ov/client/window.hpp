@@ -49,6 +49,8 @@ enum class Key : u8 {
     /// T: opens the chat — and, on a creative category page, jumps to the
     /// search tab, which is the one thing it does in this client so far.
     Chat,
+    /// ── hud ── Tab: the player list, while held.
+    PlayerList,
     Count,
 };
 

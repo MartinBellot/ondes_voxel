@@ -3,6 +3,8 @@
 #include "interface.hpp"
 
 #include "ov/base/log.hpp"
+#include "ov/gameplay/effects.hpp"   // ── hud ── effect names and colours
+#include "ov/protocol/tab_list.hpp"  // ── hud ──
 #include "ov/render/font.hpp"
 #include "ov/render/texture_image.hpp"
 
@@ -10,7 +12,9 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
+#include <variant>
 
 namespace ov::demo {
 
@@ -25,8 +29,58 @@ constexpr usize kOffHandSlot = 45;
 
 /// How long the held item's name stays up, in seconds. Vanilla's forty ticks.
 constexpr f32 kNameFlashSeconds = 2.0F;
-/// How long the hearts blink after damage. Vanilla's ten ticks.
-constexpr f32 kDamageFlashSeconds = 0.5F;
+/// ── hud ── The wall clock in milliseconds: a boss bar's slide and the
+/// hearts' second of lag are wall time in vanilla too.
+[[nodiscard]] i64 now_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+/// A mount the jump bar belongs to. Not a llama: nobody steers one, and the
+/// real client keeps the experience bar on a llama (41-llama-inventory).
+[[nodiscard]] bool jumps(std::string_view type) {
+    static constexpr std::array<std::string_view, 6> kJumpers{
+        "minecraft:horse",         "minecraft:donkey",       "minecraft:mule",
+        "minecraft:skeleton_horse", "minecraft:zombie_horse", "minecraft:camel"};
+    return std::ranges::find(kJumpers, type) != kJumpers.end();
+}
+
+/// A mount E opens an inventory for: the jumpers and the llamas.
+[[nodiscard]] bool has_mount_inventory(std::string_view type) {
+    return jumps(type) || type == "minecraft:llama" || type == "minecraft:trader_llama";
+}
+
+/// Which of the saddle and armour frames the animal's window shows
+/// (39–41-*-inventory): a saddle for all but llamas; armour for a horse, a
+/// carpet for a llama, none for the others.
+[[nodiscard]] client::HorseParts horse_parts(std::string_view type) {
+    const bool llama = type == "minecraft:llama" || type == "minecraft:trader_llama";
+    return client::HorseParts{!llama, type == "minecraft:horse" ? 1 : (llama ? 2 : 0)};
+}
+
+/// An attribute's value from its base and modifiers: the additions, then the
+/// multiplications of the base, then each multiplication of the total.
+[[nodiscard]] f64 attribute_value(const net::DecodedProperty& property) {
+    f64 value = property.base;
+    for (const net::WireModifier& m : property.modifiers) {
+        if (m.operation == 0) {
+            value += m.amount;
+        }
+    }
+    f64 total = value;
+    for (const net::WireModifier& m : property.modifiers) {
+        if (m.operation == 1) {
+            total += value * m.amount;
+        }
+    }
+    for (const net::WireModifier& m : property.modifiers) {
+        if (m.operation == 2) {
+            total *= 1.0 + m.amount;
+        }
+    }
+    return total;
+}
 
 /// Two clicks on one slot within this are one double-click. Vanilla's window is
 /// 250 ms; this is the same, in the unit the frame loop counts in.
@@ -75,7 +129,8 @@ std::expected<std::unique_ptr<Interface>, std::string> Interface::create(
     self->options_    = options;
     self->registries_ = registries;
     if (registries != nullptr) {
-        self->item_registry_ = registries->find("minecraft:item");
+        self->item_registry_   = registries->find("minecraft:item");
+        self->entity_registry_ = registries->find("minecraft:entity_type");  // ── hud ──
     }
 
     auto gui = client::Gui::create(device, colour_format);
@@ -123,15 +178,69 @@ std::expected<std::unique_ptr<Interface>, std::string> Interface::create(
     self->textures_.widgets = *widgets;
     self->textures_.icons   = *icons;
 
+    // ── hud ── the boss bars, the powder snow outline, and every effect's
+    // sprite packed into one texture. None of them is fatal: a missing sheet
+    // leaves its element undrawn and says so here.
+    if (auto bars = sheet("minecraft:gui/bars"); bars) {
+        self->bars_sheet_ = *bars;
+    } else {
+        OV_LOG_WARN("{}", bars.error());
+    }
+    if (auto snow = sheet("minecraft:misc/powder_snow_outline"); snow) {
+        self->textures_.powder_snow = *snow;
+    } else {
+        OV_LOG_WARN("{}", snow.error());
+    }
+    {
+        std::vector<std::string>          names;
+        std::vector<render::TextureImage> images;
+        for (i32 id = 1; id <= static_cast<i32>(gameplay::kEffectCount); ++id) {
+            const auto effect = gameplay::effect_from_id(id);
+            if (!effect) {
+                continue;
+            }
+            const std::string_view name = gameplay::effect_info(*effect).name;
+            const auto location = ResourceLocation::parse(
+                "minecraft:mob_effect/" + std::string(name.substr(name.find(':') + 1)));
+            if (!location) {
+                continue;
+            }
+            auto image = render::load_texture(assets, *location);
+            if (!image) {
+                OV_LOG_WARN("{}: {}", name, render::to_string(image.error()));
+                continue;
+            }
+            names.emplace_back(name);
+            images.push_back(std::move(*image));
+        }
+        const render::TextureImage icon_atlas =
+            client::pack_effect_icons(names, images, self->effect_icons_.cells);
+        if (!icon_atlas.empty()) {
+            if (auto handle = self->gui_->add_texture(icon_atlas, "mob_effect atlas"); handle) {
+                self->effect_icons_.texture = *handle;
+            }
+        }
+        OV_LOG_INFO("interface: {} effect sprites in one atlas", self->effect_icons_.cells.size());
+    }
+    // ── end hud ──
+
     for (const std::string_view location :
          {"minecraft:gui/container/inventory", "minecraft:gui/container/generic_54",
-          "minecraft:gui/container/crafting_table", "minecraft:gui/container/furnace"}) {
+          "minecraft:gui/container/crafting_table", "minecraft:gui/container/furnace",
+          // ── hud ── the windows added beside those
+          "minecraft:gui/container/dispenser", "minecraft:gui/container/hopper",
+          "minecraft:gui/container/shulker_box", "minecraft:gui/container/anvil",
+          "minecraft:gui/container/grindstone", "minecraft:gui/container/enchanting_table",
+          "minecraft:gui/container/brewing_stand", "minecraft:gui/container/horse"}) {
         auto handle = sheet(location);
         if (!handle) {
             OV_LOG_WARN("{}", handle.error());
             continue;
         }
         self->backgrounds_.emplace_back(std::string(location), *handle);
+        if (location == "minecraft:gui/container/inventory") {
+            self->inventory_sheet_ = *handle;  // ── hud ── the effect frames
+        }
     }
 
     // ── loading ──
@@ -291,7 +400,7 @@ void Interface::refresh_hotbar() {
     for (usize i = 0; i < armour.size(); ++i) {
         armour[i] = view_of(inventory_[kArmourFirst + i]);
     }
-    hud_.armour = client::armour_points(armour);
+    armour_table_ = client::armour_points(armour);  // ── hud ── the fallback
 }
 
 // ── allow-commands ──
@@ -316,7 +425,8 @@ void Interface::apply(const netclient::ClientEvents& events) {
     if (events.game_mode) {
         // 1 is creative. Creative hides the hearts, the haunches and the
         // experience bar, and it is the only thing that decides it.
-        hud_.creative = *events.game_mode == 1;
+        hud_.creative  = *events.game_mode == 1;
+        hud_.spectator = *events.game_mode == 3;  // ── hud ──
     }
     // ── allow-commands ── The operator tab, as vanilla's client decides it:
     // the "Operator Items Tab" option, and a player who may use game-master
@@ -331,9 +441,7 @@ void Interface::apply(const netclient::ClientEvents& events) {
         refresh_operator_tab();
     }
     if (events.health) {
-        if (events.health->health < previous_health_) {
-            hud_.damage_flash = kDamageFlashSeconds;
-        }
+        // ── hud ── the blink is HealthBlink's, applied every frame in draw().
         previous_health_ = events.health->health;
         hud_.health      = events.health->health;
         hud_.food        = events.health->food;
@@ -365,6 +473,34 @@ void Interface::apply(const netclient::ClientEvents& events) {
         } else {
             screen_.reset();
         }
+    }
+    // ── hud ── Open Horse Screen: the window is named after the animal.
+    if (events.open_horse_screen) {
+        std::string        title = "Horse";
+        client::HorseParts parts;
+        if (const auto type = entity_types_.find(events.open_horse_screen->entity_id);
+            type != entity_types_.end() && registries_ != nullptr && entity_registry_) {
+            const std::string_view name = registries_->entry_of(
+                *entity_registry_, static_cast<registry::ProtocolId>(type->second));
+            parts = horse_parts(name);
+            if (const usize colon = name.find(':'); colon != std::string_view::npos) {
+                title = std::string(language_.translate(
+                    "entity.minecraft." + std::string(name.substr(colon + 1))));
+            }
+        }
+        screen_ = client::ContainerScreen::from_horse(events.open_horse_screen->window_id,
+                                                      events.open_horse_screen->slot_count, title,
+                                                      parts);
+        own_inventory_ = false;
+        window_slots_.assign(screen_->slot_count(), net::ItemStack{});
+        background_ = client::GuiTexture::Invalid;
+        for (const auto& [location, handle] : backgrounds_) {
+            if (location == screen_->background_texture()) {
+                background_ = handle;
+            }
+        }
+        OV_LOG_INFO("interface: opened {} ({} slots, window {})", screen_->title(),
+                    screen_->slot_count(), screen_->window_id());
     }
 
     for (const net::ContainerContent& content : events.containers) {
@@ -408,6 +544,7 @@ void Interface::apply(const netclient::ClientEvents& events) {
         screen_.reset();
         window_slots_.clear();
     }
+    apply_hud(events);  // ── hud ──
 }
 
 void Interface::toggle_inventory(client::Window& window, netclient::Client& client) {
@@ -683,8 +820,10 @@ bool Interface::update(const client::InputState& input, netclient::Client& clien
                        client::Window& window, f64 delta_seconds) {
     const auto delta = static_cast<f32>(delta_seconds);
     clock_ += delta;
-    hud_.damage_flash    = std::max(0.0F, hud_.damage_flash - delta);
     hud_.name_flash_life = std::max(0.0F, hud_.name_flash_life - delta / kNameFlashSeconds);
+    // ── hud ── the GUI's tick, and Tab while no box or screen takes the keys
+    tick_hud(delta_seconds);
+    tab_key_ = input.held(client::Key::PlayerList) && !chat_.open() && !screen_ && !creative_visible_;
 
     const f32 scale = static_cast<f32>(gui_->scale());
     mouse_x_        = static_cast<f32>(input.mouse_x) / scale;
@@ -706,16 +845,7 @@ bool Interface::update(const client::InputState& input, netclient::Client& clien
         // the creative one needs is missing, instead of silently opening the
         // survival inventory in creative. That silence was the whole of the
         // "our client has no creative inventory" report.
-        if (hud_.creative && !screen_) {
-            toggle_creative(window, client);
-            if (!creative_visible_ && !creative_screen_) {
-                toggle_inventory(window, client);
-            }
-        } else if (creative_visible_) {
-            toggle_creative(window, client);
-        } else {
-            toggle_inventory(window, client);
-        }
+        press_inventory(window, client);  // ── hud ── a mount's inventory first
         return true;
     }
 
@@ -1003,14 +1133,41 @@ void Interface::draw(rhi::CommandList& cmd, u32 framebuffer_width, u32 framebuff
     // ── end loading ──
 
     if (options_.hud) {
+        // ── hud ── what the frame derives: the blink, the mount, the armour
+        const i64 now  = now_ms();
+        hud_.tick      = ticks_;
+        blink_.update(static_cast<i32>(std::ceil(hud_.health)), ticks_, now);
+        hud_.blinking       = blink_.blinking(ticks_);
+        hud_.display_health = blink_.display_health();
+        hud_.armour         = armour_attribute_.value_or(armour_table_);
+        hud_.vehicle_health.reset();
+        hud_.jumping_mount = false;
+        if (vehicle_id_) {
+            if (const auto health = entity_health_.find(*vehicle_id_); health != entity_health_.end()) {
+                hud_.vehicle_health     = health->second;
+                const auto max          = entity_max_health_.find(*vehicle_id_);
+                hud_.vehicle_max_health = max != entity_max_health_.end() ? max->second : health->second;
+            }
+            if (const auto type = entity_types_.find(*vehicle_id_);
+                type != entity_types_.end() && registries_ != nullptr && entity_registry_) {
+                hud_.jumping_mount = jumps(registries_->entry_of(
+                    *entity_registry_, static_cast<registry::ProtocolId>(type->second)));
+            }
+        }
         client::draw_hud(*gui_, *items_, textures_, hud_);
+        client::draw_status_effects(*gui_, client::EffectTextures{inventory_sheet_, &effect_icons_},
+                                    hud_effects_);
+        boss_bars_.draw(*gui_, bars_sheet_, now);
         scoreboard_view_.draw(*gui_, language_);  // ── scoreboard ── under the chat
-    }
-    chat_.draw(*gui_);  // ── chat ──  over the HUD, under any screen
-    if (subtitles_ != nullptr) {  // ── sound ──
-        subtitles_->draw(
-            *gui_, [this](std::string_view key) { return std::string(language_.translate(key)); },
-            subtitle_ears_);
+        chat_.draw(*gui_);  // ── chat ──  over the HUD, under any screen
+        if (tab_list_.should_show(tab_forced_.value_or(tab_key_), integrated_, scoreboard_view_)) {
+            tab_list_.draw(*gui_, textures_.icons, scoreboard_view_, language_);
+        }
+        if (subtitles_ != nullptr) {  // ── sound ──
+            subtitles_->draw(
+                *gui_, [this](std::string_view key) { return std::string(language_.translate(key)); },
+                subtitle_ears_);
+        }
     }
 
     if (creative_visible_ && creative_screen_) {
@@ -1090,5 +1247,231 @@ std::string Interface::describe_inventory() const {
     }
     return out;
 }
+
+// ── hud ──────────────────────────────────────────────────────────────────────
+
+void Interface::apply_hud(const netclient::ClientEvents& events) {
+    const i64 now = now_ms();
+    if (events.own_entity_id) {
+        // A new Login (play) or Respawn: a new player entity, nothing carried.
+        own_id_ = *events.own_entity_id;
+        vehicle_id_.reset();
+        status_effects_.clear();
+        armour_attribute_.reset();
+        hud_.max_health   = 20.0F;
+        hud_.absorption   = 0.0F;
+        hud_.air          = hud_.max_air;
+        hud_.frozen_ticks = 0;
+        boss_bars_.clear();
+        refresh_effects();
+    }
+    if (events.hardcore) {
+        hud_.hardcore = *events.hardcore;
+    }
+    if (events.dimension) {
+        dimension_ = *events.dimension;
+    }
+    using Kind = netclient::ClientEvents::EntityChangeKind;
+    for (const auto& change : events.entities) {
+        const bool own = own_id_ && change.id == *own_id_;
+        switch (change.kind) {
+            case Kind::Spawn: entity_types_[change.id] = change.type; break;
+            case Kind::Remove:
+                entity_types_.erase(change.id);
+                entity_health_.erase(change.id);
+                entity_max_health_.erase(change.id);
+                if (vehicle_id_ == change.id) {
+                    vehicle_id_.reset();
+                }
+                break;
+            case Kind::Metadata:
+                // The player's own: 1 air and 7 frozen ticks (Entity), 15
+                // absorption (Player). Anyone else's 9: a living entity's
+                // health, which the hearts of a mount are.
+                for (const net::MetadataValue& value : change.metadata) {
+                    if (own && value.index == 1) {
+                        hud_.air = static_cast<i32>(value.integer);
+                    } else if (own && value.index == 7) {
+                        hud_.frozen_ticks = static_cast<i32>(value.integer);
+                    } else if (own && value.index == 15) {
+                        hud_.absorption = value.real;
+                    } else if (!own && value.index == 9 && value.type == net::MetadataType::Float) {
+                        entity_health_[change.id] = value.real;
+                    }
+                }
+                break;
+            case Kind::Passengers:
+                if (own_id_) {
+                    if (std::ranges::find(change.riders, *own_id_) != change.riders.end()) {
+                        if (!vehicle_id_) {
+                            // The real client says it itself on the action bar
+                            // the moment a ride begins (14-mount-pig):
+                            // "Press Left Shift to Dismount".
+                            netclient::ClientEvents             onboard;
+                            netclient::ClientEvents::ChatEvent line;
+                            line.kind = netclient::ClientEvents::ChatEvent::Kind::ActionBar;
+                            line.json = R"({"translate":"mount.onboard","with":[{"keybind":"key.sneak"}]})";
+                            onboard.chat.push_back(std::move(line));
+                            chat_.apply(onboard, gui_->font(), language_);
+                        }
+                        vehicle_id_ = change.id;
+                    } else if (vehicle_id_ == change.id) {
+                        vehicle_id_.reset();
+                    }
+                }
+                break;
+            default: break;
+        }
+    }
+    for (const net::DecodedUpdateAttributes& update : events.attributes) {
+        const bool own = own_id_ && update.entity_id == *own_id_;
+        for (const net::DecodedProperty& property : update.properties) {
+            if (property.name == "minecraft:generic.max_health") {
+                const auto value = static_cast<f32>(attribute_value(property));
+                if (own) {
+                    hud_.max_health = value;
+                } else {
+                    entity_max_health_[update.entity_id] = value;
+                }
+            } else if (own && property.name == "minecraft:generic.armor") {
+                armour_attribute_ = static_cast<i32>(std::floor(attribute_value(property)));
+            }
+        }
+    }
+    for (const auto& effect : events.own_effects) {
+        std::erase_if(status_effects_, [&](const StatusEffect& s) { return s.id == effect.effect_id; });
+        if (effect.amplifier >= 0) {
+            status_effects_.push_back(
+                StatusEffect{effect.effect_id, effect.amplifier, effect.duration, effect.flags});
+        }
+    }
+    if (!events.own_effects.empty()) {
+        refresh_effects();
+    }
+    for (const auto& change : events.boss_bars) {
+        boss_bars_.apply(change, now, language_);
+    }
+    for (const auto& event : events.tab_list) {
+        tab_list_.apply(event);
+    }
+}
+
+void Interface::refresh_effects() {
+    hud_effects_.clear();
+    hud_.poisoned = hud_.withered = hud_.regenerating = hud_.hunger = false;
+    for (const StatusEffect& s : status_effects_) {
+        const auto effect = gameplay::effect_from_id(s.id);
+        if (!effect) {
+            continue;
+        }
+        const gameplay::EffectInfo& info = gameplay::effect_info(*effect);
+        hud_.poisoned     = hud_.poisoned || *effect == gameplay::Effect::Poison;
+        hud_.withered     = hud_.withered || *effect == gameplay::Effect::Wither;
+        hud_.regenerating = hud_.regenerating || *effect == gameplay::Effect::Regeneration;
+        hud_.hunger       = hud_.hunger || *effect == gameplay::Effect::Hunger;
+        client::HudEffect shown;
+        shown.name       = std::string(info.name);
+        shown.duration   = s.duration;
+        shown.amplifier  = s.amplifier;
+        shown.ambient    = (s.flags & net::effect_flags::kAmbient) != 0;
+        shown.show_icon  = (s.flags & net::effect_flags::kShowIcon) != 0;
+        shown.beneficial = client::effect_is_beneficial(info.name);
+        shown.color      = info.color;
+        hud_effects_.push_back(std::move(shown));
+    }
+    client::sort_effects(hud_effects_);
+}
+
+void Interface::tick_hud(f64 delta_seconds) {
+    constexpr f64 kTick = 0.05;
+    tick_clock_ += delta_seconds;
+    bool counted = false;
+    while (tick_clock_ >= kTick) {
+        tick_clock_ -= kTick;
+        ++ticks_;
+        // The client counts its effects down itself, one tick at a time, as
+        // vanilla's does between two packets.
+        for (StatusEffect& s : status_effects_) {
+            if (s.duration > 0) {
+                --s.duration;
+            }
+        }
+        for (client::HudEffect& e : hud_effects_) {
+            if (e.duration > 0) {
+                --e.duration;
+            }
+        }
+        counted = true;
+    }
+    if (counted) {
+        client::sort_effects(hud_effects_);
+    }
+}
+
+void Interface::press_inventory(client::Window& window, netclient::Client& client) {
+    // Riding a horse-like animal, E asks the server for its inventory: Player
+    // Command 7, answered by Open Horse Screen. Vanilla does the same.
+    if (!screen_ && !creative_visible_ && vehicle_id_) {
+        if (const auto type = entity_types_.find(*vehicle_id_);
+            type != entity_types_.end() && registries_ != nullptr && entity_registry_ &&
+            has_mount_inventory(registries_->entry_of(
+                *entity_registry_, static_cast<registry::ProtocolId>(type->second)))) {
+            client.send_player_command(7);
+            window.set_cursor_captured(false);
+            return;
+        }
+    }
+    if (hud_.creative && !screen_) {
+        toggle_creative(window, client);
+        if (!creative_visible_ && !creative_screen_) {
+            toggle_inventory(window, client);
+        }
+    } else if (creative_visible_) {
+        toggle_creative(window, client);
+    } else {
+        toggle_inventory(window, client);
+    }
+}
+
+void Interface::inject_tab_header_footer(std::string_view header_json, std::string_view footer_json) {
+    const auto bytes =
+        net::encode_tab_list_header_footer({std::string(header_json), std::string(footer_json)});
+    if (auto parsed = net::parse_tab_list_header_footer(bytes)) {
+        tab_list_.apply(netclient::ClientEvents::TabListEvent{std::move(*parsed)});
+    }
+}
+
+std::string Interface::describe_hud() const {
+    std::string out = fmt::format(
+        "  health {} max {} absorption {} food {} saturation {} air {} frozen {} armour {}\n"
+        "  xp level {} progress {}\n"
+        "  gui tickCount {} displayHealth {} blinking {} titleTime {}\n",
+        hud_.health, hud_.max_health, hud_.absorption, hud_.food, hud_.saturation, hud_.air,
+        hud_.frozen_ticks, hud_.armour, hud_.experience_level, hud_.experience_bar, ticks_,
+        hud_.display_health, hud_.blinking, chat_.title_time());
+    if (hud_.vehicle_health) {
+        out += fmt::format("  vehicle health {} max {} jumping {}\n", *hud_.vehicle_health,
+                           hud_.vehicle_max_health, hud_.jumping_mount);
+    }
+    for (const client::HudEffect& e : hud_effects_) {
+        out += fmt::format("  effect {} amplifier {} duration {} ambient {} icon {} beneficial {}\n",
+                           e.name, e.amplifier, e.duration, e.ambient, e.show_icon, e.beneficial);
+    }
+    const i64 now = now_ms();
+    for (const client::BossBarView::Bar& bar : boss_bars_.bars()) {
+        out += fmt::format("  boss \"{}\" progress {} target {} colour {} overlay {}\n",
+                           render::plain_text(bar.title), bar.progress(now), bar.target, bar.color,
+                           bar.division);
+    }
+    out += fmt::format("  tab visible {} header {} footer {}\n",
+                       tab_list_.should_show(tab_forced_.value_or(tab_key_), integrated_, scoreboard_view_),
+                       tab_list_.header(), tab_list_.footer());
+    for (const client::TabListView::Entry& e : tab_list_.entries()) {
+        out += fmt::format("  player {} latency {} mode {} listed {} team \"{}\"\n", e.name, e.latency,
+                           e.game_mode, e.listed, scoreboard_view_.team_name(e.name));
+    }
+    return out;
+}
+// ── end hud ──
 
 }  // namespace ov::demo

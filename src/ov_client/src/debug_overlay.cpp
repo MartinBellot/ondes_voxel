@@ -41,52 +41,57 @@ std::string facing_line(f32 yaw, f32 pitch) {
 }
 
 std::vector<std::string> debug_left_lines(const DebugInfo& info) {
-    std::vector<std::string> lines;
-    lines.push_back(fmt::format("Minecraft {} ({}/vanilla)", info.version, info.version));
-    lines.push_back(fmt::format("{} fps", info.fps));
-    if (!info.server_brand.empty()) {
-        lines.push_back(info.server_brand);
-    }
-    lines.push_back(fmt::format("C: {}/{}", info.sections_drawn, info.sections_resident));
-    lines.push_back(fmt::format("E: {}/{}", info.entities_drawn, info.entities_known));
-    lines.push_back("minecraft:overworld");
-    lines.emplace_back();
+    // ── hud ── The real client's nineteen lines, by number (19-f3):
+    //  0 version · 1 fps · 2 server · 3 C: · 4 E: · 5 P: · 6 Chunks[C] ·
+    //  7 dimension · 8 blank · 9 XYZ · 10 Block · 11 Chunk · 12 Facing ·
+    // 13 Client Light · 14 CH · 15 SH · 16 Biome · 17 Local Difficulty · 18 Sounds.
+    std::vector<std::string> lines(19);
+    lines[0] = fmt::format("Minecraft {} ({}/vanilla)", info.version, info.version);
+    lines[1] = fmt::format("{} fps", info.fps);
+    lines[2] = info.server_brand;
+    lines[3] = fmt::format("C: {}/{}", info.sections_drawn, info.sections_resident);
+    lines[4] = fmt::format("E: {}/{}", info.entities_drawn, info.entities_known);
+    lines[7] = info.dimension;
     const i32 bx = floor_int(info.x);
     const i32 by = floor_int(info.y);
     const i32 bz = floor_int(info.z);
-    lines.push_back(fmt::format("XYZ: {:.3f} / {:.5f} / {:.3f}", info.x, info.y, info.z));
-    lines.push_back(fmt::format("Block: {} {} {} [{} {} {}]", bx, by, bz, bx & 15, by & 15, bz & 15));
+    lines[9]  = fmt::format("XYZ: {:.3f} / {:.5f} / {:.3f}", info.x, info.y, info.z);
+    lines[10] = fmt::format("Block: {} {} {} [{} {} {}]", bx, by, bz, bx & 15, by & 15, bz & 15);
     const i32 cx = bx >> 4;
     const i32 cz = bz >> 4;
-    lines.push_back(fmt::format("Chunk: {} {} {} [{} {} in r.{}.{}.mca]", cx, by >> 4, cz, cx & 31,
-                                cz & 31, cx >> 5, cz >> 5));
-    lines.push_back(facing_line(info.yaw, info.pitch));
+    lines[11] = fmt::format("Chunk: {} {} {} [{} {} in r.{}.{}.mca]", cx, by >> 4, cz, cx & 31,
+                            cz & 31, cx >> 5, cz >> 5);
+    lines[12] = facing_line(info.yaw, info.pitch);
     if (info.sky_light && info.block_light) {
-        lines.push_back(fmt::format("Client Light: {} ({} sky, {} block)",
-                                    std::max(*info.sky_light, *info.block_light), *info.sky_light,
-                                    *info.block_light));
+        lines[13] = fmt::format("Client Light: {} ({} sky, {} block)",
+                                std::max(*info.sky_light, *info.block_light), *info.sky_light,
+                                *info.block_light);
     }
     if (!info.biome.empty()) {
-        lines.push_back("Biome: " + info.biome);
+        lines[16] = "Biome: " + info.biome;
     }
     return lines;
 }
 
 std::vector<std::string> debug_right_lines(const DebugInfo& info) {
-    std::vector<std::string> lines;
+    // ── hud ── The real client's ten: 0 Java · 1 Mem · 2 Allocation rate ·
+    // 3 Allocated · 4 blank · 5 CPU · 6 blank · 7 Display · 8 GPU · 9 GL.
+    // This is not a JVM: lines 0, 2, 3 and 9 have no value here.
+    std::vector<std::string> lines(10);
     const u64 mib = 1024ULL * 1024ULL;
     if (info.memory_total != 0) {
-        lines.push_back(fmt::format("Mem: {}% {}/{}MB", info.memory_used * 100 / info.memory_total,
-                                    info.memory_used / mib, info.memory_total / mib));
+        // Vanilla's "Mem: % 2d%% %03d/%03dMB": the percentage with a sign
+        // space, padded to two — "Mem:  45% 689/1504MB".
+        lines[1] = fmt::format("Mem: {:>2}% {:03}/{:03}MB",
+                               " " + std::to_string(info.memory_used * 100 / info.memory_total),
+                               info.memory_used / mib, info.memory_total / mib);
     }
-    lines.emplace_back();
     if (!info.cpu.empty()) {
-        lines.push_back("CPU: " + info.cpu);
+        lines[5] = "CPU: " + info.cpu;
     }
-    lines.emplace_back();
-    lines.push_back(fmt::format("Display: {}x{}", info.framebuffer_width, info.framebuffer_height));
+    lines[7] = fmt::format("Display: {}x{}", info.framebuffer_width, info.framebuffer_height);
     if (!info.gpu.empty()) {
-        lines.push_back(info.gpu);
+        lines[8] = info.gpu;
     }
     if (info.target_block) {
         lines.emplace_back();
