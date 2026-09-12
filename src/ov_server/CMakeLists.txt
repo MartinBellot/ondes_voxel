@@ -76,6 +76,16 @@ ov_add_library(ov_server
         # ── scoreboard ──
         src/scoreboard/scoreboard.cpp
         src/commands/scoreboard_commands.cpp
+        # ── dedicated server administration ──
+        src/admin/java_compat.cpp
+        src/admin/query.cpp
+        src/admin/rcon.cpp
+        src/admin/server_admin.cpp
+        src/admin/server_properties.cpp
+        src/admin/status_icon.cpp
+        src/admin/user_lists.cpp
+        src/admin/watchdog.cpp
+        src/commands/admin_commands.cpp
     DEPS
         ov_base
         ov_gameplay
@@ -92,6 +102,9 @@ ov_add_library(ov_server
         # must not reach an installed one. Only natural_spawning.cpp uses it,
         # to read the biome spawner lists out of the data generator output.
         simdjson::simdjson
+        # ── dedicated server administration ── RCON and Query sockets, inside
+        # rcon.cpp and query.cpp only.
+        asio::asio
 )
 
 # The units that can be tested without a socket. The server itself is a loop
@@ -145,6 +158,16 @@ ov_add_test(test_ov_commands
 ov_add_test(test_ov_scoreboard
     SOURCES
         tests/test_scoreboard.cpp
+    DEPS ov_server
+    LABELS unit
+)
+
+# ── dedicated server administration ──
+# server.properties, the list files, RCON and Query codecs, the watchdog.
+ov_add_test(test_ov_admin
+    SOURCES
+        tests/test_admin.cpp
+        tests/test_admin_commands.cpp
     DEPS ov_server
     LABELS unit
 )

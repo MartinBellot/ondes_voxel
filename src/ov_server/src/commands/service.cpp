@@ -26,6 +26,7 @@ CommandService::CommandService(ServiceConfig config)
         lang_ = Lang::load(config_.lang_file);
     }
     register_commands();
+    sync_admin_ops();  // ── dedicated server administration: the door knows the ops ──
     for (usize level = 0; level < graphs_.size(); ++level) {
         graphs_[level] = net::encode_commands(dispatcher_.wire_graph(static_cast<i32>(level)));
     }
@@ -57,7 +58,7 @@ void CommandService::load_world(const world::LevelSettings& settings) {
 
 void CommandService::enqueue(i32 player_entity_id, std::string command, i64 timestamp, i64 salt) {
     const std::scoped_lock lock{queue_mutex_};
-    queue_.push_back(Pending{player_entity_id, std::move(command), timestamp, salt});
+    queue_.push_back(Pending{player_entity_id, std::move(command), timestamp, salt, {}, {}});
 }
 
 void CommandService::enqueue_console(std::string command) {
@@ -67,7 +68,16 @@ void CommandService::enqueue_console(std::string command) {
         command.erase(command.begin());
     }
     const std::scoped_lock lock{queue_mutex_};
-    queue_.push_back(Pending{-1, std::move(command), 0, 0});
+    queue_.push_back(Pending{-1, std::move(command), 0, 0, {}, {}});
+}
+
+void CommandService::enqueue_captured(std::string command, std::string source_name,
+                                      std::function<void(std::string)> done) {
+    if (!command.empty() && command.front() == '/') {
+        command.erase(command.begin());
+    }
+    const std::scoped_lock lock{queue_mutex_};
+    queue_.push_back(Pending{-1, std::move(command), 0, 0, std::move(source_name), std::move(done)});
 }
 
 void CommandService::enqueue_kill(std::string killer, std::string victim, bool victim_is_player) {
@@ -316,6 +326,16 @@ void CommandService::run(CommandHost& host) {
             continue;
         }
         if (pending.player < 0) {
+            if (pending.done) {  // ── dedicated server administration: RCON ──
+                CommandSource source;
+                source.name = pending.source_name;
+                std::string words;
+                capture_    = &words;
+                (void)execute(source, pending.command, host);
+                capture_ = nullptr;
+                pending.done(std::move(words));
+                continue;
+            }
             (void)execute(CommandSource{}, pending.command, host);
             continue;
         }
@@ -368,14 +388,20 @@ void CommandService::reply(const CommandSource& source, const Text& text) {
         }
         return;
     }
+    if (capture_ != nullptr) {  // ── dedicated server administration: RCON ──
+        *capture_ += plain(text, lang());
+        return;
+    }
     if (console) {
         console(plain(shown, lang()));
     }
 }
 
 Text CommandService::source_name(const CommandSource& source) const {
+    // ── dedicated server administration ── "Server" for the console, "Rcon"
+    // for RCON: the source's own name.
     return source.is_player() ? player_display_name(source.name, source.uuid)
-                              : Text::literal("Server");
+                              : Text::literal(source.name);
 }
 
 void CommandService::success(const CommandSource& source, const Text& text, bool broadcast_to_ops) {
@@ -392,7 +418,13 @@ void CommandService::success(const CommandSource& source, const Text& text, bool
     Text admin = Text::translatable("chat.type.admin", {source_shown_, decorate(text)});
     admin.style.italic = true;
     admin.color("gray");
-    if (feedback) {
+    // ── dedicated server administration ── broadcast-console-to-ops and
+    // broadcast-rcon-to-ops decide whether operators hear the console's and
+    // RCON's commands.
+    const bool rcon     = !source.is_player() && source.name == "Rcon";
+    const bool informs  = source.is_player() || (rcon ? config_.broadcast_rcon_to_ops
+                                                      : config_.broadcast_console_to_ops);
+    if (feedback && informs) {
         const std::string json = to_json(admin);
         for (PlayerRef& p : players_) {
             if (source.is_player() && p.entity_id == source.entity_id) {
@@ -406,7 +438,7 @@ void CommandService::success(const CommandSource& source, const Text& text, bool
             }
         }
     }
-    if (source.is_player() && world_.rules.flag("logAdminCommands") && console) {
+    if ((source.is_player() || rcon) && world_.rules.flag("logAdminCommands") && console) {
         console(plain(admin, lang()));
     }
 }

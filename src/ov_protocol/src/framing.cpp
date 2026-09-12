@@ -4,6 +4,7 @@
 #include "ov/protocol/varint.hpp"
 
 #include <algorithm>
+#include <optional>
 
 namespace ov::net {
 namespace {
@@ -201,6 +202,48 @@ FrameResult<std::vector<u8>> encode_packet(i32 packet_id, std::span<const u8> bo
     const auto     result = encode_packet_into(writer, packet_id, body, threshold);
     if (!result) {
         return std::unexpected{result.error()};
+    }
+    return writer.take();
+}
+
+FrameResult<std::vector<u8>> compress_frames(std::span<const u8> frames, i32 threshold) {
+    const auto varint_at = [&](usize& at) -> std::optional<i32> {
+        u32 value = 0;
+        for (u32 shift = 0; shift < 35; shift += 7) {
+            if (at >= frames.size()) {
+                return std::nullopt;
+            }
+            const u8 byte = frames[at++];
+            value |= static_cast<u32>(byte & 0x7F) << shift;
+            if ((byte & 0x80) == 0) {
+                return static_cast<i32>(value);
+            }
+        }
+        return std::nullopt;
+    };
+    io::ByteWriter writer;
+    usize          at = 0;
+    while (at < frames.size()) {
+        const auto length = varint_at(at);
+        if (!length || *length < 1 || static_cast<usize>(*length) > frames.size() - at) {
+            return std::unexpected{FrameError::Incomplete};
+        }
+        const auto body     = frames.subspan(at, static_cast<usize>(*length));
+        usize      id_end   = 0;
+        const auto id       = [&]() -> std::optional<i32> {
+            usize local = at;
+            auto  value = varint_at(local);
+            id_end      = local;
+            return value;
+        }();
+        if (!id || id_end > at + body.size()) {
+            return std::unexpected{FrameError::Incomplete};
+        }
+        const auto data = frames.subspan(id_end, at + body.size() - id_end);
+        if (const auto result = encode_packet_into(writer, *id, data, threshold); !result) {
+            return std::unexpected{result.error()};
+        }
+        at += body.size();
     }
     return writer.take();
 }

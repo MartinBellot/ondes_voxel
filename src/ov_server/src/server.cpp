@@ -73,6 +73,14 @@
 #include "ov/protocol/survival.hpp"
 #include "ov/world/level_dat.hpp"
 #include "async_chunk_source.hpp"
+// ── dedicated server administration ──
+#include "admin/query.hpp"
+#include "admin/rcon.hpp"
+#include "admin/server_admin.hpp"
+#include "admin/server_properties.hpp"
+#include "admin/status_icon.hpp"
+#include "admin/watchdog.hpp"
+#include <future>
 #include "generated_world.hpp"
 #include "survival_session.hpp"
 #include "effect_session.hpp"  // ── effects ──
@@ -219,6 +227,13 @@ struct Options {
     /// record also goes into level.dat's Data.Player, where vanilla looks for
     /// the player of a singleplayer world. Empty on a dedicated server.
     std::string host_player;
+
+    // ── dedicated server administration ── A flag given on the command line
+    // wins over server.properties for this run, as vanilla's --port and
+    // --world do, and is not written back.
+    bool port_given{false};
+    bool world_given{false};
+    bool motd_given{false};
 };
 
 /// Where a connection is in the protocol's state machine.
@@ -572,6 +587,14 @@ struct Player {
     i64  keep_alive_id{0};
     bool awaiting_keep_alive{false};
 
+    // ── dedicated server administration ──
+    /// The address they came from, no port: what an IP ban is checked against.
+    std::string address;
+    /// Steady milliseconds of their last action, for player-idle-timeout.
+    i64 last_action_ms{0};
+    /// The last movement packet, hashed: one that repeats it is not an action.
+    u64 last_movement_hash{0};
+
     /// ── sound ── how far this player has walked, in footsteps.
     Sounds::Stride stride{};
 
@@ -816,12 +839,14 @@ Options parse_args(int argc, char** argv) {
             if (std::from_chars(value.data(), value.data() + value.size(), parsed).ec ==
                     std::errc{} &&
                 parsed > 0 && parsed < 65536) {
-                options.port = static_cast<ov::u16>(parsed);
+                options.port       = static_cast<ov::u16>(parsed);
+                options.port_given = true;
             } else {
                 OV_LOG_WARN("invalid --port value '{}', ignoring", value);
             }
         } else if (arg.starts_with("--world=")) {
-            options.world_dir = std::string{arg.substr(8)};
+            options.world_dir   = std::string{arg.substr(8)};
+            options.world_given = true;
         } else if (arg.starts_with("--seed=")) {  // ── screens ──
             const auto value  = arg.substr(7);
             ov::i64    parsed = 0;
@@ -832,7 +857,8 @@ Options parse_args(int argc, char** argv) {
                 OV_LOG_WARN("invalid --seed value '{}', ignoring", value);
             }
         } else if (arg.starts_with("--motd=")) {
-            options.motd = arg.substr(7);
+            options.motd       = arg.substr(7);
+            options.motd_given = true;
         } else if (arg.starts_with("--log-level=")) {
             options.log_level = ov::parse_log_level(arg.substr(12));
         } else if (arg.starts_with("--ticks=")) {
@@ -880,7 +906,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     const std::atomic<bool>* external_pause) {
     using namespace ov;
 
-    const Options options = parse_args(argc, argv);
+    Options options = parse_args(argc, argv);
     if (options.show_help) {
         print_help();
         return 0;
@@ -904,6 +930,50 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         std::signal(SIGTERM, handle_signal);
     }
 
+    // ── dedicated server administration ──────────────────────────────────────
+    // server.properties in the working directory, read and written back the
+    // way vanilla does on every start (admin/server_properties.hpp). Only a
+    // dedicated server has one: an integrated server's settings are the
+    // world's and the window's.
+    const bool             dedicated   = external_stop == nullptr;
+    const admin::WallClock admin_clock = admin::WallClock::system();
+    const auto             date_line   = [&admin_clock] {
+        const i64              now  = admin_clock.now();
+        const admin::LocalZone zone = admin_clock.zone(now);
+        return admin::format_java_date(now, zone.offset_seconds, zone.abbreviation);
+    };
+    std::optional<admin::PropertiesFile> properties;
+    const std::filesystem::path          properties_path{"server.properties"};
+    if (dedicated) {
+        properties = admin::load_properties_file(properties_path, date_line());
+        if (!properties->existed) {
+            // Offline only, by decision: a first start writes online-mode=false
+            // where vanilla writes true, so that the server it just configured
+            // can start. Named in docs/provenance/serveur-dedie.md.
+            properties->properties.set("online-mode", "false");
+            properties->settings.online_mode = false;
+            (void)admin::save_properties_file(properties_path, properties->properties, date_line());
+        }
+        const admin::DedicatedSettings& boot = properties->settings;
+        if (boot.online_mode) {
+            OV_LOG_ERROR("server.properties says online-mode=true. Ondes VOXEL has no Mojang "
+                         "authentication: it only runs offline, with offline uuids.");
+            OV_LOG_ERROR("Set online-mode=false in server.properties to start it.");
+            return 1;
+        }
+        if (!options.port_given) {
+            options.port = static_cast<u16>(boot.server_port);
+        }
+        if (!options.world_given) {
+            options.world_dir = boot.level_name;
+        }
+        if (!options.motd_given) {
+            options.motd = boot.motd;
+        }
+        options.max_players = boot.max_players;
+    }
+    // ── end dedicated server administration ─────────────────────────────────
+
     // ── Network ─────────────────────────────────────────────────────────────
     // Bound before the tick loop starts: failing to bind is worth saying
     // immediately rather than after the world has loaded.
@@ -916,6 +986,17 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     net::ServerStatus status;
     status.description = options.motd;
     status.max_players = options.max_players;
+    // ── dedicated server administration ── server-icon.png, 64×64, as a data
+    // URI: read once at start, as vanilla does.
+    if (dedicated) {
+        if (auto icon = admin::load_status_icon("server-icon.png")) {
+            if (icon->has_value()) {
+                status.favicon = **icon;
+            } else {
+                OV_LOG_WARN("server-icon.png: {}", icon->error());
+            }
+        }
+    }
 
     // The data a player needs before they can be let in. Both are generated
     // locally from the official jar and never committed; without them the
@@ -1188,6 +1269,20 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     // ── screens ── --seed, then the environment, then a level.dat that already
     // declares a seeded overworld (reopened from the world list).
     std::optional<i64> requested_seed = options.seed;
+    // ── dedicated server administration ── level-seed, for a world not yet
+    // created: a number is the seed, any other text its String.hashCode.
+    if (!requested_seed && properties && !properties->settings.level_seed.empty() &&
+        !level_settings.generated && !std::filesystem::exists(level_dir / "level.dat")) {
+        const std::string& level_seed_text = properties->settings.level_seed;
+        i64                level_seed_value = 0;
+        const auto [seed_end, seed_ec] =
+            std::from_chars(level_seed_text.data(), level_seed_text.data() + level_seed_text.size(),
+                            level_seed_value);
+        requested_seed =
+            seed_ec == std::errc{} && seed_end == level_seed_text.data() + level_seed_text.size()
+                ? level_seed_value
+                : static_cast<i64>(admin::java_string_hash(level_seed_text));
+    }
     if (const char* seed_text = std::getenv("OV_WORLDGEN_SEED"); !requested_seed && seed_text) {
         requested_seed = std::strtoll(seed_text, nullptr, 10);
     }
@@ -1227,6 +1322,29 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     if (options.survival) {
         level_settings.game_type = 0;
     }
+    // ── dedicated server administration ── gamemode and difficulty, which
+    // vanilla applies to the world on every start. Only from a file that was
+    // there before this start: a first start keeps this server's own
+    // defaults (creative, normal), which every tool of the project expects —
+    // a deviation named in docs/provenance/serveur-dedie.md.
+    if (properties && properties->existed && !options.survival) {
+        level_settings.game_type  = properties->settings.gamemode;
+        level_settings.difficulty = static_cast<i8>(
+            properties->settings.hardcore ? u8{3} : properties->settings.difficulty);
+    }
+    std::optional<admin::ServerAdmin> server_admin;
+    if (properties) {
+        admin::AdminConfig admin_config;
+        admin_config.directory         = ".";
+        admin_config.clock             = admin_clock;
+        admin_config.white_list        = properties->settings.white_list;
+        admin_config.enforce_whitelist = properties->settings.enforce_whitelist;
+        admin_config.max_players       = properties->settings.max_players;
+        server_admin.emplace(admin_config);
+        for (const std::string& problem : server_admin->load()) {
+            OV_LOG_WARN("{}", problem);
+        }
+    }
     std::unique_ptr<cmd::CommandService> commands;
     bool scoreboard_refused = false;  // ── scoreboard ── a scoreboard.dat that did not read
     if (blocks && registries) {
@@ -1244,6 +1362,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         command_config.host_player = options.host_player;
         command_config.max_players = options.max_players;
         command_config.motd        = options.motd;
+        // ── dedicated server administration ──
+        command_config.admin = server_admin ? &*server_admin : nullptr;
+        if (properties) {
+            command_config.op_permission_level =
+                std::clamp(properties->settings.op_permission_level, 1, 4);
+            command_config.broadcast_console_to_ops = properties->settings.broadcast_console_to_ops;
+            command_config.broadcast_rcon_to_ops    = properties->settings.broadcast_rcon_to_ops;
+        }
         commands = std::make_unique<cmd::CommandService>(std::move(command_config));
         commands->load_world(level_settings);
         commands->console = [](std::string_view line) { OV_LOG_INFO("{}", line); };
@@ -1440,7 +1566,11 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     if (blocks && registries) {
         portal_rules.emplace(*blocks, *registries);
     }
-    const bool nether_enabled = [] {
+    const bool nether_enabled = [&] {
+        // ── dedicated server administration ── allow-nether=false closes it.
+        if (properties && !properties->settings.allow_nether) {
+            return false;
+        }
         const char* setting = std::getenv("OV_NETHER");
         return setting == nullptr || std::string_view{setting} != "0";
     }();
@@ -1873,7 +2003,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     /// be 289 chunks a few steps apart, and the client would spend its time
     /// rebuilding meshes it already had.
     const auto stream_chunks = [&](const net::ConnectionPtr& connection, Player& player) {
-        constexpr i32 kRadius = 8;
+        // ── dedicated server administration ── view-distance, below this
+        // server's own radius of 8; above it, 8 still (named).
+        const i32 kRadius = properties ? std::clamp(properties->settings.view_distance, 2, 8) : 8;
 
         const i32 centre_x = static_cast<i32>(std::floor(player.x)) >> 4;
         const i32 centre_z = static_cast<i32>(std::floor(player.z)) >> 4;
@@ -4175,6 +4307,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             ref.survival      = &who.survival;
             ref.effects       = &who.effects;
             ref.effect_bearer = effect_bearer_for(who);
+            ref.address       = who.address;  // ── dedicated server administration ──
             ref.send          = [&who](i32 id, std::span<const u8> payload) {
                 if (const auto framed = net::encode_packet(id, payload); framed && who.connection) {
                     who.connection->send(*framed);
@@ -4544,6 +4677,16 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         }
     };
     command_host.save = [&] { save_world(); };
+    // ── dedicated server administration ──
+    command_host.set_property = [&](std::string_view key, std::string value) {
+        if (properties) {
+            properties->properties.set(key, std::move(value));
+            // A command's rewrite: the jar stores a copy of its table then.
+            (void)admin::save_properties_file(properties_path, properties->properties, date_line(),
+                                              true);
+        }
+    };
+    command_host.tick_count = [&server_tick] { return server_tick.load(std::memory_order_relaxed); };
     command_host.stop = [] { g_stop_requested.store(true, std::memory_order_relaxed); };
     command_host.set_world_spawn = [&](i32 x, i32 y, i32 z, f32 angle) {
         level_settings.spawn_x     = x;
@@ -4670,6 +4813,40 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         OV_LOG_DEBUG("{} disconnected", connection->peer_address());
     };
 
+    // ── dedicated server administration ── spawn-protection, as
+    // MinecraftServer.isUnderSpawnProtection: the overworld only, only while
+    // someone is an operator, never for an operator, and within the square of
+    // that radius around the world spawn. Caller holds players_mutex.
+    const auto spawn_protected = [&](const Player& who, BlockPos at) {
+        if (!properties || !server_admin || properties->settings.spawn_protection <= 0 ||
+            who.dimension != DimensionId::Overworld || who.permission > 0 ||
+            !server_admin->has_ops()) {
+            return false;
+        }
+        const i32 spawn_dx = std::abs(at.x - level_settings.spawn_x);
+        const i32 spawn_dz = std::abs(at.z - level_settings.spawn_z);
+        return std::max(spawn_dx, spawn_dz) <= properties->settings.spawn_protection;
+    };
+
+    // ── dedicated server administration ── Status with the players who are on:
+    // their number, and a sample of up to twelve (none with
+    // hide-online-players).
+    const auto status_now = [&] {
+        net::ServerStatus live = status;
+        const std::scoped_lock status_lock{players_mutex};
+        for (const auto& [status_key, who] : players) {
+            if (!who.connection) {
+                continue;
+            }
+            ++live.online_players;
+            if (live.sample.size() < 12 &&
+                !(properties && properties->settings.hide_online_players)) {
+                live.sample.push_back(who.name);
+            }
+        }
+        return live;
+    };
+
     const net::PacketHandler handle_packet = [&](const net::ConnectionPtr& connection,
                                                  i32 packet_id, std::span<const u8> body) -> bool {
         ConnectionState state{};
@@ -4712,7 +4889,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             case ConnectionState::Status: {
                 if (packet_id == static_cast<i32>(net::StatusPacket::Request)) {
                     send_packet(static_cast<i32>(net::StatusPacket::Response),
-                                net::encode_status_response(status));
+                                net::encode_status_response(status_now()));
                     return true;
                 }
                 if (packet_id == static_cast<i32>(net::StatusPacket::Ping)) {
@@ -4754,6 +4931,42 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 const net::Uuid uuid = net::Uuid::offline_player(login->name);
                 OV_LOG_INFO("{} logging in as {} ({})", connection->peer_address(), login->name,
                             uuid.to_string());
+
+                // ── dedicated server administration ── the door: a banned profile, the
+                // whitelist, a banned address, a full server — vanilla's order
+                // and words, before Set Compression, as a Login Disconnect.
+                if (server_admin) {
+                    i32 online = 0;
+                    {
+                        const std::scoped_lock lock{players_mutex};
+                        for (const auto& [key, who] : players) {
+                            online += who.connection ? 1 : 0;
+                        }
+                    }
+                    if (const auto refusal = server_admin->login_refusal(
+                            uuid, admin::address_without_port(connection->peer_address()), online)) {
+                        OV_LOG_INFO("Disconnecting {} ({}): {}", login->name,
+                                    connection->peer_address(), *refusal);
+                        send_packet(static_cast<i32>(net::LoginPacket::Disconnect),
+                                    net::encode_component_packet(*refusal));
+                        return true;
+                    }
+                    // The same profile already on: the one there goes, with
+                    // vanilla's words, and this one comes in.
+                    const std::scoped_lock lock{players_mutex};
+                    for (auto& [key, who] : players) {
+                        if (who.connection && who.uuid == uuid) {
+                            if (const auto framed = net::encode_packet(
+                                    net::clientbound::kDisconnect,
+                                    net::encode_component_packet(
+                                        R"({"translate":"multiplayer.disconnect.duplicate_login"})"))) {
+                                who.connection->send(*framed);
+                            }
+                            who.connection->close();
+                        }
+                    }
+                }
+                // ── end dedicated server administration ──
 
                 if (!world_available) {
                     // Saying so beats leaving the client waiting for a join
@@ -4813,12 +5026,28 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 }
                 // ── end loading ──
 
+                // ── dedicated server administration ── network-compression-threshold:
+                // Set Compression before Login Success, and every packet after it
+                // framed compressed (the connection re-frames them). An integrated
+                // server's host is local and, like vanilla's, uncompressed.
+                if (properties && properties->settings.network_compression_threshold >= 0) {
+                    io::ByteWriter compression;
+                    net::write_varint(compression, properties->settings.network_compression_threshold);
+                    send_packet(0x03, compression.take());
+                    connection->set_compression_threshold(
+                        properties->settings.network_compression_threshold);
+                }
                 send_packet(static_cast<i32>(net::LoginPacket::Success),
                             net::encode_login_success(uuid, login->name));
 
                 Player player;
                 player.entity_id = next_entity_id.fetch_add(1);
                 player.identity  = uuid.to_string();
+                // ── dedicated server administration ──
+                player.address        = admin::address_without_port(connection->peer_address());
+                player.last_action_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                            std::chrono::steady_clock::now().time_since_epoch())
+                                            .count();
                 bool remembered  = false;
                 {
                     const std::scoped_lock lock{players_mutex};
@@ -4992,8 +5221,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 player.enchant_random.set_seed(enchant_random_seed(player.uuid));
                 join.game_mode           = player.game_mode;
                 join.registry_codec      = *codec_bytes;
-                join.view_distance       = 10;
-                join.simulation_distance = 10;
+                join.view_distance =
+                    properties ? std::clamp(properties->settings.view_distance, 2, 32) : 10;
+                join.simulation_distance =
+                    properties ? std::clamp(properties->settings.simulation_distance, 2, 32) : 10;
                 send_packet(net::clientbound::kLoginPlay, net::encode_login_play(join));
 
                 send_packet(net::clientbound::kPlayerAbilities,
@@ -5148,6 +5379,32 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     return false;
                 }
                 Player& player = it->second;
+                // ── dedicated server administration ── what counts as an action
+                // for player-idle-timeout: anything but the housekeeping, and a
+                // movement packet only when it says something new.
+                if (packet_id != net::serverbound::kKeepAlive &&
+                    packet_id != net::serverbound::kConfirmTeleport &&
+                    packet_id != net::serverbound::kClientInformation &&
+                    packet_id != net::serverbound::kPluginMessage) {
+                    bool acted = true;
+                    if (packet_id == net::serverbound::kSetPlayerPosition ||
+                        packet_id == net::serverbound::kSetPlayerPositionRot ||
+                        packet_id == net::serverbound::kSetPlayerRotation ||
+                        packet_id == net::serverbound::kSetPlayerOnGround) {
+                        u64 hash = 1469598103934665603ULL ^ static_cast<u64>(packet_id);
+                        for (const u8 b : body) {
+                            hash = (hash ^ b) * 1099511628211ULL;
+                        }
+                        acted                     = hash != player.last_movement_hash;
+                        player.last_movement_hash = hash;
+                    }
+                    if (acted) {
+                        player.last_action_ms =
+                            std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now().time_since_epoch())
+                                .count();
+                    }
+                }
 
                 switch (packet_id) {
                     case net::serverbound::kConfirmTeleport: {
@@ -5572,6 +5829,23 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         }
                         acknowledge(connection, action->sequence);
 
+                        // ── dedicated server administration ── spawn-protection:
+                        // the block stays, and the client is told so.
+                        if ((action->status == 0 || action->status == 2) &&
+                            spawn_protected(player, BlockPos{action->position.x,
+                                                             action->position.y,
+                                                             action->position.z})) {
+                            registry::BlockStateId there{0};
+                            {
+                                const std::scoped_lock chunk_lock{chunk_mutex};
+                                there = block_at_in(player.dimension, action->position);
+                            }
+                            send_packet(net::clientbound::kBlockUpdate,
+                                        net::encode_block_update(action->position,
+                                                                 static_cast<i32>(there.value())));
+                            return true;
+                        }
+
                         // ── combat and interaction ──────────────────────────
                         // Status 5 is "release use item": the button was let
                         // go. A player who lets go at tick 31 has eaten
@@ -5693,6 +5967,29 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                             return false;
                         }
                         acknowledge(connection, place->sequence);
+
+                        // ── dedicated server administration ── spawn-protection:
+                        // nothing is used or placed; the clicked block and the one
+                        // against its face are sent back as they are.
+                        if (spawn_protected(player, BlockPos{place->position.x, place->position.y,
+                                                             place->position.z})) {
+                            static constexpr std::array<std::array<i32, 3>, 6> kFaces{
+                                {{0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0}}};
+                            const auto& f = kFaces[static_cast<usize>(std::clamp(place->face, 0, 5))];
+                            for (const net::WirePosition at :
+                                 {place->position,
+                                  net::WirePosition{place->position.x + f[0], place->position.y + f[1],
+                                                    place->position.z + f[2]}}) {
+                                registry::BlockStateId there{0};
+                                {
+                                    const std::scoped_lock chunk_lock{chunk_mutex};
+                                    there = block_at_in(player.dimension, at);
+                                }
+                                send_packet(net::clientbound::kBlockUpdate,
+                                            net::encode_block_update(at, static_cast<i32>(there.value())));
+                            }
+                            return true;
+                        }
 
                         // ── end ── An eye of ender on an End portal frame: in
                         // it goes, and a ring it completes opens the portal
@@ -7188,6 +7485,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
 
     bool      mobs_placed   = false;
     auto      last_autosave = std::chrono::steady_clock::now();
+    i64       last_autosave_tick = 0;  // ── dedicated server administration ──
 
     // ── tnt and gravity ─────────────────────────────────────────────────────
     // What an explosion reaches outside the module for. Built once, before the
@@ -7279,9 +7577,37 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     // ── commands: the dedicated server's console ────────────────────────────
     // Lines typed on stdin run at level 4. Only when nobody else owns the
     // process — an integrated server's window has no console.
+    // ── dedicated server administration ── Who is on, for the threads that
+    // are not the tick's — Query's answers and the console's Tab. The player
+    // table is the tick thread's alone (tick_thread_lock.hpp); these read a
+    // copy of the names, which the tick thread refreshes once a second in the
+    // keep-alive pass. The mutex guards a vector of strings, never the world.
+    struct OnlineNames {
+        std::mutex               mutex;
+        std::vector<std::string> names;
+    } online_names;
     std::optional<cmd::ConsoleReader> console;
     if (external_stop == nullptr && commands) {
-        console.emplace([&commands](std::string line) { commands->enqueue_console(std::move(line)); });
+        console.emplace(
+            [&commands](std::string line) { commands->enqueue_console(std::move(line)); },
+            // ── dedicated server administration ── Tab in a terminal: the
+            // engine's suggestions for the console, at level 4.
+            [&commands, &online_names](std::string_view text) {
+                std::vector<std::string> names;
+                {
+                    const std::scoped_lock lock{online_names.mutex};
+                    names = online_names.names;
+                }
+                const net::SuggestionsResponse r =
+                    commands->suggest(cmd::CommandSource{}, 0, text, names);
+                cmd::ConsoleSuggestions out;
+                out.start  = static_cast<usize>(std::max(r.start, 0));
+                out.length = static_cast<usize>(std::max(r.length, 0));
+                for (const net::Suggestion& m : r.matches) {
+                    out.matches.push_back(m.text);
+                }
+                return out;
+            });
     }
     // ── end commands ────────────────────────────────────────────────────────
     // ── projectiles ─────────────────────────────────────────────────────────
@@ -8417,6 +8743,94 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     };
     // ── end end ─────────────────────────────────────────────────────────────
 
+    // ── dedicated server administration ─────────────────────────────────────
+    // RCON and Query come up with the world, as vanilla's do, and the
+    // watchdog starts watching the first tick.
+    std::unique_ptr<admin::RconServer>  rcon;
+    std::unique_ptr<admin::QueryServer> query;
+    std::optional<admin::Watchdog>      watchdog;
+    if (properties && commands) {
+        const admin::DedicatedSettings& ds = properties->settings;
+        if (ds.enable_rcon) {
+            if (ds.rcon_password.empty()) {
+                OV_LOG_WARN("No rcon password set in server.properties, rcon disabled!");
+            } else {
+                rcon = admin::RconServer::start(
+                    static_cast<u16>(ds.rcon_port), ds.server_ip, ds.rcon_password,
+                    [&commands, &should_stop](std::string command) -> std::string {
+                        auto promise = std::make_shared<std::promise<std::string>>();
+                        auto future  = promise->get_future();
+                        commands->enqueue_captured(std::move(command), "Rcon",
+                                                   [promise](std::string words) {
+                                                       promise->set_value(std::move(words));
+                                                   });
+                        while (future.wait_for(std::chrono::milliseconds{100}) !=
+                               std::future_status::ready) {
+                            if (should_stop()) {
+                                return {};
+                            }
+                        }
+                        try {
+                            return future.get();
+                        } catch (const std::future_error&) {
+                            return {};
+                        }
+                    });
+                if (rcon) {
+                    OV_LOG_INFO("RCON running on {}:{}",
+                                ds.server_ip.empty() ? std::string{"0.0.0.0"} : ds.server_ip,
+                                ds.rcon_port);
+                }
+            }
+        }
+        if (ds.enable_query) {
+            // hostip: server-ip, else this machine's own address, as the jar.
+            const std::string query_ip =
+                ds.server_ip.empty() ? admin::local_address() : ds.server_ip;
+            query = admin::QueryServer::start(
+                static_cast<u16>(ds.query_port), ds.server_ip, [&, query_ip] {
+                    admin::QueryInfo info;
+                    info.motd        = options.motd;
+                    info.map         = options.world_dir;
+                    info.max_players = options.max_players;
+                    info.host_port   = options.port;
+                    info.host_ip     = query_ip;
+                    // The tick thread's copy: this is Query's thread.
+                    const std::scoped_lock lock{online_names.mutex};
+                    info.players = online_names.names;
+                    return info;
+                });
+            if (query) {
+                OV_LOG_INFO("Query running on {}:{}",
+                            ds.server_ip.empty() ? std::string{"0.0.0.0"} : ds.server_ip, ds.query_port);
+            }
+        }
+        const i64 max_tick = ds.max_tick_time;
+        watchdog.emplace(max_tick, [&admin_clock, max_tick](i64 overdue) {
+            const i64                now    = admin_clock.now();
+            const admin::LocalZone   zone   = admin_clock.zone(now);
+            const admin::CrashReport report = admin::watchdog_report(
+                overdue, max_tick, now, zone.offset_seconds,
+                "Ondes VOXEL dedicated server, Minecraft 1.20.1 (protocol 763)");
+            const std::string message = admin::watchdog_message(overdue);
+            const auto        cut     = message.find('\n');
+            OV_LOG_ERROR("{}", message.substr(0, cut));
+            OV_LOG_ERROR("{}", message.substr(cut + 1));
+            std::error_code ec;
+            std::filesystem::create_directories("crash-reports", ec);
+            const std::filesystem::path path =
+                std::filesystem::path{"crash-reports"} / report.file_name;
+            (void)io::write_file_atomic(
+                path, std::span<const u8>{reinterpret_cast<const u8*>(report.text.data()),
+                                          report.text.size()});
+            OV_LOG_ERROR("This crash report has been saved to: {}",
+                         std::filesystem::absolute(path, ec).string());
+            std::fflush(nullptr);
+            std::_Exit(1);
+        });
+    }
+    // ── end dedicated server administration ─────────────────────────────────
+
     while (!should_stop()) {
         // ── screens ── the integrated server behind a pause menu runs no tick.
         // The network thread still answers; the clock restarts on resume so
@@ -8433,6 +8847,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // ── end screens ──
         perf->begin_tick();  // ── perf ──
         const auto tick_started = std::chrono::steady_clock::now();
+        if (watchdog) {  // ── dedicated server administration ──
+            watchdog->tick_started();
+        }
         const i32  ticks        = clock.advance();
         server_tick.store(clock.tick_count(), std::memory_order_relaxed);
 
@@ -8709,6 +9126,24 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             std::unique_lock command_lock{players_mutex, std::try_to_lock};
             if (command_lock.owns_lock()) {
                 commands->run(command_host);
+                // ── dedicated server administration ── player-idle-timeout
+                if (const i32 idle = commands->idle_timeout(); idle > 0) {
+                    const i64 now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                           std::chrono::steady_clock::now().time_since_epoch())
+                                           .count();
+                    for (auto& [key, who] : players) {
+                        if (who.connection &&
+                            now_ms - who.last_action_ms > static_cast<i64>(idle) * 60'000) {
+                            if (const auto framed = net::encode_packet(
+                                    net::clientbound::kDisconnect,
+                                    net::encode_component_packet(
+                                        R"({"translate":"multiplayer.disconnect.idling"})"))) {
+                                who.connection->send(*framed);
+                            }
+                            who.connection->close();
+                        }
+                    }
+                }
                 // ── spawn eggs: the requests of the network thread, through
                 // /summon's own path, with the player map held as it needs ──
                 std::vector<std::pair<std::string, Vec3d>> eggs;
@@ -9320,6 +9755,20 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                                       : server_tick.load(std::memory_order_relaxed);
 
                     spawner.spawn_tick(environment, spawn_requests);
+                    // ── dedicated server administration ── spawn-monsters and
+                    // spawn-animals. Vanilla skips the category's attempts;
+                    // here its proposals are dropped, which draws the same
+                    // positions and spawns nothing of it (named in
+                    // docs/provenance/serveur-dedie.md).
+                    if (properties && (!properties->settings.spawn_monsters ||
+                                       !properties->settings.spawn_animals)) {
+                        std::erase_if(spawn_requests, [&](const gameplay::SpawnRequest& r) {
+                            return (r.category == gameplay::MobCategory::Monster &&
+                                    !properties->settings.spawn_monsters) ||
+                                   (r.category == gameplay::MobCategory::Creature &&
+                                    !properties->settings.spawn_animals);
+                        });
+                    }
                 }
 
                 for (const gameplay::SpawnRequest& request : spawn_requests) {
@@ -10597,7 +11046,11 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // failure people remember. Thirty seconds is short enough to matter and
         // long enough that a world with nothing dirty costs a map lookup.
         if (const auto now = std::chrono::steady_clock::now();
-            now - last_autosave >= std::chrono::seconds{30}) {
+            // ── dedicated server administration ── vanilla's period, 6000 ticks,
+            // and not at all after save-off.
+            static_cast<i64>(clock.tick_count()) - last_autosave_tick >= 6000 &&
+            (!commands || commands->autosave_enabled())) {
+            last_autosave_tick = static_cast<i64>(clock.tick_count());
             last_autosave = now;
             save_online_players();  // ── player data ── before level.dat, for the host
             {
@@ -10629,6 +11082,18 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             // the map without the lock would be a race of its own.
             std::unique_lock lock{players_mutex, std::try_to_lock};
             if (lock.owns_lock()) {
+                // ── dedicated server administration ── the names Query and
+                // the console read, once a second, from this thread.
+                if (static_cast<i64>(clock.tick_count()) % 20 == 0) {
+                    std::vector<std::string> names;
+                    for (const auto& [names_key, who] : players) {
+                        if (who.connection) {
+                            names.push_back(who.name);
+                        }
+                    }
+                    const std::scoped_lock names_lock{online_names.mutex};
+                    online_names.names.swap(names);
+                }
                 // The chunk queue, drained under a budget.
                 //
                 // Sending the whole square at once overran the tick and the
@@ -10817,6 +11282,25 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 if (auto taken = rails_session->take_vehicle(*mobs, who.entity_id)) {
                     leaving_vehicles[who.entity_id] = std::move(taken->root_vehicle);
                 }
+            }
+        }
+    }
+    // ── dedicated server administration ── the loop is over: nothing to watch,
+    // no command can run, and every player is told why they go.
+    watchdog.reset();
+    rcon.reset();
+    query.reset();
+    if (dedicated) {
+        const std::scoped_lock lock{players_mutex};
+        for (auto& [key, who] : players) {
+            if (!who.connection) {
+                continue;
+            }
+            if (const auto framed = net::encode_packet(
+                    net::clientbound::kDisconnect,
+                    net::encode_component_packet(
+                        R"({"translate":"multiplayer.disconnect.server_shutdown"})"))) {
+                who.connection->send(*framed);
             }
         }
     }
