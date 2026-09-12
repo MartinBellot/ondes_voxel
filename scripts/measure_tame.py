@@ -669,7 +669,15 @@ def campaign_ride_timing_open(rig: Oracle) -> dict:
     return campaign_ride_timing(rig, pen=False)
 
 
-def campaign_ride_timing(rig: Oracle, pen: bool = True) -> dict:
+def campaign_ride_timing_open60(rig: Oracle) -> dict:
+    """Sixty more open-ground first rides. The first thirty (27 timed) gave a
+    mean of 31.6 and nothing over 90 ticks: one in fifty a tick (mean 50)
+    fits badly, one in twenty-five plus a start latency fits well. Sixty more
+    tell the two apart."""
+    return campaign_ride_timing(rig, pen=False, horses=60)
+
+
+def campaign_ride_timing(rig: Oracle, pen: bool = True, horses: int = 30) -> dict:
     """How long a ridden wild horse takes to decide, to the tick.
 
     `temper` read the game time from the probe's copy, which the server only
@@ -682,7 +690,7 @@ def campaign_ride_timing(rig: Oracle, pen: bool = True) -> dict:
     """
     hand: Rider = rig.hand  # type: ignore[assignment]
     rides = []
-    for _ in range(30):
+    for _ in range(horses):
         setup = [f"tp {PROBE} -0.5 {Y} 0.5 -90 0",
                  "item replace entity ovhand weapon.mainhand with minecraft:air"]
         if pen:
@@ -866,7 +874,8 @@ CAMPAIGNS = {"meta": campaign_meta, "tame": campaign_tame, "parrot": campaign_pa
              "anger": campaign_anger, "wolf": campaign_wolf, "follow": campaign_follow,
              "spawn": campaign_spawn, "breed": campaign_breed, "temper": campaign_temper,
              "zoo": campaign_zoo, "zoo_back": campaign_zoo_back, "noai": campaign_noai,
-             "ride_timing": campaign_ride_timing, "ride_timing_open": campaign_ride_timing_open}
+             "ride_timing": campaign_ride_timing, "ride_timing_open": campaign_ride_timing_open,
+             "ride_timing_open60": campaign_ride_timing_open60}
 
 
 def main(argv: list[str]) -> int:
