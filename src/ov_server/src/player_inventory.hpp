@@ -75,12 +75,35 @@ struct PlayerClickOutcome {
 ///
 /// `book` may be null, in which case slot 0 stays empty and a click on it does
 /// nothing — refused rather than silently crafting air.
+///
+/// `selected` is the held hotbar slot, 0..8: a craft's remainder that does not
+/// fit back in the grid goes where vanilla's `Inventory.add` puts it, and that
+/// tries the held slot first.
+///
+/// Measured against the real server (`scripts/measure_window0.py`,
+/// docs/provenance/crafting-and-smelting.md): every mode on the result slot,
+/// the double click, and where a shift-click sends armour and a shield.
 [[nodiscard]] PlayerClickOutcome apply_player_click(const registry::Registries*  registries,
                                                     const gameplay::RecipeBook*  book,
                                                     const net::ContainerClick&   click,
                                                     std::span<net::ItemStack>    inventory,
                                                     net::ItemStack&              carried,
-                                                    DragState&                   drag);
+                                                    DragState&                   drag,
+                                                    i16                          selected = 0);
+
+/// The player closed window 0: the cursor and then the four grid cells go back
+/// into the inventory — measured, in that order, first free slot hotbar
+/// first. Returns what did not fit, to be thrown at the player's feet.
+[[nodiscard]] std::vector<net::ItemStack> close_player_window(
+    const registry::Registries* registries, std::span<net::ItemStack> inventory,
+    net::ItemStack& carried, i16 selected);
+
+/// Vanilla's `Inventory.add`: into a stack of the same item with room — the
+/// held slot, then the off hand, then the storage in order — and only then the
+/// first empty storage slot, hotbar first. Returns what did not fit.
+[[nodiscard]] net::ItemStack add_to_inventory(const registry::Registries* registries,
+                                              std::span<net::ItemStack>   inventory,
+                                              net::ItemStack stack, i16 selected);
 
 /// The window as one list, for `Set Container Content`.
 ///

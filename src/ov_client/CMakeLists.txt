@@ -15,6 +15,7 @@ ov_add_library(ov_client
         src/block_particles.cpp  # ── breaking ──
         src/gui.cpp
         src/hud.cpp
+        src/scoreboard_view.cpp  # ── scoreboard ──
         src/item_view.cpp
         src/menu_layouts.cpp
         src/menu_widgets.cpp
@@ -57,6 +58,7 @@ ov_add_test(test_ov_client
         tests/test_sound_director_music.cpp
         tests/test_subtitles.cpp
         tests/test_block_particles.cpp  # ── breaking ──
+        tests/test_scoreboard_view.cpp  # ── scoreboard ──
     DEPS ov_client
     LABELS unit
 )

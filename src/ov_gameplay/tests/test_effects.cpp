@@ -7,6 +7,7 @@
 // replays every one of them.
 #include "ov/gameplay/effects.hpp"
 #include "ov/gameplay/food.hpp"
+#include "ov/gameplay/mob_body.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
@@ -231,6 +232,27 @@ TEST_CASE("who refuses what", "[gameplay][effects][parity]") {
     CHECK(refused_by_arthropod == 1);
     Mob zombie{20.0, 20.0F, EffectTarget::Body::Undead};
     CHECK(zombie.effects.add(of(Effect::Poison, 100), zombie) == AddResult::Immune);
+}
+
+// ── mobs-4 ──
+TEST_CASE("a species' body, and what speed makes of its walk", "[gameplay][effects]") {
+    // The three species measured by `effect give` (§ 7), then the wiki's lists.
+    CHECK(effect_body("minecraft:zombie") == EffectTarget::Body::Undead);
+    CHECK(effect_body("minecraft:skeleton") == EffectTarget::Body::Undead);
+    CHECK(effect_body("minecraft:spider") == EffectTarget::Body::Arthropod);
+    CHECK(effect_body("minecraft:cow") == EffectTarget::Body::Ordinary);
+    CHECK(effect_body("minecraft:wither_skeleton") == EffectTarget::Body::Undead);
+    CHECK(effect_body("minecraft:cave_spider") == EffectTarget::Body::Arthropod);
+    CHECK(effect_body("minecraft:creeper") == EffectTarget::Body::Ordinary);
+    CHECK(effect_body("") == EffectTarget::Body::Ordinary);
+
+    // The walk law is quadratic in the attribute: Speed I (+20 %) walks 1.44
+    // times as fast, Slowness I (-15 %) 0.7225 times.
+    using Catch::Matchers::WithinRel;
+    CHECK_THAT(walk_factor(0.23 * 1.2, 0.23), WithinRel(1.44, 1e-12));
+    CHECK_THAT(walk_factor(0.23 * 0.85, 0.23), WithinRel(0.7225, 1e-12));
+    CHECK(walk_factor(0.23, 0.23) == 1.0);
+    CHECK(walk_factor(0.5, 0.0) == 1.0);
 }
 
 TEST_CASE("resistance takes a fifth per level", "[gameplay][effects][parity]") {

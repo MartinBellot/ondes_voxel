@@ -90,6 +90,11 @@ struct TameState {
     i32 rider{0};
     /// Ticks the rider has been on an untamed animal, for the tantrum.
     i32 ridden_for{0};
+    /// The tantrum's draws since the rider got on, and the last value drawn
+    /// (out of `kTantrumOdds`; 0 decides). The server logs them: a ridden wild
+    /// horse was seen going 500 ticks without deciding.
+    i32 tantrum_draws{0};
+    i32 tantrum_last{-1};
 
     // ── the others ──
     /// Ocelot `Trusting`.

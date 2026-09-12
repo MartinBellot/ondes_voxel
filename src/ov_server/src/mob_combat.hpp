@@ -77,6 +77,18 @@ public:
     [[nodiscard]] MobHurt hurt(entity::EntityState& state, f32 amount,
                                const gameplay::DamageConstants& constants);
 
+    /// ── mobs-4 ── Any damage type through the same window: an effect's
+    /// poison or wither, an instant damage. The entity's health is the truth —
+    /// an effect may have healed the mob since the window last wrote it — so
+    /// the window is reseeded from it before every hit, on both paths.
+    [[nodiscard]] MobHurt hurt(entity::EntityState& state, gameplay::DamageKind kind, f32 amount,
+                               const gameplay::DamageConstants& constants);
+
+    /// ── mobs-4 ── Absorption lives in the window, where the damage rules
+    /// take it from before the health.
+    [[nodiscard]] f32 absorption(i32 network_id) const noexcept;
+    void              set_absorption(const entity::EntityState& state, f32 amount);
+
     /// Draw the dead mob's table.
     ///
     /// Appends, like every other loot call in this project. Returns what the

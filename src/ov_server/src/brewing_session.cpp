@@ -55,9 +55,9 @@ constexpr u8 kCloudWaiting = 10;
 constexpr i32 kSplashEvent        = 2002;
 constexpr i32 kInstantSplashEvent = 2007;
 
-/// A player's box, for a splash and a cloud.
-constexpr f64 kPlayerHalfWidth = 0.3;
-constexpr f64 kPlayerHeight    = 1.8;
+// ── mobs-4 ── The box a splash and a cloud measure against is each target's
+// own now (`PotionPlayer::half_width`, `height`): a player's 0.3 and 1.8, a
+// mob's from its type.
 
 [[nodiscard]] u64 key_of(BlockPos p) noexcept {
     return (static_cast<u64>(static_cast<u32>(p.x) & 0x3FFFFFFU) << 38U) |
@@ -169,8 +169,8 @@ void read_stand(const nbt::Tag& data, gameplay::StandView& view, std::array<u64,
 constexpr std::array<std::string_view, 9> kGaps{
     "water bottles thrown or lingering put out no fire and hurt no enderman: named, the fire is "
     "another agent's",
-    "splash potions, clouds and tipped arrows reach players only; mobs carry no effects on this "
-    "server",
+    "splash potions, clouds and tipped arrows reach players and the overworld's mobs; the "
+    "Nether's mobs live in a world of their own and carry no effects",
     "a thrown potion carries no item metadata, so the client draws the default bottle",
     "the glass bottle a non-last dragon's breath drops is not told apart from its neighbour's in "
     "the measurement (item search reach 3 = stand spacing)",
@@ -822,14 +822,15 @@ void Brewing::potion_broke(const PotionHost& host, Vec3d at, const net::ItemStac
         const f64 dy = player.feet.y - at.y;
         const f64 dz = player.feet.z - at.z;
         // The potion's box, grown by 4 across and 2 up and down, must meet the
-        // player's; then the distance to the feet decides.
-        constexpr f64 kReach = gameplay::kSplashRadius + 0.125 + kPlayerHalfWidth;
-        if (std::abs(dx) > kReach || std::abs(dz) > kReach ||
+        // player's — ── mobs-4 ── or the mob's — then the distance to the feet
+        // decides.
+        const f64 reach = gameplay::kSplashRadius + 0.125 + player.half_width;
+        if (std::abs(dx) > reach || std::abs(dz) > reach ||
             dy > 0.25 + gameplay::kSplashHalfHeight ||
-            dy + kPlayerHeight < -gameplay::kSplashHalfHeight) {
+            dy + player.height < -gameplay::kSplashHalfHeight) {
             continue;
         }
-        const bool hit_directly = direct_is_player && player.entity_id == direct;
+        const bool hit_directly = direct_is_player != player.mob && player.entity_id == direct;
         const f64  factor       = gameplay::splash_factor(dx * dx + dy * dy + dz * dz, hit_directly);
         if (factor <= 0.0) {
             continue;
@@ -844,8 +845,10 @@ void Brewing::potion_broke(const PotionHost& host, Vec3d at, const net::ItemStac
 
 void Brewing::arrow_hit(const PotionHost& host, const net::ItemStack& arrow, i32 target,
                         bool target_is_player) {
-    if (!target_is_player || !host.affect) {
-        return;  // mobs carry no effects on this server — named in `gaps`
+    // ── mobs-4 ── a mob's too: the host resolves the id to a player or a mob.
+    (void)target_is_player;
+    if (!host.affect) {
+        return;
     }
     const std::string_view name = item_name(arrow.item_id);
     if (name == "minecraft:spectral_arrow") {
@@ -943,7 +946,7 @@ void Brewing::tick_clouds(const PotionHost& host) {
                     }
                     if (!gameplay::cloud_reaches(cloud.cloud, player.feet.x - cloud.at.x,
                                                  player.feet.y - cloud.at.y,
-                                                 player.feet.z - cloud.at.z, kPlayerHeight)) {
+                                                 player.feet.z - cloud.at.z, player.height)) {
                         continue;
                     }
                     cloud.victims[player.entity_id] =

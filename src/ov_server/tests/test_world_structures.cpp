@@ -61,7 +61,8 @@ TEST_CASE("a chunk records its starts and the starts crossing it", "[structures]
 
     auto structures = server::WorldStructures::load(data, jar, *blocks, source->biomes());
     REQUIRE(structures);
-    auto stack = structures->make_stage(generator, *blocks, *registries, kSeed);
+    auto stack = structures->make_stage(generator, *blocks, *registries, kSeed,
+                                            worldgen::OriginalStructures::vanilla_parity());
     REQUIRE(stack);
 
     // A ship whose box crosses from chunk (9, 5) into (10, 5), put in by hand
@@ -125,7 +126,8 @@ TEST_CASE("a start with terrain adaptation is referenced 12 blocks wider", "[str
     const worldgen::ChunkGenerator generator{*router, *source, *blocks};
     auto structures = server::WorldStructures::load(data, jar, *blocks, source->biomes());
     REQUIRE(structures);
-    auto stack = structures->make_stage(generator, *blocks, *registries, kSeed);
+    auto stack = structures->make_stage(generator, *blocks, *registries, kSeed,
+                                            worldgen::OriginalStructures::vanilla_parity());
     REQUIRE(stack);
     REQUIRE(stack->placer != nullptr);
 
@@ -179,7 +181,8 @@ TEST_CASE("the server refuses the portals and the treasure by name", "[structure
     const worldgen::ChunkGenerator generator{*router, *source, *blocks};
     auto structures = server::WorldStructures::load(data, jar, *blocks, source->biomes());
     REQUIRE(structures);
-    auto stack = structures->make_stage(generator, *blocks, *registries, kSeed);
+    auto stack = structures->make_stage(generator, *blocks, *registries, kSeed,
+                                            worldgen::OriginalStructures::vanilla_parity());
     REQUIRE(stack);
 
     // The game's buried treasure of reference-1234567890 starts in chunk

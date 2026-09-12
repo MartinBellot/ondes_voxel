@@ -107,7 +107,8 @@ Détails qui comptent :
   d'absorption regonfle la réserve, le fichier dit ce qu'il en reste.
 * **Grille 2×2 et curseur** : vanilla les rend à l'inventaire à la fermeture de l'écran ; le
   fichier n'a pas de place pour eux. Ils sont rangés dans les premières cases libres (barre
-  d'abord) de la copie sauvegardée ; ce qui ne trouve pas de place est compté et nommé dans le
+  d'abord), le curseur avant la grille comme à la fermeture mesurée
+  (`scripts/measure_window0.py`), dans la copie sauvegardée ; ce qui ne trouve pas de place est compté et nommé dans le
   journal (vanilla le jetterait au sol).
 * **Mode de jeu** : ce serveur a un mode global (`--survival`). Il est écrit dans
   `playerGameType` ; s'il diffère de celui du fichier, l'ancien devient
