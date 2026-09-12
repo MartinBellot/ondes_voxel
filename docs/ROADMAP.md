@@ -1218,9 +1218,24 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [ ] Fonctions `.mcfunction`, `/function`, tags de fonction
 - [ ] Loot tables : tous les prédicats, fonctions et conditions
 - [ ] Prédicats, item modifiers
-- [ ] Serveur dédié : `server.properties`, whitelist, ops, bans, RCON, query,
+- [~] Serveur dédié : `server.properties`, whitelist, ops, bans, RCON, query,
       MOTD et icône, permissions, sauvegarde automatique, arrêt propre,
       watchdog, console et complétion
+      *(**2026-09-11** : `server.properties` écrit comme le jar — les 56 clés
+      de 1.20.1, l'ordre de sa propre table au démarrage (**57/57** lignes,
+      tranché par OpenJDK 17) et celui d'une copie quand une commande le
+      réécrit (**57/57**), les clés inconnues gardées ; `online-mode=true`
+      refusé (hors ligne seulement). Les quatre listes au format de vanilla,
+      la porte dans son ordre et ses mots, ban/ban-ip/banlist/pardon/
+      pardon-ip/whitelist/setidletimeout/save-on/save-off/debug, RCON, Query,
+      icône, Set Compression, chien de garde, arrêt propre, sauvegarde toutes
+      les 6000 ticks, complétion à la console. Contre le vrai serveur sur la
+      même campagne : commandes **64/64**, console **26/26**, connexions et
+      renvois **11/11**, RCON **14/14**, Query **5/5**. Deux bugs de
+      l'écouteur trouvés par la mesure et corrigés. Restent, nommés :
+      `debug function`, `perf`, `jfr`, `publish` (refusé), l'icône ré-encodée
+      par ImageIO, `usercache.json`, `pvp`. Voir
+      `docs/provenance/serveur-dedie.md`)*
 
 ---
 

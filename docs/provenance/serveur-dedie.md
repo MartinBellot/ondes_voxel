@@ -111,9 +111,11 @@ retiré quand on le demande, comme chez vanilla.
 (`multiplayer.disconnect.server_full`, sauf `bypassesPlayerLimit`). Un même profil déjà
 connecté est renvoyé avec `multiplayer.disconnect.duplicate_login` et le nouveau entre.
 
-Les listes sont lues par le thread réseau (chaque Login Start) et modifiées par le thread de
-tick (les commandes) : elles ont leur propre verrou. Ce n'est pas le monde — aucun bloc ni aucune
-entité ne passe par cet objet — et la règle « aucun mutex sur le monde » tient.
+Les paquets sont traités sur le thread de tick (`inbound_queue.hpp`) : la porte, le renvoi pour
+double connexion, Status et la protection du point d'apparition y tournent, comme les commandes.
+Les listes gardent un verrou à elles pour les suggestions de la console, qui les lisent depuis son
+thread. Ce n'est pas le monde — aucun bloc ni aucune entité ne passe par cet objet — et la règle
+« aucun mutex sur le monde » tient.
 
 ### Les commandes
 
@@ -158,8 +160,10 @@ UDP, GameSpy 4 : `0xFE 0xFD | type | session`. Type 9 : un jeton de défi (texte
 joueurs, maximum, port en petit-boutiste, IP) ; + 4 octets : statistiques complètes (`splitnum`,
 paires clé/valeur, `player_`, noms). Un mauvais jeton ne reçoit rien. Les chaînes partent en **ISO-8859-1** (« é » est l'octet 0xE9,
 mesuré) et `hostip` est l'adresse de la machine quand `server-ip` est vide (le jar donne son adresse
-de réseau local, pas `0.0.0.0`). La réponse est bâtie depuis
-un instantané pris sous le verrou de la table des joueurs : le thread Query ne lit jamais le monde.
+de réseau local, pas `0.0.0.0`). La table des joueurs n'appartient
+qu'au thread de tick (`tick_thread_lock.hpp`) : Query — comme la complétion de la console — lit une
+copie des noms connectés que le thread de tick rafraîchit une fois par seconde, sous un verrou qui
+ne garde qu'un vecteur de chaînes. Le thread Query ne lit jamais le monde.
 
 ## 6. Chien de garde, arrêt, sauvegarde, console
 
@@ -245,6 +249,15 @@ ne déplace aucune clé. Ses ordres sont épinglés dans les tests : les 56 clé
 démarrage, la clé inconnue à sa place, le redémarrage, et 14 UUID et 5 adresses dans l'ordre d'une
 `HashMap`.
 
+**Une réécriture en cours de route, elle, passe par une copie.** Quand une commande change une clé
+(`/setidletimeout`, `/whitelist on`), le jar réécrit le fichier depuis une **copie** de sa table
+(`putAll` dans un `Properties` neuf, pré-dimensionné à 256 seaux) — et l'ordre change. Mesuré : le
+fichier qu'il laisse après la campagne n'a **aucune** ligne à la place de celles qu'il avait écrites
+au démarrage, et OpenJDK 17, nourri de la même suite d'insertions (le fichier de départ de la
+campagne puis les réglages dans leur ordre de lecture), rend l'ordre de la copie à l'identique :
+**57 lignes sur 57**, contre 0 pour la table elle-même. Notre réécriture après une commande prend
+maintenant cet ordre-là ; le premier démarrage garde celui de la table.
+
 **Deux clés en trop, et un é échappé.** `log-ips` et `resource-pack-id` ne sont pas dans le fichier
 du jar : elles appartiennent à des versions plus récentes. Le jar écrit `motd=Café \: \= x` —
 l'é tel quel, en UTF-8 : c'est la forme `Writer` de `Properties.store`, qui n'échappe que les
@@ -271,4 +284,26 @@ arrive dans celle de la commande suivante.
 
 ## 9. Mesures
 
-*(Section complétée par la campagne `capture_admin.py` sur les deux serveurs.)*
+La même campagne (`scripts/capture_admin.py`), dans le même répertoire de départ — même
+`server.properties`, mêmes listes pré-écrites au format de vanilla, même icône 64 × 64 — contre le
+vrai serveur 1.20.1 puis contre le nôtre, comparée par `scripts/check_admin.py`. Le nôtre est
+construit sur `main` après l'arrivée des paquets sur le thread de tick.
+
+| Mesure | Résultat |
+|---|---|
+| `server.properties` d'un premier démarrage : clés, valeurs, ordre des lignes | **57 / 57**, texte identique (ligne de date à part) |
+| … écrit sans copie : ce que la première version supposait | 1 / 57 lignes à leur place (témoin) |
+| `server.properties` réécrit après les commandes de la campagne (une copie de la table) | **57 / 57** ; fichiers laissés après la campagne **5 / 5** |
+| Status : membres | **3 / 4** — l'icône, ré-encodée par ImageIO chez le jar (nommé) ; ping identique |
+| Query : poignée de main, statistiques de base et complètes, mauvais jeton, erreurs | **5 / 5** |
+| RCON : mauvais mot de passe, connexion, 9 commandes, type inconnu, commande avant le mot de passe, connexion de la requête coupée | **14 / 14** (`help` et la requête coupée : nommés) |
+| Connexions refusées et admises, renvois (plein, double connexion, `ban-ip <joueur>`) | **11 / 11** |
+| Commandes d'administration d'un opérateur, octet pour octet | **64 / 64** |
+| Commandes tapées à la console, lignes imprimées | **26 / 26** |
+| Arrêt : ce que reçoit un joueur connecté, code de sortie | identiques (`server_shutdown`, 0 / 0) |
+| Ordres du JDK épinglés (OpenJDK 17, `jdk_order_oracle.java`) | premier démarrage 56 clés, fichier de départ à 3 clés, redémarrage, 14 UUID et 5 adresses d'une `HashMap` |
+| Tests | `test_ov_admin`, `test_ov_commands`, `test_ov_protocol` (dont la socket réelle de `test_listener.cpp`), `test_ov_server` : verts |
+
+Reproduire : `python3 scripts/capture_admin.py properties`, `… vanilla` (voie java), puis
+`… properties-ov`, `… ov`, et `python3 scripts/check_admin.py`. Ports : 25610 (serveur, Query en
+UDP) et 25710 (RCON).
