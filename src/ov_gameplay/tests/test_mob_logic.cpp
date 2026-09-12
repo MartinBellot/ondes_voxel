@@ -213,6 +213,49 @@ TEST_CASE("a mob that is walking covers its measured speed each tick",
     CHECK(per_tick < 0.13);
 }
 
+// ── noai ──────────────────────────────────────────────────────────────────────
+TEST_CASE("noai: a NoAI mob keeps its place, feels no gravity, and its velocity decays",
+          "[gameplay][entity][logic][noai]") {
+    // measure_tame.py `noai` (docs/provenance/apprivoisement.md § 8.3): a NoAI
+    // cow six blocks up stays there with its Motion at 0; given Motion 0.5 it
+    // never moves while the Motion reads 0.49, then 0.49 × 0.98^15. Its age
+    // still counts, as elevage.md measured on NoAI calves.
+    if (blocks() == nullptr || registries() == nullptr) {
+        WARN("registry.ovpack missing");
+        return;
+    }
+    Floor          floor{blocks()->default_state(blocks()->find_block("minecraft:stone").value())};
+    CollisionWorld collisions{*blocks(), &Floor::look_up, &floor};
+
+    entity::EntityWorld world{*registries()};
+    const auto cow   = world.spawn("minecraft:cow", Vec3d{0.5, 6.0, 0.5}, net::Uuid{}).value();
+    auto       logic = std::make_unique<Mob>(*mob_kind("minecraft:cow"), 0.9F, 1.4F, 7);
+    Mob&       mob   = *logic;
+    world.set_logic(cow, std::move(logic));
+    mob.set_no_ai(true);
+    mob.set_age(*world.mutable_state(cow), -24000);
+    world.mutable_state(cow)->velocity = Vec3d{0.5, 0.0, 0.0};
+
+    MobContext context{&collisions, nullptr, false};
+    world.tick(entity::TickContext{0, &context});
+    CHECK(world.state(cow)->velocity.x == Catch::Approx(0.49));
+    for (i64 tick = 1; tick <= 15; ++tick) {
+        world.tick(entity::TickContext{tick, &context});
+    }
+    CHECK(world.state(cow)->velocity.x == Catch::Approx(0.49 * std::pow(0.98, 15)));
+    CHECK(world.state(cow)->velocity.y == 0.0);  // no gravity, not even stored
+    CHECK(world.state(cow)->position.x == 0.5);
+    CHECK(world.state(cow)->position.y == 6.0);
+    CHECK(mob.brain().animal.age == -24000 + 16);
+
+    // The control: the same cow without NoAI falls to the floor.
+    mob.set_no_ai(false);
+    for (i64 tick = 16; tick < 216; ++tick) {
+        world.tick(entity::TickContext{tick, &context});
+    }
+    CHECK(world.state(cow)->position.y == 0.0);
+}
+
 TEST_CASE("a mob with a level decides things; one without only falls",
           "[gameplay][entity][logic]") {
     if (blocks() == nullptr || registries() == nullptr) {

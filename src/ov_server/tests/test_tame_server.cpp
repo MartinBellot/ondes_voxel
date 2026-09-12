@@ -263,6 +263,43 @@ TEST_CASE("tame: a tame zoo goes to entities/ and comes back", "[server][tame][a
     CHECK(mob_of(world2, goat2).brain().tame.right_horn);
 }
 
+// ── noai ──
+TEST_CASE("noai: the key goes to entities/ only when set, and comes back", "[server][noai]") {
+    if (registries() == nullptr) {
+        return;
+    }
+    ScratchDir          scratch;
+    Taming              taming{*registries()};
+    entity::EntityWorld world{*registries()};
+    Host                holder{&world, &taming};
+    const EntityStorageHost host = holder.make();
+    MobRecords              records;
+    EntityStorage           storage{*registries(), scratch.path / "entities"};
+    (void)storage.load_chunk(ChunkPos{0, 0}, world, records, host);
+
+    const auto still = spawn_mob(world, host, "minecraft:cow", Vec3d{1.5, 64.0, 1.5});
+    const auto free  = spawn_mob(world, host, "minecraft:pig", Vec3d{4.5, 64.0, 1.5});
+    mob_of(world, still).set_no_ai(true);
+    // Measured: vanilla writes NoAI only when it is set.
+    CHECK(storage.encode(world, still, records, host).find("NoAI")->as_bool());
+    CHECK(storage.encode(world, free, records, host).find("NoAI") == nullptr);
+    (void)storage.save_all(world, records, host);
+
+    Taming              taming2{*registries()};
+    entity::EntityWorld world2{*registries()};
+    Host                holder2{&world2, &taming2};
+    const EntityStorageHost host2 = holder2.make();
+    MobRecords              records2;
+    EntityStorage           storage2{*registries(), scratch.path / "entities"};
+    (void)storage2.load_chunk(ChunkPos{0, 0}, world2, records2, host2);
+    const auto cow2 = find_type(world2, "minecraft:cow");
+    const auto pig2 = find_type(world2, "minecraft:pig");
+    REQUIRE(cow2 != entity::kNoEntity);
+    REQUIRE(pig2 != entity::kNoEntity);
+    CHECK(mob_of(world2, cow2).no_ai());
+    CHECK_FALSE(mob_of(world2, pig2).no_ai());
+}
+
 TEST_CASE("tame: a zoo the real server wrote, read by this one", "[server][tame][parity]") {
     if (registries() == nullptr) {
         return;
@@ -302,6 +339,7 @@ TEST_CASE("tame: a zoo the real server wrote, read by this one", "[server][tame]
             continue;
         }
         ++zoo;
+        CHECK(mob_of(world, handle).no_ai());  // ── noai ── every zoo mob was summoned NoAI:1b
         const gameplay::MobBrain& brain = mob_of(world, handle).brain();
         const gameplay::TameState& t    = brain.tame;
         const auto is = [&](std::string_view type) { return state->type == type_id(type); };

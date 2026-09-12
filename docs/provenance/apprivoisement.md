@@ -297,6 +297,24 @@ fermé. Deux faux départs de la mesure elle-même, corrigés et gardés dans l'
 place tuait tout le zoo avant de le lire, et sa première recherche par position ne trouvait que
 les mobs assis, les autres ayant marché (§ 9, `NoAI`).
 
+### 8.3 `NoAI`, mesuré sur le vrai serveur
+
+Le zoo relu a montré que notre serveur ne respecte pas `NoAI` (§ 9). Avant de le corriger, la
+règle est mesurée (`measure_tame.py noai`, trois vaches — pas des zombies : le banc de mesure est
+en paisible, où le vrai serveur supprime un mob hostile dès qu'il apparaît) :
+
+| cas | vu par `data get` |
+|---|---|
+| vache `NoAI` invoquée six blocs en l'air | reste à y = −54 pendant 85 ticks, `Motion` à **exactement 0** : aucune gravité, pas même dans la vitesse stockée |
+| vache `NoAI` avec `Motion:[0.5,0,0]` | ne bouge pas (x = 44,5 du début à la fin) ; `Motion` x = 0,49 puis 0,3619 quinze ticks plus tard, **0,49 × 0,98¹⁵** exactement |
+| vache sans `NoAI` | **aucune clé `NoAI`** dans ses données : vanilla ne l'écrit que vraie |
+
+C'est ce que `explosions.md` (§ 4) avait vu sur des zombies repoussés, et ce que la métrique
+`entity_gravity` de `PROGRESS.json` appelle « NoAI coupe la physique d'un Mob » : ni cerveau, ni
+déplacement, ni gravité — la vitesse est seulement multipliée par 0,98 à chaque tick. Ce qui,
+lui, continue : l'âge et la ponte (`elevage.md`), et le décompte de la colère d'un loup (§ 2 : 400,
+399, 398… sur un loup `NoAI`).
+
 ---
 
 ## 9. Ce qui n'est pas fait, ou pas mesuré
@@ -327,11 +345,15 @@ les mobs assis, les autres ayant marché (§ 9, `NoAI`).
   **la chèvre** ne charge pas et ne perd pas ses cornes ; **le renifleur** ne creuse pas.
   Tous vivent, se nourrissent, se reproduisent et gardent leur type ou leur drapeau à la sauvegarde.
 * **Le crachat du lama** (le projectile `llama_spit`) et les **caravanes** (la laisse) : non faits.
-* **`NoAI` n'est pas respecté par notre serveur**, pour aucun mob : le drapeau est relu et
-  réécrit tel quel, mais le cerveau tourne. Vu sur le zoo relu (§ 8.2) : pendant les 45 s où
-  `ov_dedicated` l'avait chargé, les mobs debout ont quitté leur place, et seuls le loup, le chat
-  et le perroquet assis y étaient encore. C'est un manque de tous les mobs, pas de
-  l'apprivoisement ; il n'est pas corrigé ici.
+* **`NoAI` était ignoré par notre serveur**, pour tous les mobs : le drapeau était relu et réécrit
+  tel quel, mais le cerveau tournait. Vu sur le zoo relu (§ 8.2) : pendant les 45 s où
+  `ov_dedicated` l'avait chargé, les mobs debout avaient quitté leur place, et seuls le loup, le
+  chat et le perroquet assis y étaient encore. **C'est corrigé**, d'après la mesure du § 8.3 : un
+  mob `NoAI` n'a plus ni cerveau ni physique (position figée, aucune gravité, vitesse × 0,98 par
+  tick), tandis que l'âge, l'amour, la ponte et la colère d'un loup continuent. La clé est lue
+  à `NoAI` et écrite seulement quand elle est vraie, comme vanilla. Tests :
+  `test_mob_logic.cpp` (`[noai]`) et `test_tame_server.cpp` (aller-retour par `entities/`, et
+  les quinze mobs du zoo vanilla relus `NoAI`).
 
 **Non mesuré, et appliqué d'après la documentation.**
 
