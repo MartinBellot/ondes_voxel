@@ -100,6 +100,11 @@ enum class TickPhase : u8 {
     /// Anything between two named phases. Should stay near zero; if it does
     /// not, a phase is missing a name.
     Other,
+    /// Packets the network thread queued during the last tick, handled here
+    /// (inbound_queue.hpp). Packets that arrive while the loop waits for the
+    /// next tick are handled then, outside any tick, and only show in the
+    /// `network packet` histogram.
+    NetworkInput,
     /// Generated chunks moved from the workers into the map.
     ChunkPublish,
     /// Counting the spawn area in, until it is complete.
@@ -189,6 +194,9 @@ public:
     /// A block written and broadcast by `set_block_and_broadcast`, from
     /// whichever thread wrote it.
     LatencyHistogram block_edit;
+    /// How long a packet waited between the network thread framing it and the
+    /// tick thread handling it (inbound_queue.hpp). ── concurrency ──
+    LatencyHistogram network_queue_wait;
 
 private:
     void close_phase(i64 wall_now, i64 cpu_now) noexcept;
