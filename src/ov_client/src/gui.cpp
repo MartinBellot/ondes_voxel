@@ -221,6 +221,15 @@ void Gui::begin(u32 framebuffer_width, u32 framebuffer_height, u32 scale) {
     stats_.vertices  = 0;
 }
 
+// ── hud ── One framebuffer row down for every GUI vertex. Measured at scale 3
+// against the real 1.20.1 client, column by column through a heart and the
+// experience bar (docs/provenance/hud.md § 7 bis): every horizontal edge of
+// ours came one framebuffer row above the real client's, every vertical edge
+// on the same column. The viewport maths is exact (y + h, height −h); the row
+// is a rasterisation convention between the two pipelines, and it is
+// corrected where it was measured.
+constexpr f32 kRowOffset = 1.0F;
+
 void Gui::push_quad(GuiTexture texture, const std::array<GuiPoint, 4>& corners,
                     const std::array<GuiPoint, 4>& uvs, u32 argb) {
     const Texture* entry = lookup(texture);
@@ -239,8 +248,8 @@ void Gui::push_quad(GuiTexture texture, const std::array<GuiPoint, 4>& corners,
     const auto        colour = unpack_colour(argb);
     const auto        s      = static_cast<f32>(scale_);
     const auto        emit   = [&](usize index) {
-        scratch_.push_back(Vertex{corners[index].x * s, corners[index].y * s, uvs[index].x,
-                                  uvs[index].y, colour});
+        scratch_.push_back(Vertex{corners[index].x * s, corners[index].y * s + kRowOffset,
+                                  uvs[index].x, uvs[index].y, colour});
     };
     // Two triangles, counter-clockwise in a y-down space. Culling is off, so
     // the winding only has to be consistent, not correct.
@@ -295,7 +304,7 @@ void Gui::gradient(f32 x, f32 y, f32 w, f32 h, u32 top_argb, u32 bottom_argb) {
     const auto bottom = unpack_colour(bottom_argb);
     const auto s      = static_cast<f32>(scale_);
     const auto emit   = [&](f32 px, f32 py, const std::array<u8, 4>& colour) {
-        scratch_.push_back(Vertex{px * s, py * s, 0.0F, 0.0F, colour});
+        scratch_.push_back(Vertex{px * s, py * s + kRowOffset, 0.0F, 0.0F, colour});
     };
     emit(x, y, top);
     emit(x, y + h, bottom);

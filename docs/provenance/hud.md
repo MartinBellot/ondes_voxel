@@ -284,6 +284,18 @@ restent refusés et nommés, comme avant.
 - **`spawn-animals=false` refuse aussi un cheval `/summon`é** : la première
   scène de monture n'avait aucun cheval (« No entity was found »).
   `doMobSpawning false` dans les scènes suffit à garder le monde vide.
+- **Toute notre interface était un pixel d'écran trop haut.** Colonne par
+  colonne, à la résolution du tampon, à travers un cœur et la barre
+  d'expérience : chaque bord horizontal des nôtres venait une rangée plus tôt
+  que chez le vrai client (rouge du cœur à 1327 contre 1328, bord de la barre
+  à 1354 contre 1355), chaque bord vertical sur la même colonne. Le calcul du
+  viewport est exact (y + h, hauteur −h) : c'est une convention de
+  rastérisation entre les deux pipelines. Avec un pack 2× à l'échelle 3, un
+  texel fait 1,5 pixel d'écran, et ce décalage d'un pixel suffit à changer le
+  texel de plusieurs rangées — c'est ce qui laissait les cœurs à 82–92 %
+  d'identiques pour des masques d'encre à plus de 90 %. `Gui` ajoute
+  désormais une rangée à chaque sommet (`kRowOffset`), vérifié sur les
+  captures suivantes.
 - **F1 ne cache pas un écran ouvert.** `hideGui` retire le HUD mais laisse la
   fenêtre de conteneur : la capture « sans HUD » d'un écran le montre encore,
   et la différence d'encre y est vide. Les fenêtres sont donc comparées
