@@ -230,6 +230,12 @@ void note_untreeified_bucket(usize capacity) noexcept {
     return h ^ (h >> 16);
 }
 
+/// The diagnostic count behind `java_hash_treeified_bins`.
+[[nodiscard]] std::atomic<u64>& treeified_bins() noexcept {
+    static std::atomic<u64> count{0};
+    return count;
+}
+
 /// One entry of the model HashMap: a node of its bin's linked list (`next`,
 /// `prev` — the iteration order) and, once the bin is treeified, of the bin's
 /// red-black tree (`parent`, `left`, `right`, `red`).
@@ -292,6 +298,7 @@ public:
                         resize(table_.size() * 2);
                     } else {
                         treeify(index);
+                        treeified_bins().fetch_add(1, std::memory_order_relaxed);
                     }
                 }
             }
@@ -666,6 +673,10 @@ std::vector<BlockPos> java_hash_order(const std::vector<BlockPos>& inserted) {
         set.add(pos);
     }
     return set.iteration();
+}
+
+u64 java_hash_treeified_bins() noexcept {
+    return treeified_bins().load(std::memory_order_relaxed);
 }
 
 // ── The writer ──────────────────────────────────────────────────────────────

@@ -315,6 +315,11 @@ struct TreeConfig {
 /// order-preserving lo/hi split on every resize.
 [[nodiscard]] std::vector<BlockPos> java_hash_order(const std::vector<BlockPos>& inserted);
 
+/// ── worldgen-3 ── How many bins `java_hash_order` has turned into trees in
+/// this process — a diagnostic count, for the measurement that has to show the
+/// treeified order is actually exercised. Nothing reads it back.
+[[nodiscard]] u64 java_hash_treeified_bins() noexcept;
+
 /// `Vec3i.hashCode()`: `(y + z * 31) * 31 + x`, wrapping like a Java int.
 [[nodiscard]] i32 java_block_pos_hash(BlockPos at) noexcept;
 
