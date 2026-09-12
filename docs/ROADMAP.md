@@ -1218,9 +1218,11 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       l'ordre d'identité du jar), arrivée identique paquet pour paquet, console **5/5**,
       journal des opérateurs **120/120** ; fichier du jar relu et réécrit **43/43 faits**,
       notre fichier relu par le jar : **39/39 faits conservés**, 19/19 paquets d'arrivée
-      identiques. Restent : le coup d'épée entre joueurs (absent du serveur, donc le tir
-      ami et `playerKillCount` ne jouent que pour la flèche), `armor` à 0, la barre
-      latérale de notre client non mesurée, belowName non dessiné. Voir
+      identiques. **2026-09-12** : le coup d'épée entre joueurs (même chemin de dégâts,
+      `pvp`, tir ami, mort qui nomme le tueur) : phase à deux sondes **103/108** + 3 dans un
+      autre ordre, les 2 écarts étant un paquet dont le jar ne fixe pas lui-même l'étape.
+      Restent : la barre latérale de notre client non mesurée, belowName non dessiné,
+      `deathMessageVisibility` non appliquée. Voir
       `docs/provenance/scoreboard.md`)*
 - [ ] **Tous les succès** (story, nether, end, adventure, husbandry) et leurs
       déclencheurs
