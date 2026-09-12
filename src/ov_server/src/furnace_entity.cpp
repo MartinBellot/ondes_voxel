@@ -46,7 +46,58 @@ void set_short(nbt::Tag& data, std::string_view key, i32 value) {
     return a.item == b.item && a.count == b.count;
 }
 
+/// The `tag` of the stack in slot 0, if it has one.
+[[nodiscard]] const nbt::Tag* input_tag(const nbt::Tag& data) noexcept {
+    const nbt::Tag* list = data.find("Items");
+    if (list == nullptr || list->list() == nullptr) {
+        return nullptr;
+    }
+    for (const nbt::Tag& entry : *list->list()) {
+        const nbt::Tag* slot = entry.find("Slot");
+        if (slot != nullptr && slot->as_i64() == 0) {
+            return entry.find("tag");
+        }
+    }
+    return nullptr;
+}
+
+/// A block position as one key: 26 bits of x and z, 12 of y.
+[[nodiscard]] u64 key_of(BlockPos at) noexcept {
+    return (static_cast<u64>(static_cast<u32>(at.x) & 0x3FFFFFFU) << 38U) |
+           (static_cast<u64>(static_cast<u32>(at.z) & 0x3FFFFFFU) << 12U) |
+           (static_cast<u64>(static_cast<u32>(at.y) & 0xFFFU));
+}
+
 }  // namespace
+
+bool FurnaceInputMemory::same_as(const gameplay::RecipeStack& input,
+                                 const nbt::Tag*              input_tag) const {
+    if (input.empty() || empty) {
+        return input.empty() == empty;
+    }
+    if (input.item != item) {
+        return false;
+    }
+    if ((input_tag == nullptr) != !tag.has_value()) {
+        return false;
+    }
+    return input_tag == nullptr || *input_tag == *tag;
+}
+
+void FurnaceInputMemory::remember(const gameplay::RecipeStack& input, const nbt::Tag* input_tag) {
+    const bool tag_same = input_tag == nullptr ? !tag.has_value()
+                                               : tag.has_value() && *tag == *input_tag;
+    if (!tag_same) {
+        if (input_tag != nullptr) {
+            tag = *input_tag;
+        } else {
+            tag.reset();
+        }
+    }
+    empty = input.empty();
+    item  = input.empty() ? registry::ProtocolId{} : input.item;
+    known = true;
+}
 
 std::optional<gameplay::FurnaceKind> furnace_kind_of(std::string_view name) noexcept {
     if (name == "minecraft:furnace") {
@@ -203,16 +254,29 @@ std::vector<i32> take_recipes_used_experience(nbt::Tag& data, const gameplay::Re
 
 FurnaceEntityTick tick_furnace_entity(const registry::Registries& registries,
                                       registry::RegistryId items, const gameplay::RecipeBook& book,
-                                      gameplay::FurnaceKind kind, nbt::Tag& data) {
+                                      gameplay::FurnaceKind kind, nbt::Tag& data,
+                                      FurnaceInputMemory& memory) {
     FurnaceEntityTick     out;
     gameplay::FurnaceSlots slots;
     gameplay::FurnaceState state;
     read_furnace_slots(registries, items, data, slots);
     read_furnace_counters(data, state);
 
+    // Someone other than the furnace changed its input since its last tick —
+    // a click, a hopper, a command: the progress is lost and the total is the
+    // new input's, as vanilla does when its input slot is set. First seen:
+    // nothing to compare with, and the NBT is kept as it is.
+    if (memory.known && !memory.same_as(slots.input, input_tag(data))) {
+        gameplay::furnace_input_changed(book, kind, slots, state);
+        write_furnace_counters(data, state);
+        out.input_changed    = true;
+        out.counters_changed = true;
+    }
+
     // The common case by far: cold, with nothing cooking and no progress to
     // lose. A world full of decorative furnaces costs a read and a compare.
     if (!state.lit() && state.cook_time == 0 && slots.input.empty()) {
+        memory.remember(slots.input, nullptr);
         return out;
     }
 
@@ -223,7 +287,7 @@ FurnaceEntityTick tick_furnace_entity(const registry::Registries& registries,
         slots.input.empty() ? std::nullopt : gameplay::match_cooking(book, kind, slots.input.item);
 
     out.step = gameplay::furnace_tick(book, kind, slots, state);
-    out.counters_changed = state.lit_time != before.lit_time ||
+    out.counters_changed = out.counters_changed || state.lit_time != before.lit_time ||
                            state.cook_time != before.cook_time ||
                            state.cook_total != before.cook_total;
     if (out.counters_changed) {
@@ -236,6 +300,9 @@ FurnaceEntityTick tick_furnace_entity(const registry::Registries& registries,
     if (out.step.produced && recipe) {
         count_recipe_used(data, book.name(*recipe));
     }
+    // What the next tick compares with: the input as this tick left it, so
+    // that the furnace's own consumption is never taken for a change.
+    memory.remember(slots.input, input_tag(data));
     return out;
 }
 
@@ -243,12 +310,6 @@ FurnaceEntities::FurnaceEntities(const registry::Registries& registries,
                                  const gameplay::RecipeBook& book)
     : registries_(&registries), book_(&book), items_(registries.find("minecraft:item")) {
     index_.reserve(256);
-}
-
-void FurnaceEntities::note(BlockPos pos) {
-    if (std::ranges::find(index_, pos) == index_.end()) {
-        index_.push_back(pos);
-    }
 }
 
 std::optional<registry::BlockStateId> relight_furnace_block(world::Chunk&                  chunk,
@@ -292,8 +353,8 @@ FurnaceStats FurnaceEntities::tick(const FurnaceHost& host, i64 now) {
     if (!items_) {
         return stats;
     }
-    if (indexed_at_ < 0 || now < indexed_at_ || now - indexed_at_ >= 20) {
-        indexed_at_ = now;
+    // Every tick: see the class comment for why not once a second.
+    {
         index_.clear();
         if (host.for_each_chunk) {
             host.for_each_chunk([this](ChunkPos pos, const world::Chunk& chunk) {
@@ -324,8 +385,10 @@ FurnaceStats FurnaceEntities::tick(const FurnaceHost& host, i64 now) {
             continue;
         }
         ++stats.furnaces;
+        FurnaceInputMemory& memory = memory_[key_of(at)];
+        memory.seen_at             = now;
         const FurnaceEntityTick one =
-            tick_furnace_entity(*registries_, *items_, *book_, *kind, entity->data);
+            tick_furnace_entity(*registries_, *items_, *book_, *kind, entity->data, memory);
         if (read_number(entity->data, "BurnTime") > 0) {
             ++stats.burning;
         }
@@ -341,7 +404,31 @@ FurnaceStats FurnaceEntities::tick(const FurnaceHost& host, i64 now) {
             host.set_lit(*chunk, at, read_number(entity->data, "BurnTime") > 0);
         }
     }
+    // The furnaces that are gone, forgotten once a second: a furnace broken
+    // and placed again is a new one, first seen.
+    if (now % 20 == 0) {
+        std::erase_if(memory_, [now](const auto& entry) { return entry.second.seen_at != now; });
+    }
     return stats;
+}
+
+DimensionFurnaces::DimensionFurnaces(const registry::Registries& registries,
+                                     const gameplay::RecipeBook& book)
+    : passes_{FurnaceEntities{registries, book}, FurnaceEntities{registries, book},
+              FurnaceEntities{registries, book}} {}
+
+FurnaceStats DimensionFurnaces::tick(std::span<const FurnaceHost* const> hosts, i64 now) {
+    FurnaceStats total;
+    for (usize dimension = 0; dimension < kDimensions && dimension < hosts.size(); ++dimension) {
+        if (hosts[dimension] == nullptr) {
+            continue;
+        }
+        const FurnaceStats one = passes_[dimension].tick(*hosts[dimension], now);
+        total.furnaces += one.furnaces;
+        total.burning += one.burning;
+        total.cooked += one.cooked;
+    }
+    return total;
 }
 
 }  // namespace ov::server

@@ -28,9 +28,12 @@
 #include "ov/registry/registries.hpp"
 #include "ov/world/chunk.hpp"
 
+#include <array>
 #include <functional>
 #include <optional>
+#include <span>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace ov::server {
@@ -71,17 +74,47 @@ void count_recipe_used(nbt::Tag& data, std::string_view recipe);
                                                             const gameplay::RecipeBook& book,
                                                             math::LegacyRandomSource&   random);
 
+/// What a furnace's input slot held when the pass last left it: item and
+/// tags, not count.
+///
+/// Vanilla resets `CookTime` and reads `CookTimeTotal` again when its input
+/// slot is set to something else. This is how the pass sees that without every
+/// writer — click, hopper, command — having to say so: it compares the input
+/// with what its own last tick left there.
+///
+/// One gap, named in docs/provenance/crafting-and-smelting.md: the same item
+/// taken out and put back within one tick is two changes to vanilla and none
+/// to a comparison made once a tick.
+struct FurnaceInputMemory {
+    bool                    known{false};
+    bool                    empty{true};
+    registry::ProtocolId    item{};
+    std::optional<nbt::Tag> tag;
+    i64                     seen_at{-1};
+
+    [[nodiscard]] bool same_as(const gameplay::RecipeStack& input,
+                               const nbt::Tag*              input_tag) const;
+    /// Copies the tags only when they differ: no allocation for a furnace
+    /// whose input stays what it is.
+    void remember(const gameplay::RecipeStack& input, const nbt::Tag* input_tag);
+};
+
 /// What one furnace's tick did.
 struct FurnaceEntityTick {
     gameplay::FurnaceTick step{};
     bool                  counters_changed{false};
+    /// Someone else changed the input since the last tick.
+    bool                  input_changed{false};
 };
 
-/// One tick of the furnace whose block entity is `data`, in place.
+/// One tick of the furnace whose block entity is `data`, in place. `memory`
+/// is this furnace's; first seen, nothing is compared and the NBT is kept as
+/// it is — a missing `CookTimeTotal` included, as vanilla keeps it.
 [[nodiscard]] FurnaceEntityTick tick_furnace_entity(const registry::Registries& registries,
                                                     registry::RegistryId        items,
                                                     const gameplay::RecipeBook& book,
-                                                    gameplay::FurnaceKind kind, nbt::Tag& data);
+                                                    gameplay::FurnaceKind kind, nbt::Tag& data,
+                                                    FurnaceInputMemory& memory);
 
 /// Flip a furnace block's `lit` property, **keeping its block entity**.
 ///
@@ -114,26 +147,47 @@ struct FurnaceStats {
 
 /// Every furnace in the loaded chunks, every tick.
 ///
-/// The index is rebuilt once a second rather than every block entity of every
-/// chunk being walked twenty times a second. A furnace opened, clicked or fed
-/// is `note`d, so that one placed a moment ago does not wait for the index.
+/// Found again every tick, not once a second: the input detector has to see a
+/// furnace before anything else writes into it — one placed, set by a command
+/// or loaded with its chunk — or a hopper's first insertion would be taken for
+/// the state it was found in, and the furnace would never cook. The walk is
+/// over each chunk's handful of block entities, and the pass runs before the
+/// hoppers in the tick.
 class FurnaceEntities {
 public:
     FurnaceEntities(const registry::Registries& registries, const gameplay::RecipeBook& book);
-
-    /// A furnace is here; tick it from now on even before the next index.
-    void note(BlockPos pos);
 
     FurnaceStats tick(const FurnaceHost& host, i64 now);
 
     [[nodiscard]] usize indexed() const noexcept { return index_.size(); }
 
 private:
-    const registry::Registries*         registries_;
-    const gameplay::RecipeBook*         book_;
-    std::optional<registry::RegistryId> items_;
-    std::vector<BlockPos>               index_;
-    i64                                 indexed_at_{-1};
+    const registry::Registries*                     registries_;
+    const gameplay::RecipeBook*                     book_;
+    std::optional<registry::RegistryId>             items_;
+    std::vector<BlockPos>                           index_;
+    std::unordered_map<u64, FurnaceInputMemory>     memory_;
+};
+
+/// The same pass once per dimension — the overworld, the Nether and the End,
+/// numbered as `DimensionId` numbers them — each over its own chunks.
+///
+/// The version before this ticked the overworld's furnaces alone: a furnace
+/// in the Nether or the End kept its fuel and its ore and never cooked.
+class DimensionFurnaces {
+public:
+    static constexpr usize kDimensions = 3;
+
+    DimensionFurnaces(const registry::Registries& registries, const gameplay::RecipeBook& book);
+
+    /// `hosts[d]` is that dimension's host, or null when the dimension is not
+    /// loaded — then it is skipped.
+    FurnaceStats tick(std::span<const FurnaceHost* const> hosts, i64 now);
+
+    [[nodiscard]] const FurnaceEntities& pass(usize dimension) const { return passes_[dimension]; }
+
+private:
+    std::array<FurnaceEntities, kDimensions> passes_;
 };
 
 }  // namespace ov::server

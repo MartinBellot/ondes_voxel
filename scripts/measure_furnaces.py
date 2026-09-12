@@ -19,7 +19,10 @@ Deux campagnes, contre `tools/vanilla/server.jar` :
 Sortie : `.scratch/furnaces.json`, et sur la sortie standard les cellules
 sous la forme que lit `src/ov_server/tests/test_furnace_entity.cpp`.
 
-Usage : python3 scripts/measure_furnaces.py [ticks|xp|xp-iron|all]
+Usage : python3 scripts/measure_furnaces.py [ticks|xp|xp-iron|clicks|ticks-clicks|all]
+
+`clicks` vide la sortie par un lancer (mode 4) et par une touche numérique
+(mode 2), et relève l'expérience, `RecipesUsed` et où vont les lingots.
 
 `xp-iron` refait le fer, l'extraction et l'entonnoir en gardant les pierres
 déjà mesurées.
@@ -302,14 +305,147 @@ def campaign_xp(server: CraftServer, trials: int = 40) -> dict:
     return results
 
 
+# (nom, posé avec CookTimeTotal, les `item replace` du changement — tous
+# dans le même lot, donc le même tick).
+CHANGES: list[tuple[str, bool, list[str]]] = [
+    ("swap-other", True, ["minecraft:sand 8"]),
+    ("swap-uncookable", True, ["minecraft:dirt 8"]),
+    ("remove", True, ["minecraft:air"]),
+    ("same-more", True, ["minecraft:iron_ore 3"]),
+    ("same-tagged", True, ["minecraft:iron_ore{display:{Name:'\"x\"'}} 8"]),
+    ("reinsert-same-tick", True, ["minecraft:air", "minecraft:iron_ore 8"]),
+    ("control-same", False, ["minecraft:iron_ore 7"]),
+    ("control-other", False, ["minecraft:raw_iron 8"]),
+]
+
+
+def campaign_changes(server: CraftServer) -> dict:
+    """La case d'entrée changée par un autre que le four : `item replace`
+    passe par le même chemin qu'un entonnoir ou un clic. Que deviennent
+    `CookTime` et `CookTimeTotal`, et le témoin sans total se débloque-t-il ?"""
+    z = 20
+
+    def at(i: int) -> tuple[int, int, int]:
+        return (2 + 3 * i, Y, z)
+
+    place = []
+    for i, (_, with_total, _) in enumerate(CHANGES):
+        x, y, zz = at(i)
+        total = ",CookTimeTotal:200s" if with_total else ""
+        place.append(f"setblock {x} {y} {zz} minecraft:air")
+        place.append(f'setblock {x} {y} {zz} minecraft:furnace{{Items:[{{Slot:0b,id:"minecraft:'
+                     f'iron_ore",Count:8b}},{{Slot:1b,id:"minecraft:coal",Count:1b}}]{total}}}')
+    placed_at = gametime(server.batch(place + ["time query gametime"]))
+    time.sleep(2.5)
+
+    def read_all() -> tuple[int, dict]:
+        commands = ["time query gametime"] + [
+            f"data get block {at(i)[0]} {Y} {z}" for i in range(len(CHANGES))]
+        lines = server.batch(commands)
+        cells: dict = {}
+        for line in lines:
+            m = DATA.search(line)
+            if m and int(m.group(3)) == z:
+                cells[CHANGES[(int(m.group(1)) - 2) // 3][0]] = parse(m.group(4))
+        return gametime(lines) - placed_at, cells
+
+    before_dt, before = read_all()
+    change = []
+    for i, (_, _, replaces) in enumerate(CHANGES):
+        for what in replaces:
+            change.append(f"item replace block {at(i)[0]} {Y} {z} container.0 with {what}")
+    # Le changement et la lecture dans le même lot : l'état avant le tick
+    # suivant du four.
+    lines = server.batch(change + ["time query gametime"] + [
+        f"data get block {at(i)[0]} {Y} {z}" for i in range(len(CHANGES))])
+    changed_dt = gametime(lines) - placed_at
+    right_after: dict = {}
+    for line in lines:
+        m = DATA.search(line)
+        if m and int(m.group(3)) == z:
+            right_after[CHANGES[(int(m.group(1)) - 2) // 3][0]] = parse(m.group(4))
+    time.sleep(12.5)
+    later_dt, later = read_all()
+    for name, *_ in CHANGES:
+        b, a, l = before.get(name) or {}, right_after.get(name) or {}, later.get(name) or {}
+        print(f"{name}: before C{b.get('CookTime')}/T{b.get('CookTimeTotal')} "
+              f"after C{a.get('CookTime')}/T{a.get('CookTimeTotal')} {a.get('items')} "
+              f"later C{l.get('CookTime')}/T{l.get('CookTimeTotal')} {l.get('items')}", flush=True)
+    return {"changes": [[n, t, r] for n, t, r in CHANGES], "before_dt": before_dt,
+            "before": before, "changed_dt": changed_dt, "right_after": right_after,
+            "later_dt": later_dt, "later": later}
+
+
+def campaign_clicks(server: CraftServer) -> dict:
+    """La sortie vidée autrement qu'au clic : lancer (mode 4) et touche
+    numérique (mode 2). L'expérience est-elle versée, `RecipesUsed` vidé, et
+    où vont les lingots ?"""
+    probe = XpProbe(PORT, "Oven1")
+    for _ in range(40):
+        probe.settle(0.5)
+        if any("Oven1" in line for line in server.batch(["list"])):
+            break
+    pos = (4, Y, 14)
+    stand = (4.5, -60.0, 16.5)
+    server.batch(["gamemode survival Oven1", f"tp Oven1 {stand[0]} {stand[1]} {stand[2]}",
+                  f"setblock {pos[0]} {pos[1] - 1} {pos[2]} minecraft:stone"])
+    probe.settle(1.0)
+    # (nom, bouton, mode, ce que tient la case 1 de la barre)
+    cases = [("throw-one", 0, 4, None), ("throw-stack", 1, 4, None),
+             ("key-empty", 0, 2, None), ("key-occupied", 0, 2, "cobblestone"),
+             ("key-same", 0, 2, "iron_ingot")]
+    out: dict = {}
+    for name, button, mode, hotbar in cases:
+        setup = ["xp set Oven1 0 levels", "xp set Oven1 0 points",
+                 "kill @e[type=minecraft:experience_orb]", "kill @e[type=minecraft:item]",
+                 "clear Oven1"]
+        if hotbar:
+            setup.append(f"item replace entity Oven1 hotbar.0 with minecraft:{hotbar}")
+        setup += [f"setblock {pos[0]} {pos[1]} {pos[2]} minecraft:air",
+                  f'setblock {pos[0]} {pos[1]} {pos[2]} minecraft:furnace{{Items:[{{Slot:2b,'
+                  f'id:"minecraft:iron_ingot",Count:3b}}],'
+                  f'RecipesUsed:{{"minecraft:iron_ingot_from_smelting_iron_ore":3}}}}']
+        server.batch(setup)
+        probe.settle(0.3)
+        probe.open_block(pos, stand)
+        probe.settle(0.2)
+        probe.click(2, button, mode)
+        probe.settle(0.5)
+        probe.close()
+        after = block_data(server, pos) or ""
+        got, previous = collected(server, "Oven1"), -1
+        for _ in range(8):
+            if got == previous:
+                break
+            probe.settle(0.5)
+            previous, got = got, collected(server, "Oven1")
+        inventory = [l for l in server.batch(["data get entity Oven1 Inventory"])
+                     if "entity data" in l]
+        ground = [l for l in server.batch(["execute as @e[type=minecraft:item] "
+                                           "run data get entity @s Item"]) if "entity data" in l]
+        out[name] = {"after": after, "xp": got, "inventory": inventory, "ground": ground}
+        print(f"{name}: xp={got} after={after[:160]}", flush=True)
+    probe.s.close()
+    return out
+
+
 def main() -> int:
     phase = sys.argv[1] if len(sys.argv) > 1 else "all"
     RUN.parent.mkdir(parents=True, exist_ok=True)
     result: dict = json.loads(OUT.read_text()) if OUT.exists() else {}
     server = open_server()
     try:
-        if phase in ("ticks", "all"):
+        if phase in ("ticks", "ticks-clicks", "all"):
             result["ticks"] = campaign_ticks(server)
+            # Le relevé des ticks d'abord, avant que la sonde des clics ne
+            # rejoigne : les fours doivent tourner sans aucun joueur.
+            OUT.write_text(json.dumps(result, indent=1))
+        if phase in ("changes-clicks", "changes", "all"):
+            # Sans joueur aussi : des commandes seulement.
+            result["changes"] = campaign_changes(server)
+            OUT.write_text(json.dumps(result, indent=1))
+        if phase in ("ticks-clicks", "changes-clicks", "clicks", "all"):
+            result["clicks"] = campaign_clicks(server)
         if phase in ("xp", "all"):
             result["xp"] = campaign_xp(server)
         if phase == "xp-iron":

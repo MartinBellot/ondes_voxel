@@ -420,13 +420,24 @@ WorkbenchOutcome apply_click(const WorkbenchContext& context, Workbench& bench,
 
     // ── The five ordinary modes ─────────────────────────────────────────────
     if (click.mode == 2 && click.button >= 0 && click.button < 9) {
-        // A number key must not push anything into a furnace's output: it is a
-        // slot the game fills and the player only empties.
+        net::ItemStack* hotbar = &player_inventory[36 + static_cast<usize>(click.button)];
+        // A number key on a furnace's output, measured on the real server
+        // (`scripts/measure_furnaces.py clicks`): the stack goes to an
+        // **empty** hotbar slot and the furnace pays out its `RecipesUsed`;
+        // onto an occupied slot nothing moves. Nothing is ever pushed into the
+        // output, which the game fills and the player only empties.
         if (furnace_output) {
+            net::ItemStack& out = furnace_view[static_cast<usize>(kFurnaceOutput)];
+            if (out.empty() || !hotbar->empty()) {
+                return outcome;
+            }
+            *hotbar                     = out;
+            out                         = {};
+            outcome.took_furnace_output = true;
+            commit_furnace();
             return outcome;
         }
-        net::ItemStack* slot   = any_ref(click.slot);
-        net::ItemStack* hotbar = &player_inventory[36 + static_cast<usize>(click.button)];
+        net::ItemStack* slot = any_ref(click.slot);
         if (slot != nullptr && slot != hotbar) {
             std::swap(*slot, *hotbar);
             if (bench.kind != WorkbenchKind::CraftingTable) {
@@ -447,6 +458,11 @@ WorkbenchOutcome apply_click(const WorkbenchContext& context, Workbench& bench,
                 *slot = {};
             }
             outcome.overflow.push_back(thrown);
+            // Measured: throwing even one item out of a furnace's output pays
+            // out its whole `RecipesUsed`, as taking the stack does.
+            if (furnace_output) {
+                outcome.took_furnace_output = true;
+            }
             if (bench.kind != WorkbenchKind::CraftingTable) {
                 commit_furnace();
             }
@@ -596,9 +612,6 @@ bool open_workbench(const WorkbenchContext& context, const WorkbenchHost& host, 
         if (data != nullptr) {
             load_furnace(context, *data, bench);
         }
-        if (host.note_furnace) {
-            host.note_furnace(x, y, z);
-        }
     }
 
     host.send(net::clientbound::kOpenScreen,
@@ -637,9 +650,6 @@ void handle_click(const WorkbenchContext& context, const WorkbenchHost& host, Wo
     if (outcome.save_block_entity && furnace_data != nullptr) {
         store_furnace(context, *furnace_data, bench);
         host.mark_dirty(bench.x, bench.z);
-        if (host.note_furnace) {
-            host.note_furnace(bench.x, bench.y, bench.z);
-        }
     }
     for (const net::ItemStack& stack : outcome.overflow) {
         host.drop(stack);

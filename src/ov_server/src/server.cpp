@@ -994,7 +994,8 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     }
     // ── workstations ── Every furnace in a loaded chunk, ticked as a block
     // entity whether anybody is looking or not (furnace_entity.hpp).
-    std::optional<FurnaceEntities> furnace_entities;
+    // One pass per dimension: the Nether's and the End's furnaces cook too.
+    std::optional<DimensionFurnaces> furnace_entities;
     if (registries && recipe_book) {
         furnace_entities.emplace(*registries, *recipe_book);
     }
@@ -3128,9 +3129,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             one.push_back(std::move(item));
             publish_items(one);
         };
+        // ── workstations ── In the player's own dimension. The version before
+        // this read the overworld at the same coordinates, so a furnace in the
+        // Nether or the End could not even be opened.
         host.block_entity = [&](i32 x, i32 y, i32 z) -> nbt::Tag* {
             world::BlockEntity* entity =
-                chunk_at(x >> 4, z >> 4)
+                chunk_at_in(who.dimension, x >> 4, z >> 4)
                     .block_entity_at(static_cast<usize>(x & 15), y, static_cast<usize>(z & 15));
             return entity != nullptr ? &entity->data : nullptr;
         };
@@ -3138,7 +3142,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             if (!blocks) {
                 return {};
             }
-            const registry::BlockStateId state = block_at({x, y, z});
+            const registry::BlockStateId state = block_at_in(who.dimension, {x, y, z});
             return blocks->block_name(blocks->block_of(state));
         };
         // ── workstations ── No `set_lit` here any more: the screen ticks
@@ -3146,7 +3150,13 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // `relight_furnace_block`, which keeps the block entity. The version
         // before this wrote `chunk.set_block` here and emptied a furnace that
         // lit up while someone had its screen open.
-        host.mark_dirty = [&](i32 x, i32 z) { dirty_chunks.insert(chunk_key(x >> 4, z >> 4)); };
+        host.mark_dirty = [&](i32 x, i32 z) {
+            if (who.dimension == DimensionId::Overworld) {
+                dirty_chunks.insert(chunk_key(x >> 4, z >> 4));
+            } else if (NetherWorld* other = other_world(who.dimension)) {
+                other->mark_dirty(x >> 4, z >> 4);
+            }
+        };
         // Taking from a furnace's output turns its `RecipesUsed` into orbs at
         // the player's feet: one award per recipe, split as vanilla splits it.
         // Sent over `players` directly: the caller holds players_mutex.
@@ -3161,12 +3171,13 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 orb.z         = who.z;
                 orb.value     = values[k];
                 orb.born      = server_tick.load(std::memory_order_relaxed);
+                orb.dimension = who.dimension;
                 if (const auto framed = net::encode_packet(
                         net::clientbound::kSpawnExperienceOrb,
                         net::encode_spawn_experience_orb(orb.entity_id, orb.x, orb.y, orb.z,
                                                          static_cast<i16>(orb.value)))) {
                     for (auto& [other_key, other] : players) {
-                        if (other.connection && other.dimension == DimensionId::Overworld) {
+                        if (other.connection && other.dimension == who.dimension) {
                             other.connection->send(*framed);
                         }
                     }
@@ -3174,12 +3185,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 ground_orbs.push_back(orb);
             }
         };
-        host.random       = &furnace_random;
-        host.note_furnace = [&](i32 x, i32 y, i32 z) {
-            if (furnace_entities) {
-                furnace_entities->note(BlockPos{x, y, z});
-            }
-        };
+        host.random = &furnace_random;
         return host;
     };
 
@@ -6876,39 +6882,58 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     std::vector<ChunkPos>               spawn_ticking;
     std::array<i32, 8>                  spawn_live{};
 
-    // ── workstations ── What the furnace pass reaches for, built once: a
-    // `std::function` rebuilt every tick would allocate inside the tick body.
-    FurnaceHost furnace_host;
-    furnace_host.chunk = [&](i32 cx, i32 cz) { return chunk_if_resident(cx, cz); };
-    furnace_host.for_each_chunk =
-        [&](const std::function<void(ChunkPos, const world::Chunk&)>& visit) {
-            chunks.for_each(visit);
-        };
-    // `relight_furnace_block`, never `chunk.set_block`: the block entity — the
-    // furnace's ore, fuel and `RecipesUsed` — survives the flip. Sent over
-    // `players` directly: the tick holds players_mutex here.
-    furnace_host.set_lit = [&](world::Chunk& chunk, BlockPos at, bool lit) {
-        if (!blocks) {
-            return;
-        }
-        const auto next = relight_furnace_block(chunk, *blocks, at, lit);
-        if (!next) {
-            return;
-        }
-        dirty_chunks.insert(chunk_key(at.x >> 4, at.z >> 4));
-        if (const auto framed = net::encode_packet(
-                net::clientbound::kBlockUpdate,
-                net::encode_block_update(net::WirePosition{at.x, at.y, at.z},
-                                         static_cast<i32>(next->value())))) {
-            // Overworld players only: the pass walks the overworld's chunks.
-            for (auto& [other_key, other] : players) {
-                if (other.connection && other.dimension == DimensionId::Overworld) {
-                    other.connection->send(*framed);
-                }
-            }
+    // ── workstations ── What each dimension's furnace pass reaches for, built
+    // once: a `std::function` rebuilt every tick would allocate inside the
+    // tick body. One host per dimension, over its own chunks and for its own
+    // players.
+    const auto mark_dirty_in = [&](DimensionId dimension, i32 cx, i32 cz) {
+        if (dimension == DimensionId::Overworld) {
+            dirty_chunks.insert(chunk_key(cx, cz));
+        } else if (NetherWorld* other = other_world(dimension)) {
+            other->mark_dirty(cx, cz);
         }
     };
-    furnace_host.mark_dirty = [&](i32 cx, i32 cz) { dirty_chunks.insert(chunk_key(cx, cz)); };
+    std::array<FurnaceHost, DimensionFurnaces::kDimensions> furnace_hosts;
+    for (const DimensionId dimension :
+         {DimensionId::Overworld, DimensionId::Nether, DimensionId::End}) {
+        FurnaceHost& host = furnace_hosts[static_cast<usize>(dimension)];
+        host.chunk = [&, dimension](i32 cx, i32 cz) {
+            return chunk_if_resident_in(dimension, cx, cz);
+        };
+        // The Nether and the End open lazily: asked for at the call, not now.
+        host.for_each_chunk =
+            [&, dimension](const std::function<void(ChunkPos, const world::Chunk&)>& visit) {
+                if (dimension == DimensionId::Overworld) {
+                    chunks.for_each(visit);
+                } else if (NetherWorld* other = other_world(dimension)) {
+                    other->chunks().for_each(visit);
+                }
+            };
+        // `relight_furnace_block`, never `chunk.set_block`: the block entity —
+        // the furnace's ore, fuel and `RecipesUsed` — survives the flip. Sent
+        // over `players` directly: the tick holds players_mutex here.
+        host.set_lit = [&, dimension](world::Chunk& chunk, BlockPos at, bool lit) {
+            if (!blocks) {
+                return;
+            }
+            const auto next = relight_furnace_block(chunk, *blocks, at, lit);
+            if (!next) {
+                return;
+            }
+            mark_dirty_in(dimension, at.x >> 4, at.z >> 4);
+            if (const auto framed = net::encode_packet(
+                    net::clientbound::kBlockUpdate,
+                    net::encode_block_update(net::WirePosition{at.x, at.y, at.z},
+                                             static_cast<i32>(next->value())))) {
+                for (auto& [other_key, other] : players) {
+                    if (other.connection && other.dimension == dimension) {
+                        other.connection->send(*framed);
+                    }
+                }
+            }
+        };
+        host.mark_dirty = [&, dimension](i32 cx, i32 cz) { mark_dirty_in(dimension, cx, cz); };
+    }
     u64                         chunks_published = 0;
     // ── loading ──
     i32        spawn_percent_seen = -1;
@@ -8686,6 +8711,20 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         // ── end weather ─────────────────────────────────────────────
 
         perf->enter(TickPhase::Containers);  // ── perf ──
+        // ── workstations ── Every furnace in a loaded chunk cooks, watched or
+        // not: its block entity is its only copy (furnace_entity.hpp). Here,
+        // before the hoppers and the players: its input detector must see a
+        // furnace placed, set by a command or loaded this tick before anything
+        // writes into it.
+        if (furnace_entities) {
+            const std::scoped_lock furnace_pass{players_mutex, chunk_mutex};
+            // A dimension nobody has opened yet has no chunks to walk.
+            const std::array<const FurnaceHost*, DimensionFurnaces::kDimensions> hosts{
+                &furnace_hosts[static_cast<usize>(DimensionId::Overworld)],
+                nether ? &furnace_hosts[static_cast<usize>(DimensionId::Nether)] : nullptr,
+                end_world ? &furnace_hosts[static_cast<usize>(DimensionId::End)] : nullptr};
+            (void)furnace_entities->tick(hosts, static_cast<i64>(clock.tick_count()));
+        }
         // ── brewing ── Every brewing stand in the loaded chunks, watched or
         // not: a ticked block entity, like the furnace (brewing_session.hpp).
         if (brewing) {
@@ -10348,20 +10387,11 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 }
 
                 perf->enter(TickPhase::Screens);  // ── perf ──
-                // ── workstations ── Every furnace in a loaded chunk cooks,
-                // watched or not: its block entity is its only copy
-                // (furnace_entity.hpp). Before the screens, so that an open
-                // screen shows the tick that just happened.
-                if (furnace_entities) {
-                    const std::scoped_lock chunk_lock{chunk_mutex};
-                    (void)furnace_entities->tick(furnace_host,
-                                                 static_cast<i64>(clock.tick_count()));
-                }
-
                 // ── crafting and smelting ───────────────────────────────────
                 // The screens someone has open. They tick nothing: a furnace
-                // screen re-reads the block entity the pass above has just
-                // ticked and owes its viewer the four bars and a resend.
+                // screen re-reads the block entity the furnace pass (in the
+                // containers phase) has ticked, and owes its viewer the four
+                // bars and a resend.
                 for (auto& [key, player] : players) {
                     if (!player.bench || !player.connection) {
                         continue;

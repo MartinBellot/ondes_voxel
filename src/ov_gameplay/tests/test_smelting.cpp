@@ -108,6 +108,8 @@ TEST_CASE("a whole smelt, tick by tick", "[smelting]") {
     slots.input = RecipeStack{item_of("minecraft:iron_ore"), 1};
     slots.fuel  = RecipeStack{item_of("minecraft:coal"), 1};
     FurnaceState state;
+    // The ore just arrived: this is what reads the total, not the tick.
+    furnace_input_changed(book, FurnaceKind::Furnace, slots, state);
 
     // Tick one lights the furnace and does not spend a tick of its fuel: the
     // 1600 measured on the real server is the count of ticks the block is lit,
@@ -159,6 +161,7 @@ TEST_CASE("one coal smelts eight items and no more", "[smelting]") {
     slots.input = RecipeStack{item_of("minecraft:iron_ore"), 16};
     slots.fuel  = RecipeStack{item_of("minecraft:coal"), 1};
     FurnaceState state;
+    furnace_input_changed(book, FurnaceKind::Furnace, slots, state);
 
     int produced = 0;
     for (int tick = 0; tick < 4000; ++tick) {
@@ -210,6 +213,7 @@ TEST_CASE("progress falls back when the fire goes out", "[smelting]") {
     slots.input = RecipeStack{item_of("minecraft:iron_ore"), 1};
     slots.fuel  = RecipeStack{item_of("minecraft:bamboo"), 1};  // 50 ticks
     FurnaceState state;
+    furnace_input_changed(book, FurnaceKind::Furnace, slots, state);
 
     // Fifty lit ticks, and the first of them is the tick that lights it: the
     // counter is set there, not spent, so fifty ticks of bamboo buy fifty
@@ -243,8 +247,9 @@ TEST_CASE("a blast furnace is twice as fast and burns twice as much", "[smelting
     FurnaceState state;
 
     // Iron ore takes 100 ticks in a blast furnace, which the recipe file says.
-    // Read on the first tick: once the input runs out there is no recipe left
-    // to ask, and the total goes back to zero rather than lying.
+    // Read when the ore arrives, while there is a recipe to ask. Once the
+    // input runs out the total stays where it was, as the real server keeps it.
+    furnace_input_changed(book, FurnaceKind::BlastFurnace, slots, state);
     (void)furnace_tick(book, FurnaceKind::BlastFurnace, slots, state);
     CHECK(state.cook_total == 100);
     CHECK(state.lit_time == 800);
@@ -257,6 +262,41 @@ TEST_CASE("a blast furnace is twice as fast and burns twice as much", "[smelting
     }
     // 800 ticks of coal over 100 ticks an item: eight again, in half the time.
     CHECK(produced == 8);
+}
+
+TEST_CASE("a furnace without a total never finishes, as the real server's", "[smelting]") {
+    const RecipeBook& book = *loaded().book;
+
+    // Placed by hand without `CookTimeTotal`, and its input never changed:
+    // measured, vanilla burns the coal and counts `CookTime` up to 1202 with
+    // nothing produced, then reads 0 once the fire is out.
+    FurnaceSlots slots;
+    slots.input = RecipeStack{item_of("minecraft:iron_ore"), 8};
+    slots.fuel  = RecipeStack{item_of("minecraft:coal"), 1};
+    FurnaceState state;
+
+    int produced = 0;
+    for (int tick = 0; tick < 1600; ++tick) {
+        produced += furnace_tick(book, FurnaceKind::Furnace, slots, state).produced ? 1 : 0;
+    }
+    CHECK(produced == 0);
+    CHECK(state.cook_time == 1600);
+    CHECK(state.cook_total == 0);
+
+    // Out of fuel: the progress falls, and never above the total.
+    (void)furnace_tick(book, FurnaceKind::Furnace, slots, state);
+    CHECK_FALSE(state.lit());
+    CHECK(state.cook_time == 0);
+
+    // Something that does not cook keeps the total; something that does reads
+    // its own (measured: dirt keeps 200, raw iron sets 200 from 0).
+    slots.input = RecipeStack{item_of("minecraft:dirt"), 8};
+    furnace_input_changed(book, FurnaceKind::Furnace, slots, state);
+    CHECK(state.cook_total == 0);
+    slots.input = RecipeStack{item_of("minecraft:raw_iron"), 8};
+    furnace_input_changed(book, FurnaceKind::Furnace, slots, state);
+    CHECK(state.cook_total == 200);
+    CHECK(state.cook_time == 0);
 }
 
 TEST_CASE("a stonecutter offers every cut of a block", "[smelting]") {

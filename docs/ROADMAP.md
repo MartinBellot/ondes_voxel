@@ -860,7 +860,8 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       trois tables de cuisson et non une avec un diviseur. Restent la fenêtre
       2×2 du joueur, les écrans de forge et de pierre de taille,
       et `Place Recipe`. Les fours tournent comme bloc-entités, regardés ou
-      non, dans l'overworld ; `RecipesUsed` est payé en orbes à l'extraction)*
+      non, dans les trois dimensions ; `RecipesUsed` est payé en orbes à
+      l'extraction)*
 - [~] **Agriculture et élevage** : toutes les cultures, terre labourée,
       hydratation, os, composteur, abeilles et pollinisation, mode amour,
       croissance, croisement de chevaux et lamas, apprivoisement, tonte, traite,

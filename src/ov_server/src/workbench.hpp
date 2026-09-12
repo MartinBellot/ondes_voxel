@@ -127,10 +127,6 @@ struct WorkbenchHost {
     /// The draw that rounds a furnace's fractional experience. Null: rounded
     /// down, and said here.
     math::LegacyRandomSource* random{nullptr};
-    /// A furnace screen opened or was clicked: tick that furnace from now on
-    /// (FurnaceEntities::note). The `lit` flip is the furnace pass's, not the
-    /// screen's — the screen no longer ticks anything.
-    std::function<void(i32, i32, i32)> note_furnace;
 };
 
 /// Open a screen on the block the player clicked, if it is one this file owns.
