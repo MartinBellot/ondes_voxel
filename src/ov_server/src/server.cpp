@@ -182,6 +182,9 @@ struct Options {
     /// the time the real game takes, which is the only mode where the break
     /// rules are exercised at all.
     bool survival = false;
+    /// ── pvp ── Whether players may hurt players: server.properties' `pvp`,
+    /// on by default as there. `--no-pvp` turns it off.
+    bool pvp = true;
 
     /// The world directory to serve, holding level.dat and region/.
     ///
@@ -776,6 +779,8 @@ Options parse_args(int argc, char** argv) {
             options.record_motion = std::string{arg.substr(16)};
         } else if (arg == "--survival") {
             options.survival = true;
+        } else if (arg == "--no-pvp") {  // ── pvp ── server.properties' pvp=false
+            options.pvp = false;
         } else if (arg.starts_with("--effect=")) {  // ── effects ──
             std::string_view list = arg.substr(9);
             while (!list.empty()) {
@@ -3930,6 +3935,64 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         return true;
     };
 
+    // ── pvp ── A player hit by a player. The victim's own survival session
+    // takes the blow, so armour, toughness, Resistance, Protection and the
+    // invulnerability window apply exactly as they do to a mob's hit on a
+    // player: one damage path. Refused — pvp off, a creative or dead victim, a
+    // teammate with friendly fire off — the swing reaches nothing the clients
+    // see, as the capture's friendly-fire hit shows.
+    const auto player_by_id = [&](i32 id) -> Player* {
+        for (auto& [key, candidate] : players) {
+            if (candidate.entity_id == id && candidate.connection && candidate.confirmed) {
+                return &candidate;
+            }
+        }
+        return nullptr;
+    };
+    const auto hurt_player_by = [&](Player& attacker, Player& victim, f32 damage) -> bool {
+        if (&attacker == &victim) {
+            return false;
+        }
+        if (!options.pvp || !victim.mortal() || victim.survival.awaiting_respawn ||
+            victim.survival.health.dead) {
+            return true;
+        }
+        if (commands) {
+            const Scoreboard& board = commands->scoreboard();
+            if (!Scoreboard::can_hurt(board.team_of(attacker.name), board.team_of(victim.name))) {
+                return true;
+            }
+        }
+        const SurvivalIo io{
+            .send =
+                [&](i32 id, std::span<const u8> payload) {
+                    if (const auto framed = net::encode_packet(id, payload);
+                        framed && victim.connection) {
+                        victim.connection->send(*framed);
+                    }
+                },
+            .broadcast = [&](i32 id, std::span<const u8> payload) {
+                broadcast(victim.connection.get(), id, payload);
+            }};
+        victim.survival.blamed      = attacker.name;
+        victim.survival.blamed_uuid = attacker.uuid;
+        const gameplay::DamageResult result =
+            victim.survival.hurt(gameplay::DamageKind::PlayerAttack, damage, io, victim.entity_id,
+                                 nullptr, attacker.entity_id);
+        if (!result.applied) {
+            return true;
+        }
+        // The flinch, to the victim alone, turned toward the blow.
+        io.send(net::clientbound::kHurtAnimation,
+                net::encode_hurt_animation(victim.entity_id,
+                                           hurt_direction(attacker.x - victim.x,
+                                                          attacker.z - victim.z, victim.yaw)));
+        if (victim.survival.health.dead && commands) {
+            commands->enqueue_kill(attacker.name, victim.name, true);
+        }
+        return true;
+    };
+
     /// Everything the combat session reaches outside itself for.
     ///
     /// Rebuilt per packet rather than stored: it captures the player by
@@ -3957,6 +4020,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 end_fight->hurt(entity_id, damage, end_fight_host, who.entity_id, who.mortal())) {
                 return true;
             }
+            if (Player* victim = player_by_id(entity_id); victim != nullptr) {  // ── pvp ──
+                return hurt_player_by(who, *victim, damage);
+            }
             return hurt_mob(who, entity_id, damage, held_weapon(who).looting);
         };
         // ── enchanting ── Smite, Bane and Impaling need to know what is hit.
@@ -3975,6 +4041,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                             registries->entry_of(*types, state->type));
         };
         io.entity_position = [&](i32 entity_id) -> std::optional<Vec3d> {
+            if (const Player* victim = player_by_id(entity_id)) {  // ── pvp ── knockback's line
+                return Vec3d{victim->x, victim->y, victim->z};
+            }
             if (!mobs) {
                 return std::nullopt;
             }
@@ -3986,6 +4055,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             return state == nullptr ? std::nullopt : std::optional<Vec3d>{state->position};
         };
         io.entity_on_ground = [&](i32 entity_id) {
+            if (const Player* victim = player_by_id(entity_id)) {  // ── pvp ──
+                return victim->on_ground;
+            }
             if (!mobs) {
                 return true;
             }
@@ -4039,6 +4111,18 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     std::abs(state->position.z - centre.z) <= radius + 1.0 &&
                     std::abs(state->position.y - centre.y) <= 1.25) {
                     visit(state->network_id);
+                }
+            }
+            // ── pvp ── the sweep catches players in the same box
+            for (auto& [key, other] : players) {
+                if (!other.connection || !other.confirmed || other.entity_id == exclude ||
+                    other.entity_id == who.entity_id || other.dimension != who.dimension) {
+                    continue;
+                }
+                if (std::abs(other.x - centre.x) <= radius + 1.0 &&
+                    std::abs(other.z - centre.z) <= radius + 1.0 &&
+                    std::abs(other.y - centre.y) <= 1.25) {
+                    visit(other.entity_id);
                 }
             }
         };
@@ -9960,6 +10044,27 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         },
                         .broadcast = [&](i32 id, std::span<const u8> payload) {
                             broadcast(who.connection.get(), id, payload);
+                        },
+                        // ── pvp ── the death message with names dressed by their
+                        // teams and the killer named; everyone's line of it
+                        // while showDeathMessages is on.
+                        .death_message = [&](std::string_view key) -> std::string {
+                            if (!commands) {
+                                return {};
+                            }
+                            const bool by_player =
+                                key == "death.attack.player" && !who.survival.blamed.empty();
+                            return cmd::to_json(commands->death_message(
+                                key, who.name, who.uuid,
+                                by_player ? std::string_view{who.survival.blamed} : std::string_view{},
+                                who.survival.blamed_uuid));
+                        },
+                        .announce_death = [&](const std::string& json) {
+                            if (!commands || !commands->world().rules.flag("showDeathMessages")) {
+                                return;
+                            }
+                            broadcast(nullptr, net::clientbound::kSystemChat,
+                                      net::encode_system_chat(json, false));
                         }};
                     // Are their eyes under water? Vanilla measures the block
                     // at eye height, not at the feet: standing waist-deep is
@@ -10184,6 +10289,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         }
                     }
 
+                    // ── scoreboard ── this player's criteria, after the tick (and
+                    // the respawn) that moved them: Set Health, then the score.
+                    if (commands) {
+                        commands->update_player_criteria(who.entity_id, who.name, who.survival);
+                        commands->flush_scoreboard([&](i32 id, std::span<const u8> payload) {
+                            broadcast(nullptr, id, payload);
+                        });
+                    }
                     if (!outcome.died) {
                         continue;
                     }

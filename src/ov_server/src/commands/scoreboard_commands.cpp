@@ -156,6 +156,16 @@ Text CommandService::decorate(Text text) const {
     return text;
 }
 
+Text CommandService::death_message(std::string_view key, std::string_view victim,
+                                   const net::Uuid& victim_uuid, std::string_view killer,
+                                   const net::Uuid& killer_uuid) const {
+    std::vector<Text> with{player_display_name(victim, victim_uuid)};
+    if (!killer.empty()) {
+        with.push_back(player_display_name(killer, killer_uuid));
+    }
+    return decorate(Text::translatable(std::string{key}, std::move(with)));
+}
+
 void CommandService::flush_scoreboard(const std::function<void(i32, std::span<const u8>)>& send) {
     if (!scoreboard_.has_packets() || !send) {
         return;

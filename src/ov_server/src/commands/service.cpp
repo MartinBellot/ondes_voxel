@@ -70,6 +70,26 @@ void CommandService::enqueue_console(std::string command) {
     queue_.push_back(Pending{-1, std::move(command), 0, 0});
 }
 
+void CommandService::update_player_criteria(i32 entity_id, std::string_view name,
+                                            const SurvivalSession& s) {
+    criteria_names_[entity_id] = std::string{name};
+    if (s.awaiting_respawn || s.health.dead) {
+        if (dead_.insert(entity_id).second) {
+            scoreboard_.on_death(name);
+        }
+    } else {
+        dead_.erase(entity_id);
+    }
+    PlayerCriteria now;
+    now.health = static_cast<i32>(std::ceil(s.health.health + s.health.absorption));
+    now.food   = s.food.food;
+    now.air    = s.health.air;
+    now.armor  = static_cast<i32>(s.mitigation.armour);  // the worn pieces' points
+    now.xp     = s.experience_total;
+    now.level  = s.experience_level;
+    scoreboard_.update_player(name, now);
+}
+
 void CommandService::enqueue_kill(std::string killer, std::string victim, bool victim_is_player) {
     const std::scoped_lock lock{queue_mutex_};
     kills_.push_back(Kill{std::move(killer), std::move(victim), victim_is_player});
@@ -272,28 +292,8 @@ void CommandService::run(CommandHost& host) {
                 ++it;
             }
         }
-        for (const PlayerRef& p : players_) {
-            if (p.survival == nullptr) {
-                continue;
-            }
-            criteria_names_[p.entity_id] = std::string{p.name};
-            const SurvivalSession& s     = *p.survival;
-            if (s.awaiting_respawn || s.health.dead) {
-                if (dead_.insert(p.entity_id).second) {
-                    scoreboard_.on_death(p.name);
-                }
-            } else {
-                dead_.erase(p.entity_id);
-            }
-            PlayerCriteria now;
-            now.health = static_cast<i32>(std::ceil(s.health.health + s.health.absorption));
-            now.food   = s.food.food;
-            now.air    = s.health.air;
-            now.armor  = 0;  // no player armour total exists on this server yet
-            now.xp     = s.experience_total;
-            now.level  = s.experience_level;
-            scoreboard_.update_player(p.name, now);
-        }
+        // The player criteria are fed by update_player_criteria, right after
+        // each player's survival tick — not here, a phase too early.
     }
     if (host.broadcast) {
         for (const Broadcast& packet : outbox_) {

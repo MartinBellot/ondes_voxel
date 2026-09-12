@@ -3,6 +3,8 @@
 #include "ov/protocol/entity.hpp"
 #include "ov/protocol/play.hpp"
 
+#include <cmath>
+
 namespace ov::server {
 namespace {
 
@@ -21,6 +23,11 @@ constexpr u8 kAnimationCritical  = 4;
 constexpr f64 kSweepRadius = 1.0;
 
 }  // namespace
+
+f32 hurt_direction(f64 dx, f64 dz, f32 victim_yaw) noexcept {
+    constexpr f64 kDegreesPerRadian = 57.2957763671875;
+    return static_cast<f32>(std::atan2(dz, dx) * kDegreesPerRadian - static_cast<f64>(victim_yaw));
+}
 
 std::string_view CombatSession::tick(const CombatPlayer& player, f64 step) {
     gameplay::tick_attack_strength(attacker);
