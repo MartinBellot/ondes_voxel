@@ -55,6 +55,7 @@ ov_add_test(test_ov_protocol
         tests/test_framing.cpp
         tests/test_hud_packets.cpp
         tests/test_interaction.cpp
+        tests/test_listener_chunks.cpp
         tests/test_login.cpp
         tests/test_scoreboard_packets.cpp  # ── scoreboard ──
         tests/test_status.cpp
@@ -62,7 +63,9 @@ ov_add_test(test_ov_protocol
         tests/test_types.cpp
         tests/test_uuid_offline.cpp
         tests/test_varint.cpp
-    DEPS ov_protocol
+    # asio for the test's own client socket (test_listener_chunks.cpp): a test
+    # is not a public header, so R5 does not reach it.
+    DEPS ov_protocol asio::asio
     LABELS unit
 )
 

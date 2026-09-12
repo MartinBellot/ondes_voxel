@@ -130,6 +130,7 @@ i64 thread_cpu_micros() noexcept {
 std::string_view to_string(TickPhase phase) noexcept {
     switch (phase) {
         case TickPhase::Other: return "other";
+        case TickPhase::NetworkInput: return "network input";
         case TickPhase::ChunkPublish: return "chunk publish";
         case TickPhase::SpawnArea: return "spawn area";
         case TickPhase::ChunkRequests: return "chunk requests";
@@ -292,6 +293,7 @@ std::vector<std::string> TickProfile::report(i64 clock_ticks) const {
     network("packet", network_packet);
     network("player lock wait", network_lock_wait);
     network("block edit", block_edit);
+    network("queue wait", network_queue_wait);  // ── concurrency ──
 
 #if !defined(_WIN32)
     const ProcessCounters now = process_counters();
