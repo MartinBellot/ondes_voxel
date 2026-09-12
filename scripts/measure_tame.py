@@ -657,7 +657,19 @@ def campaign_temper(rig: Oracle) -> dict:
     return out
 
 
-def campaign_ride_timing(rig: Oracle) -> dict:
+def campaign_ride_timing_open(rig: Oracle) -> dict:
+    """`ride_timing` on open ground: no pen.
+
+    The first run used the old campaign's glass pen, whose floor is 3 x 3:
+    mean 72, median about 40, and five rides of 197 to 294 ticks. A horse
+    boxed in that tightly can hardly run, and its tantrum only draws while it
+    runs somewhere — the tail looks like that. This is the comparable case:
+    our e2e rides are in the open, and so are test_tame.cpp's forty horses.
+    """
+    return campaign_ride_timing(rig, pen=False)
+
+
+def campaign_ride_timing(rig: Oracle, pen: bool = True) -> dict:
     """How long a ridden wild horse takes to decide, to the tick.
 
     `temper` read the game time from the probe's copy, which the server only
@@ -671,10 +683,14 @@ def campaign_ride_timing(rig: Oracle) -> dict:
     hand: Rider = rig.hand  # type: ignore[assignment]
     rides = []
     for _ in range(30):
-        rig.server.batch([f"tp {PROBE} -0.5 {Y} 0.5 -90 0",
-                          f"fill 0 {Y} -2 4 {Y + 2} 2 minecraft:glass",
-                          f"fill 1 {Y} -1 3 {Y + 2} 1 minecraft:air",
-                          "item replace entity ovhand weapon.mainhand with minecraft:air"])
+        setup = [f"tp {PROBE} -0.5 {Y} 0.5 -90 0",
+                 "item replace entity ovhand weapon.mainhand with minecraft:air"]
+        if pen:
+            setup[1:1] = [f"fill 0 {Y} -2 4 {Y + 2} 2 minecraft:glass",
+                          f"fill 1 {Y} -1 3 {Y + 2} 1 minecraft:air"]
+        else:
+            setup.insert(1, f"fill 0 {Y} -2 4 {Y + 2} 2 minecraft:air")
+        rig.server.batch(setup)
         n, eid = rig.summon_near("horse", "Silent:1b,Variant:0", (2.0, Y, 0.0))
         time.sleep(0.3)
         since = time.monotonic()
@@ -850,7 +866,7 @@ CAMPAIGNS = {"meta": campaign_meta, "tame": campaign_tame, "parrot": campaign_pa
              "anger": campaign_anger, "wolf": campaign_wolf, "follow": campaign_follow,
              "spawn": campaign_spawn, "breed": campaign_breed, "temper": campaign_temper,
              "zoo": campaign_zoo, "zoo_back": campaign_zoo_back, "noai": campaign_noai,
-             "ride_timing": campaign_ride_timing}
+             "ride_timing": campaign_ride_timing, "ride_timing_open": campaign_ride_timing_open}
 
 
 def main(argv: list[str]) -> int:
