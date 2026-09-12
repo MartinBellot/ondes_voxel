@@ -154,6 +154,10 @@ struct MobBrain {
     f64  speed{0.0};
     bool wants_move{false};
     bool wants_jump{false};
+    /// ── mobs-4 ── What Speed and Slowness make of the walk: `(value /
+    /// base)²` of the `movement_speed` attribute (mob_body.hpp, walk_factor).
+    /// Set by whoever keeps the mob's effects; 1 without any.
+    f64 effect_walk{1.0};
 
     /// How the body moves and how big it is, from the measured tables.
     MobSize       size{};

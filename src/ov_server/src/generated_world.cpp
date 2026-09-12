@@ -11,9 +11,11 @@
 #include "ov/worldgen/feature.hpp"
 #include "ov/worldgen/pipeline.hpp"
 #include "ov/worldgen/structure_stage.hpp"  // ── structures ──
+#include "ov/worldgen/structure_template.hpp"  // ── worldgen-3 ── the fossils
 #include "ov/worldgen/surface_system.hpp"
 #include "world_structures.hpp"  // ── structures ──
 
+#include <array>
 #include <cstdlib>
 #include <memory>
 #include <string>
@@ -53,6 +55,11 @@ struct GeneratedWorld::Stack {
     /// on the way in, it crashes the first time a chunk reaches the feature
     /// stage, which is on the first join and nowhere in the unit tests.
     std::optional<worldgen::Decorator> decorator;
+
+    /// ── worldgen-3 ── The fossils' templates, which `decorator` borrows.
+    /// Declared after it, so destroyed before it — the decorator never uses
+    /// them while being destroyed.
+    std::optional<worldgen::TemplateLibrary> templates;
 
     worldgen::CarvingContext carving;
     worldgen::CarverStage    carvers;
@@ -143,6 +150,23 @@ namespace {
         return nullptr;
     }
     stack->decorator = std::move(*decorator);
+    // ── worldgen-3 ── The fossils are templates read from the server jar.
+    // Without it they place nothing, and the log says so once.
+    if (name == "overworld") {
+        static constexpr std::array<std::string_view, 1> kFamilies{"fossil/"};
+        std::string detail;
+        // `reports` is <data root>/vanilla/1.20.1/generated; the jar is found
+        // from the data root, as the structures find it.
+        const auto data_root = reports.parent_path().parent_path().parent_path();
+        auto       templates = worldgen::TemplateLibrary::open(
+            WorldStructures::default_jar(data_root), blocks, kFamilies, &detail);
+        if (templates) {
+            stack->templates.emplace(std::move(*templates));
+            stack->decorator->set_templates(&*stack->templates);
+        } else {
+            OV_LOG_WARN("worldgen: no fossil templates ({}): fossils will not be placed", detail);
+        }
+    }
 
     stack->generator.emplace(stack->router, stack->biomes, blocks);
     stack->generator->set_surface_system(&stack->surface);
@@ -201,10 +225,20 @@ std::unique_ptr<GeneratedWorld> GeneratedWorld::load(
         if (!impl->structures) {
             OV_LOG_ERROR("worldgen: {} will carry no structures (see above)", settings);
         }
+        // ── great pyramid ── Our own structures are part of the generator.
+        // `OV_ORIGINAL_STRUCTURES=0` is the parity instruments' switch, not a
+        // player option: a world measured against the game must be vanilla.
+        worldgen::OriginalStructures originals{};
+        if (const char* flag = std::getenv("OV_ORIGINAL_STRUCTURES");
+            flag != nullptr && std::string_view{flag} == "0") {
+            originals = worldgen::OriginalStructures::vanilla_parity();
+            OV_LOG_WARN("worldgen: OV_ORIGINAL_STRUCTURES=0; {} carries no {} — a parity instrument",
+                        settings, worldgen::kGreatPyramidId);
+        }
         for (auto& stack : impl->stacks) {
             if (impl->structures) {
-                stack->structures =
-                    impl->structures->make_stage(*stack->generator, blocks, registries, seed);
+                stack->structures = impl->structures->make_stage(*stack->generator, blocks,
+                                                                 registries, seed, originals);
                 stack->pipeline->set_structure_stage(stack->structures->stage.get());
             }
         }
@@ -290,7 +324,8 @@ world::Chunk GeneratedWorld::generate(i32 chunk_x, i32 chunk_z) {
 }
 
 void GeneratedWorld::generate_square(usize stack_index, i32 origin_x, i32 origin_z, i32 side,
-                                     std::vector<std::pair<ChunkPos, world::Chunk>>& out) {
+                                     std::vector<std::pair<ChunkPos, world::Chunk>>& out,
+                                     std::vector<BlockPos>* fluid_wakeups) {
     Stack& stack = *impl_->stacks[stack_index];
 
     // The cold start is the determinism. `ChunkPipeline::promote` decorates a
@@ -317,7 +352,7 @@ void GeneratedWorld::generate_square(usize stack_index, i32 origin_x, i32 origin
         for (i32 dx = 0; dx < side; ++dx) {
             const i32    x     = origin_x + dx;
             const i32    z     = origin_z + dz;
-            world::Chunk chunk = stack.pipeline->take(x, z);
+            world::Chunk chunk = stack.pipeline->take(x, z, fluid_wakeups);  // ── worldgen-3 ──
             if (stack.structures) {  // ── structures ──
                 stack.structures->record(chunk);
             }

@@ -233,6 +233,24 @@ enum class Kind : u8 {
     return Kind::Terrain;
 }
 
+/// ── worldgen-3 ── The ice the frozen-ocean pass and the iceberg feature stack
+/// over the sea: packed ice, blue ice, and the snow blocks capping them.
+[[nodiscard]] bool is_berg_ice(std::string_view name) {
+    return name == "minecraft:packed_ice" || name == "minecraft:blue_ice" ||
+           name == "minecraft:snow_block";
+}
+
+/// `classify`, in a frozen ocean column: the berg ice was put there after the
+/// rules (by the pass that follows them, or by the iceberg feature), into what
+/// was water under the sea and air over it. Anywhere else packed ice and snow
+/// blocks are the rules' own output — the frozen peaks — and stay terrain.
+[[nodiscard]] Kind classify_in(std::string_view name, i32 y, bool frozen_column) {
+    if (frozen_column && is_berg_ice(name)) {
+        return y < 63 ? Kind::Fluid : Kind::Air;
+    }
+    return classify(name);
+}
+
 /// One chunk of the reference world, decoded.
 struct ReferenceChunk {
     i32 chunk_x{0};
@@ -356,6 +374,32 @@ void unpack(const nbt::Tag* data, usize bits, usize cells, std::vector<usize>& o
     }
     return true;
 }
+
+/// ── worldgen-3 ── A frozen ocean column, by the game's biome at the sea's
+/// surface.
+[[nodiscard]] bool frozen_column(const ReferenceChunk& chunk, i32 local_x, i32 local_z) {
+    const std::string_view biome = chunk.biome(local_x, 62, local_z);
+    return biome == "minecraft:frozen_ocean" || biome == "minecraft:deep_frozen_ocean";
+}
+
+/// ── worldgen-3 ── A bare column in the eroded badlands: stone to y 63, air
+/// above. Run through the surface, it comes back with the pillar our noise
+/// raises there, if any — the prediction the game's terrain top is held to.
+class PillarQueries final : public worldgen::SurfaceQueries {
+public:
+    explicit PillarQueries(const worldgen::SurfaceQueries& inner) : inner_(&inner) {}
+    [[nodiscard]] std::string_view biome_at(i32, i32, i32) const override {
+        return "minecraft:eroded_badlands";
+    }
+    [[nodiscard]] f64 temperature_at(i32, i32, i32) const override { return 2.0; }
+    [[nodiscard]] i32 surface_height(i32, i32) const override { return 63; }
+    [[nodiscard]] i32 preliminary_surface(i32 x, i32 z) const override {
+        return inner_->preliminary_surface(x, z);
+    }
+
+private:
+    const worldgen::SurfaceQueries* inner_;
+};
 
 /// What the rules are told about the *game's* chunk.
 class ReferenceQueries final : public worldgen::SurfaceQueries {
@@ -493,6 +537,30 @@ int main(int argc, char** argv) {
     /// Reported rather than counted, because counting them either way would be
     /// a lie in one direction or the other.
     usize                        after_the_fact = 0;
+    // ── worldgen-3 ── The berg ice over the sea bed of frozen ocean columns,
+    // the game's against ours.
+    struct IceTally {
+        usize columns{0};
+        usize theirs{0};
+        usize ours{0};
+        usize both{0};
+        usize same{0};
+        usize ours_only_columns{0};
+        usize theirs_only_columns{0};
+        std::map<std::string, usize> ours_only;
+        std::map<i32, usize>         top_delta;
+        std::map<i32, usize>         low_delta;
+    } ice;
+    // ── worldgen-3 ── Eroded badlands columns: where our noise raises a
+    // pillar, is the game's terrain top that pillar's top?
+    struct PillarTally {
+        usize                columns{0};
+        usize                raised{0};
+        usize                exact{0};
+        usize                hidden{0};
+        usize                missing{0};
+        std::map<i32, usize> delta;
+    } pillars;
     std::map<std::string, usize> later_stage;
     std::vector<std::string>     shown;
 
@@ -582,8 +650,9 @@ int main(int argc, char** argv) {
                     const usize slot = static_cast<usize>(cz) * 16 + static_cast<usize>(cx);
                     i32         top  = kMinY;
                     i32         solid = kMinY;
+                    const bool frozen_here = frozen_column(reference, cx, cz);
                     for (i32 y = kMinY + kHeight - 1; y >= kMinY; --y) {
-                        const Kind kind = classify(reference.block(cx, y, cz));
+                        const Kind kind = classify_in(reference.block(cx, y, cz), y, frozen_here);
                         if (top == kMinY && kind != Kind::Air) {
                             top = y;
                         }
@@ -613,11 +682,42 @@ int main(int argc, char** argv) {
                         continue;
                     }
 
+                    // ── worldgen-3 ── The pillar our noise raises here, against
+                    // the game's terrain top.
+                    if (biome_here == "minecraft:eroded_badlands" && !options.no_rules) {
+                        std::vector<registry::BlockStateId> bare(column.size(), registry::kAirState);
+                        for (i32 y = kMinY; y <= 63; ++y) {
+                            bare[static_cast<usize>(y - kMinY)] = stone;
+                        }
+                        const PillarQueries pillar_queries{queries};
+                        surface->build_column(bare, world_x, world_z, pillar_queries, *blocks);
+                        i32 peak = 63;
+                        for (i32 y = kMinY + kHeight - 1; y > 63; --y) {
+                            if (bare[static_cast<usize>(y - kMinY)] != registry::kAirState) {
+                                peak = y;
+                                break;
+                            }
+                        }
+                        ++pillars.columns;
+                        if (peak > 63) {
+                            ++pillars.raised;
+                            if (top == peak) {
+                                ++pillars.exact;
+                            } else if (top > peak) {
+                                ++pillars.hidden;
+                            } else {
+                                ++pillars.missing;
+                            }
+                            ++pillars.delta[std::clamp(top - peak, -20, 20)];
+                        }
+                    }
+
                     // Strip the column back to what the noise stage left.
+                    const bool frozen = frozen_column(reference, cx, cz);
                     for (i32 y = kMinY; y < kMinY + kHeight; ++y) {
                         const std::string_view name = reference.block(cx, y, cz);
                         const auto             slot = static_cast<usize>(y - kMinY);
-                        switch (classify(name)) {
+                        switch (classify_in(name, y, frozen)) {
                             case Kind::Air:
                                 column[slot] = registry::kAirState;
                                 break;
@@ -634,6 +734,46 @@ int main(int argc, char** argv) {
                         surface->build_column(column, world_x, world_z, queries, *blocks);
                     }
 
+                    // ── worldgen-3 ── Every cell over the sea bed: the ice the
+                    // pass stacked against the game's. The game's also holds the
+                    // iceberg *feature*'s ice, which this pass does not place.
+                    if (frozen) {
+                        ++ice.columns;
+                        i32 their_top = kMinY - 1, our_top = kMinY - 1;
+                        i32 their_low = kMinY + kHeight, our_low = kMinY + kHeight;
+                        for (i32 y = top + 1; y < kMinY + kHeight; ++y) {
+                            const std::string_view theirs = reference.block(cx, y, cz);
+                            const std::string_view ours =
+                                air_name(column[static_cast<usize>(y - kMinY)]);
+                            const bool their_ice = is_berg_ice(theirs);
+                            const bool our_ice   = is_berg_ice(ours);
+                            ice.theirs += their_ice ? 1 : 0;
+                            ice.ours += our_ice ? 1 : 0;
+                            ice.both += (their_ice && our_ice) ? 1 : 0;
+                            ice.same += (their_ice && theirs == ours) ? 1 : 0;
+                            if (our_ice && !their_ice) {
+                                ++ice.ours_only[fmt::format("{} {}", y >= 63 ? "above" : "below",
+                                                            canonical(theirs))];
+                            }
+                            if (their_ice) {
+                                their_top = std::max(their_top, y);
+                                their_low = std::min(their_low, y);
+                            }
+                            if (our_ice) {
+                                our_top = std::max(our_top, y);
+                                our_low = std::min(our_low, y);
+                            }
+                        }
+                        if (their_top >= kMinY && our_top >= kMinY) {
+                            ++ice.top_delta[our_top - their_top];
+                            ++ice.low_delta[our_low - their_low];
+                        } else if (our_top >= kMinY) {
+                            ++ice.ours_only_columns;
+                        } else if (their_top >= kMinY) {
+                            ++ice.theirs_only_columns;
+                        }
+                    }
+
                     if (reference.block(cx, top, cz) == "minecraft:grass_block") {
                         i32 their_depth = 0;
                         while (their_depth < 8 &&
@@ -648,7 +788,8 @@ int main(int argc, char** argv) {
                     }
 
                     const bool under_water =
-                        classify(reference.block(cx, top + 1, cz)) == Kind::Fluid;
+                        classify_in(reference.block(cx, top + 1, cz), top + 1, frozen) ==
+                        Kind::Fluid;
 
                     bool whole_column = true;
                     for (i32 step = 0; step < options.depth; ++step) {
@@ -827,6 +968,42 @@ int main(int argc, char** argv) {
                    depth_samples == 0 ? 0.0
                                       : 100.0 * static_cast<f64>(depth_delta[slot]) /
                                             static_cast<f64>(depth_samples));
+    }
+
+    if (ice.columns > 0) {
+        const auto share = [](usize part, usize whole) {
+            return whole == 0 ? 0.0 : 100.0 * static_cast<f64>(part) / static_cast<f64>(whole);
+        };
+        fmt::print("\nberg ice over the sea bed, {} frozen ocean columns:\n", ice.columns);
+        fmt::print("  game {}  ours {}  both ice {}  same block {}\n", ice.theirs, ice.ours,
+                   ice.both, ice.same);
+        fmt::print("  of ours, also the game's: {:.3f} %   of the game's, also ours: {:.3f} %\n",
+                   share(ice.both, ice.ours), share(ice.both, ice.theirs));
+        fmt::print("  columns with ice on our side only {}, on the game's only {}\n",
+                   ice.ours_only_columns, ice.theirs_only_columns);
+        fmt::print("  our cells the game left without ice:\n");
+        for (const auto& [what, count] : ice.ours_only) {
+            fmt::print("    {:>6}  {}\n", count, what);
+        }
+        fmt::print("  our top minus the game's, per column with ice on both sides:\n");
+        for (const auto& [delta, count] : ice.top_delta) {
+            fmt::print("    {:+4}  {:>6}\n", delta, count);
+        }
+        fmt::print("  our lowest minus the game's:\n");
+        for (const auto& [delta, count] : ice.low_delta) {
+            fmt::print("    {:+4}  {:>6}\n", delta, count);
+        }
+    }
+
+    if (pillars.columns > 0) {
+        fmt::print("\neroded badlands pillars, {} columns: our noise raises one in {}\n",
+                   pillars.columns, pillars.raised);
+        fmt::print("  the game's top is our pillar's top: {}   higher (terrain hides it): {}   "
+                   "lower (no pillar in the game): {}\n",
+                   pillars.exact, pillars.hidden, pillars.missing);
+        for (const auto& [delta, count] : pillars.delta) {
+            fmt::print("    game top minus ours {:+3}  {:>6}\n", delta, count);
+        }
     }
 
     fmt::print("\nthe bedrock floor: {} / {} ({:.3f} %)\n", bedrock.agreed, bedrock.compared,

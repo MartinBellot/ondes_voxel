@@ -127,6 +127,11 @@ struct PotionPlayer {
     i32   entity_id{0};
     Vec3d feet{};
     bool  alive{true};
+    /// ── mobs-4 ── The box a splash and a cloud measure against, and whether
+    /// this is a mob rather than a player: mobs bear effects too now.
+    f64  half_width{0.3};
+    f64  height{1.8};
+    bool mob{false};
 };
 
 /// The rule a splash, a cloud or an arrow runs against one player's effects.

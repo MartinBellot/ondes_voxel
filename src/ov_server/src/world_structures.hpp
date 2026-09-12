@@ -42,6 +42,7 @@
 #include "ov/registry/block_states.hpp"
 #include "ov/registry/registries.hpp"
 #include "ov/world/chunk.hpp"
+#include "ov/worldgen/great_pyramid.hpp"  // ── great pyramid ── OriginalStructures
 
 #include <filesystem>
 #include <memory>
@@ -81,11 +82,15 @@ public:
 
     /// A stage for one stack. `generator` must outlive the result; the sampler
     /// the stage reads through is owned by the returned object.
+    ///
+    /// ── great pyramid ── `originals` is the generator-level switch for our
+    /// own structures; on unless a parity instrument turns it off. The Great
+    /// Pyramid is only attached where the dimension can make a desert.
     struct StackStage;
-    [[nodiscard]] std::unique_ptr<StackStage> make_stage(const worldgen::ChunkGenerator& generator,
-                                                         const registry::BlockRegistry& blocks,
-                                                         const registry::Registries&    registries,
-                                                         i64 seed) const;
+    [[nodiscard]] std::unique_ptr<StackStage> make_stage(
+        const worldgen::ChunkGenerator& generator, const registry::BlockRegistry& blocks,
+        const registry::Registries& registries, i64 seed,
+        worldgen::OriginalStructures originals = worldgen::OriginalStructures{}) const;
 
     struct Impl;
 

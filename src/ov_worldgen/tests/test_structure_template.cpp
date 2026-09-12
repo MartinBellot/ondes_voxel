@@ -418,7 +418,8 @@ TEST_CASE("a piece written chunk by chunk is the piece written at once", "[struc
             }
             return slot.get();
         };
-        StructureStage stage{*placer, *builder, nullptr, *blocks, nullptr, kSeed};
+        StructureStage stage{*placer, *builder, nullptr, *blocks, nullptr, kSeed,
+                             OriginalStructures::vanilla_parity()};  // ── great pyramid ──
         stage.add_start(start);
         std::vector<std::pair<i32, i32>> order{
             {-6561, 442}, {-6560, 442}, {-6561, 443}, {-6560, 443}};
