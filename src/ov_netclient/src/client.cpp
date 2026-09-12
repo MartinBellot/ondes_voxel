@@ -96,6 +96,7 @@ void ClientEvents::clear() {
     pickups.clear();
     death_message.reset();  // ── screens ──
     respawned = false;
+    world_reset = false;
     hardcore.reset();
 }
 
@@ -119,7 +120,12 @@ struct Client::Impl {
     ClientEvents       inbox;
     std::string        reason;
 
+    /// The shape chunk packets are parsed with, and the dimension it is for.
+    /// Network thread only. Fixed at the Overworld's, every Nether chunk — 16
+    /// sections, not 24 — failed to parse, and the player crossed a portal
+    /// into a world the client never saw.
     world::WorldShape shape{world::WorldShape::overworld()};
+    std::string       dimension_name{"minecraft:overworld"};
     world::AirStates  air;
 
     std::array<u8, 16384> read_buffer{};
@@ -139,7 +145,21 @@ struct Client::Impl {
     void handle_play(i32 packet_id, std::span<const u8> body);
     void start_read();
     void fail(std::string why);
+    void enter_dimension(const std::string& name);
 };
+
+/// A new level: its shape for the chunks to come, and nothing of the old one
+/// left waiting in the inbox — a chunk or an entity of the Overworld applied
+/// after the reset would stand in the Nether. Caller holds `mutex`.
+void Client::Impl::enter_dimension(const std::string& name) {
+    dimension_name = name;
+    shape          = net::dimension_shape(name);
+    inbox.loaded.clear();
+    inbox.unloaded.clear();
+    inbox.changed.clear();
+    inbox.entities.clear();
+    inbox.world_reset = true;
+}
 
 void Client::Impl::fail(std::string why) {
     if (!running.exchange(false)) {
@@ -380,6 +400,7 @@ void Client::Impl::handle_play(i32 packet_id, std::span<const u8> body) {
             own_entity_id = *entity_id;  // ── breaking ──
             const std::lock_guard lock(mutex);
             if (world) {  // ── music ──
+                enter_dimension(world->dimension);
                 inbox.dimension   = std::move(world->dimension);
                 inbox.biome_music = std::move(world->music);
             }
@@ -1127,6 +1148,11 @@ void Client::Impl::handle_play(i32 packet_id, std::span<const u8> body) {
             const std::lock_guard lock(mutex);
             inbox.respawned = true;
             if (dimension) {  // ── music ──
+                // Another dimension is another level. A respawn in the same
+                // one keeps it, as the game's client does.
+                if (*dimension != dimension_name) {
+                    enter_dimension(*dimension);
+                }
                 inbox.dimension = std::move(*dimension);
             }
             break;
@@ -1384,6 +1410,8 @@ void Client::poll(ClientEvents& out) {
     // ── screens ──
     out.death_message = std::move(impl_->inbox.death_message);
     out.respawned     = impl_->inbox.respawned;
+    out.world_reset   = impl_->inbox.world_reset;
+    impl_->inbox.world_reset = false;
     // ── breaking ── handed out like the rest: left out, the others' cracks,
     // this player's id and its Haste were read off the wire and thrown away —
     // the timed digs of scripts/measure_breaking.py found it, Haste II

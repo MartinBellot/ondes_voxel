@@ -60,6 +60,11 @@ public:
     /// than one long one.
     void apply(netclient::ClientEvents& events);
 
+    /// Throw the whole level away — chunks, meshes, pending work, light — for
+    /// a new one: a Respawn into another dimension. `rules` are the new
+    /// dimension's light.
+    void clear_level(world::LightRules rules);
+
     /// Mesh up to `budget_ms` worth of what is waiting, **nearest to `eye`
     /// first**, and return how many sections were rebuilt.
     ///
@@ -166,8 +171,8 @@ private:
     /// ── light ── The server sends no light after an edit — the game's own
     /// client lights its edits itself, and so does this one: a Block Update is
     /// noted here and the light around it repaired once per `apply`, with the
-    /// same engine the server runs. Overworld rules: this client knows no
-    /// other dimension yet.
+    /// same engine the server runs, with the dimension's rules — no sky light
+    /// in the Nether or the End (`clear_level`).
     std::unique_ptr<world::LightEngine> light_;
 };
 

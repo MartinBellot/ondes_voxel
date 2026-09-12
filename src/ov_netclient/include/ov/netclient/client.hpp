@@ -363,6 +363,12 @@ struct ClientEvents {
     std::optional<std::string> death_message;
     /// Respawn (0x41) arrived: the death screen comes down.
     bool respawned{false};
+    /// A new level begins: Login (play), or a Respawn into another dimension.
+    /// Everything the old level queued has already been dropped here; the
+    /// caller throws away its chunks and entities before applying this poll,
+    /// as the game's client builds a new level. The chunks that follow are
+    /// already parsed with the new dimension's shape.
+    bool world_reset{false};
     /// Login (play)'s hardcore flag: "Game over!" instead of "You died!".
     std::optional<bool> hardcore;
     // ── end screens ──
@@ -382,7 +388,7 @@ struct ClientEvents {
                !commands && suggestions.empty() && sounds.empty() &&
                entity_sounds.empty() && stop_sounds.empty() && world_events.empty() &&
                explosions.empty() && pickups.empty() && !rain_level && !thunder_level &&
-               !death_message && !respawned && !hardcore &&  // ── screens ──
+               !death_message && !respawned && !hardcore && !world_reset &&  // ── screens ──
                !op_level &&                                  // ── allow-commands ──
                destroy_stages.empty() && !own_entity_id && own_effects.empty() &&  // ── breaking ──
                !dimension && !biome_music && boss_bars.empty();                  // ── music ──
