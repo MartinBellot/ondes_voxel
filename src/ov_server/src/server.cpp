@@ -91,6 +91,7 @@
 // ── combat and interaction ───────────────────────────────────────────
 #include "combat_session.hpp"
 #include "mob_combat.hpp"
+#include "mob_effects.hpp"  // ── mobs-4 ──
 #include "player_level.hpp"
 #include "ov/gameplay/food.hpp"
 #include "ov/gameplay/item_use.hpp"
@@ -1116,6 +1117,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         entity_loot = load_entity_loot(data_dir / "vanilla" / "1.20.1" / "entity_loot.ovpack",
                                        *registries, recipe_book ? &*recipe_book : nullptr);
         mob_combat.emplace(*registries, entity_loot ? &*entity_loot : nullptr);
+    }
+    // ── mobs-4 ── a mob's status effects, beside its damage window, which
+    // their poison and wither go through
+    std::optional<MobEffects> mob_effects;
+    if (registries) {
+        mob_effects.emplace(*registries, mob_combat ? &*mob_combat : nullptr);
     }
     /// The draw for a mob's table. A source of its own rather than
     /// `loot_random`: a block broken and a mob killed on the same tick must be
@@ -2573,6 +2580,13 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         }
         if (taming && mobs) {  // ── tame ── a horse's armour, and its rider
             taming->spawn_extra(*mobs, state, [&](i32 id, std::span<const u8> payload) {
+                deliver(id, payload);
+            });
+        }
+        // ── mobs-4 ── what its effects set: the colour and bits, then the
+        // speed with its modifier — after the bases above, which it overrides
+        if (mob_effects) {
+            mob_effects->pairing(state, [&](i32 id, std::span<const u8> payload) {
                 deliver(id, payload);
             });
         }
@@ -4040,6 +4054,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             return true;
         }
 
+        if (mob_effects) {  // ── mobs-4 ── its Resistance, before its window
+            damage = mob_effects->after_resistance(target_id, gameplay::DamageKind::PlayerAttack,
+                                                   damage);
+        }
         const MobHurt result = mob_combat->hurt(*state, damage, mob_damage_constants);
         if (!result.applied) {
             // The mob is there and the window swallowed the hit. True, not
@@ -4446,6 +4464,31 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             }
         }
         return false;
+    };
+    // ── mobs-4 ── /effect on a mob
+    const auto mob_effect_sink = [&](i32 packet, std::span<const u8> payload) {
+        broadcast(nullptr, packet, payload);
+    };
+    command_host.give_mob_effect =
+        [&](i32 id, const gameplay::EffectInstance& instance) -> std::optional<gameplay::AddResult> {
+        if (!mob_effects || !mobs) {
+            return std::nullopt;
+        }
+        return mob_effects->apply(*mobs, id, instance, mob_effect_sink);
+    };
+    command_host.clear_mob_effect = [&](i32 id,
+                                        std::optional<gameplay::Effect> effect) -> std::optional<usize> {
+        if (!mob_effects || !mobs) {
+            return std::nullopt;
+        }
+        if (effect) {
+            const auto removed = mob_effects->remove(*mobs, id, *effect, mob_effect_sink);
+            if (!removed) {
+                return std::nullopt;
+            }
+            return usize{*removed ? 1U : 0U};
+        }
+        return mob_effects->clear(*mobs, id, mob_effect_sink);
     };
     command_host.kill_entity = [&](i32 id) -> bool {
         // ── dragon ── /kill on the fight's own: no animation, no orbs (measured)
@@ -7785,11 +7828,32 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                                !who.survival.health.dead});
             }
         }
+        // ── mobs-4 ── and every living mob of the overworld's entity world
+        if (mobs && mob_effects) {
+            for (const entity::EntityHandle handle : mobs->handles()) {
+                const entity::EntityState* state = mobs->state(handle);
+                if (state == nullptr || state->removed || state->health <= 0.0F ||
+                    dynamic_cast<gameplay::Mob*>(mobs->logic(handle)) == nullptr) {
+                    continue;
+                }
+                PotionPlayer mob;
+                mob.entity_id  = state->network_id;
+                mob.feet       = state->position;
+                mob.half_width = static_cast<f64>(state->width) * 0.5;
+                mob.height     = static_cast<f64>(state->height);
+                mob.mob        = true;
+                out.push_back(mob);
+            }
+        }
     };
     potion_host.affect = [&](i32 id, const EffectRule& rule) {
         if (Player* who = projectile_player(id); who != nullptr) {
             who->effects.with_target(who->survival, effect_io_for(*who), effect_bearer_for(*who),
                                      rule);
+        } else if (mob_effects && mobs) {  // ── mobs-4 ──
+            (void)mob_effects->with_target(*mobs, id, rule, [&](i32 packet, std::span<const u8> payload) {
+                broadcast(nullptr, packet, payload);
+            });
         }
     };
     potion_host.next_entity_id = [&] { return next_entity_id.fetch_add(1); };
@@ -7850,6 +7914,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             framed && who->connection) {
             who->connection->send(*framed);
         }
+    };
+    mob_attack_host.attack_damage = [&](i32 attacker) -> std::optional<f64> {  // ── mobs-4 ──
+        return mob_effects ? mob_effects->attack_damage(attacker) : std::nullopt;
     };
     mob_attack_host.give_effect = [&](i32 id, const gameplay::EffectInstance& effect) {
         if (Player* who = projectile_player(id); who != nullptr) {
@@ -8120,14 +8187,24 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     };
     // ── tame ── Owner, Sitting, CollarColor, Tame, Temper, SaddleItem,
     // ArmorItem, ChestedHorse, Strength, Variant, the drawn Attributes…
+    // ── mobs-4 ── and `ActiveEffects`. One hook for both: each assignment
+    // replaces the last, and two would silently drop one side's keys. On a
+    // read the taming comes first — a horse's drawn maximum is the base a
+    // Health Boost read with it adds to.
     entity_storage_host.write_extra = [&](const entity::EntityState& state, nbt::Tag& out) {
         if (taming && mobs) {
             taming->write_nbt(*mobs, state, out);
+        }
+        if (mob_effects) {
+            mob_effects->write(state, out);
         }
     };
     entity_storage_host.read_extra = [&](entity::EntityState& state, const nbt::Tag& compound) {
         if (taming && mobs) {
             taming->read_nbt(*mobs, state, compound);
+        }
+        if (mob_effects && mobs) {
+            mob_effects->read(*mobs, state, compound);
         }
     };
     // ── persistence ── The items and orbs of every level, the Nether's mobs,
@@ -9931,6 +10008,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     if (mob_combat) {
                         mob_combat->forget(gone);
                     }
+                    if (mob_effects) {  // ── mobs-4 ── its effects went to disk with it
+                        mob_effects->forget(gone);
+                    }
                 }
                 mobs3_unloaded.clear();
                 mobs3_to_load.clear();
@@ -10117,6 +10197,28 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 if (rails_session && level && world_ticks) {
                     rails_session->before_entity_tick(*mobs, *level, *world_ticks, rails_host);
                 }
+                // ── mobs-4 ── the mobs' effects act before they move — a living
+                // entity ticks its effects before it travels — and what they
+                // hurt is told like any hit; what they kill dies as /kill does
+                if (mob_effects) {
+                    mob_effects->tick(*mobs, [&](i32 id, std::span<const u8> payload) {
+                        broadcast(nullptr, id, payload);
+                    });
+                    for (const MobEffectHurt& hit : mob_effects->hurts()) {
+                        broadcast(nullptr, net::clientbound::kDamageEvent,
+                                  net::encode_damage_event(hit.id, damage_type_id(hit.kind),
+                                                           std::nullopt, std::nullopt));
+                        if (hit.killed) {
+                            (void)command_host.kill_entity(hit.id);
+                            mob_effects->forget(hit.id);
+                        } else if (sounds) {
+                            if (const entity::EntityState* hurt = mobs->state(mobs->find(hit.id))) {
+                                sounds->mob_hurt(sound_host, hurt->type, hurt->position);
+                            }
+                        }
+                    }
+                    mob_effects->clear_hurts();
+                }
                 mobs->tick(entity::TickContext{clock.tick_count(), &mob_context});
                 // ── rails: detector and activator rails, riders carried ──
                 if (rails_session && level && world_ticks) {
@@ -10235,6 +10337,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     // server keeps one row per mob that ever lived.
                     if (mob_combat) {
                         mob_combat->forget(gone);
+                    }
+                    if (mob_effects) {  // ── mobs-4 ──
+                        mob_effects->forget(gone);
                     }
                     // ── end combat and interaction ──────────────────────────
                 }

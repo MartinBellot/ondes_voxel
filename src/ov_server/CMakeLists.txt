@@ -37,6 +37,7 @@ ov_add_library(ov_server
         src/mob_combat.cpp
         src/mob_attacks.cpp  # ── mobs-3 ──
         src/mob_despawn.cpp  # ── mobs-3 ──
+        src/mob_effects.cpp  # ── mobs-4 ──
         src/entity_storage.cpp  # ── mobs-3 ──
         src/entity_nbt.cpp  # ── persistence ──
         src/ground_entities.cpp  # ── persistence ──
@@ -134,6 +135,7 @@ ov_add_test(test_ov_server
         tests/test_persistence.cpp  # ── persistence ──
         tests/test_nether_mobs.cpp  # ── nether-2 ──
         tests/test_mobs3_server.cpp  # ── mobs-3 ──
+        tests/test_mob_effects.cpp  # ── mobs-4 ──
         tests/test_tame_server.cpp  # ── tame ──
         tests/test_world_structures.cpp  # ── structures ──
         tests/test_fluid_wakeups.cpp  # ── worldgen-3 ──
