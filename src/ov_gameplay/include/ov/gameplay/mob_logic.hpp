@@ -57,6 +57,9 @@ struct MobContext {
     std::span<const Quarry> quarries{};
     std::vector<MobAttack>* attacks{nullptr};
     i32                     villager_type{-1};
+
+    // ── tame ── owners and the sink for taming decisions (tame_state.hpp).
+    const TameWorld* tame_world{nullptr};
 };
 
 /// Recover the context, or null if the caller did not provide one.

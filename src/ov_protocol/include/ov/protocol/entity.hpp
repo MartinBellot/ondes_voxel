@@ -148,6 +148,62 @@ inline constexpr i8 kSheepSheared = 0x10;
 /// Pig, a boolean: saddled. Measured with `Saddle:1b`.
 inline constexpr u8 kPigSaddle = 17;
 
+// ── tame ── Measured the same way on the tame-able species, one NBT field
+// against a baseline (scripts/measure_tame.py `meta`,
+// docs/provenance/apprivoisement.md § 2).
+/// Wolf, cat, parrot: a byte, 0x01 sitting, 0x04 tame.
+inline constexpr u8 kTameFlags       = 17;
+inline constexpr i8 kTameFlagSitting = 0x01;
+inline constexpr i8 kTameFlagTame    = 0x04;
+/// Wolf, cat, parrot: the owner, an optional UUID. Measured with `Owner`.
+inline constexpr u8 kTameOwner = 18;
+/// Wolf: the collar colour, a varint (red, 14, is the default and is not sent
+/// — measured), and `AngerTime`, a varint that counts down on the wire.
+inline constexpr u8 kWolfCollar = 20;
+inline constexpr u8 kWolfAnger  = 21;
+/// Cat: the variant (type CatVariant, black the default — measured: `tabby`
+/// sends 0, `black` sends nothing) and the collar, a varint.
+inline constexpr u8 kCatVariant = 19;
+inline constexpr i32 kCatDefaultVariant = 1;
+inline constexpr u8 kCatCollar  = 22;
+/// Parrot: the variant, a varint.
+inline constexpr u8 kParrotVariant = 19;
+/// Ocelot: trusting, a boolean.
+inline constexpr u8 kOcelotTrusting = 17;
+/// Horse, donkey, mule, llama, camel: a byte, 0x02 tame, 0x04 saddled, 0x08
+/// bred, 0x10 eating. **No owner on the wire** (measured with `Owner`), and
+/// the armour is equipment, not metadata.
+inline constexpr u8 kHorseFlags        = 17;
+inline constexpr i8 kHorseFlagTame     = 0x02;
+inline constexpr i8 kHorseFlagSaddled  = 0x04;
+inline constexpr i8 kHorseFlagBred     = 0x08;
+inline constexpr i8 kHorseFlagEating   = 0x10;
+/// Horse: `Variant`, a varint. Donkey, mule, llama: the chest, a boolean.
+inline constexpr u8 kHorseVariant = 18;
+inline constexpr u8 kChested      = 18;
+/// Llama: strength, carpet colour (a varint, -1 for none) and variant.
+inline constexpr u8 kLlamaStrength = 19;
+inline constexpr u8 kLlamaCarpet   = 20;
+inline constexpr u8 kLlamaVariant  = 21;
+/// Rabbit and fox: the type, a varint. Fox: a byte of flags, 0x01 sitting,
+/// 0x04 crouching, 0x20 sleeping.
+inline constexpr u8 kRabbitType     = 17;
+inline constexpr u8 kFoxType        = 17;
+inline constexpr u8 kFoxFlags       = 18;
+inline constexpr i8 kFoxFlagSleeping = 0x20;
+/// Turtle: carrying an egg, a boolean.
+inline constexpr u8 kTurtleHasEgg = 18;
+/// Bee: a byte, 0x04 stung, 0x08 nectar; anger, a varint.
+inline constexpr u8 kBeeFlags      = 17;
+inline constexpr i8 kBeeFlagNectar = 0x08;
+inline constexpr u8 kBeeAnger      = 18;
+/// Goat: screaming, then the two horns, booleans. Screaming measured; the
+/// horns' order (left 18, right 19) is the protocol archive's, both measured
+/// false on a summoned goat.
+inline constexpr u8 kGoatScreaming = 17;
+inline constexpr u8 kGoatLeftHorn  = 18;
+inline constexpr u8 kGoatRightHorn = 19;
+
 }  // namespace metadata
 
 /// Builds the body of Set Entity Metadata: (index, type, value)*, then 0xFF.
@@ -182,6 +238,8 @@ public:
     /// which is fine, because state 0 is air and nothing carries it.
     MetadataWriter& optional_block_state_value(u8 index, i32 state);
     MetadataWriter& villager_data_value(u8 index, i32 type, i32 profession, i32 level);
+    /// ── tame ── A cat's variant: its id in `minecraft:cat_variant`.
+    MetadataWriter& cat_variant_value(u8 index, i32 variant);
     /// Absent is 0; a present value is written as value + 1.
     MetadataWriter& optional_unsigned_int_value(u8 index, std::optional<i32> value);
     MetadataWriter& pose_value(u8 index, i32 pose);

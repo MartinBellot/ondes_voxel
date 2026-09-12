@@ -70,6 +70,12 @@ struct HusbandryHost {
     std::function<void(const entity::EntityState& state)> announce;
     std::function<void(Vec3d at, const net::ItemStack& stack)> drop_item;
     std::function<void(Vec3d at, i32 value)>                    spawn_orb;
+    /// ── tame ── A birth is finished (the child is a baby, not yet
+    /// announced): a pup takes its parent's owner, a foal its parents' stats.
+    /// Null: nothing more.
+    std::function<void(entity::EntityHandle mother, entity::EntityHandle father,
+                       entity::EntityHandle child)>
+        on_birth;
 };
 
 /// What one tick did, for the log and the end-to-end check.

@@ -2,6 +2,7 @@
 
 #include "ov/gameplay/breeding.hpp"  // ── husbandry ──
 #include "ov/gameplay/villager.hpp"  // ── villagers ──
+#include "ov/gameplay/tame.hpp"      // ── tame ──
 
 #include <algorithm>
 #include <array>
@@ -42,6 +43,14 @@ void install_goals(GoalSelector& selector, const MobKind& kind, i32 look_type,
     if (villager_mob_kind(kind.type_name) != nullptr) {
         install_villager_goals(selector, kind, look_type);
         return;
+    }
+    // ── tame ── a list of their own (tame.cpp)
+    if (const TameKind* tame = tame_kind(kind.type_name); tame != nullptr && tame->own_goals) {
+        install_tame_goals(selector, kind, *tame, look_type, quarry_type);
+        return;
+    }
+    if (kind.type_name == "minecraft:creeper") {
+        install_creeper_fear(selector, kind);  // it keeps away from cats
     }
     // 0 — staying alive beats everything. A mob that drowns while deciding
     // where to wander is a mob nobody sees again.
@@ -134,6 +143,10 @@ Mob::Mob(const MobKind& kind, f32 width, f32 height, i64 seed, i32 quarry_type)
     if (villager_mob_kind(kind.type_name) != nullptr) {
         init_villager(brain_.villager, seed);
     }
+    // ── tame ── the family, and what is drawn at birth: stats, variant
+    if (const TameKind* tame = tame_kind(kind.type_name)) {
+        init_tame(brain_.tame, *tame, random_);
+    }
 }
 
 void Mob::frighten(i32 ticks) noexcept {
@@ -170,10 +183,17 @@ void Mob::tick(entity::EntityWorld& world, entity::EntityHandle self,
                       brain_.animal.baby(), context.tick);
     }
 
+    // ── tame ── the drawn body, anger running down; a horse under a rider's
+    // control has no brain of its own: the rider's client moves it.
+    if (brain_.tame.active()) {
+        apply_tame_body(brain_.tame, *state);
+        tick_tame(brain_.tame, *state);
+    }
+
     // The brain runs only when there is a world to read. Without a level a mob
     // still falls — which is the floor `FallingMob` established — but it does
     // not decide anything, because every decision here needs blocks.
-    if (mob->level != nullptr) {
+    if (mob->level != nullptr && !rider_controls(brain_.tame)) {
         brain_.wants_move = false;
         brain_.wants_jump = false;
         brain_.has_look   = false;
@@ -196,6 +216,7 @@ void Mob::tick(entity::EntityWorld& world, entity::EntityHandle self,
         goal_context.quarries      = mob->quarries;
         goal_context.attacks       = mob->attacks;
         goal_context.villager_type = mob->villager_type;
+        goal_context.tame_world    = mob->tame_world;  // ── tame ──
         goals_.tick(goal_context);
 
         // Turn the brain's intent into velocity. The goals never touch
@@ -208,19 +229,22 @@ void Mob::tick(entity::EntityWorld& world, entity::EntityHandle self,
                 const f64 dz     = waypoint.z - state->position.z;
                 const f64 length = std::sqrt(dx * dx + dz * dz);
                 if (length > 1e-6) {
+                    // ── tame ── a horse walks at its own drawn attribute
                     const f64 speed =
-                        brain_.speed > 0.0 ? brain_.speed : kind_->speed(kind_->stroll);  // ── mobs-2 ──
+                        (brain_.speed > 0.0 ? brain_.speed : kind_->speed(kind_->stroll)) *  // ── mobs-2 ──
+                        tame_speed_factor(brain_.tame, kind_->movement_speed);
                     // Divided by the friction the step is about to apply, so
                     // that what comes out is `speed` blocks of *displacement*.
                     // Without this the mob moves at 0.546 of the number in the
                     // table — and since the table's number is the measured one,
                     // every mob in the world would be 45 % too slow while the
                     // constant it was compared against still read correct.
-                    const f64 friction =
-                        state->on_ground ? motion_.air_drag * motion_.default_slipperiness
-                                         : motion_.air_drag;
-                    state->velocity.x = dx / length * speed / friction;
-                    state->velocity.z = dz / length * speed / friction;
+                    // ── movement physics ── the floor's own friction, and the
+                    // walk law's ratio for it (ice, soul sand).
+                    const f64 friction = entity_friction(*state, motion_, *mob->world);
+                    const f64 floor    = walk_floor_scale(*state, motion_, *mob->world);
+                    state->velocity.x  = dx / length * speed * floor / friction;
+                    state->velocity.z  = dz / length * speed * floor / friction;
                     // Face where it is going. A mob that walks sideways is the
                     // most obvious possible sign that nothing is steering it.
                     state->yaw =

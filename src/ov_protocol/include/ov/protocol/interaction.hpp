@@ -39,7 +39,11 @@ inline constexpr i32 kUseItem = 0x32;
 
 namespace clientbound {
 /// Set Cooldown — the grey sweep over an item's icon.
-inline constexpr i32 kSetCooldown = 0x16;
+///
+/// 0x15. It was 0x16 until scripts/protocol_matrix.py checked every id constant
+/// against data/protocol/763.json: 0x16 is Chat Suggestions, so a vanilla
+/// client handed a pearl's cooldown read two varints as a suggestions action.
+inline constexpr i32 kSetCooldown = 0x15;
 /// Block Action: the chest lid, the note block's twang, the piston's push.
 inline constexpr i32 kBlockAction = 0x09;
 }  // namespace clientbound

@@ -39,7 +39,11 @@ struct EntityMotionConstants {
     /// Together these two give a terminal speed of -g·d/(1-d) = -3.92 blocks a
     /// tick, which is the number a long fall converges on and the fastest speed
     /// observed in the measurement (-3.58 after forty samples, still climbing).
-    f64 vertical_drag{0.98};
+    ///
+    /// A float for a living thing — 0.98000001907…: an armor stand traced tick
+    /// by tick on the real server stores -0.0784000015 after one tick of fall,
+    /// -0.08 × 0.98F. A dropped item uses the exact 0.98 (see item_motion).
+    f64 vertical_drag{static_cast<f64>(0.98F)};
 
     /// Multiplies the horizontal velocity each tick while airborne.
     f64 air_drag{0.91};
@@ -69,6 +73,19 @@ struct EntityMotionConstants {
 /// The box an entity of this size occupies at this position.
 [[nodiscard]] AABB entity_box(const entity::EntityState& state) noexcept;
 
+/// The horizontal drag `step_entity` applies this tick: the air's 0.91, times
+/// the supporting block's friction on the ground.
+[[nodiscard]] f64 entity_friction(const entity::EntityState&   state,
+                                  const EntityMotionConstants& constants,
+                                  const CollisionWorld&        world);
+
+/// How a walk's cruising speed on the floor under `state` compares with the
+/// same walk on ordinary ground — 1 on grass, a little under on ice, 0.58 on
+/// soul sand. A mob that sets its own velocity multiplies by this.
+[[nodiscard]] f64 walk_floor_scale(const entity::EntityState&   state,
+                                   const EntityMotionConstants& constants,
+                                   const CollisionWorld&        world);
+
 /// A dropped stack falls at **half** the gravity of everything else.
 ///
 /// Measured the same way and the fit is exact — residual 1.2e-15, which is
@@ -79,6 +96,9 @@ struct EntityMotionConstants {
 [[nodiscard]] inline EntityMotionConstants item_motion() noexcept {
     EntityMotionConstants constants;
     constants.gravity = 0.04;
+    // Exactly 0.98 for an item: its traced fall stores -0.0392, with no float
+    // residue, where a living thing stores -0.0784000015.
+    constants.vertical_drag = 0.98;
     return constants;
 }
 
