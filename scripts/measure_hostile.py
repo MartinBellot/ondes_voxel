@@ -706,6 +706,52 @@ def campaign_enderman2(server, rec: Recorder) -> dict:
     return out
 
 
+def carry_trace(server, count: int, seconds: float) -> list[dict]:
+    rows = []
+    begin = time.monotonic()
+    while time.monotonic() - begin < seconds:
+        row = {"tick": gametime_of(server.batch(["time query gametime"]))}
+        for k in range(count):
+            row[k] = value(server.batch([f"data get entity @e[tag=c{k},limit=1] "
+                                         "carriedBlockState.Name"]))
+        rows.append(row)
+        time.sleep(1.0)
+    return rows
+
+
+def campaign_enderman3(server, rec: Recorder) -> dict:
+    """Carrying, second attempt. `enderman2` put eight endermen on bare flat
+    grass and none took anything in 80 s: the only holdable block was the one
+    under their feet. Here the holdable blocks are at feet level."""
+    out: dict = {}
+    # Pickup: a layer of dandelions (#enderman_holdable, and walkable).
+    fresh(server)
+    server.batch(["time set midnight", "gamerule mobGriefing true",
+                  f"fill 10 {Y} 10 60 {Y} 40 minecraft:dandelion"], timeout=60)
+    for k in range(8):
+        server.batch([f"summon minecraft:enderman {20.5 + (k % 4) * 10} {Y} {20.5 + (k // 4) * 10} "
+                      "{PersistenceRequired:1b,Silent:1b,Tags:[\"ovc\",\"c" + str(k) + "\"]}"])
+    out["pickup"] = carry_trace(server, 8, 60.0)
+    server.batch([f"fill 10 {Y} 10 60 {Y} 40 minecraft:air"], timeout=60)
+
+    # Placement: eight endermen carrying dirt, on the flat grass.
+    fresh(server)
+    server.batch(["time set midnight", "gamerule mobGriefing true"])
+    for k in range(8):
+        server.batch([f"summon minecraft:enderman {20.5 + (k % 4) * 10} {Y} {20.5 + (k // 4) * 10} "
+                      "{PersistenceRequired:1b,Silent:1b,Tags:[\"ovc\",\"c" + str(k) + "\"],"
+                      "carriedBlockState:{Name:\"minecraft:dirt\"}}"])
+    out["place"] = carry_trace(server, 8, 100.0)
+    # Where the dirt went: every dirt block standing at feet level or above.
+    found = []
+    for x in range(0, 80, 2):
+        lines = server.batch([f"execute if block {x} {Y} {z} minecraft:dirt run say D {x} {z}"
+                              for z in range(0, 70)], timeout=60)
+        found += [line.split("D ", 1)[1] for line in lines if "D " in line]
+    out["placed_at"] = found
+    return out
+
+
 def campaign_spider(server, rec: Recorder) -> dict:
     out = {}
     for when in ("noon", "midnight"):
@@ -762,6 +808,7 @@ def campaign_witch(server, rec: Recorder) -> dict:
 CAMPAIGNS = {"packets": campaign_packets, "speed": campaign_speed, "strength": campaign_strength,
              "splash": campaign_splash, "arrow": campaign_arrow, "anvil": campaign_anvil,
              "enderman": campaign_enderman, "enderman2": campaign_enderman2,
+             "enderman3": campaign_enderman3,
              "spider": campaign_spider, "slime": campaign_slime,
              "witch": campaign_witch, "anvil_back": campaign_anvil_back}
 
