@@ -359,11 +359,21 @@ TEST_CASE("pieces from the seed are the game's pieces", "[structure][pieces]") {
     CHECK(structure_step_index(*placer, "minecraft:buried_treasure") == 0);
 
     // What is not built is refused by name.
+    const StructureDefinition* mineshaft = placer->find("minecraft:mineshaft");
+    REQUIRE(mineshaft != nullptr);
+    const auto refused = builder->generate(*mineshaft, kSeed, 0, 0, nullptr);
+    REQUIRE_FALSE(refused.has_value());
+    CHECK(refused.error().find("mineshaft") != std::string::npos);
+
+    // ── temples ── A desert pyramid's start is generated now; what it lacks is
+    // named rather than silently absent.
     const StructureDefinition* pyramid = placer->find("minecraft:desert_pyramid");
     REQUIRE(pyramid != nullptr);
-    const auto refused = builder->generate(*pyramid, kSeed, 0, 0, nullptr);
-    REQUIRE_FALSE(refused.has_value());
-    CHECK(refused.error().find("desert_pyramid") != std::string::npos);
+    const auto started = builder->generate(*pyramid, kSeed, 0, 0, nullptr);
+    REQUIRE(started.has_value());
+    REQUIRE(started->pieces.size() == 1);
+    CHECK(started->pieces.front().kind == PieceKind::Scattered);
+    CHECK(started->incomplete.find("desert_pyramid") != std::string::npos);
 }
 
 TEST_CASE("a piece written chunk by chunk is the piece written at once", "[structure][stage]") {
@@ -418,7 +428,8 @@ TEST_CASE("a piece written chunk by chunk is the piece written at once", "[struc
             }
             return slot.get();
         };
-        StructureStage stage{*placer, *builder, nullptr, *blocks, nullptr, kSeed};
+        StructureStage stage{*placer, *builder, nullptr, *blocks, nullptr, kSeed,
+                             OriginalStructures::vanilla_parity()};  // ── great pyramid ──
         stage.add_start(start);
         std::vector<std::pair<i32, i32>> order{
             {-6561, 442}, {-6560, 442}, {-6561, 443}, {-6560, 443}};

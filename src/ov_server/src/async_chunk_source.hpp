@@ -72,6 +72,11 @@ struct GeneratedBlock {
     i32 block_z{0};
 
     std::vector<std::pair<ChunkPos, world::Chunk>> chunks;
+
+    /// ── worldgen-3 ── The fluids the generator wants woken in these chunks
+    /// (world positions), for the tick thread to schedule once it publishes
+    /// them.
+    std::vector<BlockPos> fluid_wakeups;
 };
 
 class AsyncChunkSource {
@@ -91,10 +96,13 @@ public:
                                      : -(((-chunk_coordinate) + kBlockChunks - 1) / kBlockChunks);
     }
 
-    /// Generate one square on a stack: `(stack, origin_x, origin_z, side, out)`,
-    /// the shape of `GeneratedWorld::generate_square`.
-    using Generate = std::function<void(usize, i32, i32, i32,
-                                        std::vector<std::pair<ChunkPos, world::Chunk>>&)>;
+    /// Generate one square on a stack:
+    /// `(stack, origin_x, origin_z, side, out, fluid_wakeups)`, the shape of
+    /// `GeneratedWorld::generate_square` (── worldgen-3 ── the wakeups may be
+    /// null).
+    using Generate =
+        std::function<void(usize, i32, i32, i32, std::vector<std::pair<ChunkPos, world::Chunk>>&,
+                           std::vector<BlockPos>*)>;
 
     /// `world` is borrowed and must outlive this. It must have been loaded with
     /// at least `workers + 1` stacks, one per worker plus the tick thread's own.

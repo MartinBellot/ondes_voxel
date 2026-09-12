@@ -392,6 +392,10 @@ void tick_tame(TameState& tame, entity::EntityState& state) noexcept {
         }
     }
     tame.ridden_for = tame.rider != 0 ? tame.ridden_for + 1 : 0;
+    if (tame.rider == 0) {
+        tame.tantrum_draws = 0;
+        tame.tantrum_last  = -1;
+    }
 }
 
 f64 tame_speed_factor(const TameState& tame, f64 species_attribute) noexcept {
@@ -746,7 +750,10 @@ void RideTantrumGoal::tick(GoalContext& context) {
         }
     }
     keep_moving(context, speed_);
-    if (context.random->next_int(kTantrumOdds) != 0) {
+    const i32 draw = context.random->next_int(kTantrumOdds);
+    ++tame.tantrum_draws;
+    tame.tantrum_last = draw;
+    if (draw != 0) {
         return;
     }
     const entity::EntityState* self  = context.state();

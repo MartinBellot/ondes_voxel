@@ -23,11 +23,13 @@
 #define OV_LOG_CATEGORY "structblocks"
 
 #include "ov/base/log.hpp"
+#include "ov/gameplay/weather.hpp"
 #include "ov/nbt/region.hpp"
 #include "ov/registry/block_states.hpp"
 #include "ov/registry/registries.hpp"
 #include "ov/world/chunk.hpp"
 #include "ov/world/chunk_storage.hpp"
+#include "ov/worldgen/aquifer.hpp"
 #include "ov/worldgen/biome_source.hpp"
 #include "ov/worldgen/carver.hpp"
 #include "ov/worldgen/chunk_generator.hpp"
@@ -78,6 +80,9 @@ struct Options {
     /// structures only.
     bool                  features{true};
     std::filesystem::path reports{"data/vanilla/1.20.1/generated"};
+    /// ── portals ── The dimension levels B and H generate: `overworld` or
+    /// `the_nether` (the world is then the `DIM-1` directory).
+    std::string dimension{"overworld"};
 };
 
 [[nodiscard]] Options parse(int argc, char** argv) {
@@ -97,6 +102,8 @@ struct Options {
             options.data = value("--data=");
         } else if (argument.starts_with("--seed=")) {
             options.seed = std::atoll(value("--seed=").c_str());
+        } else if (argument.starts_with("--dimension=")) {
+            options.dimension = value("--dimension=");
         } else if (argument.starts_with("--level=")) {
             options.level = value("--level=").front();
         } else if (argument == "--witness") {
@@ -120,7 +127,14 @@ struct Options {
 [[nodiscard]] bool in_scope(std::string_view name) {
     return name == "minecraft:igloo" || name.starts_with("minecraft:shipwreck") ||
            name.starts_with("minecraft:ocean_ruin") ||
-           name.starts_with("minecraft:ruined_portal") || name == "minecraft:buried_treasure";
+           name.starts_with("minecraft:ruined_portal") || name == "minecraft:buried_treasure" ||
+           // ── temples ── the scattered pieces
+           name == "minecraft:swamp_hut" || name == "minecraft:desert_pyramid" ||
+           name == "minecraft:jungle_pyramid" ||
+           // ── jigsaw ──
+           name.starts_with("minecraft:village_") || name == "minecraft:pillager_outpost" ||
+           name == "minecraft:bastion_remnant" || name == "minecraft:ancient_city" ||
+           name == "minecraft:trail_ruins";
 }
 
 [[nodiscard]] std::string label(const registry::BlockRegistry& blocks,
@@ -596,7 +610,102 @@ struct Tally {
     return 0;
 }
 
-[[nodiscard]] i32 run_level_b(const Options& options, const worldgen::StructureBuilder& builder) {
+/// The world as the placer's biome filter sees it, from our own noise — the
+/// same two heightmap rules as `ov_structparity`, duplicated rather than shared
+/// so that a change there cannot quietly change this measurement.
+///
+/// ── portals ── With the block registry it also answers the base column's
+/// substance and the temperature, which a ruined portal's height and cold test
+/// read — the same rules as the server's sampler.
+class NoiseSampler final : public worldgen::StructureWorldSampler {
+public:
+    explicit NoiseSampler(const worldgen::ChunkGenerator& generator,
+                          const registry::BlockRegistry*  blocks = nullptr)
+        : generator_{&generator},
+          blocks_{blocks},
+          low_{generator.gen_min_y()},
+          high_{generator.gen_min_y() + generator.gen_depth() - 1},
+          lava_{fluid_state(blocks, "minecraft:lava")} {}
+
+    [[nodiscard]] std::string_view biome_at(i32 x, i32 y, i32 z) const override {
+        return generator_->biome_name_at(x, y, z);
+    }
+
+    [[nodiscard]] i32 surface_height(i32 x, i32 z) const override {
+        const i32 sea = generator_->sea_level();
+        for (i32 y = high_; y >= low_; --y) {
+            if (generator_->is_solid(x, y, z) || y < sea) {
+                return y + 1;
+            }
+        }
+        return low_;
+    }
+
+    [[nodiscard]] i32 ocean_floor_height(i32 x, i32 z) const override {
+        for (i32 y = high_; y >= low_; --y) {
+            if (generator_->is_solid(x, y, z)) {
+                return y + 1;
+            }
+        }
+        return low_;
+    }
+
+    [[nodiscard]] std::optional<bool> base_solid(i32 x, i32 y, i32 z) const override {
+        return generator_->is_solid(x, y, z);
+    }
+
+    [[nodiscard]] std::optional<worldgen::Substance> base_substance(i32 x, i32 y,
+                                                                    i32 z) const override {
+        const f64 density = generator_->density_at(x, y, z);
+        if (generator_->aquifer_active()) {
+            worldgen::AquiferSampler aquifer{*generator_->aquifer()};
+            return aquifer.compute(x, y, z, density).substance;
+        }
+        if (density > 0.0) {
+            return worldgen::Substance::Solid;
+        }
+        const auto fluid = generator_->fluid_at(y);
+        if (fluid == registry::kAirState) {
+            return worldgen::Substance::Air;
+        }
+        return fluid == lava_ && lava_ != registry::kAirState ? worldgen::Substance::Lava
+                                                              : worldgen::Substance::Water;
+    }
+
+    [[nodiscard]] std::optional<f32> temperature_at(i32 x, i32 y, i32 z) const override {
+        if (blocks_ == nullptr) {
+            return std::nullopt;
+        }
+        const auto biome = blocks_->find_biome(generator_->biome_name_at(x, y, z));
+        if (!biome) {
+            return std::nullopt;
+        }
+        return climate_.temperature_at(gameplay::climate_of(blocks_->biome(*biome)), {x, y, z});
+    }
+
+private:
+    /// A fluid's default state, or air when there is no registry to ask — then
+    /// every fluid reads as water, which is all the portal's settling tells
+    /// apart (air or not).
+    [[nodiscard]] static registry::BlockStateId fluid_state(const registry::BlockRegistry* blocks,
+                                                            std::string_view               name) {
+        if (blocks == nullptr) {
+            return registry::kAirState;
+        }
+        const auto block = blocks->find_block(name);
+        return block ? blocks->default_state(*block) : registry::kAirState;
+    }
+
+    const worldgen::ChunkGenerator* generator_;
+    const registry::BlockRegistry*  blocks_;
+    i32                             low_;
+    i32                             high_;
+    registry::BlockStateId          lava_;
+    gameplay::ClimateNoise          climate_;
+};
+
+[[nodiscard]] i32 run_level_b(const Options& options, const registry::BlockRegistry& blocks,
+                              const worldgen::StructureBuilder& builder) {
     auto sets = worldgen::StructureSetRegistry::load(options.data);
     if (!sets) {
         OV_LOG_ERROR("structure sets: {}", worldgen::to_string(sets.error()));
@@ -607,6 +716,16 @@ struct Tally {
         OV_LOG_ERROR("structures: {}", worldgen::to_string(placer.error()));
         return 1;
     }
+    // ── portals ── A real sampler: a portal's height and its cold test are
+    // decided at generation, from the noise, and compared below.
+    auto router = worldgen::NoiseRouter::load(options.data, options.dimension, options.seed);
+    auto biomes = worldgen::BiomeSource::load(options.reports, options.dimension);
+    if (!router || !biomes) {
+        OV_LOG_ERROR("worldgen stack could not be loaded for {}", options.dimension);
+        return 1;
+    }
+    worldgen::ChunkGenerator generator{*router, *biomes, blocks};
+    const NoiseSampler       sampler{generator, &blocks};
 
     struct Row {
         i32                        starts{0};
@@ -626,7 +745,7 @@ struct Tally {
             continue;
         }
         auto ours =
-            builder.generate(*definition, options.seed, start.chunk_x, start.chunk_z, nullptr);
+            builder.generate(*definition, options.seed, start.chunk_x, start.chunk_z, &sampler);
         if (!ours) {
             ++row.refused;
             ++row.reasons[ours.error()];
@@ -660,6 +779,26 @@ struct Tally {
                 } else if (a.origin.x != b.origin.x || a.origin.z != b.origin.z) {
                     why = fmt::format("origin {},{} vs {},{}", a.origin.x, a.origin.z, b.origin.x,
                                       b.origin.z);
+                } else if (a.kind == worldgen::PieceKind::RuinedPortal &&
+                           a.origin.y != b.origin.y) {
+                    // ── portals ── Settled at generation: the stored y is the
+                    // game's even in a start whose chunks were never finished.
+                    why = fmt::format("height {} vs {}", a.origin.y, b.origin.y);
+                } else if (a.kind == worldgen::PieceKind::RuinedPortal &&
+                           a.portal.cold != b.portal.cold) {
+                    why = fmt::format("cold {} vs {}", a.portal.cold, b.portal.cold);
+                } else if (a.kind == worldgen::PieceKind::Scattered &&
+                           (a.scattered.kind != b.scattered.kind ||
+                            a.scattered.orientation != b.scattered.orientation ||
+                            a.scattered.width != b.scattered.width ||
+                            a.scattered.height != b.scattered.height ||
+                            a.scattered.depth != b.scattered.depth ||
+                            a.box.max_x != b.box.max_x || a.box.max_z != b.box.max_z)) {
+                    // ── temples ── The stored y is the placeholder until the
+                    // piece is placed; the facing and the footprint are the start's.
+                    why = fmt::format("scattered: facing {} vs {}, box x {} vs {}, z {} vs {}",
+                                      a.scattered.orientation, b.scattered.orientation, a.box.max_x,
+                                      b.box.max_x, a.box.max_z, b.box.max_z);
                 } else if (std::abs(a.integrity - b.integrity) > 1e-6F) {
                     why = "integrity";
                 } else if (a.kind == worldgen::PieceKind::RuinedPortal &&
@@ -706,40 +845,6 @@ struct Tally {
     }
     return 0;
 }
-
-/// The world as the placer's biome filter sees it, from our own noise — the
-/// same two heightmap rules as `ov_structparity`, duplicated rather than shared
-/// so that a change there cannot quietly change this measurement.
-class NoiseSampler final : public worldgen::StructureWorldSampler {
-public:
-    explicit NoiseSampler(const worldgen::ChunkGenerator& generator) : generator_{&generator} {}
-
-    [[nodiscard]] std::string_view biome_at(i32 x, i32 y, i32 z) const override {
-        return generator_->biome_name_at(x, y, z);
-    }
-
-    [[nodiscard]] i32 surface_height(i32 x, i32 z) const override {
-        const i32 sea = generator_->sea_level();
-        for (i32 y = 319; y >= -64; --y) {
-            if (generator_->is_solid(x, y, z) || y < sea) {
-                return y + 1;
-            }
-        }
-        return -64;
-    }
-
-    [[nodiscard]] i32 ocean_floor_height(i32 x, i32 z) const override {
-        for (i32 y = 319; y >= -64; --y) {
-            if (generator_->is_solid(x, y, z)) {
-                return y + 1;
-            }
-        }
-        return -64;
-    }
-
-private:
-    const worldgen::ChunkGenerator* generator_;
-};
 
 /// Level C — our world. The whole pipeline, noise to features with the
 /// structure stage attached, generates the chunks a start of the game's
@@ -832,8 +937,10 @@ private:
         // Our world, generated around it.
         worldgen::ChunkPipeline  pipeline{generator, options.features ? &*decorator : nullptr,
                                           blocks, world::WorldShape::overworld(), options.seed};
+        // ── great pyramid ── a parity instrument: vanilla structures only.
         worldgen::StructureStage stage{*placer, builder,     &sampler,
-                                       blocks,  &registries, options.seed};
+                                       blocks,  &registries, options.seed,
+                                       worldgen::OriginalStructures::vanilla_parity()};
         pipeline.set_structure_stage(&stage);
         for (i32 chunk_x = box.min_x >> 4; chunk_x <= box.max_x >> 4; ++chunk_x) {
             for (i32 chunk_z = box.min_z >> 4; chunk_z <= box.max_z >> 4; ++chunk_z) {
@@ -912,6 +1019,80 @@ private:
     return 0;
 }
 
+/// Level H — the heights the starts' own generation reads, dumped for analysis:
+/// for every ruined portal and buried treasure start of the game, the start's
+/// large-feature seed, its box from our pieces, the game's settled box, and our
+/// noise's heights over the box and base columns at its corners. One JSON
+/// object per line; the rule is fitted outside, then written here in C++.
+[[nodiscard]] i32 run_level_h(const Options& options, const registry::BlockRegistry& blocks,
+                              const worldgen::StructureBuilder& builder) {
+    auto sets = worldgen::StructureSetRegistry::load(options.data);
+    if (!sets) {
+        return 1;
+    }
+    auto placer = worldgen::StructurePlacer::load(options.data, *sets);
+    auto router = worldgen::NoiseRouter::load(options.data, "overworld", options.seed);
+    auto biomes = worldgen::BiomeSource::load(options.reports, "overworld");
+    if (!placer || !router || !biomes) {
+        OV_LOG_ERROR("worldgen stack could not be loaded");
+        return 1;
+    }
+    worldgen::ChunkGenerator generator{*router, *biomes, blocks};
+    const NoiseSampler       sampler{generator};
+    for (const StoredStart& start : read_starts(options.world, options.only)) {
+        const auto* definition = placer->find(start.name);
+        if (definition == nullptr) {
+            continue;
+        }
+        auto ours = builder.generate(*definition, options.seed, start.chunk_x, start.chunk_z,
+                                     &sampler);
+        if (!ours || ours->pieces.empty()) {
+            continue;
+        }
+        const nbt::Tag& child = start.children.list()->front();
+        const auto*     bb    = child.find("BB")->get_if<nbt::Tag::IntArray>();
+        const auto&     piece = ours->pieces.front();
+        const auto&     box   = piece.box;
+        std::string     out   = fmt::format(
+            R"({{"name":"{}","cx":{},"cz":{},"full":{},"seed":{},"placement":"{}","template":"{}",)"
+                  R"("box":[{},{},{},{},{},{}],"game":[{},{},{},{},{},{}],"heights":[)",
+            start.name, start.chunk_x, start.chunk_z, start.full ? 1 : 0,
+            worldgen::large_feature_seed(options.seed, start.chunk_x, start.chunk_z),
+            piece.portal.placement, piece.template_name, box.min_x, box.min_y, box.min_z,
+            box.max_x, box.max_y, box.max_z, (*bb)[0], (*bb)[1], (*bb)[2], (*bb)[3], (*bb)[4],
+            (*bb)[5]);
+        bool first = true;
+        for (i32 z = box.min_z; z <= box.max_z; ++z) {
+            for (i32 x = box.min_x; x <= box.max_x; ++x) {
+                out += fmt::format("{}[{},{},{},{}]", first ? "" : ",", x, z,
+                                   sampler.surface_height(x, z), sampler.ocean_floor_height(x, z));
+                first = false;
+            }
+        }
+        out += R"(],"columns":{)";
+        first = true;
+        for (const auto& [x, z] : {std::pair{box.min_x, box.min_z}, std::pair{box.max_x, box.min_z},
+                                   std::pair{box.min_x, box.max_z}, std::pair{box.max_x, box.max_z}}) {
+            std::string column;
+            for (i32 y = -64; y < 320; ++y) {
+                column += generator.is_solid(x, y, z) ? '#' : '.';
+            }
+            out += fmt::format(R"({}"{},{}":"{}")", first ? "" : ",", x, z, column);
+            first = false;
+        }
+        out += R"(},"biomes":{)";
+        first = true;
+        for (i32 y = -64; y < 320; y += 4) {
+            out += fmt::format(R"({}"{}":"{}")", first ? "" : ",", y,
+                               generator.biome_name_at(box.min_x, y, box.min_z));
+            first = false;
+        }
+        out += "}}";
+        fmt::print("{}\n", out);
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -939,7 +1120,10 @@ int main(int argc, char** argv) {
         return 1;
     }
     if (options.level == 'b') {
-        return run_level_b(options, *builder);
+        return run_level_b(options, *blocks, *builder);
+    }
+    if (options.level == 'h') {
+        return run_level_h(options, *blocks, *builder);
     }
     if (options.level == 'c') {
         if (!registries) {

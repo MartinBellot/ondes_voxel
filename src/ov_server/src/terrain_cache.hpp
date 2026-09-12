@@ -43,9 +43,11 @@ public:
     SharedTerrainCache& operator=(const SharedTerrainCache&) = delete;
 
     [[nodiscard]] bool fetch(i32 chunk_x, i32 chunk_z, world::Chunk& chunk,
-                             std::vector<std::string_view>& starts) override;
+                             std::vector<std::string_view>& starts,
+                             std::vector<BlockPos>&         fluid_wakeups) override;
     void offer(i32 chunk_x, i32 chunk_z, const world::Chunk& chunk,
-               const std::vector<std::string_view>& starts) override;
+               const std::vector<std::string_view>& starts,
+               const std::vector<BlockPos>&         fluid_wakeups) override;
 
     [[nodiscard]] usize capacity() const noexcept;
 

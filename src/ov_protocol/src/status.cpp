@@ -56,19 +56,24 @@ std::string ServerStatus::to_json() const {
     json += std::to_string(max_players);
     json += R"(,"online":)";
     json += std::to_string(online_players);
-    json += R"(,"sample":[)";
-    for (usize i = 0; i < sample.size(); ++i) {
-        if (i > 0) {
-            json.push_back(',');
+    // An empty sample is left out, as the 1.20.1 jar leaves it out (measured
+    // against its Status Response).
+    if (!sample.empty()) {
+        json += R"(,"sample":[)";
+        for (usize i = 0; i < sample.size(); ++i) {
+            if (i > 0) {
+                json.push_back(',');
+            }
+            // Each sample entry needs a UUID as well as a name; a nil one is
+            // accepted and keeps this from needing a player registry.
+            json += R"({"name":)";
+            append_json_string(json, sample[i]);
+            json += R"(,"id":"00000000-0000-0000-0000-000000000000"})";
         }
-        // Each sample entry needs a UUID as well as a name; a nil one is
-        // accepted and keeps this from needing a player registry.
-        json += R"({"name":)";
-        append_json_string(json, sample[i]);
-        json += R"(,"id":"00000000-0000-0000-0000-000000000000"})";
+        json += "]";
     }
 
-    json += R"(]},"description":{"text":)";
+    json += R"(},"description":{"text":)";
     append_json_string(json, description);
     json += "}";
 
@@ -77,8 +82,11 @@ std::string ServerStatus::to_json() const {
         append_json_string(json, favicon);
     }
 
-    json += R"(,"enforcesSecureChat":)";
-    json += enforces_secure_chat ? "true" : "false";
+    // Written only when true: the jar's codec leaves the member out at its
+    // default, false (measured on an offline 1.20.1 server).
+    if (enforces_secure_chat) {
+        json += R"(,"enforcesSecureChat":true)";
+    }
     if (spawn_progress >= 0) {  // ── streaming ── see the header
         json += R"(,"ondesSpawnProgress":)";
         json += std::to_string(spawn_progress);

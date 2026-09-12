@@ -24,6 +24,7 @@
 #include "ov/gameplay/physics.hpp"
 #include "ov/netclient/client.hpp"
 #include "ov/registry/block_states.hpp"
+#include "ov/world/light_engine.hpp"  // ── light ──
 #include "ov/render/atlas.hpp"
 #include "ov/render/biome_colours.hpp"
 #include "ov/render/block_models.hpp"
@@ -161,6 +162,13 @@ private:
     usize resident_{0};
     /// Scratch, kept between calls so meshing allocates nothing per section.
     render::MeshBuffers scratch_;
+
+    /// ── light ── The server sends no light after an edit — the game's own
+    /// client lights its edits itself, and so does this one: a Block Update is
+    /// noted here and the light around it repaired once per `apply`, with the
+    /// same engine the server runs. Overworld rules: this client knows no
+    /// other dimension yet.
+    std::unique_ptr<world::LightEngine> light_;
 };
 
 }  // namespace ov::demo

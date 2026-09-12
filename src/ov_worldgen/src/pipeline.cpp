@@ -185,6 +185,9 @@ struct ChunkPipeline::Impl {
         /// side table would leak one row per chunk generated for the life of
         /// the world.
         std::vector<std::string_view> starts;
+        /// ── worldgen-3 ── The fluids to wake once the chunk exists, from the
+        /// noise stage and the carvers. Travels with the chunk, like `starts`.
+        std::vector<BlockPos> fluid_wakeups;
     };
 
     const ChunkGenerator*          generator;
@@ -217,6 +220,7 @@ struct ChunkPipeline::Impl {
                           .emplace(key, Entry{world::Chunk{ChunkPos{chunk_x, chunk_z}, shape, air,
                                                            blocks},
                                               ChunkStatus::Empty,
+                                              {},
                                               {}})
                           .first->second;
         stats.reached[static_cast<usize>(ChunkStatus::Empty)] += 1;
@@ -236,9 +240,12 @@ struct ChunkPipeline::Impl {
         // ── streaming ── Terrain is a pure function of the seed and the
         // position up to and including the carvers (TerrainCache), so a chunk
         // another pipeline has already carved is copied, not carved again.
+        // The fluids to wake travel with the terrain: the noise and the carvers
+        // write them onto the entry, and a copied chunk must bring them too.
         if (terrain_cache != nullptr && entry.status == ChunkStatus::Empty &&
             target >= ChunkStatus::Carvers &&
-            terrain_cache->fetch(chunk_x, chunk_z, entry.chunk, entry.starts)) {
+            terrain_cache->fetch(chunk_x, chunk_z, entry.chunk, entry.starts,
+                                 entry.fluid_wakeups)) {
             entry.status = ChunkStatus::Carvers;
             stats.terrain_hits += 1;
         }
@@ -248,7 +255,8 @@ struct ChunkPipeline::Impl {
             entry.status = next;
             note(next);
             if (next == ChunkStatus::Carvers && terrain_cache != nullptr) {  // ── streaming ──
-                terrain_cache->offer(chunk_x, chunk_z, entry.chunk, entry.starts);
+                terrain_cache->offer(chunk_x, chunk_z, entry.chunk, entry.starts,
+                                     entry.fluid_wakeups);
             }
         }
         return entry;
@@ -280,13 +288,13 @@ struct ChunkPipeline::Impl {
                 generator->generate_biomes(entry.chunk);
                 break;
             case ChunkStatus::Noise:
-                generator->generate_noise(entry.chunk);
+                generator->generate_noise(entry.chunk, &entry.fluid_wakeups);
                 break;
             case ChunkStatus::Surface:
                 generator->generate_surface(entry.chunk);
                 break;
             case ChunkStatus::Carvers:
-                generator->generate_carvers(entry.chunk);
+                generator->generate_carvers(entry.chunk, &entry.fluid_wakeups);
                 // Rebuilt here rather than at the end of everything: a carved
                 // cell can be the block a heightmap was pointing at, and the
                 // decoration that comes next asks this chunk how high its
@@ -397,10 +405,14 @@ const world::Chunk& ChunkPipeline::promote(i32 chunk_x, i32 chunk_z, ChunkStatus
     return impl_->advance(chunk_x, chunk_z, status).chunk;
 }
 
-world::Chunk ChunkPipeline::take(i32 chunk_x, i32 chunk_z) {
+world::Chunk ChunkPipeline::take(i32 chunk_x, i32 chunk_z, std::vector<BlockPos>* fluid_wakeups) {
     (void)impl_->advance(chunk_x, chunk_z, ChunkStatus::Full);
     const auto  it    = impl_->cache.find(key_of(chunk_x, chunk_z));
     world::Chunk chunk = std::move(it->second.chunk);
+    if (fluid_wakeups != nullptr) {  // ── worldgen-3 ──
+        fluid_wakeups->insert(fluid_wakeups->end(), it->second.fluid_wakeups.begin(),
+                              it->second.fluid_wakeups.end());
+    }
     impl_->cache.erase(it);
     impl_->stats.resident = impl_->cache.size();
     return chunk;

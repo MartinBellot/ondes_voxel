@@ -23,6 +23,7 @@
 
 #include "ov/gameplay/crafting.hpp"
 #include "ov/gameplay/smelting.hpp"
+#include "ov/math/random.hpp"
 #include "ov/nbt/tag.hpp"
 #include "ov/protocol/play.hpp"
 #include "ov/protocol/recipe_packets.hpp"
@@ -68,9 +69,9 @@ struct Workbench {
     /// The 3x3 grid of a crafting table. Empty for a furnace.
     std::array<net::ItemStack, 9> grid{};
 
-    /// The furnace's three slots and four counters. Loaded from the block
-    /// entity when the screen opens and written back on every change, so that
-    /// a second player looking at the same furnace sees the same thing.
+    /// The furnace's three slots and four counters: a view of the block
+    /// entity, which is the only copy (furnace_entity.hpp). Re-read before
+    /// every click and every refresh; written back only by a click.
     gameplay::FurnaceSlots furnace_slots{};
     gameplay::FurnaceState furnace_state{};
 
@@ -91,8 +92,9 @@ struct WorkbenchOutcome {
     bool save_block_entity{false};
     /// Stacks the player could not fit, to be dropped at their feet.
     std::vector<net::ItemStack> overflow;
-    /// Experience the player has just earned by emptying a furnace.
-    f32 experience{0.0F};
+    /// The player took from a furnace's output: its `RecipesUsed` turns into
+    /// experience (furnace_entity.hpp).
+    bool took_furnace_output{false};
 };
 
 /// Everything the window needs from the game that is not in the window.
@@ -118,12 +120,13 @@ struct WorkbenchHost {
     std::function<nbt::Tag*(i32, i32, i32)> block_entity;
     /// The block's registry name at a position, empty when out of the world.
     std::function<std::string_view(i32, i32, i32)> block_name;
-    /// Turn a furnace's `lit` property on or off, and tell everyone.
-    std::function<void(i32, i32, i32, bool)> set_lit;
     /// The chunk holding this position has changed and must be saved.
     std::function<void(i32, i32)> mark_dirty;
-    /// Award experience to the player.
-    std::function<void(f32)> award_experience;
+    /// Award experience points to the player, as one `ExperienceOrb.award`.
+    std::function<void(i32)> award_experience;
+    /// The draw that rounds a furnace's fractional experience. Null: rounded
+    /// down, and said here.
+    math::LegacyRandomSource* random{nullptr};
 };
 
 /// Open a screen on the block the player clicked, if it is one this file owns.
@@ -140,7 +143,9 @@ void handle_click(const WorkbenchContext& context, const WorkbenchHost& host, Wo
                   const net::ContainerClick& click, std::span<net::ItemStack> inventory,
                   net::ItemStack& carried, std::optional<Workbench>& holder);
 
-/// One tick of an open furnace, including the property packets the bars need.
+/// Once a tick per open furnace screen: re-read the block entity (which the
+/// furnace pass has just ticked) and send what moved — the four bars, and the
+/// slots when they changed. Ticks nothing itself.
 void tick_open_workbench(const WorkbenchContext& context, const WorkbenchHost& host,
                          Workbench& bench, std::span<const net::ItemStack> inventory);
 

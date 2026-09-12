@@ -195,6 +195,13 @@ public:
     /// Set an age read from anywhere (a test, an NBT one day). Resizes.
     void set_age(entity::EntityState& state, i32 age) noexcept;
 
+    // ── noai ── `NoAI`: no brain and no physics. The position stays, no
+    // gravity builds up, the stored velocity only decays by 0.98 a tick
+    // (measured, docs/provenance/apprivoisement.md § 8.3). Age, love, eggs and
+    // a wolf's anger still tick, as they do in vanilla.
+    void               set_no_ai(bool no_ai) noexcept { no_ai_ = no_ai; }
+    [[nodiscard]] bool no_ai() const noexcept { return no_ai_; }
+
 private:
     /// Age, love and eggs, once per tick. breeding.cpp.
     void tick_husbandry(entity::EntityState& state, entity::EntityHandle self,
@@ -213,6 +220,7 @@ private:
     /// The box is a baby's. Separate from `age < 0` because food and grass
     /// can move the age to 0 between two ticks, and the box must follow.
     bool baby_box_{false};
+    bool no_ai_{false};  // ── noai ──
 };
 
 /// Build the goal list for a kind.

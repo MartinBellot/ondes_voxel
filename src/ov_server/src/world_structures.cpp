@@ -3,6 +3,9 @@
 #include "world_structures.hpp"
 
 #include "ov/base/log.hpp"
+#include "ov/gameplay/weather.hpp"
+#include "ov/registry/block_states.hpp"
+#include "ov/worldgen/aquifer.hpp"
 #include "ov/worldgen/chunk_generator.hpp"
 #include "ov/worldgen/placement.hpp"
 #include "ov/worldgen/structure.hpp"
@@ -11,6 +14,7 @@
 #include "ov/worldgen/structure_set.hpp"
 #include "ov/worldgen/structure_stage.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <optional>
 #include <utility>
@@ -28,10 +32,44 @@ namespace {
 /// extent — 319 to -64 in the overworld, 127 to 0 in the Nether and the End.
 class GeneratorSampler final : public worldgen::StructureWorldSampler {
 public:
-    explicit GeneratorSampler(const worldgen::ChunkGenerator& generator)
+    GeneratorSampler(const worldgen::ChunkGenerator& generator,
+                     const registry::BlockRegistry&  blocks)
         : generator_(&generator),
+          blocks_(&blocks),
           low_(generator.gen_min_y()),
-          high_(generator.gen_min_y() + generator.gen_depth() - 1) {}
+          high_(generator.gen_min_y() + generator.gen_depth() - 1),
+          lava_(lava_state(blocks)) {}
+
+    /// ── portals ── The noise stage's own decision: the aquifer given the
+    /// density where there is one, the global fluid rule otherwise. A fresh
+    /// aquifer sampler per question — its memo is a chunk's, and a portal asks
+    /// a handful of columns once per start.
+    [[nodiscard]] std::optional<worldgen::Substance> base_substance(i32 x, i32 y,
+                                                                    i32 z) const override {
+        const f64 density = generator_->density_at(x, y, z);
+        if (generator_->aquifer_active()) {
+            worldgen::AquiferSampler aquifer{*generator_->aquifer()};
+            return aquifer.compute(x, y, z, density).substance;
+        }
+        if (density > 0.0) {
+            return worldgen::Substance::Solid;
+        }
+        const auto fluid = generator_->fluid_at(y);
+        if (fluid == registry::kAirState) {
+            return worldgen::Substance::Air;
+        }
+        return fluid == lava_ ? worldgen::Substance::Lava : worldgen::Substance::Water;
+    }
+
+    /// ── portals ── The biome's temperature with the frozen patches and the
+    /// height adjustment, as the weather reads it.
+    [[nodiscard]] std::optional<f32> temperature_at(i32 x, i32 y, i32 z) const override {
+        const auto biome = blocks_->find_biome(generator_->biome_name_at(x, y, z));
+        if (!biome) {
+            return std::nullopt;
+        }
+        return climate_.temperature_at(gameplay::climate_of(blocks_->biome(*biome)), {x, y, z});
+    }
 
     [[nodiscard]] std::string_view biome_at(i32 x, i32 y, i32 z) const override {
         return generator_->biome_name_at(x, y, z);
@@ -61,9 +99,19 @@ public:
     }
 
 private:
+    /// Lava's default state: what the global fluid rule fills the Nether's
+    /// sea with. Air when the registry has no lava, so nothing matches it.
+    [[nodiscard]] static registry::BlockStateId lava_state(const registry::BlockRegistry& blocks) {
+        const auto block = blocks.find_block("minecraft:lava");
+        return block ? blocks.default_state(*block) : registry::kAirState;
+    }
+
     const worldgen::ChunkGenerator* generator_;
+    const registry::BlockRegistry*  blocks_;
     i32                             low_;
     i32                             high_;
+    registry::BlockStateId          lava_;
+    gameplay::ClimateNoise          climate_;
 };
 
 }  // namespace
@@ -75,6 +123,8 @@ struct WorldStructures::Impl {
     std::optional<worldgen::BlockTags>            tags;
     std::optional<worldgen::StructurePlacer>      placer;
     std::optional<worldgen::StructureBuilder>     builder;
+    /// ── great pyramid ── Can this dimension make a desert at all?
+    bool has_desert{false};
 };
 
 WorldStructures::WorldStructures(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
@@ -111,6 +161,8 @@ std::unique_ptr<WorldStructures> WorldStructures::load(const std::filesystem::pa
     }
     impl->placer.emplace(std::move(*placer));
     impl->placer->restrict_to_biomes(biomes);
+    impl->has_desert =  // ── great pyramid ──
+        std::find(biomes.begin(), biomes.end(), std::string_view{"minecraft:desert"}) != biomes.end();
 
     auto tags = worldgen::BlockTags::load(data, blocks);
     if (!tags) {
@@ -126,6 +178,8 @@ std::unique_ptr<WorldStructures> WorldStructures::load(const std::filesystem::pa
         return nullptr;
     }
     impl->builder.emplace(std::move(*builder));
+    // ── jigsaw ── the biome of a jigsaw start is read where its piece lands
+    impl->placer->set_jigsaw(impl->builder->jigsaw());
     return std::unique_ptr<WorldStructures>(new WorldStructures(std::move(impl)));
 }
 
@@ -134,18 +188,22 @@ WorldStructures::StackStage::~StackStage() = default;
 
 std::unique_ptr<WorldStructures::StackStage> WorldStructures::make_stage(
     const worldgen::ChunkGenerator& generator, const registry::BlockRegistry& blocks,
-    const registry::Registries& registries, i64 seed) const {
+    const registry::Registries& registries, i64 seed, worldgen::OriginalStructures originals) const {
     auto out     = std::make_unique<StackStage>();
     out->placer  = &*impl_->placer;
-    out->sampler = std::make_unique<GeneratorSampler>(generator);
+    out->sampler = std::make_unique<GeneratorSampler>(generator, blocks);
+    // ── great pyramid ── never asked where no desert can be.
+    originals.great_pyramid = originals.great_pyramid && impl_->has_desert;
     out->stage   = std::make_unique<worldgen::StructureStage>(*impl_->placer, *impl_->builder,
                                                             out->sampler.get(), blocks,
-                                                            &registries, seed);
-    out->stage->refuse(worldgen::StructureKind::RuinedPortal,
-                       "ruined portal: its height search is not implemented, it would stand at y 0");
-    out->stage->refuse(
-        worldgen::StructureKind::BuriedTreasure,
-        "buried treasure: its downward search is not implemented, its chest would hang at y 90");
+                                                            &registries, seed, originals);
+    // ── temples ── Their starts are generated, their blocks are not yet: a start
+    // without its blocks must not reach a chunk.
+    for (const auto kind : {worldgen::StructureKind::SwampHut, worldgen::StructureKind::DesertPyramid,
+                            worldgen::StructureKind::JungleTemple}) {
+        out->stage->refuse(kind, std::string{worldgen::to_string(kind)} +
+                                     ": its layout is not built yet");
+    }
     return out;
 }
 
@@ -184,10 +242,14 @@ void WorldStructures::StackStage::record(world::Chunk& chunk) {
         }
     }
     const auto& here = stage->starts_at(chunk_x, chunk_z);
-    if (here.empty() && references.empty()) {
+    nbt::Tag    tag  = worldgen::chunk_structures_to_nbt(here, references);
+    // ── great pyramid ── its start and references, beside the game's.
+    const bool pyramid = stage->great_pyramid() != nullptr &&
+                         stage->great_pyramid()->record(chunk_x, chunk_z, tag);
+    if (here.empty() && references.empty() && !pyramid) {
         return;
     }
-    chunk.set_structures(worldgen::chunk_structures_to_nbt(here, references));
+    chunk.set_structures(std::move(tag));
 }
 
 void WorldStructures::StackStage::report(std::string_view dimension) {

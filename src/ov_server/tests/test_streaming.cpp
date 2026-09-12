@@ -33,7 +33,8 @@ struct FakeGenerator {
 
     [[nodiscard]] AsyncChunkSource::Generate generate() {
         return [this](usize /*stack*/, i32 x, i32 z, i32 side,
-                      std::vector<std::pair<ChunkPos, world::Chunk>>& /*out*/) {
+                      std::vector<std::pair<ChunkPos, world::Chunk>>& /*out*/,
+                      std::vector<BlockPos>* /*fluid_wakeups*/) {
             std::unique_lock lock{mutex};
             // The origin is a whole number of blocks: the division is exact.
             order.push_back(ChunkPos{x / side, z / side}.packed());

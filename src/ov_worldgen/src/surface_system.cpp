@@ -2,6 +2,8 @@
 
 #include "ov/worldgen/surface_system.hpp"
 
+#include "surface_extension.hpp"  // ── worldgen-3 ──
+
 #include "ov/base/log.hpp"
 
 #include <simdjson.h>
@@ -62,6 +64,10 @@ struct SurfaceSystem::Impl final : public SurfaceResources {
     const NormalNoise* clay_bands_offset_noise{nullptr};
 
     std::array<registry::BlockStateId, kClayBandCount> clay_bands{};
+
+    /// ── worldgen-3 ── The pillar and iceberg passes; inert when a noise or
+    /// the Xoroshiro factory is missing.
+    SurfaceExtension extension;
 
     registry::BlockStateId default_block{};
 
@@ -373,6 +379,47 @@ std::expected<SurfaceSystem, SurfaceError> SurfaceSystem::load(
         *slot = built->get();
     }
 
+    // ── worldgen-3 ── The pillar and iceberg passes' six noises. A dimension
+    // whose datapack lacks them simply has no such passes.
+    {
+        SurfaceExtension& ext = impl.extension;
+        const std::array<std::pair<std::string_view, const NormalNoise**>, 6> pass_noises{
+            std::pair{std::string_view("minecraft:badlands_surface"), &ext.badlands_surface},
+            std::pair{std::string_view("minecraft:badlands_pillar"), &ext.badlands_pillar},
+            std::pair{std::string_view("minecraft:badlands_pillar_roof"), &ext.badlands_pillar_roof},
+            std::pair{std::string_view("minecraft:iceberg_surface"), &ext.iceberg_surface},
+            std::pair{std::string_view("minecraft:iceberg_pillar"), &ext.iceberg_pillar},
+            std::pair{std::string_view("minecraft:iceberg_pillar_roof"), &ext.iceberg_pillar_roof}};
+        for (const auto& [name, slot] : pass_noises) {
+            auto built = impl.load_noise(name);
+            *slot      = built ? built->get() : nullptr;
+        }
+        ext.blocks        = &blocks;
+        ext.random        = impl.factory.xoroshiro();
+        ext.default_block = impl.default_block;
+        ext.min_y         = impl.min_y;
+        ext.sea_level     = impl.sea_level;
+        const auto packed = blocks.find_block("minecraft:packed_ice");
+        const auto snow   = blocks.find_block("minecraft:snow_block");
+        const auto water  = blocks.find_block("minecraft:water");
+        if (packed && snow && water) {
+            ext.packed_ice = blocks.default_state(*packed);
+            ext.snow_block = blocks.default_state(*snow);
+            ext.water      = *water;
+        } else {
+            ext.blocks = nullptr;
+        }
+        // An instrument, like OV_AQUIFER: the "before" of the measurement from
+        // the same binary.
+        if (const char* setting = std::getenv("OV_SURFACE_PASSES");
+            setting != nullptr && std::string_view(setting) == "0") {
+            ext.blocks = nullptr;
+        }
+        if (const char* setting = std::getenv("OV_SURFACE_PASS_SHIFT"); setting != nullptr) {
+            ext.shift = std::atoi(setting);
+        }
+    }
+
     // The bands. Drawn from a generator seeded by the name alone, so the table
     // is the same in every chunk of a world and different in every world.
     {
@@ -465,6 +512,27 @@ void SurfaceSystem::build_column(std::span<registry::BlockStateId> column, i32 w
         return blocks.holds_fluid(state);
     };
 
+    // ── worldgen-3 ── The biome is read once, one above the column's top, and
+    // decides both passes: the pillar before the rules, the iceberg after.
+    i32 top = queries.surface_height(world_x, world_z);
+    const i32 above_top = top + 1;
+    const auto is_biome = [](std::string_view name, std::string_view bare) {
+        return name == bare || (name.starts_with("minecraft:") && name.substr(10) == bare);
+    };
+    std::string_view column_biome;
+    if (impl.extension.ready()) {
+        column_biome = queries.biome_at(world_x, above_top, world_z);
+        if (is_biome(column_biome, "eroded_badlands")) {
+            impl.extension.eroded_badlands(column, world_x, world_z, above_top);
+            for (i32 y = impl.min_y + size - 1; y >= impl.min_y; --y) {
+                if (!is_air(column[static_cast<usize>(y - impl.min_y)])) {
+                    top = std::max(top, y);
+                    break;
+                }
+            }
+        }
+    }
+
     // Depth counted from below, in one pass. Computing it on demand would mean
     // rescanning the column for every block of it, which turns a chunk from
     // thousands of operations into millions.
@@ -480,8 +548,6 @@ void SurfaceSystem::build_column(std::span<registry::BlockStateId> column, i32 w
         run = (is_air(state) || is_fluid(state)) ? 0 : run + 1;
         below[index] = impl.ceiling_depth_from_run ? run : 1;
     }
-
-    const i32 top = queries.surface_height(world_x, world_z);
 
     i32 stone_depth_above = 0;
     i32 water_height      = kNoWater;
@@ -521,6 +587,29 @@ void SurfaceSystem::build_column(std::span<registry::BlockStateId> column, i32 w
         if (auto result = impl.rule->apply(at)) {
             column[index] = *result;
         }
+    }
+
+    // ── worldgen-3 ── The iceberg pass, after the rules. It stops at the
+    // context's minimum surface level: the preliminary surface interpolated
+    // between the four corners of the chunk grid cell, lowered by eight and
+    // raised by the column's surface depth.
+    if (is_biome(column_biome, "frozen_ocean") || is_biome(column_biome, "deep_frozen_ocean")) {
+        const i32 cell_x  = (world_x >> 4) * 16;
+        const i32 cell_z  = (world_z >> 4) * 16;
+        const i32 c00     = queries.preliminary_surface(cell_x, cell_z);
+        const i32 c10     = queries.preliminary_surface(cell_x + 16, cell_z);
+        const i32 c01     = queries.preliminary_surface(cell_x, cell_z + 16);
+        const i32 c11     = queries.preliminary_surface(cell_x + 16, cell_z + 16);
+        i32       minimum = kNoSurface;
+        if (c00 != kNoSurface && c10 != kNoSurface && c01 != kNoSurface && c11 != kNoSurface) {
+            const auto fx   = static_cast<f64>(static_cast<f32>(world_x & 15) / 16.0F);
+            const auto fz   = static_cast<f64>(static_cast<f32>(world_z & 15) / 16.0F);
+            const auto lerp = [](f64 t, f64 a, f64 b) { return a + t * (b - a); };
+            const f64  both = lerp(fz, lerp(fx, c00, c10), lerp(fx, c01, c11));
+            minimum = static_cast<i32>(std::floor(both)) + at.surface_depth - 8;
+        }
+        impl.extension.frozen_ocean(column, world_x, world_z, above_top, minimum,
+                                    static_cast<f32>(queries.temperature_at(world_x, 63, world_z)));
     }
 }
 

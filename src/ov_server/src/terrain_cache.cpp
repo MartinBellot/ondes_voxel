@@ -18,7 +18,10 @@ namespace {
 struct Item {
     world::Chunk                  chunk;
     std::vector<std::string_view> starts;
-    u64                           used{0};
+    /// ── worldgen-3 ── The fluids the noise and the carvers marked for
+    /// waking: beside the chunk, not in it, and copied with it.
+    std::vector<BlockPos> fluid_wakeups;
+    u64                   used{0};
 };
 
 }  // namespace
@@ -26,13 +29,13 @@ struct Item {
 struct SharedTerrainCache::Impl {
     usize capacity{0};
 
-    mutable std::mutex              mutex;
-    std::unordered_map<u64, Item>   items;
-    u64                             clock{0};
-    u64                             hits{0};
-    u64                             misses{0};
-    u64                             stored{0};
-    u64                             evicted{0};
+    mutable std::mutex               mutex;
+    std::unordered_map<u64, Item>    items;
+    u64                              clock{0};
+    u64                              hits{0};
+    u64                              misses{0};
+    u64                              stored{0};
+    u64                              evicted{0};
     std::vector<std::pair<u64, u64>> ages;  ///< eviction scratch: (used, key)
 
     /// Forget the least recently used eighth. Called with the lock held, when
@@ -60,7 +63,8 @@ SharedTerrainCache::SharedTerrainCache(usize capacity) : impl_(std::make_unique<
 SharedTerrainCache::~SharedTerrainCache() = default;
 
 bool SharedTerrainCache::fetch(i32 chunk_x, i32 chunk_z, world::Chunk& chunk,
-                               std::vector<std::string_view>& starts) {
+                               std::vector<std::string_view>& starts,
+                               std::vector<BlockPos>&         fluid_wakeups) {
     const u64              key = ChunkPos{chunk_x, chunk_z}.packed();
     const std::scoped_lock lock{impl_->mutex};
     const auto             found = impl_->items.find(key);
@@ -71,13 +75,15 @@ bool SharedTerrainCache::fetch(i32 chunk_x, i32 chunk_z, world::Chunk& chunk,
     // Copied under the lock: see the header.
     chunk              = found->second.chunk;
     starts             = found->second.starts;
+    fluid_wakeups      = found->second.fluid_wakeups;
     found->second.used = ++impl_->clock;
     ++impl_->hits;
     return true;
 }
 
 void SharedTerrainCache::offer(i32 chunk_x, i32 chunk_z, const world::Chunk& chunk,
-                               const std::vector<std::string_view>& starts) {
+                               const std::vector<std::string_view>& starts,
+                               const std::vector<BlockPos>&         fluid_wakeups) {
     if (impl_->capacity == 0) {
         return;
     }
@@ -89,7 +95,7 @@ void SharedTerrainCache::offer(i32 chunk_x, i32 chunk_z, const world::Chunk& chu
     if (impl_->items.size() >= impl_->capacity) {
         impl_->evict();
     }
-    impl_->items.emplace(key, Item{chunk, starts, ++impl_->clock});
+    impl_->items.emplace(key, Item{chunk, starts, fluid_wakeups, ++impl_->clock});
     ++impl_->stored;
 }
 

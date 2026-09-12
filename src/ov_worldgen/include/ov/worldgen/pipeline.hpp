@@ -147,14 +147,22 @@ public:
     TerrainCache& operator=(const TerrainCache&) = delete;
     virtual ~TerrainCache()                      = default;
 
-    /// Copy a carved chunk, and the structures that start in it, out of the
+    /// Copy a carved chunk, the structures that start in it, and the fluids
+    /// its noise and carvers marked for waking (── worldgen-3 ──), out of the
     /// cache. False when it is not there.
+    ///
+    /// The wakeups are not in the chunk: they travel beside it, on the
+    /// pipeline's entry, and a copy that left them behind would be the same
+    /// blocks with every generated waterfall frozen — which no block digest
+    /// can see.
     [[nodiscard]] virtual bool fetch(i32 chunk_x, i32 chunk_z, world::Chunk& chunk,
-                                     std::vector<std::string_view>& starts) = 0;
+                                     std::vector<std::string_view>& starts,
+                                     std::vector<BlockPos>&         fluid_wakeups) = 0;
 
     /// A chunk that has just reached `Carvers`, offered for others to copy.
     virtual void offer(i32 chunk_x, i32 chunk_z, const world::Chunk& chunk,
-                       const std::vector<std::string_view>& starts) = 0;
+                       const std::vector<std::string_view>& starts,
+                       const std::vector<BlockPos>&         fluid_wakeups) = 0;
 };
 
 /// Drives chunks through the statuses, holding the neighbourhood decoration
@@ -198,7 +206,12 @@ public:
     /// chunk again regenerates it and re-runs the neighbours' decoration into
     /// the new copy, so a caller that keeps chunks — the server does — must
     /// consult its own store first.
-    [[nodiscard]] world::Chunk take(i32 chunk_x, i32 chunk_z);
+    ///
+    /// ── worldgen-3 ── `fluid_wakeups`, when given, receives the fluids the
+    /// aquifer marked in this chunk — the game's `PostProcessing` marks —
+    /// for the server to wake once the chunk is part of the world.
+    [[nodiscard]] world::Chunk take(i32 chunk_x, i32 chunk_z,
+                                    std::vector<BlockPos>* fluid_wakeups = nullptr);
 
     /// Give the pipeline the structure placer, and the view of the world its
     /// biome filter needs.

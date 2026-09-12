@@ -31,6 +31,7 @@
 #pragma once
 
 #include "ov/base/types.hpp"
+#include "ov/worldgen/aquifer.hpp"  // ── portals ── Substance
 #include "ov/worldgen/structure_set.hpp"
 
 #include <array>
@@ -43,6 +44,8 @@
 #include <vector>
 
 namespace ov::worldgen {
+
+class JigsawLibrary;  // ── jigsaw ── jigsaw.hpp
 
 /// The `type` field of a structure. Every one 1.20.1 has, named — including the
 /// ones whose geometry we do not build, because the *placement* of a structure
@@ -196,6 +199,22 @@ public:
     [[nodiscard]] virtual std::optional<bool> base_solid(i32 /*x*/, i32 /*y*/, i32 /*z*/) const {
         return std::nullopt;
     }
+
+    /// ── portals ── What the base column holds here: the noise and the
+    /// aquifer, before surface rules and carvers — stone, water, lava or air.
+    /// A ruined portal settles by it. Nothing: this sampler cannot say.
+    [[nodiscard]] virtual std::optional<Substance> base_substance(i32 /*x*/, i32 /*y*/,
+                                                                  i32 /*z*/) const {
+        return std::nullopt;
+    }
+
+    /// ── portals ── The biome's temperature at a position, with the frozen
+    /// patches and the height adjustment — the one snow is decided by. A ruined
+    /// portal is cold below 0.15. Nothing: this sampler cannot say.
+    [[nodiscard]] virtual std::optional<f32> temperature_at(i32 /*x*/, i32 /*y*/,
+                                                            i32 /*z*/) const {
+        return std::nullopt;
+    }
 };
 
 /// Why a chunk does or does not start a structure.
@@ -227,6 +246,9 @@ enum class PlacementDecision : u8 {
     /// happily "places" a nether fossil every second chunk — 1 286 of them in
     /// 5 092 chunks, measured, before the filter was added.
     OtherDimension,
+    /// ── jigsaw ── The structure's own start refused: its start pool drew the
+    /// empty element, or its start piece lacks the named start jigsaw.
+    StartRefused,
 };
 
 [[nodiscard]] std::string_view to_string(PlacementDecision decision) noexcept;
@@ -256,6 +278,11 @@ public:
     /// `OtherDimension` from then on. Calling this with an empty list leaves
     /// every set active — the honest reading of "no dimension was named".
     void restrict_to_biomes(const std::vector<std::string_view>& biomes);
+
+    /// ── jigsaw ── Read the jigsaw structures' biome where their start piece
+    /// lands rather than at a fixed column. Borrowed; null goes back to the
+    /// fixed column (the measuring instrument of § 5).
+    void set_jigsaw(const JigsawLibrary* library) noexcept;
 
     /// Every set's verdict for one chunk, in set order.
     ///

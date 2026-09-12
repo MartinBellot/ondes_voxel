@@ -81,8 +81,10 @@ struct AsyncChunkSource::Impl {
     }
 
     void start_loops(usize count) {
-        // `Impl*`, never the AsyncChunkSource: see the note on `~unique_ptr` in
-        // docs/provenance/chunkmap.md § 13 — the pool joins inside `~Impl`.
+        // `Impl*`, never the AsyncChunkSource: libc++'s `~unique_ptr` nulls its
+        // stored pointer before running the deleter, and the pool joins inside
+        // `~Impl` — a job reading `impl_` then would read null
+        // (docs/provenance/chunkmap.md § 13).
         Impl* self = this;
         for (usize i = 0; i < count; ++i) {
             pool.submit([self](usize worker) { self->work(worker); });
@@ -113,8 +115,9 @@ struct AsyncChunkSource::Impl {
             const auto started = std::chrono::steady_clock::now();
             // Worker index plus one: stack zero belongs to the tick thread's own
             // synchronous fallback, and two threads on one stack is the race.
+            // ── worldgen-3 ── with the fluids to wake once the tick publishes.
             generate(worker + 1, block.x * kBlockChunks, block.z * kBlockChunks, kBlockChunks,
-                     out.chunks);
+                     out.chunks, &out.fluid_wakeups);
             busy_micros.fetch_add(
                 static_cast<u64>(std::chrono::duration_cast<std::chrono::microseconds>(
                                      std::chrono::steady_clock::now() - started)
@@ -139,8 +142,9 @@ struct AsyncChunkSource::Impl {
 AsyncChunkSource::AsyncChunkSource(GeneratedWorld& world, usize workers, ThreadRole role)
     : AsyncChunkSource(
           [&world](usize stack, i32 x, i32 z, i32 side,
-                   std::vector<std::pair<ChunkPos, world::Chunk>>& out) {
-              world.generate_square(stack, x, z, side, out);
+                   std::vector<std::pair<ChunkPos, world::Chunk>>& out,
+                   std::vector<BlockPos>*                          fluid_wakeups) {
+              world.generate_square(stack, x, z, side, out, fluid_wakeups);
           },
           workers, role) {
     if (world.stack_count() < workers + 1) {
@@ -262,9 +266,10 @@ void AsyncChunkSource::generate_here(usize stack, i32 block_x, i32 block_z, Gene
     out.block_x = block_x;
     out.block_z = block_z;
     out.chunks.clear();
+    out.fluid_wakeups.clear();  // ── worldgen-3 ──
     out.chunks.reserve(static_cast<usize>(kBlockChunks) * kBlockChunks);
     impl_->generate(stack, block_x * kBlockChunks, block_z * kBlockChunks, kBlockChunks,
-                    out.chunks);
+                    out.chunks, &out.fluid_wakeups);
 }
 
 }  // namespace ov::server

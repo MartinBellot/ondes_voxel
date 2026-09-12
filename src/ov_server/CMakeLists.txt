@@ -34,10 +34,12 @@ ov_add_library(ov_server
         src/effect_session.cpp
         src/enchant_session.cpp
         src/fire_session.cpp
+        src/furnace_entity.cpp  # ── workstations ──
         src/campfire.cpp
         src/mob_combat.cpp
         src/mob_attacks.cpp  # ── mobs-3 ──
         src/mob_despawn.cpp  # ── mobs-3 ──
+        src/mob_effects.cpp  # ── mobs-4 ──
         src/entity_storage.cpp  # ── mobs-3 ──
         src/entity_nbt.cpp  # ── persistence ──
         src/ground_entities.cpp  # ── persistence ──
@@ -74,6 +76,19 @@ ov_add_library(ov_server
         src/commands/suggestions.cpp
         src/commands/text.cpp
         src/commands/world_state.cpp
+        # ── scoreboard ──
+        src/scoreboard/scoreboard.cpp
+        src/commands/scoreboard_commands.cpp
+        # ── dedicated server administration ──
+        src/admin/java_compat.cpp
+        src/admin/query.cpp
+        src/admin/rcon.cpp
+        src/admin/server_admin.cpp
+        src/admin/server_properties.cpp
+        src/admin/status_icon.cpp
+        src/admin/user_lists.cpp
+        src/admin/watchdog.cpp
+        src/commands/admin_commands.cpp
     DEPS
         ov_base
         ov_gameplay
@@ -90,6 +105,9 @@ ov_add_library(ov_server
         # must not reach an installed one. Only natural_spawning.cpp uses it,
         # to read the biome spawner lists out of the data generator output.
         simdjson::simdjson
+        # ── dedicated server administration ── RCON and Query sockets, inside
+        # rcon.cpp and query.cpp only.
+        asio::asio
 )
 
 # The units that can be tested without a socket. The server itself is a loop
@@ -119,10 +137,14 @@ ov_add_test(test_ov_server
         tests/test_persistence.cpp  # ── persistence ──
         tests/test_nether_mobs.cpp  # ── nether-2 ──
         tests/test_mobs3_server.cpp  # ── mobs-3 ──
+        tests/test_mob_effects.cpp  # ── mobs-4 ──
         tests/test_tame_server.cpp  # ── tame ──
         tests/test_world_structures.cpp  # ── structures ──
         tests/test_streaming.cpp  # ── streaming ──
         tests/test_chunk_saver.cpp  # ── streaming ──
+        tests/test_fluid_wakeups.cpp  # ── worldgen-3 ──
+        tests/test_furnace_entity.cpp  # ── workstations ──
+        tests/test_great_pyramid_traps.cpp  # ── great pyramid ──
     DEPS ov_server
     LABELS unit
 )
@@ -133,6 +155,26 @@ ov_add_test(test_ov_server
 ov_add_test(test_ov_commands
     SOURCES
         tests/test_commands.cpp
+    DEPS ov_server
+    LABELS unit
+)
+
+# ── scoreboard ──
+# The scoreboard model, its file and its packets, and /scoreboard, /team,
+# /trigger and /teammsg against the answers of the real server.
+ov_add_test(test_ov_scoreboard
+    SOURCES
+        tests/test_scoreboard.cpp
+    DEPS ov_server
+    LABELS unit
+)
+
+# ── dedicated server administration ──
+# server.properties, the list files, RCON and Query codecs, the watchdog.
+ov_add_test(test_ov_admin
+    SOURCES
+        tests/test_admin.cpp
+        tests/test_admin_commands.cpp
     DEPS ov_server
     LABELS unit
 )

@@ -562,6 +562,7 @@ int main(int argc, char** argv) {
         std::map<std::string, Count>                         by_block;
         std::map<std::pair<std::string, std::string>, usize> full_confusion;
         std::map<std::pair<std::string, std::string>, usize> state_confusion;
+        std::vector<std::string>                             gateway_diffs;
         std::ranges::sort(full_positions);
         for (const auto& [cx, cz] : full_positions) {
             if (compared_chunks >= static_cast<usize>(options.full_chunks)) {
@@ -595,6 +596,12 @@ int main(int argc, char** argv) {
                         ++per.compared;
                         if (game != mine) {
                             ++full_confusion[{std::string(game), std::string(mine)}];
+                            // ── worldgen-3 ── where a gateway disagrees, by position
+                            if (game == "minecraft:end_gateway" || mine == "minecraft:end_gateway") {
+                                gateway_diffs.push_back(fmt::format(
+                                    "    gateway ({}, {}, {}) game {} ours {}", cx * 16 + x, y,
+                                    cz * 16 + z, game, mine));
+                            }
                             continue;
                         }
                         ++cells.agreed;
@@ -627,6 +634,9 @@ int main(int argc, char** argv) {
         fmt::print("  same block, same properties (neither air nor end stone): {} / {} ({:.4f} %)\n",
                    states.agreed, states.compared, percent(states.agreed, states.compared));
         print_ranked(state_confusion, 10);
+        for (const auto& line : gateway_diffs) {
+            fmt::print("{}\n", line);
+        }
     }
 
     // ── The spikes ───────────────────────────────────────────────────────────

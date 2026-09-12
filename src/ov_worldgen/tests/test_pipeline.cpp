@@ -410,20 +410,24 @@ namespace {
 class MapTerrainCache final : public TerrainCache {
 public:
     [[nodiscard]] bool fetch(i32 chunk_x, i32 chunk_z, world::Chunk& chunk,
-                             std::vector<std::string_view>& starts) override {
+                             std::vector<std::string_view>& starts,
+                             std::vector<BlockPos>&         fluid_wakeups) override {
         const auto found = items_.find(ChunkPos{chunk_x, chunk_z}.packed());
         if (found == items_.end()) {
             return false;
         }
-        chunk  = found->second.first;
-        starts = found->second.second;
+        chunk         = found->second.chunk;
+        starts        = found->second.starts;
+        fluid_wakeups = found->second.fluid_wakeups;
         ++hits;
         return true;
     }
 
     void offer(i32 chunk_x, i32 chunk_z, const world::Chunk& chunk,
-               const std::vector<std::string_view>& starts) override {
-        items_.try_emplace(ChunkPos{chunk_x, chunk_z}.packed(), chunk, starts);
+               const std::vector<std::string_view>& starts,
+               const std::vector<BlockPos>&         fluid_wakeups) override {
+        items_.try_emplace(ChunkPos{chunk_x, chunk_z}.packed(),
+                           Stored{chunk, starts, fluid_wakeups});
         ++offers;
     }
 
@@ -431,7 +435,12 @@ public:
     usize offers{0};
 
 private:
-    std::unordered_map<u64, std::pair<world::Chunk, std::vector<std::string_view>>> items_;
+    struct Stored {
+        world::Chunk                  chunk;
+        std::vector<std::string_view> starts;
+        std::vector<BlockPos>         fluid_wakeups;
+    };
+    std::unordered_map<u64, Stored> items_;
 };
 
 /// Cells, biome cells and heightmap columns that differ between two chunks.
@@ -518,6 +527,17 @@ TEST_CASE("terrain copied out of the cache is the terrain carved in place",
         CHECK(differences(copier.promote(x, z, ChunkStatus::Carvers),
                           reference.promote(x, z, ChunkStatus::Carvers)) == 0);
     }
+
+    // ── worldgen-3 ── The fluids to wake travel with the copy. They are not in
+    // the chunk — they ride beside it on the pipeline's entry — so a cache that
+    // left them behind would give the same blocks, every generated waterfall
+    // frozen, and no digest of blocks could tell. (1, 0) came out of the cache.
+    ChunkPipeline         fresh{generator, nullptr, *blocks, shape, kSeed};
+    std::vector<BlockPos> carved_wakeups;
+    std::vector<BlockPos> copied_wakeups;
+    (void)fresh.take(1, 0, &carved_wakeups);
+    (void)copier.take(1, 0, &copied_wakeups);
+    CHECK(copied_wakeups == carved_wakeups);
 
     // A copy is the copier's own: writing into it leaves the cached chunk,
     // and the next copy, as they were (copy-on-write sections).

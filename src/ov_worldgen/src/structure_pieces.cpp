@@ -5,6 +5,9 @@
 #include "ov/base/log.hpp"
 #include "ov/math/random.hpp"
 #include "ov/worldgen/structure_set.hpp"
+#include "buried_treasure.hpp"  // ── treasure ──
+#include "ruined_portal.hpp"    // ── portals ──
+#include "scattered.hpp"      // ── temples ──
 
 #include <simdjson.h>
 
@@ -20,9 +23,11 @@ namespace ov::worldgen {
 namespace {
 
 /// The template families this file places. Loaded once, eagerly.
-constexpr std::array<std::string_view, 5> kFamilies{"igloo/", "shipwreck/", "underwater_ruin/",
-                                                    "ruined_portal/",
-                                                    "nether_fossils/"};  // ── nether-2 ──
+constexpr std::array<std::string_view, 10> kFamilies{
+    "igloo/", "shipwreck/", "underwater_ruin/", "ruined_portal/",
+    "nether_fossils/",  // ── nether-2 ──
+    // ── jigsaw ── the pools' templates
+    "village/", "pillager_outpost/", "bastion/", "ancient_city/", "trail_ruins/"};
 
 /// ── nether-2 ── The Nether fossil's search: from a drawn height down to the
 /// sea level, the first air above something solid, in the base column.
@@ -152,6 +157,8 @@ std::string_view to_string(PieceKind kind) noexcept {
         case PieceKind::RuinedPortal: return "ruined_portal";
         case PieceKind::BuriedTreasure: return "buried_treasure";
         case PieceKind::NetherFossil: return "nether_fossil";  // ── nether-2 ──
+        case PieceKind::Scattered: return "scattered";         // ── temples ──
+        case PieceKind::Jigsaw: return "jigsaw";               // ── jigsaw ──
     }
     return "?";
 }
@@ -178,6 +185,8 @@ struct StructureBuilder::Impl {
                                                            "minecraft:air"};
     ProcessorRef                  structure_and_air;
     ProcessorRef                  jigsaw_replacement;
+    /// ── treasure ── The states a buried treasure's chest rests on.
+    std::vector<registry::BlockStateId> treasure_support;
 
     registry::BlockStateId chest_default{};
     registry::BlockStateId water_default{};
@@ -185,6 +194,9 @@ struct StructureBuilder::Impl {
     /// ── nether-2 ── `#has_structure/nether_fossil`: the biomes a fossil may
     /// stand in, tested at the point its search found.
     std::vector<std::string> fossil_biomes;
+
+    /// ── jigsaw ── The pools, over the same templates.
+    std::optional<JigsawLibrary> jigsaw;
 
     [[nodiscard]] const StructureTemplate* find(std::string_view name) const {
         return library->find(name);
@@ -279,6 +291,13 @@ std::expected<StructureBuilder, TemplateError> StructureBuilder::load(
         builder.impl_->portal_setups.emplace("minecraft:" + stem, std::move(parsed));
     }
 
+    // ── treasure ── the support blocks, resolved once
+    for (const std::string_view name : kTreasureSupport) {
+        if (const auto block = blocks.find_block(name)) {
+            builder.impl_->treasure_support.push_back(blocks.default_state(*block));
+        }
+    }
+
     // ── nether-2 ── the fossil's biome tag, read like every other tag
     if (auto biome_tags = BiomeTags::load(data_root)) {
         for (const std::string_view biome : biome_tags->members("minecraft:has_structure/nether_fossil")) {
@@ -288,6 +307,12 @@ std::expected<StructureBuilder, TemplateError> StructureBuilder::load(
     builder.impl_->blocks  = &blocks;
     builder.impl_->tags    = &tags;
     builder.impl_->library = std::move(*library);
+    // ── jigsaw ──
+    auto pools = JigsawLibrary::load(data_root, *builder.impl_->library, blocks, tags, detail);
+    if (!pools) {
+        return std::unexpected(pools.error());
+    }
+    builder.impl_->jigsaw.emplace(std::move(*pools));
     builder.impl_->structure_and_air =
         make_block_ignore(blocks, builder.impl_->ignore_structure_and_air);
     std::string ignored;
@@ -308,6 +333,11 @@ std::expected<StructureBuilder, TemplateError> StructureBuilder::load(
 
 const TemplateLibrary& StructureBuilder::templates() const noexcept {
     return *impl_->library;
+}
+
+// ── jigsaw ──
+const JigsawLibrary* StructureBuilder::jigsaw() const noexcept {
+    return impl_->jigsaw ? &*impl_->jigsaw : nullptr;
 }
 
 // ── Generation ──────────────────────────────────────────────────────────────
@@ -511,9 +541,33 @@ std::expected<StructureStart, std::string> StructureBuilder::generate(
             if (auto added = add(std::move(piece)); !added) {
                 return std::unexpected(added.error());
             }
-            start.incomplete =
-                "ruined portal: the height search, the cold biome test and the netherrack "
-                "spread are not implemented";
+            // ── portals ── The height and the cold test, from the noise, here:
+            // the game's stored starts carry both before any block exists.
+            StructurePiece& placed = start.pieces.back();
+            if (sampler == nullptr) {
+                start.incomplete = "ruined portal: no sampler, the height is not searched";
+                break;
+            }
+            // The dimension's bottom: a Nether portal is the only one there.
+            const i32  bottom = placed.portal.placement == "in_nether" ? 0 : -64;
+            const auto y      = ruined_portal_height(*sampler, placed.portal.placement,
+                                                     placed.portal.air_pocket, placed.box, bottom,
+                                                     random);
+            if (!y) {
+                return std::unexpected(y.error());
+            }
+            placed.origin.y           = *y;
+            placed.generated_origin.y = *y;
+            placed.box.move(0, *y - placed.box.min_y, 0);
+            placed.height_settled = true;
+            if (setup->can_be_cold) {
+                const auto cold = ruined_portal_cold(*sampler, placed.origin);
+                if (!cold) {
+                    return std::unexpected(cold.error());
+                }
+                placed.portal.cold = *cold;
+            }
+            start.incomplete = "ruined portal: the netherrack spread is not implemented";
             break;
         }
         case StructureKind::NetherFossil: {  // ── nether-2 ──
@@ -568,6 +622,22 @@ std::expected<StructureStart, std::string> StructureBuilder::generate(
             }
             break;
         }
+        case StructureKind::DesertPyramid:
+        case StructureKind::JungleTemple:
+        case StructureKind::SwampHut: {  // ── temples ── scattered.cpp
+            start.pieces.push_back(make_scattered_piece(*scattered_kind_for(definition.kind),
+                                                        chunk_x, chunk_z, random));
+            start.incomplete = std::string{to_string(definition.kind)} + ": the layout is not built";
+            break;
+        }
+        case StructureKind::Jigsaw: {  // ── jigsaw ── grown from its pools
+            const JigsawConfig* config =
+                impl_->jigsaw ? impl_->jigsaw->config(definition.name) : nullptr;
+            if (config == nullptr) {
+                return std::unexpected(definition.name + ": no jigsaw settings were read");
+            }
+            return impl_->jigsaw->assemble(*config, level_seed, chunk_x, chunk_z, sampler);
+        }
         default:
             return std::unexpected(std::string{to_string(definition.kind)} +
                                    ": not a structure this builder makes");
@@ -602,6 +672,14 @@ std::expected<StructurePiece, std::string> StructureBuilder::piece_from_nbt(
         piece.kind = PieceKind::BuriedTreasure;
     } else if (kind == "minecraft:nefos") {  // ── nether-2 ──
         piece.kind = PieceKind::NetherFossil;
+    } else if (const auto scattered = scattered_kind_of(kind)) {  // ── temples ──
+        piece.kind           = PieceKind::Scattered;
+        piece.scattered.kind = *scattered;
+    } else if (kind == "minecraft:jigsaw") {  // ── jigsaw ──
+        if (!impl_->jigsaw) {
+            return std::unexpected(std::string{"jigsaw piece and no pools"});
+        }
+        return jigsaw_piece_from_nbt(*impl_->jigsaw, child);
     } else {
         return std::unexpected("piece type " + std::string{kind} +
                                " is not one this builder makes");
@@ -617,6 +695,12 @@ std::expected<StructurePiece, std::string> StructureBuilder::piece_from_nbt(
 
     if (piece.kind == PieceKind::BuriedTreasure) {
         piece.origin = {piece.box.min_x, piece.box.min_y, piece.box.min_z};
+        return piece;
+    }
+    if (piece.kind == PieceKind::Scattered) {  // ── temples ──
+        if (auto read = scattered_from_nbt(child, piece); !read) {
+            return std::unexpected(read.error());
+        }
         return piece;
     }
 
@@ -691,7 +775,9 @@ std::expected<StructurePiece, std::string> StructureBuilder::piece_from_nbt(
             break;
         }
         case PieceKind::BuriedTreasure:
-        case PieceKind::NetherFossil: break;  // ── nether-2 ──
+        case PieceKind::NetherFossil:  // ── nether-2 ──
+        case PieceKind::Scattered: break;  // ── temples ── read above
+        case PieceKind::Jigsaw: break;     // ── jigsaw ── returned above
     }
 
     // The stored origin keeps the placeholder height for the igloo while the
@@ -751,9 +837,15 @@ void StructureBuilder::settle_height(const StructureLevel& level, StructurePiece
                  piece.origin.y;
             break;
         }
-        case PieceKind::BuriedTreasure:
-        case PieceKind::RuinedPortal:
-        case PieceKind::NetherFossil: break;  // ── nether-2 ── settled by its search
+        case PieceKind::BuriedTreasure:  // ── treasure ── down to its support
+            dy = buried_treasure_height(level, impl_->treasure_support, piece.origin.x,
+                                        piece.origin.z) -
+                 piece.origin.y;
+            break;
+        case PieceKind::RuinedPortal:  // ── portals ── settled at generation
+        case PieceKind::NetherFossil:  // ── nether-2 ── settled by its search
+        case PieceKind::Jigsaw: break;  // ── jigsaw ── settled by the assembler
+        case PieceKind::Scattered: break;  // ── temples ── not settled yet: refused
     }
     piece.origin.y += dy;
     piece.box.move(0, dy, 0);
@@ -768,6 +860,14 @@ PiecePlaceResult StructureBuilder::place(StructureLevel& level, const StructureP
     PiecePlaceResult               result;
     const registry::BlockRegistry& blocks = *impl_->blocks;
 
+    if (piece.kind == PieceKind::Jigsaw) {  // ── jigsaw ──
+        if (impl_->jigsaw) {
+            return impl_->jigsaw->place(level, piece, clip, random, blocks);
+        }
+        result.unknown_markers.push_back("jigsaw piece and no pools");
+        return result;
+    }
+
     if (piece.kind == PieceKind::BuriedTreasure) {
         const BlockPos at = piece.origin;
         if (!clip.contains(at.x, at.y, at.z)) {
@@ -781,6 +881,11 @@ PiecePlaceResult StructureBuilder::place(StructureLevel& level, const StructureP
         impl_->set_loot(level, at, "minecraft:chests/buried_treasure", random);
         result.written = 1;
         result.chests  = 1;
+        return result;
+    }
+
+    if (piece.kind == PieceKind::Scattered) {  // ── temples ── nothing to place yet
+        result.unknown_markers.push_back("scattered piece: the layout is not built");
         return result;
     }
 
@@ -851,6 +956,8 @@ PiecePlaceResult StructureBuilder::place(StructureLevel& level, const StructureP
         case PieceKind::BuriedTreasure: break;
         // ── nether-2 ── the fossil's air and structure blocks are not written
         case PieceKind::NetherFossil: settings.processors.push_back(impl_->structure_and_air); break;
+        case PieceKind::Scattered: break;  // ── temples ── returned above
+        case PieceKind::Jigsaw: break;     // ── jigsaw ── placed above
     }
 
     // A beached ship settles on its lowest column minus a random 0 to 2, and
@@ -912,7 +1019,9 @@ PiecePlaceResult StructureBuilder::place(StructureLevel& level, const StructureP
                 break;
             case PieceKind::RuinedPortal:
             case PieceKind::BuriedTreasure:
-            case PieceKind::NetherFossil: break;  // ── nether-2 ──
+            case PieceKind::NetherFossil:  // ── nether-2 ──
+            case PieceKind::Scattered: break;  // ── temples ──
+            case PieceKind::Jigsaw: break;     // ── jigsaw ──
         }
         result.unknown_markers.push_back(marker.metadata);
     }

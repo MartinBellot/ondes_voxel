@@ -33,7 +33,8 @@ namespace {
         case StructureKind::OceanRuin:
         case StructureKind::RuinedPortal:
         case StructureKind::BuriedTreasure:
-        case StructureKind::NetherFossil: return true;  // ── nether-2 ──
+        case StructureKind::NetherFossil:  // ── nether-2 ──
+        case StructureKind::Jigsaw: return true;  // ── jigsaw ──
         default: return false;
     }
 }
@@ -191,6 +192,9 @@ struct StructureStage::Impl {
     StructureStageStats                            stats;
     /// ── structures ── Kinds refused by the caller, with the reason.
     std::map<StructureKind, std::string> refused_kinds;
+    /// ── great pyramid ── Our own structure, after the game's; null when the
+    /// generator-level switch is off.
+    std::unique_ptr<GreatPyramidStage> pyramid;
 
     std::vector<StructureStart>& starts_at(i32 chunk_x, i32 chunk_z) {
         const i64 key = key_of(chunk_x, chunk_z);
@@ -237,7 +241,8 @@ struct StructureStage::Impl {
 StructureStage::StructureStage(const StructurePlacer& placer, const StructureBuilder& builder,
                                const StructureWorldSampler*   sampler,
                                const registry::BlockRegistry& blocks,
-                               const registry::Registries* registries, i64 level_seed)
+                               const registry::Registries* registries, i64 level_seed,
+                               OriginalStructures originals)
     : impl_(std::make_unique<Impl>()) {
     impl_->placer      = &placer;
     impl_->builder     = &builder;
@@ -246,6 +251,9 @@ StructureStage::StructureStage(const StructurePlacer& placer, const StructureBui
     impl_->registries  = registries;
     impl_->level_seed  = level_seed;
     impl_->random_kind = configured_feature_random();
+    if (originals.great_pyramid) {  // ── great pyramid ──
+        impl_->pyramid = std::make_unique<GreatPyramidStage>(blocks, &placer, sampler, level_seed);
+    }
 }
 
 StructureStage::~StructureStage() = default;
@@ -328,6 +336,13 @@ void StructureStage::place(std::span<world::Chunk* const, 9> neighbourhood, i32 
         }
     }
 
+    // ── great pyramid ── Our own structure, written after the game's: its
+    // placement refuses any site a vanilla start could share, so the order
+    // between the two never decides a block.
+    if (impl_->pyramid) {
+        impl_->pyramid->place(level, chunk_x, chunk_z);
+    }
+
     // The neighbour-shape update, again, for every recorded position in the
     // neighbourhood: this chunk's blocks may be the neighbours those were
     // waiting for. Writes land in the neighbours too, which is what the
@@ -356,13 +371,22 @@ void StructureStage::trim(i32 centre_x, i32 centre_z, i32 keep) {
     };
     std::erase_if(impl_->starts, [&](const auto& entry) { return far(entry.first); });
     std::erase_if(impl_->shaped, [&](const auto& entry) { return far(entry.first); });
+    if (impl_->pyramid) {  // ── great pyramid ── it reaches further than kReach
+        impl_->pyramid->trim(centre_x, centre_z, keep + GreatPyramid::kReach - kReach);
+    }
 }
 
 // ── structures ──
 void StructureStage::clear() {
     impl_->starts.clear();
     impl_->shaped.clear();
+    if (impl_->pyramid) {  // ── great pyramid ──
+        impl_->pyramid->clear();
+    }
 }
+
+// ── great pyramid ──
+GreatPyramidStage* StructureStage::great_pyramid() noexcept { return impl_->pyramid.get(); }
 
 void StructureStage::refuse(StructureKind kind, std::string reason) {
     impl_->refused_kinds[kind] = std::move(reason);

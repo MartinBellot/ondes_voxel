@@ -2,6 +2,8 @@
 
 #include "snbt.hpp"
 
+#include "../scoreboard/scoreboard.hpp"  // ── scoreboard ── slots, colours, criteria
+
 #include "ov/io/byte_writer.hpp"
 #include "ov/nbt/binary.hpp"
 #include "ov/protocol/types.hpp"
@@ -70,6 +72,21 @@ std::string_view ArgumentType::parser_name() const noexcept {
         return "minecraft:time";
     case ArgKind::Resource:
         return "minecraft:resource";
+    // ── scoreboard ──
+    case ArgKind::Objective:
+        return "minecraft:objective";
+    case ArgKind::ObjectiveCriteria:
+        return "minecraft:objective_criteria";
+    case ArgKind::Operation:
+        return "minecraft:operation";
+    case ArgKind::ScoreboardSlot:
+        return "minecraft:scoreboard_slot";
+    case ArgKind::ScoreHolder:
+        return "minecraft:score_holder";
+    case ArgKind::Team:
+        return "minecraft:team";
+    case ArgKind::Color:
+        return "minecraft:color";
     }
     return "brigadier:string";
 }
@@ -100,6 +117,9 @@ std::vector<u8> ArgumentType::wire_properties() const {
         break;
     case ArgKind::Resource:
         net::write_string(writer, registry);
+        break;
+    case ArgKind::ScoreHolder:  // ── scoreboard ── 0x01: several holders allowed
+        writer.write_u8(single ? 0 : 1);
         break;
     default:
         break;
@@ -823,6 +843,69 @@ Parsed<ArgValue> parse_argument(const ArgumentType& type, StringReader& reader,
         }
         return ArgValue{ResourceArg{std::move(*id)}};
     }
+    // ── scoreboard ── The objective and the team are only read here; whether
+    // they exist is the command's to say, at execution, with no place in the
+    // input — the capture's `arguments.objective.notFound` has no second
+    // line. The slot, the colour, the operation and the criterion are checked
+    // now, and fail the same way: a message and nothing under it.
+    case ArgKind::Objective:
+    case ArgKind::Team:
+        return ArgValue{std::string{reader.read_unquoted_string()}};
+    case ArgKind::ScoreboardSlot: {
+        std::string name{reader.read_unquoted_string()};
+        if (!display_slot_from_name(name)) {
+            return std::unexpected{CommandError::plain(
+                Text::translatable("argument.scoreboardDisplaySlot.invalid", {Text::raw(name)}))};
+        }
+        return ArgValue{std::move(name)};
+    }
+    case ArgKind::Color: {
+        std::string name{reader.read_unquoted_string()};
+        if (!color_from_name(name)) {
+            return std::unexpected{
+                CommandError::plain(Text::translatable("argument.color.invalid", {Text::raw(name)}))};
+        }
+        return ArgValue{std::move(name)};
+    }
+    case ArgKind::Operation:
+    case ArgKind::ObjectiveCriteria: {
+        const usize start = reader.cursor();
+        while (reader.can_read() && reader.peek() != ' ') {
+            reader.skip();
+        }
+        std::string text{reader.string().substr(start, reader.cursor() - start)};
+        if (type.kind == ArgKind::Operation) {
+            static constexpr std::array<std::string_view, 9> kOperations{"=",  "+=", "-=", "*=", "/=",
+                                                                         "%=", "<",  ">",  "><"};
+            if (std::ranges::find(kOperations, text) == kOperations.end()) {
+                return std::unexpected{
+                    CommandError::plain(Text::translatable("arguments.operation.invalid"))};
+            }
+        } else if (!parse_criterion(text, env.registries())) {
+            return std::unexpected{
+                CommandError::plain(Text::translatable("argument.criteria.invalid", {Text::raw(text)}))};
+        }
+        return ArgValue{std::move(text)};
+    }
+    case ArgKind::ScoreHolder: {
+        if (reader.can_read() && reader.peek() == '@') {
+            auto selector = parse_entity_selector(reader, env);
+            if (!selector) {
+                return std::unexpected{selector.error()};
+            }
+            if (type.single && selector->max_results > 1) {
+                return std::unexpected{
+                    CommandError::plain(Text::translatable("argument.entity.toomany"))};
+            }
+            return ArgValue{GameProfileArg{std::move(*selector), {}}};
+        }
+        const usize start = reader.cursor();
+        while (reader.can_read() && reader.peek() != ' ') {
+            reader.skip();
+        }
+        return ArgValue{
+            GameProfileArg{std::nullopt, std::string{reader.string().substr(start, reader.cursor() - start)}}};
+    }
     }
     return std::unexpected{reader.error("command.unknown.argument")};
 }
@@ -989,6 +1072,42 @@ void suggest_argument(const ArgumentType& type, SuggestionsBuilder& builder, con
                 "entity." + id.substr(0, colon) + "." + id.substr(colon + 1)));
         }
         suggest_resources(builder, ids, {}, &tooltips);
+        break;
+    }
+    // ── scoreboard ── The fixed vocabularies. Objectives and teams are the
+    // scoreboard's, which the network thread may not read: not suggested.
+    case ArgKind::ScoreHolder:
+        suggest_entity_selector(builder, player_names, env);
+        break;
+    case ArgKind::ScoreboardSlot:
+    case ArgKind::Color:
+    case ArgKind::Operation:
+    case ArgKind::ObjectiveCriteria: {
+        std::vector<std::string> words;
+        if (type.kind == ArgKind::ScoreboardSlot) {
+            for (u8 slot = 0; slot < net::scoreboard::kSlotCount; ++slot) {
+                words.push_back(display_slot_name(slot));
+            }
+        } else if (type.kind == ArgKind::Color) {
+            for (u8 color = 0; color < kColorCount; ++color) {
+                words.emplace_back(color_name(color));
+            }
+            words.emplace_back("reset");
+        } else if (type.kind == ArgKind::Operation) {
+            words = {"=", "+=", "-=", "*=", "/=", "%=", "<", ">", "><"};
+        } else {
+            words = {"dummy", "trigger", "deathCount", "playerKillCount", "totalKillCount",
+                     "health", "food", "air", "armor", "xp", "level"};
+            for (u8 color = 0; color < kColorCount; ++color) {
+                words.push_back("teamkill." + std::string{color_name(color)});
+                words.push_back("killedByTeam." + std::string{color_name(color)});
+            }
+        }
+        for (const std::string& word : words) {
+            if (std::string_view{word}.starts_with(builder.remaining())) {
+                builder.suggest(word);
+            }
+        }
         break;
     }
     default:

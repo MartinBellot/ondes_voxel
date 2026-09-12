@@ -118,6 +118,16 @@ enum class ArgKind : u8 {
     GameMode,
     Time,
     Resource,
+    // ── scoreboard ── Each reads to a string (the text as written), except
+    // ScoreHolder, which reads to a GameProfileArg: a selector, or a name —
+    // "*" meaning every holder the scoreboard tracks.
+    Objective,
+    ObjectiveCriteria,
+    Operation,
+    ScoreboardSlot,
+    ScoreHolder,
+    Team,
+    Color,
 };
 
 struct ArgumentType {
@@ -182,6 +192,18 @@ struct ArgumentType {
         t.registry = std::move(registry);
         return t;
     }
+    // ── scoreboard ──
+    [[nodiscard]] static ArgumentType objective() { return of(ArgKind::Objective); }
+    [[nodiscard]] static ArgumentType objective_criteria() { return of(ArgKind::ObjectiveCriteria); }
+    [[nodiscard]] static ArgumentType operation() { return of(ArgKind::Operation); }
+    [[nodiscard]] static ArgumentType scoreboard_slot() { return of(ArgKind::ScoreboardSlot); }
+    [[nodiscard]] static ArgumentType score_holder(bool multiple) {
+        ArgumentType t = of(ArgKind::ScoreHolder);
+        t.single       = !multiple;
+        return t;
+    }
+    [[nodiscard]] static ArgumentType team() { return of(ArgKind::Team); }
+    [[nodiscard]] static ArgumentType color() { return of(ArgKind::Color); }
 
     /// The registry name of the parser, e.g. "brigadier:integer".
     [[nodiscard]] std::string_view parser_name() const noexcept;

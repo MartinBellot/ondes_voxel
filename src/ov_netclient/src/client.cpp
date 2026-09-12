@@ -77,6 +77,7 @@ void ClientEvents::clear() {
     abilities.reset();  // ── flight ──
     entities.clear();
     chat.clear();  // ── chat ──
+    scoreboard.clear();  // ── scoreboard ──
     chat_types.reset();
     commands.reset();
     suggestions.clear();
@@ -964,6 +965,35 @@ void Client::Impl::handle_play(i32 packet_id, std::span<const u8> body) {
         // encoders are round-tripped against. A packet that does not parse
         // is logged and dropped: the stream is framed, so the next packet is
         // still readable.
+        // ── scoreboard ── decoded here, drawn by the app's sidebar
+        case net::scoreboard::kDisplayObjective:
+        case net::scoreboard::kUpdateObjectives:
+        case net::scoreboard::kUpdateTeams:
+        case net::scoreboard::kUpdateScore: {
+            std::optional<ClientEvents::ScoreboardEvent> event;
+            if (packet_id == net::scoreboard::kDisplayObjective) {
+                if (auto p = net::scoreboard::parse_display_objective(body)) {
+                    event = std::move(*p);
+                }
+            } else if (packet_id == net::scoreboard::kUpdateObjectives) {
+                if (auto p = net::scoreboard::parse_update_objectives(body)) {
+                    event = std::move(*p);
+                }
+            } else if (packet_id == net::scoreboard::kUpdateTeams) {
+                if (auto p = net::scoreboard::parse_update_teams(body)) {
+                    event = std::move(*p);
+                }
+            } else if (auto p = net::scoreboard::parse_update_score(body)) {
+                event = std::move(*p);
+            }
+            if (!event) {
+                OV_LOG_WARN("malformed scoreboard packet 0x{:02X} ({} bytes)", packet_id, body.size());
+                return;
+            }
+            const std::lock_guard lock(mutex);
+            inbox.scoreboard.push_back(std::move(*event));
+            break;
+        }
         case net::clientbound::kSystemChat: {
             auto chat = net::parse_system_chat(body);
             if (!chat) {
@@ -1345,6 +1375,7 @@ void Client::poll(ClientEvents& out) {
     impl_->inbox.close_window.reset();
     // ── chat ──
     out.chat.swap(impl_->inbox.chat);
+    out.scoreboard.swap(impl_->inbox.scoreboard);  // ── scoreboard ──
     out.suggestions.swap(impl_->inbox.suggestions);
     out.chat_types = std::move(impl_->inbox.chat_types);
     out.commands   = std::move(impl_->inbox.commands);

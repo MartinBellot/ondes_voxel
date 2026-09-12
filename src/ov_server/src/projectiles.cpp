@@ -892,11 +892,17 @@ ProjectileStats Projectiles::after_entity_tick(entity::EntityWorld& world,
                         amount = gameplay::scale_for_difficulty(
                             amount, static_cast<gameplay::Difficulty>(difficulty_));
                     }
-                    landed = host.hurt_player &&
+                    // ── scoreboard ── friendly fire: a teammate's arrow bounces
+                    const bool allowed = !data.owner_is_player || !host.may_hurt ||
+                                         host.may_hurt(data.owner, event.target);
+                    landed = allowed && host.hurt_player &&
                              host.hurt_player(event.target, amount,
                                               data.kind == ProjectileKind::Trident
                                                   ? gameplay::DamageKind::Trident
                                                   : gameplay::DamageKind::Arrow);
+                    if (landed && data.owner_is_player && host.player_struck) {
+                        host.player_struck(data.owner, event.target);
+                    }
                 } else {
                     hit_mob(world, *state, data, event, host, deliver, landed);
                 }
