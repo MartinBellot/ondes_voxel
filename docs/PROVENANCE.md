@@ -69,6 +69,7 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`projectiles.md`](provenance/projectiles.md) | Flèches, tridents et lancers : un vol ajusté à 1,3·10⁻¹⁴, et l'ordre des opérations qui expliquait le résidu des flèches |
 | [`commandes.md`](provenance/commandes.md) | Le chat et 34 commandes : 269/271 réponses identiques au vrai serveur, octet pour octet |
 | [`donnees-joueur.md`](provenance/donnees-joueur.md) | Le fichier joueur de vanilla, relu et réécrit sans perdre une feuille — et ce qui n'était pas sauvé du tout |
+| [`scoreboard.md`](provenance/scoreboard.md) | Scoreboard, équipes, `/trigger`, `/teammsg` : les quatre paquets, `scoreboard.dat` et les réponses du vrai serveur, l'ordre des `HashMap` Java reproduit |
 | [`agriculture.md`](provenance/agriculture.md) | Le random tick et ce qui pousse dessus : 676/676 cellules humides, 288/288 feuilles, et des forêts entières qui seraient tombées |
 | [`effets.md`](provenance/effets.md) | Les 33 effets et leurs modificateurs : 522/522 intervalles, et l'ordre des seaux de hachage de Java |
 | [`tnt-et-gravite.md`](provenance/tnt-et-gravite.md) | La TNT qui saute, le creeper qui siffle, le sable qui tombe — et le paquet Explosion qui n'est pas là où l'archive le met |
