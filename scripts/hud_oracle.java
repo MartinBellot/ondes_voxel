@@ -409,6 +409,16 @@ public final class HudOracle {
         pause(60);
     }
 
+    /// The open screen's title, or "none": a scene says what it opened.
+    static String screenName() throws Exception {
+        return onRender(() -> {
+            Object s = get(mc, MC, "screen");
+            if (s == null) return "none";
+            Object title = call(s, "net.minecraft.client.gui.screens.Screen", "getTitle", NONE);
+            return s.getClass().getSimpleName() + " " + text(title);
+        });
+    }
+
     static Object parse(String json) throws Exception {
         return call(null, COMPONENT + "$Serializer", "fromJson", new String[]{"java.lang.String"}, json);
     }
@@ -441,6 +451,21 @@ public final class HudOracle {
                     if (a[1].equals("tap")) pause(60);
                     if (a[1].equals("release") || a[1].equals("tap")) keyAction(k, 0);
                     pause(60);
+                    if (a[0].equals("esc")) {
+                        // The first screens run left the hopper's window open
+                        // through every later scene: an injected Escape alone
+                        // did not close it. The game's own close — what Escape
+                        // calls on a container — when a screen is still up.
+                        onRender(() -> {
+                            if (get(mc, MC, "screen") != null) {
+                                Object p = get(mc, MC, "player");
+                                call(p, "net.minecraft.client.player.LocalPlayer", "closeContainer", NONE);
+                            }
+                            return null;
+                        });
+                        pause(100);
+                    }
+                    line("key " + rest + " → screen " + screenName());
                 }
                 case "tabfoot" -> {
                     String[] a = rest.split("\\s*\\|\\s*", 2);
@@ -468,7 +493,8 @@ public final class HudOracle {
                         });
                         pause(60);
                     }
-                    line("use");
+                    pause(300);
+                    line("use → screen " + screenName());
                 }
                 default -> line("unknown scene line " + quote(s));
             }
