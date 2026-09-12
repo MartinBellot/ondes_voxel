@@ -9,6 +9,7 @@
 #include <array>
 #include <cstdlib>
 #include <optional>
+#include <string_view>
 #include <tuple>
 #include <unordered_map>
 
@@ -18,6 +19,19 @@ namespace {
 
 [[nodiscard]] constexpr i64 key_of(i32 chunk_x, i32 chunk_z) noexcept {
     return (static_cast<i64>(chunk_x) << 32) | static_cast<i64>(static_cast<u32>(chunk_z));
+}
+
+/// ── jigsaw ── `OV_STRUCT_REACH=<n>` scans n chunks around a decorated chunk
+/// instead of `kReach`: a measuring instrument for the cost of the reach
+/// (docs/provenance/jigsaw.md), read once. Not a supported setting — below the
+/// jigsaw reach it drops the parts of villages that start farther away.
+[[nodiscard]] i32 scan_reach() {
+    static const i32 reach = [] {
+        const char* value = std::getenv("OV_STRUCT_REACH");
+        const int   parsed = value != nullptr ? std::atoi(value) : 0;
+        return parsed > 0 ? static_cast<i32>(parsed) : StructureStage::kReach;
+    }();
+    return reach;
 }
 
 [[nodiscard]] constexpr usize local_16(i32 value) noexcept {
@@ -175,6 +189,71 @@ private:
 
 }  // namespace
 
+namespace {
+
+/// ── jigsaw ── `OV_STRUCT_STAGE=scan`: the stage as it was before each set
+/// had its own reach — a square of `scan_reach()` chunks, every set asked in
+/// every chunk, everything forgotten at `clear`. A measuring instrument, read
+/// once: the before and the after of docs/provenance/jigsaw.md § 6 come out of
+/// one binary.
+[[nodiscard]] bool scan_mode() {
+    static const bool scan = [] {
+        const char* value = std::getenv("OV_STRUCT_STAGE");
+        return value != nullptr && std::string_view{value} == "scan";
+    }();
+    return scan;
+}
+
+/// Division rounding towards negative infinity: the grid cell of a chunk.
+[[nodiscard]] constexpr i32 cell_of(i32 value, i32 spacing) noexcept {
+    const i32 quotient = value / spacing;
+    return (value % spacing != 0 && value < 0) ? quotient - 1 : quotient;
+}
+
+/// A start whose pieces were all settled when it was grown — every jigsaw
+/// start, heights from the noise alone. Nothing the stage does changes it
+/// afterwards, so it is the same whenever and by whichever square it is asked.
+/// ── jigsaw ── The stage's sampler, counting what it is asked and answering
+/// with the sampler it wraps, unchanged. One per stage, and a stage belongs to
+/// one generation stack and its one thread: the mutable counters are never
+/// shared (trap 17 is a cache filled from two threads, which this is not).
+class CountingSampler final : public StructureWorldSampler {
+public:
+    explicit CountingSampler(const StructureWorldSampler& inner) : inner_(&inner) {}
+
+    [[nodiscard]] std::string_view biome_at(i32 x, i32 y, i32 z) const override {
+        ++biomes_;
+        return inner_->biome_at(x, y, z);
+    }
+    [[nodiscard]] i32 surface_height(i32 x, i32 z) const override {
+        ++heights_;
+        return inner_->surface_height(x, z);
+    }
+    [[nodiscard]] i32 ocean_floor_height(i32 x, i32 z) const override {
+        ++heights_;
+        return inner_->ocean_floor_height(x, z);
+    }
+    [[nodiscard]] std::optional<bool> base_solid(i32 x, i32 y, i32 z) const override {
+        return inner_->base_solid(x, y, z);
+    }
+
+    [[nodiscard]] u64 heights() const noexcept { return heights_; }
+    [[nodiscard]] u64 biomes() const noexcept { return biomes_; }
+
+private:
+    const StructureWorldSampler* inner_;
+    mutable u64                  heights_{0};
+    mutable u64                  biomes_{0};
+};
+
+[[nodiscard]] bool settled_at_birth(const StructureStart& start) noexcept {
+    return std::ranges::all_of(start.pieces, [](const StructurePiece& piece) {
+        return piece.kind == PieceKind::Jigsaw;
+    });
+}
+
+}  // namespace
+
 struct StructureStage::Impl {
     const StructurePlacer*         placer{nullptr};
     const StructureBuilder*        builder{nullptr};
@@ -184,57 +263,136 @@ struct StructureStage::Impl {
     i64                            level_seed{0};
     FeatureRandom::Kind            random_kind{FeatureRandom::Kind::Xoroshiro};
 
-    /// Starts by start chunk. Node-based: a reference into one survives the
-    /// insertion of another.
-    std::unordered_map<i64, std::vector<StructureStart>> starts;
+    /// ── jigsaw ── One structure set, and how far its starts reach.
+    struct SetInfo {
+        const StructureSet* set{nullptr};
+        i32                 reach{kTemplateReach};
+    };
+    std::vector<SetInfo> sets;
+    /// Per set, by start chunk: the start there, or nothing. Node-based: a
+    /// pointer into one survives the insertion of another.
+    std::vector<std::unordered_map<i64, std::optional<StructureStart>>> by_set;
+    /// Starts put in by hand, replacing whatever their chunk had.
+    std::unordered_map<i64, std::vector<StructureStart>> manual;
+    /// `starts_at`'s answers, rebuilt on every call.
+    std::unordered_map<i64, std::vector<StructureStart>> answers;
     /// Positions whose shape follows neighbours, by the chunk they are in.
     std::unordered_map<i64, std::vector<BlockPos>> shaped;
     StructureStageStats                            stats;
     /// ── structures ── Kinds refused by the caller, with the reason.
     std::map<StructureKind, std::string> refused_kinds;
+    /// ── jigsaw ── `sampler` points here when there is one to wrap.
+    std::unique_ptr<CountingSampler> counting;
     /// ── great pyramid ── Our own structure, after the game's; null when the
     /// generator-level switch is off.
     std::unique_ptr<GreatPyramidStage> pyramid;
 
-    std::vector<StructureStart>& starts_at(i32 chunk_x, i32 chunk_z) {
-        const i64 key = key_of(chunk_x, chunk_z);
-        if (const auto it = starts.find(key); it != starts.end()) {
-            return it->second;
+    [[nodiscard]] bool is_candidate(usize set_index, i32 chunk_x, i32 chunk_z) const {
+        const StructureSet& set = *sets[set_index].set;
+        return set.spread && set.spread->is_candidate_chunk(level_seed, chunk_x, chunk_z);
+    }
+
+    /// The start one set has in one chunk, decided and built on first use.
+    StructureStart* start_of(usize set_index, i32 chunk_x, i32 chunk_z) {
+        auto&     cache = by_set[set_index];
+        const i64 key   = key_of(chunk_x, chunk_z);
+        if (const auto it = cache.find(key); it != cache.end()) {
+            return it->second ? &*it->second : nullptr;
         }
-        auto& out = starts[key];
-        for (const StructurePlacementResult& result :
-             placer->decide(level_seed, chunk_x, chunk_z, sampler)) {
-            if (result.decision != PlacementDecision::PlacedByPlacement) {
-                continue;
-            }
-            const StructureDefinition* definition = placer->find(result.structure);
-            if (definition == nullptr) {
-                continue;
-            }
-            // ── structures ── Refusals carry the structure's name: "jigsaw"
-            // alone does not say whether a village or a bastion is missing.
-            if (!buildable(definition->kind)) {
-                ++stats.refused[definition->name + ": " + std::string{to_string(definition->kind)} +
-                                " is not built here"];
-                continue;
-            }
-            if (const auto refused = refused_kinds.find(definition->kind);
-                refused != refused_kinds.end()) {
-                ++stats.refused[definition->name + ": " + refused->second];
-                continue;
-            }
-            auto start = builder->generate(*definition, level_seed, chunk_x, chunk_z, sampler);
-            if (!start) {
-                ++stats.refused[definition->name + ": " + start.error()];
-                continue;
-            }
-            if (!start->incomplete.empty()) {
-                ++stats.incomplete[start->incomplete];
-            }
-            ++stats.starts_built;
-            out.push_back(std::move(*start));
+        auto& slot = cache[key];
+        ++stats.decisions;
+        const auto result =
+            placer->decide_set(*sets[set_index].set, level_seed, chunk_x, chunk_z, sampler);
+        if (result.decision != PlacementDecision::PlacedByPlacement) {
+            return nullptr;
         }
-        return out;
+        const StructureDefinition* definition = placer->find(result.structure);
+        if (definition == nullptr) {
+            return nullptr;
+        }
+        // ── structures ── Refusals carry the structure's name: "jigsaw"
+        // alone does not say whether a village or a bastion is missing.
+        if (!buildable(definition->kind)) {
+            ++stats.refused[definition->name + ": " + std::string{to_string(definition->kind)} +
+                            " is not built here"];
+            return nullptr;
+        }
+        if (const auto refused = refused_kinds.find(definition->kind);
+            refused != refused_kinds.end()) {
+            ++stats.refused[definition->name + ": " + refused->second];
+            return nullptr;
+        }
+        auto start = builder->generate(*definition, level_seed, chunk_x, chunk_z, sampler);
+        if (!start) {
+            ++stats.refused[definition->name + ": " + start.error()];
+            return nullptr;
+        }
+        if (!start->incomplete.empty()) {
+            ++stats.incomplete[start->incomplete];
+        }
+        ++stats.starts_built;
+        slot = std::move(*start);
+        return &*slot;
+    }
+
+    /// Every start with pieces that may cross this chunk: for each set, the
+    /// grid candidates within the set's reach plus `extra` — one chunk per
+    /// grid cell, not every chunk of the square.
+    void reaching(i32 chunk_x, i32 chunk_z, i32 extra, std::vector<StructureStart*>& out) {
+        const auto take = [&](usize set_index, i32 x, i32 z) {
+            if (manual.contains(key_of(x, z))) {
+                return;
+            }
+            if (StructureStart* start = start_of(set_index, x, z);
+                start != nullptr && !start->pieces.empty()) {
+                out.push_back(start);
+            }
+        };
+        if (scan_mode()) {
+            const i32 reach = scan_reach() + extra;
+            for (i32 dz = -reach; dz <= reach; ++dz) {
+                for (i32 dx = -reach; dx <= reach; ++dx) {
+                    for (usize index = 0; index < sets.size(); ++index) {
+                        if (is_candidate(index, chunk_x + dx, chunk_z + dz)) {
+                            take(index, chunk_x + dx, chunk_z + dz);
+                        }
+                    }
+                }
+            }
+        } else {
+            for (usize index = 0; index < sets.size(); ++index) {
+                const auto& spread = sets[index].set->spread;
+                if (!spread) {
+                    continue;  // the strongholds' rings: never started here
+                }
+                const i32 reach   = sets[index].reach + extra;
+                const i32 spacing = std::max(spread->spacing, 1);
+                for (i32 gz = cell_of(chunk_z - reach, spacing);
+                     gz <= cell_of(chunk_z + reach, spacing); ++gz) {
+                    for (i32 gx = cell_of(chunk_x - reach, spacing);
+                         gx <= cell_of(chunk_x + reach, spacing); ++gx) {
+                        const ChunkPos candidate = spread->candidate(level_seed, gx, gz);
+                        if (std::abs(candidate.x - chunk_x) <= reach &&
+                            std::abs(candidate.z - chunk_z) <= reach) {
+                            take(index, candidate.x, candidate.z);
+                        }
+                    }
+                }
+            }
+        }
+        const i32 bound = kReach + extra;
+        for (auto& [key, list] : manual) {
+            const auto x = static_cast<i32>(key >> 32);
+            const auto z = static_cast<i32>(static_cast<u32>(key));
+            if (std::abs(x - chunk_x) > bound || std::abs(z - chunk_z) > bound) {
+                continue;
+            }
+            for (StructureStart& start : list) {
+                if (!start.pieces.empty()) {
+                    out.push_back(&start);
+                }
+            }
+        }
     }
 };
 
@@ -251,19 +409,80 @@ StructureStage::StructureStage(const StructurePlacer& placer, const StructureBui
     impl_->registries  = registries;
     impl_->level_seed  = level_seed;
     impl_->random_kind = configured_feature_random();
+    if (sampler != nullptr) {  // ── jigsaw ── counted, answered unchanged
+        impl_->counting = std::make_unique<CountingSampler>(*sampler);
+        impl_->sampler  = impl_->counting.get();
+    }
+
+    // ── jigsaw ── Each set's own reach: a jigsaw set reaches as far as its
+    // largest structure grows, every other set as far as a template does.
+    for (const StructureSet& set : placer.sets().sets()) {
+        Impl::SetInfo info;
+        info.set  = &set;
+        i32 reach = 0;
+        for (const StructureSetEntry& entry : set.entries) {
+            const StructureDefinition* definition = placer.find(entry.structure);
+            const JigsawConfig*        config =
+                definition != nullptr && definition->kind == StructureKind::Jigsaw &&
+                        builder.jigsaw() != nullptr
+                    ? builder.jigsaw()->config(definition->name)
+                    : nullptr;
+            reach = std::max(reach, config != nullptr ? config->reach_chunks : kTemplateReach);
+        }
+        if (reach > kReach) {
+            OV_LOG_ERROR("structures: set {} reaches {} chunks, more than the stage's bound {}; "
+                         "its farthest pieces are not placed",
+                         set.name, reach, kReach);
+            reach = kReach;
+        }
+        info.reach = reach;
+        impl_->sets.push_back(info);
+    }
+    impl_->by_set.resize(impl_->sets.size());
+
     if (originals.great_pyramid) {  // ── great pyramid ──
         impl_->pyramid = std::make_unique<GreatPyramidStage>(blocks, &placer, sampler, level_seed);
     }
 }
 
-StructureStage::~StructureStage() = default;
+StructureStage::~StructureStage() {
+    // ── jigsaw ── The stage's work, once, for the cost measurement.
+    if (impl_ && impl_->stats.decisions > 0) {
+        const StructureStageStats& work = stats();
+        OV_LOG_INFO("structures: stage work — {} decisions, {} starts grown, {} height queries, "
+                    "{} biome queries",
+                    work.decisions, work.starts_built, work.height_queries, work.biome_queries);
+    }
+}
 
 const std::vector<StructureStart>& StructureStage::starts_at(i32 chunk_x, i32 chunk_z) {
-    return impl_->starts_at(chunk_x, chunk_z);
+    const i64 key = key_of(chunk_x, chunk_z);
+    if (const auto it = impl_->manual.find(key); it != impl_->manual.end()) {
+        return it->second;
+    }
+    // Rebuilt on every call and in set order, as the placer answers: a
+    // template start still settles its height as its chunks are placed.
+    auto& answer = impl_->answers[key];
+    answer.clear();
+    for (usize index = 0; index < impl_->sets.size(); ++index) {
+        if (!impl_->is_candidate(index, chunk_x, chunk_z)) {
+            continue;
+        }
+        if (const StructureStart* start = impl_->start_of(index, chunk_x, chunk_z)) {
+            answer.push_back(*start);
+        }
+    }
+    return answer;
+}
+
+std::vector<StructureStart*> StructureStage::starts_reaching(i32 chunk_x, i32 chunk_z, i32 extra) {
+    std::vector<StructureStart*> out;
+    impl_->reaching(chunk_x, chunk_z, extra, out);
+    return out;
 }
 
 void StructureStage::add_start(StructureStart start) {
-    auto& list = impl_->starts[key_of(start.chunk_x, start.chunk_z)];
+    auto& list = impl_->manual[key_of(start.chunk_x, start.chunk_z)];
     list.clear();
     list.push_back(std::move(start));
 }
@@ -281,20 +500,23 @@ void StructureStage::place(std::span<world::Chunk* const, 9> neighbourhood, i32 
     };
 
     std::vector<Crossing> crossing;
-    for (i32 dz = -kReach; dz <= kReach; ++dz) {
-        for (i32 dx = -kReach; dx <= kReach; ++dx) {
-            for (StructureStart& start : impl_->starts_at(chunk_x + dx, chunk_z + dz)) {
-                if (!start.pieces.empty() && start.box.intersects(column)) {
-                    const StructureDefinition* definition = impl_->placer->find(start.structure);
-                    const i32 step  = definition != nullptr ? step_ordinal(definition->step) : 4;
-                    const i32 index = structure_step_index(*impl_->placer, start.structure);
-                    crossing.push_back({step, index, &start});
-                }
-            }
+    // ── jigsaw ── Each set within its own reach (Impl::reaching). The order
+    // is the one the square scan gave: by step and rank, then by start chunk,
+    // z before x — two starts of one structure share its random, in that order.
+    std::vector<StructureStart*> reaching;
+    impl_->reaching(chunk_x, chunk_z, 0, reaching);
+    for (StructureStart* start : reaching) {
+        if (!start->box.intersects(column)) {
+            continue;
         }
+        const StructureDefinition* definition = impl_->placer->find(start->structure);
+        const i32 step  = definition != nullptr ? step_ordinal(definition->step) : 4;
+        const i32 index = structure_step_index(*impl_->placer, start->structure);
+        crossing.push_back({step, index, start});
     }
     std::stable_sort(crossing.begin(), crossing.end(), [](const Crossing& a, const Crossing& b) {
-        return std::tie(a.step, a.index) < std::tie(b.step, b.index);
+        return std::tie(a.step, a.index, a.start->chunk_z, a.start->chunk_x) <
+               std::tie(b.step, b.index, b.start->chunk_z, b.start->chunk_x);
     });
 
     StageLevel level{neighbourhood,     chunk_x,        chunk_z,   *impl_->blocks,
@@ -369,7 +591,11 @@ void StructureStage::trim(i32 centre_x, i32 centre_z, i32 keep) {
         const auto z = static_cast<i32>(static_cast<u32>(key));
         return std::abs(x - centre_x) > keep || std::abs(z - centre_z) > keep;
     };
-    std::erase_if(impl_->starts, [&](const auto& entry) { return far(entry.first); });
+    for (auto& cache : impl_->by_set) {
+        std::erase_if(cache, [&](const auto& entry) { return far(entry.first); });
+    }
+    std::erase_if(impl_->manual, [&](const auto& entry) { return far(entry.first); });
+    std::erase_if(impl_->answers, [&](const auto& entry) { return far(entry.first); });
     std::erase_if(impl_->shaped, [&](const auto& entry) { return far(entry.first); });
     if (impl_->pyramid) {  // ── great pyramid ── it reaches further than kReach
         impl_->pyramid->trim(centre_x, centre_z, keep + GreatPyramid::kReach - kReach);
@@ -378,7 +604,24 @@ void StructureStage::trim(i32 centre_x, i32 centre_z, i32 keep) {
 
 // ── structures ──
 void StructureStage::clear() {
-    impl_->starts.clear();
+    // ── jigsaw ── What is kept is a pure function of the seed and the chunk:
+    // the decisions that started nothing, and the starts settled when they
+    // were grown (every jigsaw start). Keeping them across squares changes no
+    // block — ov_gendet's serial and parallel worlds stay identical — and
+    // spares a village being grown again by every square it crosses. A
+    // template start settles its height on the terrain it is first placed on,
+    // so it goes, as it always did. The scan instrument forgets everything.
+    for (auto& cache : impl_->by_set) {
+        if (scan_mode()) {
+            cache.clear();
+            continue;
+        }
+        std::erase_if(cache, [](const auto& entry) {
+            return entry.second && !settled_at_birth(*entry.second);
+        });
+    }
+    impl_->manual.clear();
+    impl_->answers.clear();
     impl_->shaped.clear();
     if (impl_->pyramid) {  // ── great pyramid ──
         impl_->pyramid->clear();
@@ -393,6 +636,10 @@ void StructureStage::refuse(StructureKind kind, std::string reason) {
 }
 
 const StructureStageStats& StructureStage::stats() const noexcept {
+    if (impl_->counting) {  // ── jigsaw ── the sampler's counts, brought up to date
+        impl_->stats.height_queries = impl_->counting->heights();
+        impl_->stats.biome_queries  = impl_->counting->biomes();
+    }
     return impl_->stats;
 }
 

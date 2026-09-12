@@ -10,6 +10,8 @@
 #include "ov/worldgen/structure.hpp"
 #include "ov/worldgen/structure_nbt.hpp"
 #include "ov/worldgen/structure_pieces.hpp"
+#include "ov/worldgen/structure_set.hpp"
+#include "ov/worldgen/structure_stage.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -185,6 +187,81 @@ TEST_CASE("the ancient city's anchor is its named start jigsaw", "[jigsaw]") {
     auto start = library.assemble(*config, 1234567890, -72, 83, nullptr);
     REQUIRE(start.has_value());
     CHECK(start->pieces.size() == 86);
+}
+
+namespace {
+
+/// A Nether with no noise: every column in the Nether wastes, a flat floor.
+/// Enough for a bastion, which reads neither heights nor terrain.
+class FlatNether final : public StructureWorldSampler {
+public:
+    [[nodiscard]] std::string_view biome_at(i32, i32, i32) const override {
+        return "minecraft:nether_wastes";
+    }
+    [[nodiscard]] i32 surface_height(i32, i32) const override { return 64; }
+    [[nodiscard]] i32 ocean_floor_height(i32, i32) const override { return 64; }
+};
+
+}  // namespace
+
+TEST_CASE("the stage scans each set within its own reach and keeps what cannot change",
+          "[jigsaw][stage]") {
+    if (!available()) {
+        SKIP("generated data or server jar missing");
+    }
+    REQUIRE(loaded().builder.has_value());
+    auto sets = StructureSetRegistry::load(data_root());
+    REQUIRE(sets.has_value());
+    auto placer = StructurePlacer::load(data_root(), *sets);
+    REQUIRE(placer.has_value());
+    placer->set_jigsaw(loaded().builder->jigsaw());
+    const JigsawConfig* bastion = loaded().builder->jigsaw()->config("minecraft:bastion_remnant");
+    REQUIRE(bastion != nullptr);
+    CHECK(bastion->reach_chunks == 9);
+    CHECK(loaded().builder->jigsaw()->config("minecraft:ancient_city")->reach_chunks == 12);
+    CHECK(loaded().builder->jigsaw()->config("minecraft:village_plains")->reach_chunks == 7);
+
+    FlatNether     nether;
+    StructureStage stage{*placer, *loaded().builder, &nether, *loaded().blocks, nullptr, 987654321};
+
+    // The first bastion the grid and the set's draw give, searched outward.
+    const StructureStart* found = nullptr;
+    for (i32 z = 0; z < 96 && found == nullptr; ++z) {
+        for (i32 x = 0; x < 96 && found == nullptr; ++x) {
+            for (const StructureStart& start : stage.starts_at(x, z)) {
+                if (start.structure == "minecraft:bastion_remnant") {
+                    found = &start;
+                }
+            }
+        }
+    }
+    REQUIRE(found != nullptr);
+    const i32 start_x = found->chunk_x;
+    const i32 start_z = found->chunk_z;
+
+    const auto holds = [&](i32 chunk_x, i32 chunk_z) -> const StructureStart* {
+        for (StructureStart* start : stage.starts_reaching(chunk_x, chunk_z)) {
+            if (start->structure == "minecraft:bastion_remnant" && start->chunk_x == start_x &&
+                start->chunk_z == start_z) {
+                return start;
+            }
+        }
+        return nullptr;
+    };
+    // Nine chunks away it is still asked; ten, never — the set's reach.
+    const StructureStart* near = holds(start_x + 9, start_z);
+    REQUIRE(near != nullptr);
+    CHECK(holds(start_x + 10, start_z) == nullptr);
+    CHECK(holds(start_x, start_z - 9) == near);
+
+    // A jigsaw start is settled when it is grown: `clear` keeps it, the very
+    // object, and the next square does not grow it again.
+    const usize pieces = near->pieces.size();
+    stage.clear();
+    const StructureStart* again = holds(start_x + 9, start_z);
+    CHECK(again == near);
+    REQUIRE(again != nullptr);
+    CHECK(again->pieces.size() == pieces);
 }
 
 TEST_CASE("a jigsaw piece is stored as the game stores it, and read back", "[jigsaw][nbt]") {

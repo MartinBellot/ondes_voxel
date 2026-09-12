@@ -150,6 +150,14 @@ struct JigsawConfig {
     bool                                expansion_hack{false};
     /// `terrain_adaptation`: none, beard_thin, beard_box, bury, encapsulate.
     std::string                         terrain_adaptation{"none"};
+    /// How far from its start chunk a piece can lie, in chunks: every piece
+    /// fits in `max_distance_from_center` about the anchor, and the anchor —
+    /// the middle of the start piece — lies within the start piece's extent
+    /// (plus the named start jigsaw's offset) of the chunk corner. Computed
+    /// at load from the start pool: 12 for the ancient city, 9 for the
+    /// bastion, 7 or 8 for the rest. `max_distance / 16` alone would drop
+    /// pieces (docs/provenance/jigsaw.md § 6).
+    i32                                 reach_chunks{0};
 };
 
 /// A connection between two pieces, as the game stores it on both.

@@ -51,6 +51,14 @@ struct StructureStageStats {
     /// Piece placements (one piece, one chunk) and the blocks they wrote.
     u64 placements{0};
     u64 blocks_written{0};
+    /// ── jigsaw ── The work the stage asked for, counted rather than timed: a
+    /// placer verdict computed (a cache miss), and the questions put to the
+    /// world sampler — a height is a column of noise, the costly part of a
+    /// jigsaw start. Deterministic, so two arms compare on a loaded machine
+    /// where seconds do not (docs/provenance/jigsaw.md § 6).
+    u64 decisions{0};
+    u64 height_queries{0};
+    u64 biome_queries{0};
 };
 
 class StructureStage {
@@ -84,6 +92,15 @@ public:
     /// The starts whose start chunk is this one, built on first use.
     [[nodiscard]] const std::vector<StructureStart>& starts_at(i32 chunk_x, i32 chunk_z);
 
+    /// ── jigsaw ── Every start that may cross this chunk: for each set, the
+    /// grid candidates within the set's own reach plus `extra` chunks, built
+    /// on first use. What the stage places from, and what a chunk's
+    /// `References` are searched in (with `extra` 1 for the terrain
+    /// adaptation margin). Pointers into the stage's cache: valid until the
+    /// next `clear` or `trim`.
+    [[nodiscard]] std::vector<StructureStart*> starts_reaching(i32 chunk_x, i32 chunk_z,
+                                                               i32 extra = 0);
+
     /// Put a start in by hand, replacing whatever the chunk had. For tests and
     /// harnesses that place the game's own pieces.
     void add_start(StructureStart start);
@@ -111,12 +128,16 @@ public:
     /// null when the switch is off.
     [[nodiscard]] GreatPyramidStage* great_pyramid() noexcept;
 
-    /// How far, in chunks, a start's pieces can reach from its start chunk.
-    /// Three covered the template kinds (a ship is at most 28 blocks long and
-    /// lies from its chunk corner). ── jigsaw ── A jigsaw start grows inside a
-    /// cube of `max_distance_from_center` about its start piece — 116 blocks
-    /// for the ancient city, whose start piece is 41 long: ten chunks.
-    static constexpr i32 kReach = 10;
+    /// How far, in chunks, any start's pieces can reach from its start chunk:
+    /// the bound the callers keep caches and search references within.
+    /// ── jigsaw ── The stage itself scans each set within its *own* reach —
+    /// three for the template kinds (a ship is at most 28 blocks long and lies
+    /// from its chunk corner), `JigsawConfig::reach_chunks` for a jigsaw set
+    /// (7 to 9, and 12 for the ancient city, the largest: this bound).
+    static constexpr i32 kReach = 12;
+
+    /// ── jigsaw ── The template kinds' reach, in chunks.
+    static constexpr i32 kTemplateReach = 3;
 
 private:
     struct Impl;

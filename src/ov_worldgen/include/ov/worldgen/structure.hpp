@@ -316,6 +316,9 @@ public:
 
     [[nodiscard]] const StructureDefinition* find(std::string_view name) const noexcept;
     [[nodiscard]] const std::vector<StructureDefinition>& structures() const noexcept;
+    /// ── jigsaw ── The sets given to `load`, for a caller that asks them one
+    /// by one (the structure stage, which scans each set within its own reach).
+    [[nodiscard]] const StructureSetRegistry& sets() const noexcept;
     [[nodiscard]] const BiomeTags&                        biome_tags() const noexcept;
 
     StructurePlacer(StructurePlacer&&) noexcept;
