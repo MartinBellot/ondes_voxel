@@ -11,8 +11,10 @@
 #include "ov/worldgen/structure_set.hpp"
 #include "ov/worldgen/structure_stage.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <optional>
+#include <tuple>
 #include <utility>
 
 namespace ov::server {
@@ -178,26 +180,25 @@ void WorldStructures::StackStage::record(world::Chunk& chunk) {
     // `kReach` chunks around every decorated chunk, and a finished chunk's
     // neighbours were all decorated.
     std::vector<worldgen::StructureReference> references;
-    constexpr i32 kSearch = worldgen::StructureStage::kReach + 1;
-    for (i32 dz = -kSearch; dz <= kSearch; ++dz) {
-        for (i32 dx = -kSearch; dx <= kSearch; ++dx) {
-            for (const worldgen::StructureStart& start :
-                 stage->starts_at(chunk_x + dx, chunk_z + dz)) {
-                if (start.pieces.empty()) {
-                    continue;
-                }
-                worldgen::BoundingBox box = start.box;
-                const worldgen::StructureDefinition* definition =
-                    placer != nullptr ? placer->find(start.structure) : nullptr;
-                if (definition != nullptr && definition->terrain_adaptation) {
-                    constexpr i32 kMargin = worldgen::kTerrainAdaptationMargin;
-                    box = {box.min_x - kMargin, box.min_y, box.min_z - kMargin,
-                           box.max_x + kMargin, box.max_y, box.max_z + kMargin};
-                }
-                if (box.intersects(column)) {
-                    references.push_back({start.structure, start.chunk_x, start.chunk_z});
-                }
-            }
+    // ── jigsaw ── Each set within its own reach, plus one chunk for the
+    // terrain adaptation margin: the grid candidates only, not every chunk of
+    // a 27 x 27 square. The order is the stage's, z then x, as before.
+    auto reaching = stage->starts_reaching(chunk_x, chunk_z, 1);
+    std::stable_sort(reaching.begin(), reaching.end(),
+                     [](const worldgen::StructureStart* a, const worldgen::StructureStart* b) {
+                         return std::tie(a->chunk_z, a->chunk_x) < std::tie(b->chunk_z, b->chunk_x);
+                     });
+    for (const worldgen::StructureStart* start : reaching) {
+        worldgen::BoundingBox box = start->box;
+        const worldgen::StructureDefinition* definition =
+            placer != nullptr ? placer->find(start->structure) : nullptr;
+        if (definition != nullptr && definition->terrain_adaptation) {
+            constexpr i32 kMargin = worldgen::kTerrainAdaptationMargin;
+            box = {box.min_x - kMargin, box.min_y, box.min_z - kMargin,
+                   box.max_x + kMargin, box.max_y, box.max_z + kMargin};
+        }
+        if (box.intersects(column)) {
+            references.push_back({start->structure, start->chunk_x, start->chunk_z});
         }
     }
     const auto& here = stage->starts_at(chunk_x, chunk_z);

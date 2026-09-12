@@ -37,7 +37,11 @@ NAMES = {1: "b", 2: "s", 3: "i", 4: "l", 5: "f", 6: "d", 7: "B[]", 8: "str", 9: 
          10: "c", 11: "I[]", 12: "L[]"}
 
 BUILT = {"minecraft:igloo", "minecraft:shipwreck", "minecraft:shipwreck_beached",
-         "minecraft:ocean_ruin_cold", "minecraft:ocean_ruin_warm", "minecraft:nether_fossil"}
+         "minecraft:ocean_ruin_cold", "minecraft:ocean_ruin_warm", "minecraft:nether_fossil",
+         # ── jigsaw ── grown from their pools (docs/provenance/jigsaw.md)
+         "minecraft:village_plains", "minecraft:village_desert", "minecraft:village_savanna",
+         "minecraft:village_snowy", "minecraft:village_taiga", "minecraft:pillager_outpost",
+         "minecraft:bastion_remnant", "minecraft:ancient_city", "minecraft:trail_ruins"}
 
 
 def tpayload(r, t):

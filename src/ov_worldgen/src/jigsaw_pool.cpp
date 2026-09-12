@@ -10,6 +10,7 @@
 #include <simdjson.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <map>
 #include <string>
 #include <tuple>
@@ -472,6 +473,41 @@ std::expected<JigsawLibrary, TemplateError> JigsawLibrary::load(
             continue;
         }
         library.impl_->configs.emplace(config.name, std::move(config));
+    }
+
+    // How far each structure can reach from its start chunk: the anchor lies
+    // within the start piece's horizontal extent (and the named jigsaw's
+    // offset) of the chunk corner, and every piece within max_distance of the
+    // anchor. A bound, not a guess: a chunk outside it never sees a piece.
+    for (auto& [name, config] : library.impl_->configs) {
+        const TemplatePool* start_pool = library.pool(config.start_pool);
+        i32                 extent     = 0;
+        i32                 offset     = 0;
+        if (start_pool != nullptr) {
+            for (const auto& owned : start_pool->elements) {
+                if (owned->type == PoolElementType::Empty) {
+                    continue;
+                }
+                for (u8 turn = 0; turn < 4; ++turn) {
+                    const auto        rotation = static_cast<Rotation>(turn);
+                    const BoundingBox box      = owned->box({0, 0, 0}, rotation);
+                    extent = std::max({extent, std::abs(box.min_x), std::abs(box.max_x),
+                                       std::abs(box.min_z), std::abs(box.max_z)});
+                    if (config.start_jigsaw_name.empty()) {
+                        continue;
+                    }
+                    for (const JigsawConnector& connector : owned->connectors) {
+                        if (connector.name == config.start_jigsaw_name) {
+                            const BlockPos at = transform(connector.pos, Mirror::None, rotation,
+                                                          {0, 0, 0});
+                            offset = std::max({offset, std::abs(at.x), std::abs(at.z)});
+                        }
+                    }
+                }
+            }
+        }
+        const i32 span      = config.max_distance + extent + offset + 15;
+        config.reach_chunks = (span + 15) / 16;
     }
 
     // The processors every element gets, spelled as their JSON twins.

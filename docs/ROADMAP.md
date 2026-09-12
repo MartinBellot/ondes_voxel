@@ -636,7 +636,23 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       trésor enfoui, portail en ruine ×7, manoir, forteresse du Nether,
       bastion ×4, fossile du Nether, cité de l'End, **cité antique**,
       **ruines de sentier**, puits du désert, donjon, fossile, geode
-- [ ] Jigsaw, pools de structures, ancrages
+- [~] Jigsaw, pools de structures, ancrages
+      *(**2026-09-11 — jigsaw** : pools de gabarits (éléments single, legacy,
+      list, feature, empty ; poids, replis, processeurs, projection) et
+      l'assembleur (hauteur et rotation de départ, jigsaw nommé, pousse en
+      largeur, formes, « expansion hack », jonctions) ; pièces stockées et
+      relues au format du jeu. Pièces tirées de la graine contre les départs
+      stockés : **29/31 identiques tag pour tag** — bastions **9/9** (985/985
+      pièces, témoin graine + 1 : 0/985), villages plaines 6/6, désert 2/2,
+      taïga 1/1, avant-postes 3/3, cités antiques 6/6, ruines de sentier 3/3 ;
+      les 2 restants sont les deux départs qu'un `/locate` a générés, sans
+      expansion, nommés. L'ancre du filtre de biome est le milieu de la pièce
+      de départ (placés 31/31). Blocs, pièces du jeu posées par notre code :
+      avant-poste 99,6 %, villages 85–89 % (témoin 8,8 %). La portée de
+      l'étage est calculée par ensemble (12 pour la cité antique) et les
+      départs jigsaw sont gardés d'un carré à l'autre. Restent la pose par le
+      serveur mesurée de bout en bout, l'adaptation du terrain, les éléments
+      `feature`, les entités des gabarits. Voir `docs/provenance/jigsaw.md`)*
 - [x] **Nether** : portails, allumage, ratio 1:8, liaison de portails
       *(**2026-09-11** : génération du Nether contre le vrai serveur à la graine
       1234567890 — biomes 3 071 999/3 072 000 cellules, masques de carvers

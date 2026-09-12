@@ -195,6 +195,126 @@ Les écarts, nommés :
 * Avant-poste : 6 connexions de clôtures de chêne noir, la mise à jour de forme à la frontière des
   pièces.
 
+## 6. Le coût de la portée, et ce qui le rend bon marché
+
+Une pièce jigsaw peut tomber loin de son chunk de départ : l'étage de structures, qui pose chaque
+chunk à partir des départs qui le traversent, doit donc interroger les départs d'un large
+voisinage. La première version portait la portée globale de l'étage de 3 à 10 chunks : chaque
+chunk demandait **21 × 21 = 441** chunks voisins, et pour chacun les **19** ensembles de
+structures, au lieu de 7 × 7 = 49.
+
+### 6.1 La portée de chaque ensemble, calculée, pas devinée
+
+Une pièce tient dans `max_distance_from_center` autour de l'ancre ; l'ancre — le milieu de la
+pièce de départ — est à moins de l'étendue horizontale de la pièce de départ (plus le décalage du
+jigsaw nommé) du coin du chunk. D'où, calculée au chargement depuis le pool de départ
+(`JigsawConfig::reach_chunks`) :
+
+| structure | R | étendue du départ | décalage du jigsaw nommé | ⌈R/16⌉ | portée sûre |
+|---|---:|---:|---:|---:|---:|
+| ancient_city | 116 | 40 | 20 | 8 | **12** |
+| bastion_remnant | 80 | 47 | 0 | 5 | **9** |
+| village_taiga | 80 | 21 | 0 | 5 | **8** |
+| autres villages, avant-poste, ruines de sentier | 80 | 6–16 | 0 | 5 | **7** |
+
+⌈R/16⌉ seul **perdrait des pièces** ; et la portée globale de 10 coupait déjà jusqu'à deux
+chunks du bord d'une cité antique. L'étage garde une borne (`kReach` = 12, pour les caches et la
+recherche des `References`) et interroge chaque ensemble à **sa** portée : 3 pour les gabarits,
+celle de sa plus grande structure pour un ensemble jigsaw.
+
+### 6.2 Les candidats de la grille, pas le carré
+
+Un ensemble à écartement n'a qu'**un** chunk candidat par cellule de sa grille. Au lieu de
+demander aux 441 chunks du carré ce que chacun des 19 ensembles y démarre, l'étage énumère, pour
+chaque ensemble, les candidats des cellules qui recoupent sa portée : pour un village (écartement
+34, portée 7), une à quatre cellules. `References` passe par la même énumération (portée + 1 pour
+la marge d'adaptation du terrain), et non plus par 27 × 27 appels.
+
+### 6.3 Ce qui ne change jamais n'est calculé qu'une fois
+
+Le serveur vide l'étage au début et à la fin de chaque carré de génération, pour que les
+structures d'un carré ne dépendent que de la graine et du carré. Mais un départ jigsaw est
+**entièrement réglé quand il pousse** — ses hauteurs viennent du bruit, jamais du terrain posé —
+et rien ne le modifie ensuite : le garder d'un carré à l'autre ne change aucun bloc, et évite de
+refaire pousser un village par chacun des carrés qu'il traverse. `clear` garde donc les décisions
+sans départ et les départs jigsaw ; un départ à gabarit, dont la hauteur se règle sur le terrain où
+il est posé pour la première fois, part comme avant. Le cache reste par pile de génération (aucun
+partage entre fils, aucun verrou) et `trim` le borne autour du chunk en cours.
+
+### 6.4 Mesure
+
+`ov_gendet` (le chemin du serveur, pool de tâches à deux fils), un carré de 4 × 4 chunks autour du
+village des plaines de (3006, 10), graine 1234567890, en **secondes CPU** (`/usr/bin/time`,
+utilisateur) : la machine est partagée avec une quinzaine d'agents et le temps mural d'un bras
+dépend de ce que font les autres. L'ancien étage reste dans le binaire comme instrument
+(`OV_STRUCT_STAGE=scan OV_STRUCT_REACH=10`) : avant et après sortent du même binaire.
+
+### 6.5 Ce que les secondes disent, et ce qu'elles ne disent pas
+
+La parité ne bouge pas : après le changement, bastions **9/9** (985/985 pièces, témoin graine + 1 :
+0/985), `reference-1234567890` **18/18** (1 427/1 427), `reference-987654321` **2/2**,
+`struct-locate` 2/4 (les deux départs de `/locate`, § 4) — toujours **29/31**. Le monde série et le
+monde parallèle d'`ov_gendet` restent **identiques** dans tous les bras.
+
+Les secondes, elles, ne tranchent pas. Mesurées pendant que la machine portait une charge de 73
+sur 8 cœurs (cinq outils de génération d'autres agents en même temps), les secondes CPU d'un même
+bras varient de ±50 % d'une série à l'autre, et l'ordre des bras s'inverse :
+
+| série (Release, 16 chunks × 2 bras, s CPU) | sans structures | portée 3 | nouvel étage | ancien étage, portée 10 |
+|---|---:|---:|---:|---:|
+| 1 | 49,6 | 57,8 | 57,4 | 61,3 |
+| 2 | 44,1 | 86,1 | 80,9 | 70,1 |
+
+(Debug, ancien code : 344,7 sans structures, 413,6 à portée 3, 349,4 à portée 10 — la portée 3
+plus chère que la portée 10, ce qui n'a pas de sens autrement que par le bruit.) Le débit, pour
+fixer les ordres de grandeur : **~0,6 chunk/s CPU en Release, ~0,09 en Debug**, structures
+comprises ; et sur 144 chunks autour du village, l'étage de structures coûte **+3,5 %** du CPU
+(§ 8).
+
+La mesure retenue est donc le **travail**, compté et déterministe : combien de verdicts de
+placement l'étage calcule, combien de départs il fait pousser, combien de hauteurs et de biomes il
+demande à l'échantillonneur (une hauteur est une colonne de bruit, le coût d'un départ jigsaw).
+L'étage le journalise en se détruisant ; `.scratch`-libre, `bench_work.sh` le somme par bras.
+
+*(compte du travail : § 6.6)*
+
+## 8. Posé par le serveur, relu comme le jeu l'écrit
+
+`ov_gendet --export` génère par **le chemin du serveur** (`GeneratedWorld::generate_square`,
+étage attaché, échantillonneur de surface par l'aquifère) et écrit les régions par
+`world::to_nbt` ; `scripts/measure_structures.py` compare aux régions du jeu. Carré des chunks
+(3000..3011, 4..15) autour du village des plaines de (3006, 10), graine 1234567890 : 144 chunks
+exportés, 77 finis chez le jeu.
+
+| mesure | résultat |
+|---|---|
+| départs du jeu dans les chunks exportés | 1 — trouvé, **identique champ pour champ, types compris** |
+| pièces comparées | **128 / 128** identiques |
+| départs chez nous et pas chez le jeu | 0 |
+| `References` (chunk, structure) | **70 / 70** |
+| blocs dans les boîtes des pièces du jeu | 47 879 / 51 190 — **93,532 %** |
+| témoin : le même terrain exporté sans structures (`OV_STRUCTURES=0`) | 45 013 / 51 190 — 87,933 % |
+
+Le témoin est faible — la plupart du volume des boîtes est du terrain et de l'air sur lesquels
+les deux côtés s'accordent déjà — mais il situe l'écart : le village ajoute 5,6 points, et ce qui
+manque est surtout l'adaptation du terrain (§ 8.1) et les éléments `feature` (arbres, fleurs,
+meules de foin, § 5).
+
+Le coût, build Release, chemin du serveur, ces 144 chunks : **196,2 s CPU avec les structures,
+189,5 s sans** — l'étage de structures, villages compris, coûte +3,5 %.
+
+### 8.1 L'adaptation du terrain : refusée, et pourquoi
+
+Les villages, avant-postes, cités antiques et ruines de sentier déclarent un
+`terrain_adaptation` (`beard_thin`, `beard_box`, `bury`) : le terrain autour d'eux est adouci ou
+creusé pendant l'étage de bruit. Dans 1.20.1, ce terme **n'est pas dans les données** : le
+`final_density` du routeur de bruit de l'Overworld ne contient aucun `minecraft:beardifier`, et
+notre interpréteur de fonctions de densité ne le connaît pas. Le jeu l'ajoute dans son propre code,
+avec un noyau que la documentation ne décrit pas ; le reconstituer depuis ce code serait le
+traduire, ce que les règles du dépôt interdisent. Ce n'est pas fait, et c'est dit : les blocs de
+terrain autour d'un village sont ceux du bruit seul, et l'écart du tableau ci-dessus en contient la
+part.
+
 ## 7. Rejouer
 
 ```bash
@@ -203,6 +323,15 @@ cmake --build --preset macos-debug --target ov_jigsawparity test_ov_worldgen
 ./build/macos-debug/bin/ov_jigsawparity --world=run/reference-1234567890/world --seed=1234567890
 ./build/macos-debug/bin/ov_jigsawparity --world=run/reference-1234567890/world --seed=1234567890 --control
 ./build/macos-debug/bin/ov_jigsawparity --world=run/reference-nether-987654321/world --seed=987654321 --dimension=nether
+./build/macos-debug/bin/ov_jigsawparity --world=run/reference-987654321/world --seed=987654321 --aquifer-surface
+# § 4 — l'expansion coupée, instrument
+OV_JIGSAW_EXPANSION_HACK=0 ./build/macos-debug/bin/ov_jigsawparity --world=run/struct-locate-1234567890/world
+# § 6 — l'ancien étage (carré, portée 10, tout oublié par carré) contre le nouveau, un binaire
+OV_STRUCT_STAGE=scan OV_STRUCT_REACH=10 ./build/macos-release/bin/ov_gendet --origin=751,2 --side=1 --workers=2
+./build/macos-release/bin/ov_gendet --origin=751,2 --side=1 --workers=2
+# § 8 — le chemin du serveur, exporté et comparé
+./build/macos-release/bin/ov_gendet --export=.scratch/v/region --chunks=3000,4,3011,15
+python3 scripts/measure_structures.py .scratch/v/region run/reference-1234567890/world/region
 ```
 
 ## Sources

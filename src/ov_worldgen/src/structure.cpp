@@ -440,6 +440,9 @@ const std::vector<StructureDefinition>& StructurePlacer::structures() const noex
 
 const BiomeTags& StructurePlacer::biome_tags() const noexcept { return impl_->tags; }
 
+// ── jigsaw ──
+const StructureSetRegistry& StructurePlacer::sets() const noexcept { return *impl_->sets; }
+
 namespace {
 
 /// Whether a biome satisfies a structure's `biomes` field, tag or list.
