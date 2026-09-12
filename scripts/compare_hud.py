@@ -103,8 +103,12 @@ class Image:
         os.makedirs(CACHE, exist_ok=True)
         key = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.relpath(os.path.abspath(path), ROOT))
         out = os.path.join(CACHE, key + ".bmp")
+        if os.path.getsize(path) == 0:
+            raise SystemExit("capture vide (écriture interrompue) : %s" % path)
         subprocess.run(["sips", "-s", "format", "bmp", path, "--out", out], check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if not os.path.exists(out):
+            raise SystemExit("sips n'a rien écrit pour %s" % path)
         return out
 
     def _ppm(self, path):

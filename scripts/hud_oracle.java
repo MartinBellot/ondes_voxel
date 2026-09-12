@@ -516,6 +516,9 @@ public final class HudOracle {
         });
         dumpStatics();
         play(Files.readAllLines(scenes, StandardCharsets.UTF_8));
+        // The game writes a screenshot on its I/O pool, after grab() returns:
+        // halting at once left the last capture of a run empty (0 bytes).
+        pause(3000);
         line("done");
     }
 
