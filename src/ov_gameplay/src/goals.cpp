@@ -118,6 +118,10 @@ bool has_line_of_sight(const CollisionWorld& collisions, const entity::EntitySta
                     from.position.z};
     const Vec3d aim{to.position.x, to.position.y + static_cast<f64>(to.eye_height) * 0.5,
                     to.position.z};
+    return has_clear_line(collisions, eye, aim);
+}
+
+bool has_clear_line(const CollisionWorld& collisions, const Vec3d& eye, const Vec3d& aim) {
     const Vec3d delta = aim - eye;
     const f64   length = std::sqrt(delta.x * delta.x + delta.y * delta.y + delta.z * delta.z);
     if (length < 1e-9) {

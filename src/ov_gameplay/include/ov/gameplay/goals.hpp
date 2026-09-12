@@ -561,4 +561,9 @@ inline constexpr i32 kNoQuarry = -2;
                                      const entity::EntityState& from,
                                      const entity::EntityState& to);
 
+/// ── mobs-5 ── The same test between two points: a player's eyes are not an
+/// entity of the entity world, and an enderman's stare starts there.
+[[nodiscard]] bool has_clear_line(const CollisionWorld& collisions, const Vec3d& from,
+                                  const Vec3d& to);
+
 }  // namespace ov::gameplay

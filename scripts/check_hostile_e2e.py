@@ -22,12 +22,14 @@ Usage : python3 scripts/check_hostile_e2e.py [effects] [poison] [undead] [anvil]
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from check_interaction_e2e import item_id, items_by_id  # noqa: E402
 from check_mobs3_e2e import ROOT, TYPES, Ours, connect, settle_until, spawned_of  # noqa: E402
 
 OUT = ROOT / ".scratch" / "hostile_e2e.json"
@@ -175,8 +177,102 @@ def check_anvil() -> dict:
     return out
 
 
+# ── enderman (mobs-5) ───────────────────────────────────────────────────────
+
+ENDERMAN_EYE = 2.55
+
+
+def aim(server: Ours, probe, target: int) -> bool:
+    """Teleport the probe where it stands, looking at the enderman's eyes. Our
+    server ignores NoAI and the enderman walks: the aim is renewed each call."""
+    where = probe.where.get(target)
+    if where is None or probe.pos is None:
+        return False
+    x, y, z = probe.pos
+    dx, dy, dz = where[0] - x, where[1] + ENDERMAN_EYE - (y + 1.62), where[2] - z
+    yaw = math.degrees(math.atan2(-dx, dz))
+    pitch = -math.degrees(math.atan2(dy, math.hypot(dx, dz)))
+    server.console(f"tp {NAME} {x:.3f} {y:.3f} {z:.3f} {yaw:.2f} {pitch:.2f}")
+    return True
+
+
+def stare_until(server: Ours, probe, target: int, seconds: float) -> bool:
+    begin = time.monotonic()
+    while time.monotonic() - begin < seconds:
+        aim(server, probe, target)
+        probe.settle(0.4)
+        if probe.field(target, 17) is True:
+            return True
+    return False
+
+
+def check_enderman() -> dict:
+    items = items_by_id()
+    server = Ours(ROOT / ".scratch" / "e2e-hostile-enderman")
+    out: dict = {}
+    try:
+        probe = connect()
+        probe.settle(3.0)
+        server.console("gamerule doMobSpawning false", "time set 18000", "difficulty normal",
+                       "gamerule mobGriefing true")
+        # The stare: a survival probe looking at its eyes — screaming (17).
+        x, y, z = fresh(server, probe)
+        ender = summon(server, probe, "enderman", (x + 8.0, y, z))
+        out["enderman"] = ender
+        if ender is None:
+            return out
+        server.console(f"gamemode survival {NAME}")
+        probe.settle(0.5)
+        out["stare_screams"] = stare_until(server, probe, ender, 10.0)
+        out["stared_index18"] = probe.field(ender, 18)
+
+        # A carved pumpkin on the head: no scream.
+        x, y, z = fresh(server, probe)
+        probe.creative_set(5, item_id(items, "minecraft:carved_pumpkin"))
+        probe.settle(0.5)
+        masked = summon(server, probe, "enderman", (x + 8.0, y, z))
+        server.console(f"gamemode survival {NAME}")
+        probe.settle(0.5)
+        out["pumpkin_screams"] = stare_until(server, probe, masked, 6.0) if masked else None
+        server.console(f"gamemode creative {NAME}")
+        probe.settle(0.3)
+        probe.creative_set(5, 0, 0)
+
+        # Water at its feet: 1 damage and a teleport.
+        x, y, z = fresh(server, probe)
+        wet = summon(server, probe, "enderman", (x + 6.0, y, z))
+        if wet is not None:
+            probe.settle(1.0)
+            before = list(probe.where.get(wet, [0.0, 0.0, 0.0]))
+            fx, fy, fz = (int(math.floor(v)) for v in before)
+            server.console(f"setblock {fx} {fy} {fz} minecraft:water")
+            settle_until(probe, 6.0, lambda: probe.field(wet, 9) is not None and
+                         float(probe.field(wet, 9)) < 40.0)
+            probe.settle(1.0)
+            after = probe.where.get(wet, before)
+            out["water_health"] = probe.field(wet, 9)
+            out["water_jump"] = round(math.dist(before, after), 2)
+
+        # Carrying: four endermen in a field of dandelions — a block in hand (16).
+        x, y, z = fresh(server, probe)
+        bx, by, bz = int(x), int(y), int(z)
+        server.console(f"fill {bx + 4} {by} {bz - 12} {bx + 28} {by} {bz + 12} minecraft:dandelion")
+        probe.settle(1.0)
+        carriers = [summon(server, probe, "enderman", (x + 8.0 + 6.0 * k, y, z)) for k in range(4)]
+        carriers = [c for c in carriers if c is not None]
+        settle_until(probe, 60.0, lambda: any((probe.field(c, 16) or 0) != 0 for c in carriers))
+        out["carrying"] = {c: probe.field(c, 16) for c in carriers}
+        out["pass"] = (out["stare_screams"] is True and out.get("pumpkin_screams") is False and
+                       float(out.get("water_health") or 40.0) < 40.0 and
+                       (out.get("water_jump") or 0.0) > 2.0 and
+                       any((v or 0) != 0 for v in out["carrying"].values()))
+    finally:
+        server.stop()
+    return out
+
+
 CHECKS = {"effects": check_effects, "poison": check_poison, "undead": check_undead,
-          "anvil": check_anvil}
+          "anvil": check_anvil, "enderman": check_enderman}
 
 
 def main(argv: list[str]) -> int:

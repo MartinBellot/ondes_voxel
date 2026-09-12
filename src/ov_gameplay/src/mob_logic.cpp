@@ -85,6 +85,13 @@ void install_goals(GoalSelector& selector, const MobKind& kind, i32 look_type,
             selector.add(3, std::make_unique<NearestAttackableTargetGoal>(
                                 kVillagerQuarry, kind.follow_range, false));
         }
+    } else if (kind.category == MobCategory::Monster && kind.melee) {
+        // ── mobs-5 ── A neutral monster — the enderman — gets the swing but not
+        // the search: it attacks only once something has provoked it and set
+        // its target (the server's endermen.cpp, on a stare or a hit).
+        selector.add(3, std::make_unique<MeleeAttackGoal>(kind.speed(kind.chase),
+                                                          kMeleeCooldownTicks, kind.hold_at,
+                                                          kind.melee));
     }
     if (kind.breeds) {
         // ── husbandry ── Breed before tempt before following a parent, which

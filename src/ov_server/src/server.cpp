@@ -82,6 +82,7 @@
 #include "combat_session.hpp"
 #include "mob_combat.hpp"
 #include "mob_effects.hpp"  // ── mobs-4 ──
+#include "endermen.hpp"     // ── mobs-5 ──
 #include "player_level.hpp"
 #include "ov/gameplay/food.hpp"
 #include "ov/gameplay/item_use.hpp"
@@ -1031,6 +1032,11 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     std::optional<MobEffects> mob_effects;
     if (registries) {
         mob_effects.emplace(*registries, mob_combat ? &*mob_combat : nullptr);
+    }
+    // ── mobs-5 ── the endermen: anger, teleporting, water and rain, carrying
+    std::optional<Endermen> endermen;
+    if (registries && blocks) {
+        endermen.emplace(*registries, *blocks, mob_combat ? &*mob_combat : nullptr);
     }
     /// The draw for a mob's table. A source of its own rather than
     /// `loot_random`: a block broken and a mob killed on the same tick must be
@@ -2263,6 +2269,13 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     MobRecords                mob_records;    // persistence, names, noActionTime
     std::optional<MobDespawn> mob_despawn;
     std::vector<Vec3d>        mobs3_players;  // every non-spectator, for despawn
+    // ── mobs-5 ── the players a stare may come from, refilled each tick, and
+    // the one helmet that stops it
+    std::vector<EndermanWatcher> ender_watchers;
+    const i32 carved_pumpkin_item =
+        registries && item_registry
+            ? registries->protocol_id(*item_registry, "minecraft:carved_pumpkin").value_or(-1)
+            : -1;
     std::optional<ZombieVillagers> zombie_villagers;  // the risen, and their cure
     std::optional<EntityStorage>   entity_storage;    // entities/r.x.z.mca
     std::vector<ChunkPos>          mobs3_to_load;
@@ -2340,6 +2353,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         }
         if (zombie_villagers) {  // ── mobs-3: a zombie villager's villager, and its cure ──
             zombie_villagers->spawn_metadata(state, fields);
+        }
+        if (endermen) {  // ── mobs-5 ── the block it carries, its screaming, the stare
+            endermen->spawn_metadata(state, fields);
         }
         deliver(net::clientbound::kEntityMetadata,
                 net::encode_entity_metadata(state.network_id, fields.take()));
@@ -3872,6 +3888,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         if (taming) {  // ── tame ── a wolf pack's anger, a pet standing up, an owner's fight
             taming->on_player_hit(*mobs, attacker.entity_id, target_id,
                                   static_cast<i64>(server_tick.load(std::memory_order_relaxed)));
+        }
+        if (endermen && endermen->owns(state->type)) {  // ── mobs-5 ── angry at the hitter, and away
+            endermen->on_hurt(target_id, attacker.entity_id,
+                              static_cast<i64>(server_tick.load(std::memory_order_relaxed)));
         }
 
         broadcast(nullptr, net::clientbound::kDamageEvent,
@@ -7375,6 +7395,23 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     };
     projectile_host.drop_item                 = tnt_host.drop_item;
     // ── brewing ── what a broken potion, a cloud and a tipped arrow reach for
+    // ── mobs-5 ── what the endermen reach for: the rain, a resident block,
+    // everyone's client
+    EndermenHost ender_host;
+    ender_host.raining_at = [&](BlockPos pos) {
+        return weather && commands && weather->is_raining_at(chunks, pos, commands->world().weather);
+    };
+    ender_host.block_at = [&](BlockPos pos) -> registry::BlockStateId {
+        const world::Chunk* chunk = chunk_if_resident(pos.x >> 4, pos.z >> 4);
+        if (chunk == nullptr || !world::WorldShape::overworld().contains_y(pos.y)) {
+            return superflat.air.air;
+        }
+        return chunk->get_block(static_cast<usize>(pos.x & 15), pos.y,
+                                static_cast<usize>(pos.z & 15));
+    };
+    ender_host.broadcast = [&](i32 id, std::span<const u8> payload) {
+        broadcast(nullptr, id, payload);
+    };
     PotionHost potion_host;
     potion_host.players = [&](std::vector<PotionPlayer>& out) {
         for (const auto& [key, who] : players) {
@@ -7754,6 +7791,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         if (mob_effects) {
             mob_effects->write(state, out);
         }
+        if (endermen) {  // ── mobs-5 ── `carriedBlockState`
+            endermen->write(state, out);
+        }
     };
     entity_storage_host.read_extra = [&](entity::EntityState& state, const nbt::Tag& compound) {
         if (taming && mobs) {
@@ -7761,6 +7801,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         }
         if (mob_effects && mobs) {
             mob_effects->read(*mobs, state, compound);
+        }
+        if (endermen) {  // ── mobs-5 ──
+            endermen->read(state, compound);
         }
     };
     // ── persistence ── The items and orbs of every level, the Nether's mobs,
@@ -9405,6 +9448,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     if (mob_effects) {  // ── mobs-4 ── its effects went to disk with it
                         mob_effects->forget(gone);
                     }
+                    if (endermen) {  // ── mobs-5 ──
+                        endermen->forget(gone);
+                    }
                 }
                 mobs3_unloaded.clear();
                 mobs3_to_load.clear();
@@ -9537,6 +9583,22 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         mobs3_players.push_back(Vec3d{who.x, who.y, who.z});
                     }
                 }
+                // ── mobs-5 ── who may stare at an enderman: the players a mob may
+                // hunt, with their eyes, their look and their helmet
+                ender_watchers.clear();
+                for (const auto& [ender_key, who] : players) {
+                    if (who.connection && who.confirmed && who.mortal() &&
+                        !who.survival.awaiting_respawn && !who.survival.health.dead &&
+                        who.dimension == DimensionId::Overworld) {
+                        ender_watchers.push_back(EndermanWatcher{
+                            .player = who.entity_id,
+                            .eye    = Vec3d{who.x, who.y + (who.sneaking ? 1.27 : 1.62), who.z},
+                            .yaw    = who.yaw,
+                            .pitch  = who.pitch,
+                            .masked = carved_pumpkin_item >= 0 &&
+                                      who.inventory[5].item_id == carved_pumpkin_item});
+                    }
+                }
                 if (mob_attacks) {
                     mob_attacks->begin_tick();
                     for (const auto& [mobs3_key, who] : players) {
@@ -9612,6 +9674,36 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                         }
                     }
                     mob_effects->clear_hurts();
+                }
+                // ── mobs-5 ── the endermen: water, rain, stares, anger, carrying.
+                // The blocks they move are written after the chunk lock, below.
+                if (endermen) {
+                    endermen->tick(*mobs, collisions, ender_watchers,
+                                   !commands || commands->world().rules.flag("mobGriefing"),
+                                   static_cast<i64>(server_tick.load(std::memory_order_relaxed)),
+                                   world::WorldShape::overworld().min_y, ender_host);
+                    for (const MobEffectHurt& hit : endermen->hurts()) {
+                        broadcast(nullptr, net::clientbound::kDamageEvent,
+                                  net::encode_damage_event(hit.id, damage_type_id(hit.kind),
+                                                           std::nullopt, std::nullopt));
+                        if (hit.killed) {
+                            (void)command_host.kill_entity(hit.id);
+                            endermen->forget(hit.id);
+                        } else if (const entity::EntityState* hurt =
+                                       mobs->state(mobs->find(hit.id))) {
+                            // The health the watchers see, as a player's hit
+                            // tells it: without it the client showed 40 while
+                            // the enderman had 39 (check_hostile_e2e enderman).
+                            net::MetadataWriter fields;
+                            fields.float_value(net::metadata::kHealth, hurt->health);
+                            broadcast(nullptr, net::clientbound::kEntityMetadata,
+                                      net::encode_entity_metadata(hit.id, fields.take()));
+                            if (sounds) {
+                                sounds->mob_hurt(sound_host, hurt->type, hurt->position);
+                            }
+                        }
+                    }
+                    endermen->clear_hurts();
                 }
                 mobs->tick(entity::TickContext{clock.tick_count(), &mob_context});
                 // ── rails: detector and activator rails, riders carried ──
@@ -9735,6 +9827,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     if (mob_effects) {  // ── mobs-4 ──
                         mob_effects->forget(gone);
                     }
+                    if (endermen) {  // ── mobs-5 ──
+                        endermen->forget(gone);
+                    }
                     // ── end combat and interaction ──────────────────────────
                 }
 
@@ -9783,6 +9878,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     }
                 }
             }
+        }
+        // ── mobs-5 ── The blocks the endermen took or put down, now that the
+        // chunk lock is released: written and told as any edit.
+        if (endermen && !endermen->edits().empty()) {
+            for (const EndermanBlockEdit& edit : endermen->edits()) {
+                set_block_and_broadcast({edit.pos.x, edit.pos.y, edit.pos.z}, edit.state);
+            }
+            endermen->clear_edits();
         }
         // ── nether-2 ── The Nether's mobs, under both locks as the overworld's.
         if (nether_mobs && nether) {

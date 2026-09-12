@@ -35,6 +35,7 @@ ov_add_library(ov_gameplay
         src/nether_mobs.cpp  # ── nether-2 ──
         src/mob_attack.cpp  # ── mobs-3 ──
         src/mob_body.cpp  # ── mobs-4 ──
+        src/enderman.cpp  # ── mobs-5 ──
         src/breeding.cpp
         src/tame.cpp  # ── tame ──
         src/pathfinding.cpp
@@ -99,6 +100,7 @@ ov_add_test(test_ov_gameplay
         tests/test_mobs2.cpp
         tests/test_nether_mobs.cpp  # ── nether-2 ──
         tests/test_mobs3.cpp  # ── mobs-3 ──
+        tests/test_enderman.cpp  # ── mobs-5 ──
         tests/test_breeding.cpp
         tests/test_tame.cpp  # ── tame ──
         tests/test_pathfinding.cpp

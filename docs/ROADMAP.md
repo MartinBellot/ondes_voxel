@@ -811,6 +811,16 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       disque. Le lama et le lama marchand se montent et s'apprivoisent
       (tempérament sur 30) ; la chèvre et l'abeille vivent sans leurs attaques.
       Voir `docs/provenance/apprivoisement.md`)*
+      *(**2026-09-12 — mobs-5** : **l'enderman**. Le regard le met en colère dans
+      un cône qui se referme avec la distance — mesuré à 8 et 16 blocs,
+      `cos θ > 1 − k/d` avec k ∈ [0,022 ; 0,030] — et rien derrière une
+      citrouille sculptée ; colère de 20 à 39 s ; l'eau et la pluie le blessent
+      de 1 par fenêtre et le téléportent (±32 par axe, jamais dans un liquide) ;
+      un coup le met en colère et le téléporte ; il prend et pose les blocs de
+      `#enderman_holdable` (chances étalonnées sur le vrai serveur) ; indices 16,
+      17, 18 sur le fil, `carriedBlockState` sur disque. Restent l'esquive des
+      flèches, le téléport vers la cible et au soleil, la colère sauvée. Voir
+      `docs/provenance/mobs-5.md`)*
 - [ ] **Hostiles (29)** : blaze, creeper, drowned, elder_guardian, endermite,
       evoker, ghast, guardian, hoglin, husk, magma_cube, phantom, piglin_brute,
       pillager, ravager, shulker, silverfish, skeleton, slime, stray, vex,
