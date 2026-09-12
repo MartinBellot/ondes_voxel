@@ -56,10 +56,7 @@ constexpr std::array<JobBlock, 16> kJobBlocks{{
 // modifier 0.5 — 0.1349 blocks a tick. Measured: 0.126 to 0.14 on the walk to
 // a far job block and after a panic calms (villageois.md).
 constexpr f64 kWalkModifier = 0.5;
-// Panic: 0.21 to 0.24 blocks a tick, median 0.225, over twelve intervals of
-// the flee campaign (from a zombie and after a hit). Carried as measured: it
-// lies just past the speeds the walking law was fitted on.
-constexpr f64 kPanicSpeed = 0.225;
+// Panic: `kVillagerPanicSpeed` (villager.hpp), shared with the brain.
 
 // Named fields: since mobs-2 a kind carries the attribute and one modifier per
 // goal, and a positional list would put the next number in the wrong one.
@@ -188,17 +185,15 @@ const MobKind* villager_mob_kind(std::string_view type_name) noexcept {
 }
 
 void install_villager_goals(GoalSelector& selector, const MobKind& kind, i32 look_type) {
-    const f64 walk  = kind.speed(kind.stroll);
-    const f64 panic = kPanicSpeed;
+    // ── brains ── A villager has no goals in vanilla: its brain holds the
+    // body (brain/villager_brain.hpp). Swimming stays a goal of its own, on
+    // the Jump control the brain does not take. The goals below are kept for
+    // the tests that build them by hand; no villager runs them any more.
+    (void)kind;
+    (void)look_type;
     selector.add(0, std::make_unique<FloatGoal>());
-    selector.add(1, std::make_unique<VillagerPanicGoal>(panic));
-    selector.add(1, std::make_unique<TradeWithPlayerGoal>());
-    selector.add(2, std::make_unique<SleepInBedGoal>(walk));
-    selector.add(3, std::make_unique<AcquireJobSiteGoal>(walk));
-    selector.add(4, std::make_unique<WorkAtJobSiteGoal>(walk));
-    selector.add(6, std::make_unique<RandomStrollGoal>(walk));
-    selector.add(7, std::make_unique<LookAtEntityGoal>(look_type, 8.0, 0.02F));
-    selector.add(8, std::make_unique<RandomLookGoal>());
+    math::LegacyRandomSource phases{0};  // restaggered by the mob (mob_logic.cpp)
+    selector.add(1, std::make_unique<brain::BrainGoal>(brain::make_villager_brain(phases)));
 }
 
 void init_villager(VillagerState& villager, i64 seed) noexcept {
@@ -245,6 +240,7 @@ void scan_step(VillagerState& villager, const world::LevelView& level, BlockPos 
         s.row    = -r;
         s.best_job.reset();
         s.best_bed.reset();
+        s.best_bell.reset();  // ── brains ──
     }
     const registry::BlockRegistry& blocks = level.blocks();
     const BedRules                 beds{blocks};
@@ -252,11 +248,16 @@ void scan_step(VillagerState& villager, const world::LevelView& level, BlockPos 
     const i64                      bed_limit = static_cast<i64>(kBedSearchRadius) * kBedSearchRadius;
     const bool                     job_wanted = villager.profession != Profession::Nitwit;
     const bool                     bed_wanted = !villager.claims.home.has_value();
+    // ── brains ── the bell, shared: any bell within reach is a meeting point
+    const bool bell_wanted = !villager.claims.meeting_point.has_value();
+    const i64  bell_limit  = static_cast<i64>(brain::kMeetingSearchRadius) *
+                            brain::kMeetingSearchRadius;
 
     // Terrain repeats: the answer for the last state seen is kept.
     registry::BlockStateId last_state = registry::kAirState;
     std::optional<Profession> last_job;
-    bool                      last_bed = false;
+    bool                      last_bed  = false;
+    bool                      last_bell = false;  // ── brains ──
 
     i32 done = 0;
     while (done < budget && s.layer <= kScanHalfHeight) {
@@ -277,8 +278,14 @@ void scan_step(VillagerState& villager, const world::LevelView& level, BlockPos 
                     const std::string_view name = blocks.block_name(blocks.block_of(state));
                     last_job               = profession_of_job_block(name);
                     last_bed               = beds.is_bed(state);
+                    last_bell              = name == "minecraft:bell";  // ── brains ──
                 }
                 const i64 d = block_distance_sq(pos, s.origin);
+                if (last_bell && bell_wanted && d <= bell_limit &&
+                    (!s.best_bell || d < s.best_bell_distance)) {  // ── brains ──
+                    s.best_bell          = pos;
+                    s.best_bell_distance = d;
+                }
                 if (last_job && job_wanted && d <= job_limit &&
                     (villager.profession == Profession::None || *last_job == villager.profession) &&
                     (!s.best_job || d < s.best_job_distance) && !claimed(entities, self, pos)) {
@@ -345,11 +352,20 @@ void tick_villager(VillagerState& villager, const entity::EntityState& self_stat
             }
         }
 
+        // ── brains ── a bell that went is no meeting point
+        if (villager.claims.meeting_point && level->is_loaded(*villager.claims.meeting_point) &&
+            blocks.block_name(blocks.block_of(level->block_at(*villager.claims.meeting_point))) !=
+                "minecraft:bell") {
+            villager.claims.meeting_point.reset();
+        }
+
         // The scan: for a job while jobless (or for one's own trade's block
-        // while the old one is gone), and for a bed while homeless.
-        const bool job_needed = wants_job(villager, baby);
-        const bool bed_needed = !villager.claims.home.has_value();
-        if ((job_needed || bed_needed) && (villager.scan.active || tick >= villager.scan.next_scan_tick)) {
+        // while the old one is gone), for a bed while homeless, for a bell.
+        const bool job_needed  = wants_job(villager, baby);
+        const bool bed_needed  = !villager.claims.home.has_value();
+        const bool bell_needed = !baby && !villager.claims.meeting_point.has_value();  // ── brains ──
+        if ((job_needed || bed_needed || bell_needed) &&
+            (villager.scan.active || tick >= villager.scan.next_scan_tick)) {
             scan_step(villager, *level, feet_of(self_state), &claimed_by_other, entities, self,
                       kScanBudget);
             if (villager.scan.layer > kScanHalfHeight) {
@@ -363,6 +379,10 @@ void tick_villager(VillagerState& villager, const entity::EntityState& self_stat
                 if (bed_needed && s.best_bed && !claimed_by_other(entities, self, *s.best_bed)) {
                     villager.claims.home = s.best_bed;
                     found                = true;
+                }
+                if (bell_needed && s.best_bell) {  // ── brains ──
+                    villager.claims.meeting_point = s.best_bell;
+                    found                         = true;
                 }
                 s.next_scan_tick = tick + (found ? 20 : kScanPause);
             }

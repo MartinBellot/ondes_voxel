@@ -185,10 +185,17 @@ void ZombieVillagers::finish_cure(entity::EntityWorld& world, entity::EntityStat
         villager.offers_drawn   = record.villager.offers_drawn;
         villager.restocks_today = record.villager.restocks_today;
         villager.last_restock   = record.villager.last_restock;
+        // ── brains ── its gossip and its type come back with it
+        villager.gossips           = record.villager.gossips;
+        villager.last_gossip_decay = record.villager.last_gossip_decay;
+        villager.typed             = true;
         ++villager.revision;
     }
     if (host.announce) {
         host.announce(*state);
+    }
+    if (host.on_cured && record.curer >= 0) {  // ── brains ──
+        host.on_cured(state->network_id, record.curer);
     }
 }
 
@@ -219,6 +226,7 @@ ZombieVillagerStats ZombieVillagers::tick(entity::EntityWorld& world,
         }
         record.conversion = kCureBase + random_.next_int(kCureSpread);
         record.weakness   = 0;
+        record.curer      = player;  // ── brains ──
         ++stats.cures_started;
         net::MetadataWriter fields;
         fields.boolean_value(kConvertingIndex, true);

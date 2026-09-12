@@ -41,6 +41,9 @@ struct ZombieVillagerHost {
     /// Make a mob of this type here, with the server's own behaviour for it.
     /// `kNoEntity` when the type cannot be spawned.
     std::function<entity::EntityHandle(std::string_view type, Vec3d at)> create_mob;
+    /// ── brains ── A cure finished: the villager's network id and the player
+    /// who started it (the gossip it owes them). Null: nobody hears.
+    std::function<void(i32 villager, i32 player)> on_cured;
     /// Tell every client about a mob just made.
     std::function<void(const entity::EntityState& state)> announce;
     /// The player's main hand, by registry name; empty for none.
@@ -102,6 +105,8 @@ private:
         /// Weakness ticks left. Mob effects are not modelled on this server;
         /// this one is, because the cure asks for it.
         i32 weakness{0};
+        /// ── brains ── the player whose apple started the cure, -1: none
+        i32 curer{-1};
     };
 
     void finish_cure(entity::EntityWorld& world, entity::EntityState& zombie, Record& record,

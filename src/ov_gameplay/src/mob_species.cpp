@@ -12,6 +12,8 @@
 #include "ov/gameplay/mob_logic.hpp"
 #include "ov/gameplay/villager.hpp"  // ── villagers ──
 #include "ov/gameplay/tame.hpp"      // ── tame ──
+#include "ov/gameplay/village_mobs.hpp"  // ── brains ──
+#include "ov/gameplay/wandering_trader.hpp"  // ── brains ──
 
 #include <array>
 
@@ -193,6 +195,12 @@ const MobKind* mob_kind(std::string_view type_name) noexcept {
         return kind;
     }
     // ── villagers ── a table of its own, in villager.cpp
+    if (const MobKind* golem = village_mob_kind(type_name)) {  // ── brains ── the iron golem
+        return golem;
+    }
+    if (const MobKind* trader = wandering_trader_kind(type_name)) {  // ── brains ──
+        return trader;
+    }
     return villager_mob_kind(type_name);
 }
 

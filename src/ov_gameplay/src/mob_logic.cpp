@@ -1,6 +1,9 @@
 #include "ov/gameplay/mob_logic.hpp"
 
 #include "ov/gameplay/breeding.hpp"  // ── husbandry ──
+#include "ov/gameplay/brain/brain.hpp"  // ── brains ──
+#include "ov/gameplay/village_mobs.hpp"  // ── brains ──
+#include "ov/gameplay/wandering_trader.hpp"  // ── brains ──
 #include "ov/gameplay/villager.hpp"  // ── villagers ──
 #include "ov/gameplay/tame.hpp"      // ── tame ──
 
@@ -42,6 +45,15 @@ void install_goals(GoalSelector& selector, const MobKind& kind, i32 look_type,
     // ── villagers ── a list of their own (villager.cpp)
     if (villager_mob_kind(kind.type_name) != nullptr) {
         install_villager_goals(selector, kind, look_type);
+        return;
+    }
+    // ── brains ── the iron golem and the wandering trader, lists of their own
+    if (village_mob_kind(kind.type_name) != nullptr) {
+        install_village_goals(selector, kind, look_type);
+        return;
+    }
+    if (wandering_trader_kind(kind.type_name) != nullptr) {
+        install_wandering_trader_goals(selector, kind, look_type);
         return;
     }
     // ── tame ── a list of their own (tame.cpp)
@@ -142,6 +154,15 @@ Mob::Mob(const MobKind& kind, f32 width, f32 height, i64 seed, i32 quarry_type)
     // ── villagers ── the state switched on, its generator seeded from the id
     if (villager_mob_kind(kind.type_name) != nullptr) {
         init_villager(brain_.villager, seed);
+        // ── brains ── the sensors' phases, from this villager's own stream
+        if (auto* held = dynamic_cast<brain::BrainGoal*>(goals_.find("brain"))) {
+            held->brain().restagger(random_);
+        }
+    }
+    // ── brains ── a wandering trader: a merchant without a job, its six offers
+    if (wandering_trader_kind(kind.type_name) != nullptr) {
+        init_villager(brain_.villager, seed);
+        init_wandering_trader(brain_.villager, brain_.villager.random);
     }
     // ── tame ── the family, and what is drawn at birth: stats, variant
     if (const TameKind* tame = tame_kind(kind.type_name)) {
@@ -178,7 +199,7 @@ void Mob::tick(entity::EntityWorld& world, entity::EntityHandle self,
     tick_husbandry(*state, self, *mob);
 
     // ── villagers ── claims, a job lost, the level-up timer: before the goals
-    if (brain_.villager.active) {
+    if (brain_.villager.active && !brain_.villager.wandering) {  // ── brains ── not a trader
         tick_villager(brain_.villager, *state, self, world, mob->level, mob->villagers,
                       brain_.animal.baby(), context.tick);
     }

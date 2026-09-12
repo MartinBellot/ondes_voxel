@@ -18,6 +18,7 @@
 
 #include "ov/base/types.hpp"
 #include "ov/entity/world.hpp"
+#include "ov/gameplay/brain/villager_brain.hpp"  // ── brains ──
 #include "ov/gameplay/goals.hpp"
 #include "ov/gameplay/mob_logic.hpp"
 #include "ov/gameplay/villager_state.hpp"
@@ -70,6 +71,10 @@ inline constexpr i32 kUnhappyTicks = 40;
 /// How long a hit villager runs. Measured bracket: running speed until 2.07 s
 /// after the hit, walking speed again by 4.12 s; 60 ticks is inside it.
 inline constexpr i32 kHurtPanicTicks = 60;
+/// Panic: 0.21 to 0.24 blocks a tick, median 0.225, over twelve intervals of
+/// the flee campaign (from a zombie and after a hit). Carried as measured: it
+/// lies just past the speeds the walking law was fitted on.
+inline constexpr f64 kVillagerPanicSpeed = 0.225;
 
 // ── Time of day ─────────────────────────────────────────────────────────────
 
@@ -86,10 +91,28 @@ struct HostileSight {
     f32 distance{8.0F};
 };
 
+/// ── brains ── A player as the village sees them: who (for gossip), where.
+struct ReputationSubject {
+    i32       network_id{0};
+    net::Uuid uuid{};
+    Vec3d     feet{};
+};
+
 struct VillagerWorld {
     i64 day_time{6000};
     i64 game_time{0};
     std::span<const HostileSight> hostiles{};
+    // ── brains ──
+    /// Births, golems, harvests for the caller to finish. Null: nobody hears.
+    std::vector<brain::VillagerEvent>* events{nullptr};
+    /// Protocol ids of `minecraft:iron_golem` and `minecraft:villager`; -1:
+    /// no golem is ever detected, no villager is ever a fellow.
+    i32 iron_golem_type{-1};
+    i32 villager_type{-1};
+    /// The players in the world, for an iron golem's defence of the village.
+    std::span<const ReputationSubject> players{};
+    /// The types an iron golem attacks on sight: every enemy but the creeper.
+    std::span<const i32> golem_quarries{};
 };
 
 // ── The species ─────────────────────────────────────────────────────────────

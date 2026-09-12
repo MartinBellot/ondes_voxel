@@ -28,6 +28,7 @@
 #include "ov/gameplay/villager_state.hpp"  // ── villagers ──
 #include "ov/gameplay/mob_attack.hpp"      // ── mobs-3 ──
 #include "ov/gameplay/tame_state.hpp"      // ── tame ──
+#include "ov/gameplay/brain/memory.hpp"    // ── brains ──
 #include "ov/math/random.hpp"
 #include "ov/math/vec.hpp"
 #include "ov/world/level.hpp"
@@ -173,6 +174,10 @@ struct MobBrain {
     /// Owner, sitting, collar, temper, saddle, stats: see tame_state.hpp.
     /// `family` is None on every mob that is not tame-able.
     TameState tame{};
+    // ── brains ──
+    /// What a brained mob remembers (brain/memory.hpp): a fixed slot per type,
+    /// empty on every mob that has no brain.
+    brain::Memories memories{};
 
     explicit MobBrain(usize path_capacity = 2048) : finder{path_capacity} {
         path.steps.reserve(256);

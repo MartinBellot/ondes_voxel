@@ -182,9 +182,26 @@ std::vector<u8> encode_merchant_offers(const registry::Registries& registries,
     }
     net::write_varint(w, v.level);
     net::write_varint(w, v.xp);
-    w.write_u8(1);  // a villager shows the level bar (a wandering trader does not)
-    w.write_u8(1);  // and restocks
+    // A villager shows the level bar and restocks; a wandering trader does
+    // neither (── brains ──; the trader's two bytes are not captured, named).
+    w.write_u8(v.wandering ? 0 : 1);
+    w.write_u8(v.wandering ? 0 : 1);
     return w.take();
+}
+
+void apply_special_prices(gameplay::VillagerState& v, const net::Uuid& player,
+                          i32 hero_amplifier) {
+    const i32 reputation = v.gossips.reputation(player);
+    for (gameplay::MerchantOffer& offer : v.offers) {
+        i32 special = 0;
+        if (reputation != 0) {
+            special += gameplay::brain::reputation_price_diff(reputation, offer.price_multiplier);
+        }
+        if (hero_amplifier >= 0) {
+            special += gameplay::brain::hero_price_diff(hero_amplifier, offer.cost_a.count);
+        }
+        offer.special_price = special;
+    }
 }
 
 std::optional<i32> parse_select_trade(std::span<const u8> payload) {
@@ -204,12 +221,15 @@ std::string merchant_title(const gameplay::VillagerState& v, const net::Uuid& uu
     if (const auto colon = profession.find(':'); colon != std::string_view::npos) {
         profession = profession.substr(colon + 1);
     }
-    const std::string key = "entity.minecraft.villager." + std::string{profession};
-    const std::string id  = uuid.to_string();
+    // ── brains ── a wandering trader is named after its type
+    const std::string key  = v.wandering ? std::string{"entity.minecraft.wandering_trader"}
+                                         : "entity.minecraft.villager." + std::string{profession};
+    const std::string type = v.wandering ? "minecraft:wandering_trader" : "minecraft:villager";
+    const std::string id   = uuid.to_string();
     return "{\"insertion\":\"" + id +
-           "\",\"hoverEvent\":{\"action\":\"show_entity\",\"contents\":{\"type\":"
-           "\"minecraft:villager\",\"id\":\"" +
-           id + "\",\"name\":{\"translate\":\"" + key + "\"}}},\"translate\":\"" + key + "\"}";
+           "\",\"hoverEvent\":{\"action\":\"show_entity\",\"contents\":{\"type\":\"" + type +
+           "\",\"id\":\"" + id + "\",\"name\":{\"translate\":\"" + key +
+           "\"}}},\"translate\":\"" + key + "\"}";
 }
 
 // ── Villagers ───────────────────────────────────────────────────────────────
@@ -454,9 +474,12 @@ void Villagers::interact(entity::EntityWorld& world, const Action& a, const Vill
             const std::scoped_lock lock{mutex_};
             open_[a.player] = kMerchantWindow;
         }
+        // ── brains ── priced for this player until the screen closes
+        apply_special_prices(v, p.uuid, p.hero_amplifier);
         Window w;
-        w.player   = a.player;
-        w.villager = state->network_id;
+        w.player      = a.player;
+        w.villager    = state->network_id;
+        w.player_uuid = p.uuid;  // ── brains ──
         // Captured order: Open Screen, Set Container Content, Merchant Offers.
         if (p.send) {
             p.send(net::clientbound::kOpenScreen,
@@ -612,6 +635,8 @@ bool Villagers::take(entity::EntityWorld& world, gameplay::VillagerState& v, Win
         return false;
     }
     const gameplay::TradeOutcome out = gameplay::record_trade(v, offer, v.random);
+    // ── brains ── measured: trading +2 a trade (2, then 4)
+    v.gossips.add_event(w.player_uuid, gameplay::brain::ReputationEvent::Trade);
     if (out.orb > 0 && host.spawn_orb) {
         if (const entity::EntityState* s = world.state(world.find(w.villager))) {
             // Measured: one orb per trade, at the villager, half a block up.
@@ -792,6 +817,11 @@ void Villagers::click(entity::EntityWorld& world, gameplay::VillagerState& v, Wi
 void Villagers::close(entity::EntityWorld& world, Window& w, MerchantPlayer* p) {
     if (gameplay::VillagerState* v = villager_of(world, w.villager)) {
         v->trading_player = -1;
+        // ── brains ── the prices go back to their own (measured: 0 after the
+        // close on 17 villagers of 18; the 18th was read before its close)
+        for (gameplay::MerchantOffer& offer : v->offers) {
+            offer.special_price = 0;
+        }
     }
     for (usize i = 0; i < 2; ++i) {
         net::ItemStack& slot = w.slots[i];
@@ -831,8 +861,10 @@ void Villagers::close(entity::EntityWorld& world, Window& w, MerchantPlayer* p) 
 void Villagers::send_data(const entity::EntityState& state, const gameplay::VillagerState& v,
                           const VillagerDeliver& deliver) const {
     net::MetadataWriter fields;
-    fields.villager_data_value(villager_metadata::kData, static_cast<i32>(v.type),
-                               static_cast<i32>(v.profession), v.level);
+    if (!v.wandering) {  // ── brains ── a trader has no VillagerData
+        fields.villager_data_value(villager_metadata::kData, static_cast<i32>(v.type),
+                                   static_cast<i32>(v.profession), v.level);
+    }
     if (v.sleeping && v.claims.home) {
         const BlockPos bed = *v.claims.home;
         fields.pose_value(villager_metadata::kPose, villager_metadata::kPoseSleeping);
@@ -888,6 +920,9 @@ void Villagers::spawn_metadata(entity::EntityWorld& world, const entity::EntityS
         return;
     }
     const gameplay::VillagerState& v = brain->villager;
+    if (v.wandering) {  // ── brains ── a trader has no VillagerData
+        return;
+    }
     // Captured: a villager's spawn carries index 18 even at plains / none / 1.
     fields.villager_data_value(villager_metadata::kData, static_cast<i32>(v.type),
                                static_cast<i32>(v.profession), v.level);
