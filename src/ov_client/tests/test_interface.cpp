@@ -118,10 +118,13 @@ TEST_CASE("a crafting table and a furnace have their own slot lists",
 }
 
 TEST_CASE("a menu shape this client does not draw is refused", "[interface]") {
-    // An anvil drawn as a chest would put its three slots where the player's
+    // A stonecutter drawn as a chest would put its slots where the player's
     // inventory is, and every click would name a slot that means something else
-    // on the server. Refusing is the only safe answer.
-    for (const i32 menu : {7, 8, 10, 12, 15, 18, 20, 23, 999}) {
+    // on the server. Refusing is the only safe answer. ── hud ── The anvil (7),
+    // brewing stand (10), enchanting table (12) and hopper (15) are drawn now
+    // (test_hud.cpp); these are the menus no server of ours opens: beacon,
+    // lectern, loom, merchant, smithing, cartography, stonecutter.
+    for (const i32 menu : {8, 16, 17, 18, 20, 22, 23, 999}) {
         CHECK_FALSE(ContainerScreen::from_menu(menu, 1, "?").has_value());
     }
 }

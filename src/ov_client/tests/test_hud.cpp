@@ -83,7 +83,8 @@ TEST_CASE("the regeneration wave runs over max health plus five", "[hud]") {
     CHECK(regeneration_heart(951, 20.0F) == 1);
     CHECK(regeneration_heart(924, 20.0F) == 24);
     CHECK(regeneration_heart(950, 20.0F) == 0);
-    CHECK(regeneration_heart(1000, 30.0F) == 0);
+    CHECK(regeneration_heart(1000, 30.0F) == 20);  // 1000 mod 35
+    CHECK(regeneration_heart(1015, 30.0F) == 0);
 }
 
 TEST_CASE("the hearts blink as the real client's timers said", "[hud]") {
