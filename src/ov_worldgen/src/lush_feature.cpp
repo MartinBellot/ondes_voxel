@@ -259,6 +259,17 @@ struct GrowthConfig {
     i32                search_range{10};
     f32                chance_of_spreading{0.5F};
     registry::BlockId  water{0};
+
+    /// ── worldgen-3 ── The sculk vein spreads by its own rule: never next to
+    /// sculk, a catalyst or a moving piston; never round a corner a sturdy
+    /// face closes; never into lava, flowing water or fire; and into anything
+    /// `#replaceable` besides air, veins and water sources.
+    bool              sculk_vein{false};
+    registry::BlockId sculk{0};
+    registry::BlockId catalyst{0};
+    registry::BlockId moving_piston{0};
+    std::vector<u16>  replaceable;  ///< #minecraft:replaceable
+    std::vector<u16>  fire;         ///< #minecraft:fire
 };
 
 class MultifaceGrowthFeature final : public Feature {
@@ -394,12 +405,37 @@ private:
                 {step(pos, to), from},
                 {step(step(pos, to), from), opposite(to)},
             }};
-            for (const auto& [target, face] : candidates) {
+            for (usize kind = 0; kind < candidates.size(); ++kind) {
+                const auto& [target, face] = candidates[kind];
                 const auto there = level.block_at(target.x, target.y, target.z);
                 const auto block = blocks.block_of(there);
                 const bool replaceable =
                     blocks.is_air(block) || block == c_.block || is_water_source(blocks, there);
-                if (!replaceable) {
+                if (c_.sculk_vein) {
+                    // ── worldgen-3 ── the vein's own rule
+                    const BlockPos behind = step(target, face);
+                    const auto     back =
+                        blocks.block_of(level.block_at(behind.x, behind.y, behind.z));
+                    if (back == c_.sculk || back == c_.catalyst || back == c_.moving_piston) {
+                        continue;
+                    }
+                    if (kind == 2) {  // round the corner: two blocks from the source
+                        const BlockPos side = step(pos, opposite(face));
+                        if (blocks.face_is_sturdy(level.block_at(side.x, side.y, side.z),
+                                                  kDirs[face].face)) {
+                            continue;
+                        }
+                    }
+                    if (blocks.holds_fluid(there) && !is_water_source(blocks, there)) {
+                        continue;
+                    }
+                    if (holds(c_.fire, block)) {
+                        continue;
+                    }
+                    if (!replaceable && !holds(c_.replaceable, block)) {
+                        continue;
+                    }
+                } else if (!replaceable) {
                     continue;
                 }
                 const auto placed = state_for(blocks, level, there, target, face);
@@ -508,10 +544,26 @@ ClaimedFeature parse_lush_feature(std::string_view kind, Json config,
         auto block = named_block(blocks, qualify(name));
         if (!block) return std::unexpected(block.error());
         c.block = *block;
-        if (blocks.block_name(c.block) != "minecraft:glow_lichen") {
-            // The sculk vein grows through the sculk spreader, a different
-            // machine; only the glow lichen's default spreader is written.
-            OV_LOG_ERROR("worldgen: multiface_growth of {} needs its own spreader, not written",
+        if (blocks.block_name(c.block) == "minecraft:sculk_vein") {
+            // ── worldgen-3 ── The vein grows like the lichen and spreads by its
+            // own rule (see GrowthConfig).
+            auto sculk       = named_block(blocks, "minecraft:sculk");
+            auto catalyst    = named_block(blocks, "minecraft:sculk_catalyst");
+            auto piston      = named_block(blocks, "minecraft:moving_piston");
+            auto replaceable = tag_members(blocks, tags, "minecraft:replaceable");
+            auto fire        = tag_members(blocks, tags, "minecraft:fire");
+            if (!sculk || !catalyst || !piston || !replaceable || !fire) {
+                return std::unexpected(FeatureError::Missing);
+            }
+            c.sculk_vein    = true;
+            c.sculk         = *sculk;
+            c.catalyst      = *catalyst;
+            c.moving_piston = *piston;
+            c.replaceable   = std::move(*replaceable);
+            c.fire          = std::move(*fire);
+        } else if (blocks.block_name(c.block) != "minecraft:glow_lichen") {
+            OV_LOG_ERROR("worldgen: multiface_growth of {}: only the glow lichen's and the sculk "
+                         "vein's spreaders are written",
                          blocks.block_name(c.block));
             return std::unexpected(FeatureError::Unsupported);
         }

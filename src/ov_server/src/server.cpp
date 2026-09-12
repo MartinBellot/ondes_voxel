@@ -8407,13 +8407,37 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             if (chunk_source->drain(finished_blocks) != 0) {
                 const std::scoped_lock lock{chunk_mutex};
                 for (GeneratedBlock& block : finished_blocks) {
-                    for (auto& [pos, chunk] : block.chunks) {
+                    // ── worldgen-3 ── which of the block's chunks are new here
+                    std::array<bool, 64> fresh{};
+                    for (usize index = 0; index < block.chunks.size(); ++index) {
+                        auto& [pos, chunk] = block.chunks[index];
                         if (chunks.contains(pos)) {
                             continue;
                         }
                         chunks.publish(pos, std::move(chunk));
                         light_arrived(pos, false);  // ── light ──
                         ++chunks_published;
+                        if (index < fresh.size()) {
+                            fresh[index] = true;
+                        }
+                    }
+                    // ── worldgen-3 ── The fluids the aquifer marked, woken as a
+                    // neighbour's change would wake them: a generated waterfall
+                    // flows. Only in chunks generated just now — a chunk read
+                    // from disk won the race and carries its own ticks.
+                    if (level && world_ticks) {
+                        for (const BlockPos& at : block.fluid_wakeups) {
+                            const ChunkPos home{at.x >> 4, at.z >> 4};
+                            for (usize index = 0; index < block.chunks.size() && index < fresh.size();
+                                 ++index) {
+                                if (block.chunks[index].first == home) {
+                                    if (fresh[index]) {
+                                        world_ticks->fluid().on_neighbour_changed(*level, at);
+                                    }
+                                    break;
+                                }
+                            }
+                        }
                     }
                 }
             }
