@@ -363,14 +363,14 @@ void ContainerScreen::draw(Gui& gui, const ItemRenderer& items, GuiTexture backg
     // under the next slot's quads.
     for (const SlotRect& slot : slots_) {
         const auto index = static_cast<usize>(slot.index);
-        if (index >= contents.size()) {
+        if (index >= contents.size() || slot.hidden) {
             continue;
         }
         items.draw(gui, ox + slot.x, oy + slot.y, contents[index]);
     }
     for (const SlotRect& slot : slots_) {
         const auto index = static_cast<usize>(slot.index);
-        if (index >= contents.size()) {
+        if (index >= contents.size() || slot.hidden) {
             continue;
         }
         items.draw_count(gui, ox + slot.x, oy + slot.y, contents[index]);
