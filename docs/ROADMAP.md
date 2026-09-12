@@ -717,7 +717,21 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       manger, lait, miel, mort, cassage, mêlée, chute, souffle. **Restent** les
       effets sur les mobs, la persistance (le serveur n'écrit aucun fichier
       joueur), et les effets sans règle serveur — nausée, lévitation, dolphin's
-      grace, bad omen, hero of the village. Voir `docs/provenance/effets.md`)* :
+      grace, bad omen, hero of the village. Voir `docs/provenance/effets.md`)*
+      *(**2026-09-11 — mobs-4** : **les mobs portent leurs effets**. Table par
+      mob à côté de la fenêtre de dégâts ; corps mort-vivant / arthropode par
+      espèce ; vigueur sur la santé max, vitesse et lenteur sur la marche
+      (`(valeur / base)²`), force et faiblesse sur le coup ; `/effect` sur un
+      mob, potions jetées, nuages et flèches trempées ; `ActiveEffects` dans
+      `entities/`. **Mesuré** : aux observateurs d'un mob, métadonnées et
+      Update Attributes (`movement_speed`), **jamais** d'Entity Effect ; jet
+      `1 − r/4` et instantanés `(int)(p × base + 0,5)` sur les 40 cases ;
+      marche sous vitesse I / II / lenteur I à **1,4397 / 1,9596 / 0,7228** du
+      témoin pour 1,44 / 1,96 / 0,7225 prédits ; un effet donné en NBT de
+      `summon` ne porte pas son modificateur (1,0003) ; force I / II → 6 / 9
+      par coup de zombie (témoin 3), faiblesse I → aucun coup. De bout en bout
+      4/4. Flèches trempées sur un mob **non mesurées** (la flèche rebondit sur
+      la vache). Voir `docs/provenance/mobs-4.md`)* :
       speed, slowness, haste, mining_fatigue, strength,
       instant_health, instant_damage, jump_boost, nausea, regeneration,
       resistance, fire_resistance, water_breathing, invisibility, blindness,
@@ -962,9 +976,9 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       appariement nommées ; **2885 grilles posées, 2885 identiques** au vrai
       serveur — dont 120 arrangements qui doivent ne rien produire, le groupe
       qu'un apparieur trop gourmand rate. 248 combustibles mesurés sur 1254 ;
-      trois tables de cuisson et non une avec un diviseur. Restent la fenêtre
-      2×2 du joueur, les écrans de forge et de pierre de taille,
-      et `Place Recipe`. Les fours tournent comme bloc-entités, regardés ou
+      trois tables de cuisson et non une avec un diviseur. La fenêtre 2×2 du
+      joueur est mesurée (13 cas) et alignée. Restent les écrans de forge et
+      de pierre de taille, et `Place Recipe`. Les fours tournent comme bloc-entités, regardés ou
       non, dans les trois dimensions ; `RecipesUsed` est payé en orbes à
       l'extraction)*
 - [~] **Agriculture et élevage** : toutes les cultures, terre labourée,

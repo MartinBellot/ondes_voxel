@@ -23,6 +23,10 @@ ov_add_library(ov_worldgen
         src/jigsaw_nbt.cpp
         src/jigsaw_place.cpp
         src/jigsaw_pool.cpp
+        # ── great pyramid ── an original Ondes VOXEL structure
+        src/great_pyramid_build.cpp
+        src/great_pyramid_plan.cpp
+        src/great_pyramid_stage.cpp
         src/nether_feature.cpp  # ── nether-2 ──
         src/noise.cpp
         src/ore_feature.cpp
@@ -83,6 +87,7 @@ ov_add_test(test_ov_worldgen
         tests/test_end.cpp
         tests/test_feature.cpp
         tests/test_jigsaw.cpp  # ── jigsaw ──
+        tests/test_great_pyramid.cpp  # ── great pyramid ──
         tests/test_nether.cpp
         tests/test_nether_feature.cpp  # ── nether-2 ──
         tests/test_noise.cpp

@@ -421,14 +421,99 @@ s'automatise pas ici. C'est un client qui envoie exactement les mêmes paquets,
 dans le même ordre ; ce que le test prouve, c'est que le serveur y répond
 correctement.
 
+## 7 bis. La fenêtre 0 du joueur et sa grille 2×2
+
+`scripts/measure_window0.py` fait cliquer une sonde en survie dans la fenêtre 0
+d'un vrai serveur 1.20.1. Cette fenêtre n'a pas d'`Open Screen` ; elle compte
+46 cases : 0 le résultat, 1 à 4 la grille, 5 à 8 l'armure, 9 à 35 le sac, 36 à
+44 la barre, 45 la main secondaire. La sonde relit la fenêtre, le curseur,
+l'inventaire (`data get entity`) et le sol. Quatre bûches de chêne dans la
+grille :
+
+| Clic sur le résultat | Vanilla |
+|---|---|
+| clic gauche ou droit | une fabrication (4 planches) sur le curseur |
+| shift-clic | toutes les fabrications, l'inventaire rempli **par la fin** : 16 planches dans la dernière case de la barre |
+| touche numérique vers une case vide | une fabrication dans cette case |
+| touche numérique vers une case occupée | rien : ni déplacé, ni fabriqué |
+| lancer, un bouton ou l'autre | **une** fabrication, lancée entière (4 planches) |
+
+| Autre cas | Vanilla |
+|---|---|
+| fermer, la grille et le curseur pleins | le curseur revient d'abord (barre 0), puis la grille (barre 1) |
+| shift-clic sur un casque de fer du sac | la case de la tête |
+| shift-clic sur un bouclier du sac | la main secondaire |
+| double clic, 10 terres au curseur, 5 et 3 ailleurs | 18 au curseur |
+| 2 bouteilles de miel, un clic | 3 sucres au curseur ; la bouteille vide en barre 0, la case tenant encore du miel |
+| 2 bouteilles de miel, shift-clic | 6 sucres en fin de barre, une bouteille vide en barre 0, la dernière dans la case vidée |
+
+Ce serveur rendait la touche numérique et le lancer comme un clic (sur le
+curseur), remplissait le sac d'abord, ne rendait rien à la fermeture,
+n'équipait rien au shift-clic, ignorait le double clic et rangeait les restes
+au sac d'abord. Tout est aligné et rejoué par `test_player_inventory.cpp`. La
+sauvegarde range désormais le curseur avant la grille, dans l'ordre de la
+fermeture.
+
+Non mesuré : la fusion avec une pile existante à la fermeture (l'inventaire
+mesuré était vide ; ce serveur fusionne d'abord, comme `Inventory.add`) ;
+l'ordre du double clic entre piles pleines et non pleines ; les autres objets
+portables (élytres, citrouille, têtes, d'après la liste du wiki) ; la touche
+numérique vers une case qui tient déjà le même objet.
+
+## 7 ter. La table de forge — mesurée sur le fil
+
+`scripts/measure_smithing.py` : une sonde en survie ouvre une table de forge sur
+un vrai serveur 1.20.1 et relit `Open Screen`, `Set Container Content` (NBT
+décodé) et l'inventaire une fois l'objet pris.
+
+* **Le menu** : type **20** (`minecraft:smithing`), titre
+  `{"translate":"container.upgrade"}`, **40 cases** : 0 le gabarit, 1 la base,
+  2 l'ajout, 3 le résultat, puis les 27 cases du sac et les 9 de la barre.
+* **Une garniture** (gabarit côte, lingot d'or, plastron de fer) : le résultat
+  est la base, avec `Trim: {material: "minecraft:gold", pattern:
+  "minecraft:coast"}` ajouté à son tag. Le reste du tag est gardé : `Damage`,
+  et la couleur `display.color` d'un plastron de cuir teint. La **même**
+  garniture une seconde fois ne donne rien ; un autre matériau remplace le
+  `Trim`. Le matériau vient de l'ajout (`trim_material/*.json`, `ingredient`),
+  le motif du gabarit (`trim_pattern/*.json`, `template_item`).
+* **L'amélioration en netherite** (épée de diamant usée de 10, tranchant II,
+  renommée) : l'objet change, le tag passe **entier** : usure, enchantements,
+  nom.
+* Une combinaison qu'aucune recette n'accepte (gabarit de garniture, épée,
+  or) : rien.
+* **La prise** coûte un de chaque entrée : deux gabarits et deux lingots en
+  laissent un de chaque. Le **shift-clic** sur le résultat remplit par la fin
+  (la dernière case de la barre). Depuis le sac, le shift-clic envoie le
+  gabarit en 0, l'armure en 1, le lingot en 2.
+* À la fermeture, les entrées reviennent à l'inventaire (barre 0, 1, 2).
+
+L'ordre des clés d'un compound NBT sur le fil suit une table de hachage chez
+vanilla : il ne porte aucun sens et n'est pas reproduit.
+
+## 7 quater. Le tailleur de pierre — l'ordre des boutons
+
+`scripts/measure_stonecutter.py` : le client choisit une coupe par son
+**indice** (`Click Container Button`, 0x0A) dans une liste qu'il calcule
+lui-même ; le serveur doit calculer la même, dans le même ordre. La sonde clique
+chaque indice et lit la case de résultat.
+
+* **Le menu** : type **23** (`minecraft:stonecutter`), titre
+  `{"translate":"container.stonecutter"}`, **38 cases** : 0 l'entrée,
+  1 le résultat, puis 27 + 9.
+* **L'ordre** : par nom de l'objet produit. Pour la pierre : briques de pierre
+  sculptées, dalle de briques, escalier de briques, muret de briques, briques,
+  dalle, escalier. Andésite, grès, bloc de cuivre, pavé, briques de boue et
+  pierre noire (12 coupes) suivent la même règle. Tous les produits du tailleur
+  sont des blocs : trier par nom ou par clé de traduction revient au même.
+* La propriété de fenêtre 0 renvoie l'indice choisi ; un indice au-delà de la
+  liste ne change rien (ni propriété, ni résultat).
+* Une prise coûte une entrée et **garde** le choix ; le shift-clic taille toute
+  l'entrée ; un autre objet dans l'entrée **efface** le choix.
+
 ## 8. Ce qui n'est pas fait
 
 Nommé plutôt que caché :
 
-* **La grille 2×2 de l'inventaire du joueur** est appariée par `ov_gameplay` et
-  testée, mais le serveur ne câble pas encore l'écran de la fenêtre 0 : le code
-  de fenêtre existant y répond pour le coffre, et le partager demandait une
-  refonte de `server.cpp` que la parallélisation en cours interdit.
 * **La table de forge et la pierre de taille** ont leur appariement
   (`match_smithing`, `stonecutting_options`) et leurs tests, mais pas leur
   fenêtre.

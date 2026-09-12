@@ -11,6 +11,7 @@
 #include "ov/worldgen/structure_set.hpp"
 #include "ov/worldgen/structure_stage.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <optional>
 #include <utility>
@@ -75,6 +76,8 @@ struct WorldStructures::Impl {
     std::optional<worldgen::BlockTags>            tags;
     std::optional<worldgen::StructurePlacer>      placer;
     std::optional<worldgen::StructureBuilder>     builder;
+    /// ── great pyramid ── Can this dimension make a desert at all?
+    bool has_desert{false};
 };
 
 WorldStructures::WorldStructures(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
@@ -111,6 +114,8 @@ std::unique_ptr<WorldStructures> WorldStructures::load(const std::filesystem::pa
     }
     impl->placer.emplace(std::move(*placer));
     impl->placer->restrict_to_biomes(biomes);
+    impl->has_desert =  // ── great pyramid ──
+        std::find(biomes.begin(), biomes.end(), std::string_view{"minecraft:desert"}) != biomes.end();
 
     auto tags = worldgen::BlockTags::load(data, blocks);
     if (!tags) {
@@ -136,13 +141,15 @@ WorldStructures::StackStage::~StackStage() = default;
 
 std::unique_ptr<WorldStructures::StackStage> WorldStructures::make_stage(
     const worldgen::ChunkGenerator& generator, const registry::BlockRegistry& blocks,
-    const registry::Registries& registries, i64 seed) const {
+    const registry::Registries& registries, i64 seed, worldgen::OriginalStructures originals) const {
     auto out     = std::make_unique<StackStage>();
     out->placer  = &*impl_->placer;
     out->sampler = std::make_unique<GeneratorSampler>(generator);
+    // ── great pyramid ── never asked where no desert can be.
+    originals.great_pyramid = originals.great_pyramid && impl_->has_desert;
     out->stage   = std::make_unique<worldgen::StructureStage>(*impl_->placer, *impl_->builder,
                                                             out->sampler.get(), blocks,
-                                                            &registries, seed);
+                                                            &registries, seed, originals);
     out->stage->refuse(worldgen::StructureKind::RuinedPortal,
                        "ruined portal: its height search is not implemented, it would stand at y 0");
     out->stage->refuse(
@@ -186,10 +193,14 @@ void WorldStructures::StackStage::record(world::Chunk& chunk) {
         }
     }
     const auto& here = stage->starts_at(chunk_x, chunk_z);
-    if (here.empty() && references.empty()) {
+    nbt::Tag    tag  = worldgen::chunk_structures_to_nbt(here, references);
+    // ── great pyramid ── its start and references, beside the game's.
+    const bool pyramid = stage->great_pyramid() != nullptr &&
+                         stage->great_pyramid()->record(chunk_x, chunk_z, tag);
+    if (here.empty() && references.empty() && !pyramid) {
         return;
     }
-    chunk.set_structures(worldgen::chunk_structures_to_nbt(here, references));
+    chunk.set_structures(std::move(tag));
 }
 
 void WorldStructures::StackStage::report(std::string_view dimension) {

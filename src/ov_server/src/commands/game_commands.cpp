@@ -317,10 +317,16 @@ void CommandService::register_commands() {
 
     // ── effect ──────────────────────────────────────────────────────────────
     //
-    // On the status effects wave's own API (effect_session.hpp). Players
-    // only: the mobs of this server carry no effects yet, and a mob target is
-    // refused by name rather than counted as a failure to apply.
+    // On the status effects wave's own API (effect_session.hpp) for a player,
+    // and ── mobs-4 ── the host's mob effects (mob_effects.hpp) for a mob. An
+    // entity that bears none — an item, an arrow — is simply not applied to,
+    // as in vanilla, which counts only living targets.
     {
+        /// One target: a player with its session, or a mob by its info.
+        struct EffectHolder {
+            PlayerRef* player{nullptr};
+            EntityInfo entity{};
+        };
         const auto effect_of = [](const CommandContext& ctx) -> Parsed<gameplay::Effect> {
             const std::string& id     = ctx.find<ResourceArg>("effect")->id;
             const auto         effect = gameplay::effect_from_name(id);
@@ -336,7 +342,7 @@ void CommandService::register_commands() {
             return Text::translatable("effect." + std::string{id.substr(0, colon)} + "." +
                                       std::string{id.substr(colon + 1)});
         };
-        const auto targets_of = [this](const CommandContext& ctx) -> Parsed<std::vector<PlayerRef*>> {
+        const auto targets_of = [this](const CommandContext& ctx) -> Parsed<std::vector<EffectHolder>> {
             std::vector<const EntityInfo*> found;
             if (ctx.has("targets")) {
                 auto chosen = entities(ctx, "targets");
@@ -354,13 +360,20 @@ void CommandService::register_commands() {
                     return std::unexpected{error("permissions.requires.entity")};
                 }
             }
-            std::vector<PlayerRef*> out;
+            std::vector<EffectHolder> out;
             for (const EntityInfo* e : found) {
-                PlayerRef* p = e->player ? player(e->id) : nullptr;
-                if (p == nullptr || p->effects == nullptr || p->survival == nullptr) {
-                    return std::unexpected{not_modelled("keep status effects on anything but a player")};
+                if (!e->player) {
+                    if (!host_->give_mob_effect || !host_->clear_mob_effect) {
+                        return std::unexpected{not_modelled("keep status effects on a mob")};
+                    }
+                    out.push_back(EffectHolder{nullptr, *e});
+                    continue;
                 }
-                out.push_back(p);
+                PlayerRef* p = player(e->id);
+                if (p == nullptr || p->effects == nullptr || p->survival == nullptr) {
+                    return std::unexpected{not_modelled("keep status effects on this player")};
+                }
+                out.push_back(EffectHolder{p, *e});
             }
             return out;
         };
@@ -393,11 +406,15 @@ void CommandService::register_commands() {
                     .visible   = !hidden,
                     .show_icon = !hidden};
                 i32 applied = 0;
-                for (PlayerRef* p : *targets) {
-                    const gameplay::AddResult result = p->effects->apply(
-                        instance, *p->survival, EffectIo{p->send, p->broadcast_others}, p->effect_bearer);
-                    if (result != gameplay::AddResult::Unchanged &&
-                        result != gameplay::AddResult::Immune) {
+                for (const EffectHolder& t : *targets) {
+                    PlayerRef* p = t.player;
+                    const std::optional<gameplay::AddResult> result =
+                        p != nullptr ? std::optional{p->effects->apply(
+                                           instance, *p->survival,
+                                           EffectIo{p->send, p->broadcast_others}, p->effect_bearer)}
+                                     : host_->give_mob_effect(t.entity.id, instance);
+                    if (result && *result != gameplay::AddResult::Unchanged &&
+                        *result != gameplay::AddResult::Immune) {
                         ++applied;
                     }
                 }
@@ -412,7 +429,10 @@ void CommandService::register_commands() {
                     success(ctx.source(),
                             Text::translatable("commands.effect.give.success.single",
                                                {effect_name(*effect),
-                                                player_display_name((*targets)[0]->name, (*targets)[0]->uuid),
+                                                (*targets)[0].player != nullptr
+                                                    ? player_display_name((*targets)[0].player->name,
+                                                                          (*targets)[0].player->uuid)
+                                                    : display((*targets)[0].entity),
                                                 shown_seconds}),
                             true);
                 } else {
@@ -441,10 +461,16 @@ void CommandService::register_commands() {
                     which = *effect;
                 }
                 i32 cleared = 0;
-                for (PlayerRef* p : *targets) {
-                    const EffectIo io{p->send, p->broadcast_others};
-                    const bool     done = which ? p->effects->remove(*which, *p->survival, io, p->effect_bearer)
-                                                : p->effects->clear(*p->survival, io, p->effect_bearer) > 0;
+                for (const EffectHolder& t : *targets) {
+                    bool done = false;
+                    if (PlayerRef* p = t.player; p != nullptr) {
+                        const EffectIo io{p->send, p->broadcast_others};
+                        done = which ? p->effects->remove(*which, *p->survival, io, p->effect_bearer)
+                                     : p->effects->clear(*p->survival, io, p->effect_bearer) > 0;
+                    } else {
+                        const std::optional<usize> gone = host_->clear_mob_effect(t.entity.id, which);
+                        done = gone && *gone > 0;
+                    }
                     cleared += done ? 1 : 0;
                 }
                 if (cleared == 0) {
@@ -452,8 +478,11 @@ void CommandService::register_commands() {
                                                        : "commands.effect.clear.everything.failed")};
                 }
                 const bool  single = targets->size() == 1;
-                const Text  who    = single ? player_display_name((*targets)[0]->name, (*targets)[0]->uuid)
-                                            : raw(static_cast<i64>(targets->size()));
+                const Text  who =
+                    !single ? raw(static_cast<i64>(targets->size()))
+                    : (*targets)[0].player != nullptr
+                        ? player_display_name((*targets)[0].player->name, (*targets)[0].player->uuid)
+                        : display((*targets)[0].entity);
                 const std::string key = std::string{"commands.effect.clear."} +
                                         (which ? "specific" : "everything") + ".success." +
                                         (single ? "single" : "multiple");

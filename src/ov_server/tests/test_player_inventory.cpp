@@ -9,11 +9,45 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
+#include <filesystem>
+#include <optional>
+#include <string_view>
 
 using namespace ov;
 using namespace ov::server;
 
 namespace {
+
+struct Loaded {
+    std::optional<registry::Registries>  registries;
+    std::optional<gameplay::RecipeBook>  book;
+    std::optional<registry::RegistryId>  items;
+};
+
+[[nodiscard]] const Loaded& loaded() {
+    static const Loaded state = [] {
+        const auto path =
+            std::filesystem::path{OV_SOURCE_DIR} / "data" / "vanilla" / "1.20.1" / "registry.ovpack";
+        Loaded out;
+        if (auto regs = registry::Registries::load(path)) {
+            out.registries = std::move(*regs);
+            out.book.emplace(*out.registries);
+            out.items = out.registries->find("minecraft:item");
+        }
+        return out;
+    }();
+    return state;
+}
+
+[[nodiscard]] net::ItemStack item(std::string_view name, i8 count) {
+    const auto id = loaded().registries->protocol_id(*loaded().items, name);
+    REQUIRE(id.has_value());
+    return net::ItemStack{static_cast<i32>(*id), count, {}};
+}
+
+[[nodiscard]] bool holds(const net::ItemStack& stack, std::string_view name, i8 count) {
+    return !stack.empty() && stack.item_id == item(name, 1).item_id && stack.count == count;
+}
 
 /// A player's 46 slots, as the protocol numbers them.
 using Slots = std::array<net::ItemStack, kPlayerWindowSlots>;
@@ -100,6 +134,135 @@ TEST_CASE("the craft result slot is never written to", "[inventory][window0]") {
     REQUIRE(carried.count == 64);
     REQUIRE(slots[kCraftResultSlot].empty());
     (void)out;
+}
+
+// ── The 2x2 against the real server ─────────────────────────────────────────
+//
+// `scripts/measure_window0.py`: a survival probe clicks in window 0 of a real
+// 1.20.1 server, and each case below is one of its readings.
+
+TEST_CASE("the 2x2 answers each click on its result as the real server does",
+          "[inventory][window0][parity]") {
+    if (!loaded().book) {
+        SKIP("data/vanilla/1.20.1/registry.ovpack is not generated");
+    }
+    Slots          slots{};
+    net::ItemStack carried{};
+    DragState      drag;
+    slots[kCraftGridFirst] = item("minecraft:oak_log", 4);
+    const auto press       = [&](i8 button, i32 mode) {
+        return apply_player_click(&*loaded().registries, &*loaded().book,
+                                        click(kCraftResultSlot, button, mode), slots, carried, drag);
+    };
+
+    SECTION("shift-click: every craft, the inventory filled from its end") {
+        (void)press(0, 1);
+        CHECK(holds(slots[44], "minecraft:oak_planks", 16));
+        CHECK(slots[kCraftGridFirst].empty());
+    }
+    SECTION("a click, left or right: one craft on the cursor") {
+        (void)press(1, 0);
+        CHECK(holds(carried, "minecraft:oak_planks", 4));
+        CHECK(holds(slots[kCraftGridFirst], "minecraft:oak_log", 3));
+    }
+    SECTION("a number key onto an empty hotbar slot: one craft there") {
+        (void)press(2, 2);
+        CHECK(holds(slots[kHotbarFirst + 2], "minecraft:oak_planks", 4));
+        CHECK(holds(slots[kCraftGridFirst], "minecraft:oak_log", 3));
+        CHECK(carried.empty());
+    }
+    SECTION("a number key onto an occupied one: nothing") {
+        slots[kHotbarFirst + 2] = item("minecraft:cobblestone", 1);
+        (void)press(2, 2);
+        CHECK(holds(slots[kHotbarFirst + 2], "minecraft:cobblestone", 1));
+        CHECK(holds(slots[kCraftGridFirst], "minecraft:oak_log", 4));
+    }
+    SECTION("a throw, either button: exactly one craft, whole") {
+        const PlayerClickOutcome one = press(0, 4);
+        REQUIRE(one.dropped.size() == 1);
+        CHECK(holds(one.dropped[0], "minecraft:oak_planks", 4));
+        const PlayerClickOutcome all = press(1, 4);
+        REQUIRE(all.dropped.size() == 1);
+        CHECK(holds(all.dropped[0], "minecraft:oak_planks", 4));
+        CHECK(holds(slots[kCraftGridFirst], "minecraft:oak_log", 2));
+    }
+}
+
+TEST_CASE("a honey bottle's glass bottle goes back to the grid or the hotbar",
+          "[inventory][window0][parity]") {
+    if (!loaded().book) {
+        SKIP("data/vanilla/1.20.1/registry.ovpack is not generated");
+    }
+    Slots          slots{};
+    net::ItemStack carried{};
+    DragState      drag;
+    slots[kCraftGridFirst] = item("minecraft:honey_bottle", 2);
+
+    SECTION("one craft: the cell still holds honey, so the bottle goes to hotbar 0") {
+        (void)apply_player_click(&*loaded().registries, &*loaded().book,
+                                 click(kCraftResultSlot, 0, 0), slots, carried, drag);
+        CHECK(holds(carried, "minecraft:sugar", 3));
+        CHECK(holds(slots[kCraftGridFirst], "minecraft:honey_bottle", 1));
+        CHECK(holds(slots[kHotbarFirst], "minecraft:glass_bottle", 1));
+    }
+    SECTION("shift-click: the last bottle stays in the emptied cell") {
+        (void)apply_player_click(&*loaded().registries, &*loaded().book,
+                                 click(kCraftResultSlot, 0, 1), slots, carried, drag);
+        CHECK(holds(slots[44], "minecraft:sugar", 6));
+        CHECK(holds(slots[kCraftGridFirst], "minecraft:glass_bottle", 1));
+        CHECK(holds(slots[kHotbarFirst], "minecraft:glass_bottle", 1));
+    }
+}
+
+TEST_CASE("closing window 0 gives back the cursor, then the grid", "[inventory][window0][parity]") {
+    if (!loaded().registries) {
+        SKIP("data/vanilla/1.20.1/registry.ovpack is not generated");
+    }
+    Slots          slots{};
+    net::ItemStack carried = item("minecraft:dirt", 5);
+    slots[kCraftGridFirst] = item("minecraft:oak_log", 4);
+    const std::vector<net::ItemStack> thrown =
+        close_player_window(&*loaded().registries, slots, carried, 0);
+    CHECK(thrown.empty());
+    CHECK(carried.empty());
+    CHECK(slots[kCraftGridFirst].empty());
+    CHECK(holds(slots[kHotbarFirst], "minecraft:dirt", 5));
+    CHECK(holds(slots[kHotbarFirst + 1], "minecraft:oak_log", 4));
+}
+
+TEST_CASE("shift-click wears a helmet and holds a shield", "[inventory][window0][parity]") {
+    if (!loaded().registries) {
+        SKIP("data/vanilla/1.20.1/registry.ovpack is not generated");
+    }
+    Slots          slots{};
+    net::ItemStack carried{};
+    DragState      drag;
+    slots[kBackpackFirst]     = item("minecraft:iron_helmet", 1);
+    slots[kBackpackFirst + 1] = item("minecraft:shield", 1);
+    (void)apply_player_click(&*loaded().registries, nullptr, click(kBackpackFirst, 0, 1), slots,
+                             carried, drag);
+    (void)apply_player_click(&*loaded().registries, nullptr, click(kBackpackFirst + 1, 0, 1),
+                             slots, carried, drag);
+    CHECK(holds(slots[kArmourFirst], "minecraft:iron_helmet", 1));
+    CHECK(holds(slots[kOffhandSlot], "minecraft:shield", 1));
+    CHECK(slots[kBackpackFirst].empty());
+    CHECK(slots[kBackpackFirst + 1].empty());
+}
+
+TEST_CASE("a double click gathers the cursor's item", "[inventory][window0][parity]") {
+    if (!loaded().registries) {
+        SKIP("data/vanilla/1.20.1/registry.ovpack is not generated");
+    }
+    Slots          slots{};
+    net::ItemStack carried = item("minecraft:dirt", 10);
+    DragState      drag;
+    slots[kBackpackFirst + 1] = item("minecraft:dirt", 5);
+    slots[kHotbarFirst + 3]   = item("minecraft:dirt", 3);
+    (void)apply_player_click(&*loaded().registries, nullptr, click(kBackpackFirst, 0, 6), slots,
+                             carried, drag);
+    CHECK(holds(carried, "minecraft:dirt", 18));
+    CHECK(slots[kBackpackFirst + 1].empty());
+    CHECK(slots[kHotbarFirst + 3].empty());
 }
 
 TEST_CASE("throwing a stack hands it back to be dropped", "[inventory][window0]") {
