@@ -565,6 +565,147 @@ def campaign_enderman(server, rec: Recorder) -> dict:
     return out
 
 
+# ── enderman, second pass: what the implementation needs ────────────────────
+
+def entity_of_type(packets, name: str) -> int | None:
+    for _, pid, p in packets:
+        if pid == SPAWN_ENTITY:
+            eid, i = read_varint(p, 0)
+            kind, _ = read_varint(p, i + 16)
+            if kind == tid(name):
+                return eid
+    return None
+
+
+def metadata_hex(packets, eid: int | None) -> list[str]:
+    out = []
+    for _, pid, p in packets:
+        if pid == METADATA and eid is not None:
+            first, _ = read_varint(p, 0)
+            if first == eid:
+                out.append(p.hex())
+    return out
+
+
+def pit(d: int) -> str:
+    """A 1×1 hole two deep at (d, 0): an enderman in it cannot walk out."""
+    return f"fill {d} {Y - 2} 0 {d} {Y - 1} 0 minecraft:air"
+
+
+def ender_in_pit(server, d: int, extra: str = "") -> None:
+    server.batch([pit(d), f"summon minecraft:enderman {d + 0.5} {Y - 2} 0.5 "
+                  "{PersistenceRequired:1b,Silent:1b,Tags:[\"ove\"]" + extra + "}"])
+
+
+def stare_pitch(d: float, offset: float = 0.0) -> float:
+    """The pitch that looks from the probe's eyes to those of an enderman in the
+    pit `d` blocks east — minus `offset` degrees, looking higher."""
+    dy = (Y - 2 + 2.55) - (Y + 1.62)
+    return -math.degrees(math.atan2(dy, d)) - offset
+
+
+def angered(server) -> bool:
+    return value(server.batch(["data get entity @e[tag=ove,limit=1] AngryAt"])) is not None
+
+
+def position(server, selector: str) -> list[float] | None:
+    raw = value(server.batch([f"data get entity {selector} Pos"]))
+    if raw is None:
+        return None
+    return [float(v.strip().rstrip("d")) for v in raw.strip("[]").split(",")]
+
+
+def campaign_enderman2(server, rec: Recorder) -> dict:
+    out: dict = {}
+    # (a) The metadata: carrying a block from the spawn, then stared at.
+    fresh(server, "normal", "survival")
+    server.batch([f"clear {PROBE}", "time set midnight", "gamerule mobGriefing true"])
+    rec.take()
+    ender_in_pit(server, 8, ",carriedBlockState:{Name:\"minecraft:grass_block\","
+                            "Properties:{snowy:\"false\"}}")
+    time.sleep(1.5)
+    got = rec.take()
+    eid = entity_of_type(got, "enderman")
+    out["spawn_metadata"] = metadata_hex(got, eid)
+    server.batch([f"tp {PROBE} 0.5 {Y} 0.5 -90 {stare_pitch(8):.3f}"])
+    time.sleep(2.5)
+    out["stared_metadata"] = metadata_hex(rec.take(), eid)
+    out["carried_nbt"] = value(server.batch(["data get entity @e[tag=ove,limit=1] "
+                                             "carriedBlockState"]))
+    out["anger_nbt"] = value(server.batch(["data get entity @e[tag=ove,limit=1] AngerTime"]))
+
+    # (b) The stare's cone: looking above the eyes by `offset` degrees.
+    cells = []
+    for d in (8, 16):
+        for offset in (0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 7.0):
+            fresh(server, "normal", "survival")
+            server.batch(["time set midnight"])
+            ender_in_pit(server, d)
+            time.sleep(0.8)
+            server.batch([f"tp {PROBE} 0.5 {Y} 0.5 -90 {stare_pitch(d, offset):.3f}"])
+            time.sleep(1.5)
+            cells.append({"d": d, "offset": offset, "angry": angered(server)})
+    out["cone"] = cells
+
+    # (c) A carved pumpkin on the head.
+    fresh(server, "normal", "survival")
+    server.batch(["time set midnight",
+                  f"item replace entity {PROBE} armor.head with minecraft:carved_pumpkin"])
+    ender_in_pit(server, 8)
+    time.sleep(0.8)
+    server.batch([f"tp {PROBE} 0.5 {Y} 0.5 -90 {stare_pitch(8):.3f}"])
+    time.sleep(2.5)
+    out["pumpkin_angry"] = angered(server)
+    server.batch([f"item replace entity {PROBE} armor.head with minecraft:air"])
+
+    # (d) Rain, in the open.
+    fresh(server)
+    server.batch(["time set midnight", "weather rain",
+                  f"summon minecraft:enderman 8.5 {Y} 0.5 "
+                  "{PersistenceRequired:1b,Silent:1b,Tags:[\"ove\"]}"])
+    rain = []
+    begin = time.monotonic()
+    while time.monotonic() - begin < 12.0:
+        tick = gametime_of(server.batch(["time query gametime"]))
+        hp = value(server.batch(["data get entity @e[tag=ove,limit=1] Health"]))
+        rain.append({"tick": tick, "health": hp, "pos": position(server, "@e[tag=ove,limit=1]")})
+    out["rain"] = rain
+    server.batch(["weather clear"])
+
+    # (e) Where a hurt enderman lands: sixteen hits, the position around each.
+    fresh(server)
+    server.batch(["time set midnight", f"summon minecraft:enderman 0.5 {Y} 20.5 "
+                  "{PersistenceRequired:1b,Silent:1b,Tags:[\"ove\"]}"])
+    time.sleep(1.0)
+    hops = []
+    for _ in range(16):
+        before = position(server, "@e[tag=ove,limit=1]")
+        server.batch(["damage @e[tag=ove,limit=1] 1 minecraft:generic",
+                      "effect give @e[tag=ove] minecraft:instant_health 1 3 true"])
+        time.sleep(0.8)
+        hops.append({"before": before, "after": position(server, "@e[tag=ove,limit=1]")})
+    out["hurt_hops"] = hops
+
+    # (f) Picking up and putting down: eight endermen on the grass, left alone.
+    fresh(server)
+    server.batch(["time set midnight", "gamerule mobGriefing true"])
+    for k in range(8):
+        server.batch([f"summon minecraft:enderman {20.5 + (k % 4) * 10} {Y} {20.5 + (k // 4) * 10} "
+                      "{PersistenceRequired:1b,Silent:1b,Tags:[\"ovc\",\"c" + str(k) + "\"]}"])
+    carry = []
+    begin = time.monotonic()
+    while time.monotonic() - begin < 80.0:
+        tick = gametime_of(server.batch(["time query gametime"]))
+        row = {"tick": tick}
+        for k in range(8):
+            row[k] = value(server.batch([f"data get entity @e[tag=c{k},limit=1] "
+                                         "carriedBlockState.Name"]))
+        carry.append(row)
+        time.sleep(1.0)
+    out["carry"] = carry
+    return out
+
+
 def campaign_spider(server, rec: Recorder) -> dict:
     out = {}
     for when in ("noon", "midnight"):
@@ -620,7 +761,8 @@ def campaign_witch(server, rec: Recorder) -> dict:
 
 CAMPAIGNS = {"packets": campaign_packets, "speed": campaign_speed, "strength": campaign_strength,
              "splash": campaign_splash, "arrow": campaign_arrow, "anvil": campaign_anvil,
-             "enderman": campaign_enderman, "spider": campaign_spider, "slime": campaign_slime,
+             "enderman": campaign_enderman, "enderman2": campaign_enderman2,
+             "spider": campaign_spider, "slime": campaign_slime,
              "witch": campaign_witch, "anvil_back": campaign_anvil_back}
 
 
