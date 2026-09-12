@@ -25,11 +25,23 @@ namespace ov::gameplay {
 /// translation unit that includes it.
 using BlockLookup = registry::BlockStateId (*)(void* context, i32 x, i32 y, i32 z);
 
+class BlockMotionTable;
+
 class CollisionWorld {
 public:
-    CollisionWorld(const registry::BlockRegistry& blocks, BlockLookup lookup,
-                   void* context) noexcept
-        : blocks_{&blocks}, lookup_{lookup}, context_{context} {}
+    /// `motion` is optional: without it every block is ordinary ground — no
+    /// ice, no ladders, no cobwebs — which is what a test about walls wants.
+    CollisionWorld(const registry::BlockRegistry& blocks, BlockLookup lookup, void* context,
+                   const BlockMotionTable* motion = nullptr) noexcept
+        : blocks_{&blocks}, lookup_{lookup}, context_{context}, motion_{motion} {}
+
+    /// The state at a position, through the caller's lookup.
+    [[nodiscard]] registry::BlockStateId state_at(i32 x, i32 y, i32 z) const {
+        return lookup_(context_, x, y, z);
+    }
+    [[nodiscard]] const registry::BlockRegistry& blocks() const noexcept { return *blocks_; }
+    /// What blocks do to movement, or null when the caller did not say.
+    [[nodiscard]] const BlockMotionTable* motion() const noexcept { return motion_; }
 
     /// The boxes one block state occupies, in world space. Appends.
     void boxes_at(i32 x, i32 y, i32 z, std::vector<AABB>& out) const;
@@ -51,6 +63,7 @@ private:
     const registry::BlockRegistry* blocks_{nullptr};
     BlockLookup                    lookup_{nullptr};
     void*                          context_{nullptr};
+    const BlockMotionTable*        motion_{nullptr};
 };
 
 /// A player's box: 0.6 wide, 1.8 tall, standing on the given position.

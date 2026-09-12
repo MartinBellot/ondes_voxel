@@ -11,6 +11,7 @@
 // modifiers are not measured at all (`follow_parent`, `avoid_sun`).
 #include "ov/gameplay/mob_logic.hpp"
 #include "ov/gameplay/villager.hpp"  // ── villagers ──
+#include "ov/gameplay/tame.hpp"      // ── tame ──
 
 #include <array>
 
@@ -156,11 +157,12 @@ constexpr std::array<MobKind, 30> kAll{{
 
     // Rabbit: a hop, not a walk — 0.13175 b/t strolling and 0.380 panicking
     // are fitted through the law (0.824, 1.40), not goal modifiers.
-    animal("minecraft:rabbit", 0.3, 0.824, 1.40, false),
+    // ── tame ── it breeds (carrots, husbandry's table)
+    animal("minecraft:rabbit", 0.3, 0.824, 1.40, true),
     // Wolf strolls at 1.0 (0.19416) and does not panic.
     animal("minecraft:wolf", 0.3, 1.0, 0.0, false),
     // Fox strolls at 1.0 (0.19392); its panic leaps, 0.859 b/t, fitted 2.1.
-    animal("minecraft:fox", 0.3, 1.0, 2.1, false),
+    animal("minecraft:fox", 0.3, 1.0, 2.1, true),  // ── tame ── berries
     // Cat strolls at 0.8 (0.12432) and flees at 1.5 (0.429).
     animal("minecraft:cat", 0.3, 0.8, 1.5, false),
     // Horse strolls at 0.7 (0.05354) and panics at 1.2 (0.157).
@@ -185,6 +187,10 @@ const MobKind* mob_kind(std::string_view type_name) noexcept {
         if (kind.type_name == type_name) {
             return &kind;
         }
+    }
+    // ── tame ── donkeys, llamas, parrots and the rest (tame.cpp)
+    if (const MobKind* kind = tame_mob_kind(type_name)) {
+        return kind;
     }
     // ── villagers ── a table of its own, in villager.cpp
     return villager_mob_kind(type_name);

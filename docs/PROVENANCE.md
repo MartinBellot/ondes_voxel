@@ -36,6 +36,7 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`chunkmap.md`](provenance/chunkmap.md) | Tickets, pool de jobs, génération hors du thread de tick, déterminisme sous TSan |
 | **Jeu** | |
 | [`fluides.md`](provenance/fluides.md) | Écoulement, recherche du trou, mélanges : 3172/3172 positions |
+| [`physique-blocs.md`](provenance/physique-blocs.md) | Glace, échelles, slime, miel, toiles, colonnes de bulles, courants : une table, lue par le joueur et les mobs |
 | [`redstone.md`](provenance/redstone.md) | Le modèle de puissance, circuit par circuit, et 36 exceptions nommées à « cube plein » |
 | [`survie.md`](provenance/survie.md) | Vie, faim, expérience — et les dégâts de chute qui sont un `ceil` |
 | [`crafting-and-smelting.md`](provenance/crafting-and-smelting.md) | 1174 recettes, 2885 grilles, et trois tables de cuisson plutôt qu'un diviseur |
@@ -61,6 +62,8 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`nether.md`](provenance/nether.md) | Le Nether à 99,9 %, des portails là où le jeu les met, et le bruit de l'Overworld qui lisait ses octaves à l'envers |
 | [`nether-2.md`](provenance/nether-2.md) | Les features du Nether, ses fossiles à 185 départs sur 185, et ses mobs dans un monde à eux : troc, salves, boules de feu |
 | [`son.md`](provenance/son.md) | Les sons de 1003 blocs et 79 créatures, relevés sur le fil, et le client qui les joue |
+| [`apprivoisement.md`](provenance/apprivoisement.md) | Loups, chats, perroquets, chevaux et lamas : apprivoisement à 1/3 (χ², témoins rejetés), colère 20–39 s, statistiques et poulains à la règle 1.20, tempérament +5, montures pilotées par `Move Vehicle` — et une force de lama que le wiki donne fausse |
+| [`son-client.md`](provenance/son-client.md) | La tête (panoramique invariant au tangage, 8/8 positions au modèle), la priorité des voix (16 → 4,9 ms p99 pour 200 sons/frame), la musique par situation, les disques 1010/1011 mesurés, les sous-titres |
 | [`elevage.md`](provenance/elevage.md) | Veaux, agneaux et poussins : reproduction à 59-62 ticks, couleurs héritées, et une vitesse de marche qui n'est pas l'attribut divisé par deux |
 | [`chat-client.md`](provenance/chat-client.md) | Le chat de notre client, mesuré sur le vrai client : un fondu de 10 s et non de 3, et des coupures de ligne identiques |
 | [`projectiles.md`](provenance/projectiles.md) | Flèches, tridents et lancers : un vol ajusté à 1,3·10⁻¹⁴, et l'ordre des opérations qui expliquait le résidu des flèches |
@@ -70,10 +73,11 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`effets.md`](provenance/effets.md) | Les 33 effets et leurs modificateurs : 522/522 intervalles, et l'ordre des seaux de hachage de Java |
 | [`tnt-et-gravite.md`](provenance/tnt-et-gravite.md) | La TNT qui saute, le creeper qui siffle, le sable qui tombe — et le paquet Explosion qui n'est pas là où l'archive le met |
 | [`branchement.md`](provenance/branchement.md) | Le câblage au tick, et les deux bugs qu'il a révélés |
+| [`protocole-763.md`](provenance/protocole-763.md) | Les 176 paquets de 763 (deux sources d'accord sur chaque id), la matrice de conformité générée depuis le code, et Set Cooldown qui partait en 0x16 |
 | **Client** | |
 | [`interface.md`](provenance/interface.md) | Police, HUD, inventaire : 2414 glyphes validés glyphe par glyphe |
 | [`inventaire-creatif.md`](provenance/inventaire-creatif.md) | Les 14 onglets demandés au jar serveur, 1689 cases, et la géométrie comptée dans les pixels |
-| [`rendu-entites.md`](provenance/rendu-entites.md) | Modèles d'entités, leur source, et le chest refusé faute de source permise |
+| [`rendu-entites.md`](provenance/rendu-entites.md) | Les ~200 modèles d'entités lus du vrai client pendant qu'il tourne, textures par métadonnées, et chaque espèce mesurée contre lui — et la vache qui se tenait debout |
 | [`serveur-dedie.md`](provenance/serveur-dedie.md) | Le serveur dédié administré comme vanilla : `server.properties` et les quatre listes dans l'ordre même des tables de hachage du JDK 17, la porte, RCON, Query, le chien de garde — et la fermeture côté serveur que l'écouteur ne signalait jamais |
 | [`persistance-entites.md`](provenance/persistance-entites.md) | Objets, orbes, flèches, TNT, sable, nuages, mobs du Nether, dragon et cristaux, et le wagonnet du joueur : sauvés au type près mesuré sur le vrai serveur, un écrivain par dimension |
 
@@ -155,6 +159,7 @@ Une ligne par système non trivial, ajoutée au moment de son implémentation.
 | VarInt / VarLong | `ov_protocol` | archive protocole 763, *Data types* | ≤ 5 et ≤ 10 octets. Un négatif occupe **toujours** la taille maximale (complément à deux). |
 | Chaînes du protocole | `ov_protocol` | archive protocole 763, *Data types* | Préfixe VarInt en **octets** ; la limite déclarée est en unités UTF-16, donc la borne en octets vaut 3×. |
 | Registres et blockstates | `ov_datagen` | data generator officiel, `server.jar` 1.20.1 (SHA-1 `84194a2f286ef7c14ed7ce0090dba59902951553`) | Voir les deux pièges ci-dessous. |
+| Musique, disques, sous-titres du client | `ov_audio`, `ov_client` | wiki *Music*, *Subtitles*, *Jukebox* ; archive protocole 763 (World Event, Boss Bar, Login, Respawn) ; mesure sur le vrai serveur (`scripts/measure_jukebox_events.py`) | 1010 = id d'objet du disque, 1011 = arrêt (éjection et casse), reçus par l'acteur aussi. Durées de fondu et de sous-titre, volume du clic, priorité des voix : les nôtres. Voir `docs/provenance/son-client.md`. |
 
 ---
 

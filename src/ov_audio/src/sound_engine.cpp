@@ -149,7 +149,18 @@ struct Mixer {
     std::atomic<u32> active_voices{0};
     std::atomic<u32> active_streams{0};
     std::atomic<u64> dropped{0};
+    std::atomic<u64> stolen{0};
     std::atomic<u64> frames_mixed{0};
+
+    /// What a voice sends to both ears, summed: the priority. A voice not yet
+    /// mixed has applied nothing, so its target stands in.
+    [[nodiscard]] f32 loudness(const Voice& voice) const noexcept {
+        if (voice.fresh || voice.file == nullptr) {
+            const Gains g = target_gains(voice, voice.file != nullptr && voice.file->channels >= 2);
+            return g.left + g.right;
+        }
+        return voice.gain_l + voice.gain_r;
+    }
 
     [[nodiscard]] bool push(const Command& command) noexcept {
         const u32 h = head.load(std::memory_order_relaxed);
@@ -203,9 +214,37 @@ struct Mixer {
                         }
                     }
                 }
+                if (index >= voices.size() && command.stream_slot < 0 && max_voices > 0) {
+                    // Every voice is taken: the quietest gives way, if the
+                    // newcomer would be louder than it. What reaches the ears
+                    // decides, so a sound out of range or in a muted category
+                    // never takes a voice from one that is heard.
+                    Voice candidate;
+                    candidate.file                 = command.file;
+                    candidate.position             = command.position;
+                    candidate.volume               = command.volume;
+                    candidate.attenuation_distance = command.attenuation_distance;
+                    candidate.category             = command.category;
+                    candidate.relative             = command.relative;
+                    const f32 incoming             = loudness(candidate);
+                    usize     quietest             = 0;
+                    f32       lowest               = loudness(voices[0]);
+                    for (usize i = 1; i < max_voices; ++i) {
+                        const f32 level = loudness(voices[i]);
+                        if (level < lowest) {
+                            lowest   = level;
+                            quietest = i;
+                        }
+                    }
+                    if (incoming > lowest) {
+                        release(quietest);
+                        stolen.fetch_add(1, std::memory_order_relaxed);
+                        index = quietest;
+                    }
+                }
                 if (index >= voices.size() || voices[index].active) {
-                    // Every voice is taken. The new sound is dropped and counted;
-                    // stealing one would cut a sound off mid-word to make room.
+                    // Every voice is taken by something at least as loud: the
+                    // new sound is the one dropped, and counted.
                     dropped.fetch_add(1, std::memory_order_relaxed);
                     if (command.stream_slot >= 0) {
                         streams[static_cast<usize>(command.stream_slot)].finished.store(
@@ -259,34 +298,22 @@ struct Mixer {
                              (voice.category == SoundCategory::Master
                                   ? 1.0F
                                   : volumes[index_of(voice.category)]);
-        f32 base = 0.0F;
-        f32 pan  = 0.0F;
-        if (voice.relative) {
-            base = std::clamp(voice.volume, 0.0F, 1.0F);
-        } else {
-            const f64 dx       = voice.position.x - listener.position.x;
-            const f64 dy       = voice.position.y - listener.position.y;
-            const f64 dz       = voice.position.z - listener.position.z;
-            const f64 distance = std::sqrt(dx * dx + dy * dy + dz * dz);
-            base = SoundEngine::attenuation(distance, voice.volume, voice.attenuation_distance);
-            if (distance > 1e-6) {
-                // Minecraft's yaw: 0 faces +Z, 90 faces -X. The listener's right
-                // hand points along (-cos yaw, 0, -sin yaw). Dividing by the full
-                // distance and not the horizontal one centres a sound overhead.
-                const f64 yaw     = static_cast<f64>(listener.yaw_degrees) * std::numbers::pi / 180.0;
-                const f64 right_x = -std::cos(yaw);
-                const f64 right_z = -std::sin(yaw);
-                pan = static_cast<f32>(std::clamp((dx * right_x + dz * right_z) / distance, -1.0, 1.0));
-            }
-        }
-        const f32 gain = base * category;
         if (stereo_source) {
             // A stereo file is not positioned — vanilla spatialises mono only —
-            // so its two channels go out as they are.
-            return Gains{gain, gain};
+            // so its two channels go out as they are, attenuated but unpanned.
+            f32 base = std::clamp(voice.volume, 0.0F, 1.0F);
+            if (!voice.relative) {
+                const f64 dx = voice.position.x - listener.position.x;
+                const f64 dy = voice.position.y - listener.position.y;
+                const f64 dz = voice.position.z - listener.position.z;
+                base = SoundEngine::attenuation(std::sqrt(dx * dx + dy * dy + dz * dz),
+                                                voice.volume, voice.attenuation_distance);
+            }
+            return Gains{base * category, base * category};
         }
-        const f32 angle = (pan + 1.0F) * std::numbers::pi_v<f32> / 4.0F;
-        return Gains{gain * std::cos(angle), gain * std::sin(angle)};
+        const StereoGain g = SoundEngine::spatialise(listener, voice.position, voice.volume,
+                                                     voice.attenuation_distance, voice.relative);
+        return Gains{g.left * category, g.right * category};
     }
 
     [[nodiscard]] static bool sample_buffer(const Voice& voice, f32& left, f32& right) noexcept {
@@ -484,6 +511,7 @@ struct SoundEngine::Impl {
     std::unordered_map<const SoundEntry*, std::unique_ptr<DecodedFile>>                  cache;
     std::unordered_map<std::string, std::unique_ptr<DecodedFile>, NameHash, std::equal_to<>> supplied;
     std::array<f32, kCategoryCount> volumes{};
+    std::array<f32, kCategoryCount> fades{};
     bool                            volumes_dirty{true};
     u64                             started{0};
     u64                             refused{0};
@@ -699,6 +727,7 @@ std::expected<std::unique_ptr<SoundEngine>, std::string> SoundEngine::create(
     impl.desc                         = desc;
     impl.synchronous                  = desc.backend == Backend::Null;
     impl.volumes.fill(1.0F);
+    impl.fades.fill(1.0F);
     impl.deferred.reserve(32);
     // Bounded, and allocated once: a play past it is refused as QueueFull.
     impl.pending_streams.reserve(static_cast<usize>(desc.max_streams) * 4 + 4);
@@ -769,6 +798,22 @@ void SoundEngine::set_volume(SoundCategory category, f32 volume) noexcept {
 
 f32 SoundEngine::volume(SoundCategory category) const noexcept {
     return impl_->volumes[index_of(category)];
+}
+
+void SoundEngine::set_fade(SoundCategory category, f32 fade) noexcept {
+    const f32 clamped = std::clamp(fade, 0.0F, 1.0F);
+    if (impl_->fades[index_of(category)] != clamped) {
+        impl_->fades[index_of(category)] = clamped;
+        impl_->volumes_dirty             = true;
+    }
+}
+
+f32 SoundEngine::fade(SoundCategory category) const noexcept {
+    return impl_->fades[index_of(category)];
+}
+
+const SoundCatalog& SoundEngine::catalog() const noexcept {
+    return *impl_->desc.catalog;
 }
 
 void SoundEngine::add_pcm(std::string_view path, std::span<const i16> samples, u32 channels,
@@ -869,8 +914,10 @@ void SoundEngine::update() {
     impl.deferred.erase(impl.deferred.begin(), impl.deferred.begin() + static_cast<isize>(sent));
     if (impl.volumes_dirty) {
         Command command;
-        command.kind    = Command::Kind::SetVolumes;
-        command.volumes = impl.volumes;
+        command.kind = Command::Kind::SetVolumes;
+        for (usize i = 0; i < kCategoryCount; ++i) {
+            command.volumes[i] = impl.volumes[i] * impl.fades[i];
+        }
         if (impl.mixer.push(command)) {
             impl.volumes_dirty = false;
         }
@@ -923,6 +970,7 @@ EngineStats SoundEngine::stats() const {
     out.started          = impl.started;
     out.refused          = impl.refused;
     out.dropped_no_voice = impl.mixer.dropped.load(std::memory_order_relaxed);
+    out.stolen           = impl.mixer.stolen.load(std::memory_order_relaxed);
     out.frames_mixed     = impl.mixer.frames_mixed.load(std::memory_order_relaxed);
     out.cached_files     = impl.cache.size() + impl.supplied.size();
     for (const auto& [entry, file] : impl.cache) {
@@ -950,6 +998,55 @@ f32 SoundEngine::attenuation(f64 distance, f32 volume, i32 attenuation_distance)
     const f64 range   = static_cast<f64>(attenuation_distance) * std::max(1.0, static_cast<f64>(volume));
     const f64 falloff = std::clamp(1.0 - distance / range, 0.0, 1.0);
     return static_cast<f32>(std::min(1.0, static_cast<f64>(volume)) * falloff);
+}
+
+f32 SoundEngine::pan(const Listener& listener, Vec3d source) noexcept {
+    const f64 dx       = source.x - listener.position.x;
+    const f64 dy       = source.y - listener.position.y;
+    const f64 dz       = source.z - listener.position.z;
+    const f64 distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+    if (distance <= 1e-6) {
+        return 0.0F;
+    }
+    // The head's basis from Minecraft's angles: yaw 0 looks along +Z, yaw 90
+    // along -X, pitch 90 straight down. `look` and `up` are orthonormal, and
+    // right = look × up. Dividing by the full distance and not the horizontal
+    // one centres a sound overhead.
+    constexpr f64 kRadians = std::numbers::pi / 180.0;
+    const f64     yaw      = static_cast<f64>(listener.yaw_degrees) * kRadians;
+    const f64     pitch    = static_cast<f64>(listener.pitch_degrees) * kRadians;
+    const f64     look_x   = -std::sin(yaw) * std::cos(pitch);
+    const f64     look_y   = -std::sin(pitch);
+    const f64     look_z   = std::cos(yaw) * std::cos(pitch);
+    const f64     up_x     = -std::sin(yaw) * std::sin(pitch);
+    const f64     up_y     = std::cos(pitch);
+    const f64     up_z     = std::cos(yaw) * std::sin(pitch);
+    // Minecraft's world is right-handed (+X east, +Y up, +Z south), so
+    // look × up is the right hand: facing south (yaw 0) it is west, -X.
+    const f64 right_x = look_y * up_z - look_z * up_y;
+    const f64 right_y = look_z * up_x - look_x * up_z;
+    const f64 right_z = look_x * up_y - look_y * up_x;
+    return static_cast<f32>(
+        std::clamp((dx * right_x + dy * right_y + dz * right_z) / distance, -1.0, 1.0));
+}
+
+StereoGain SoundEngine::spatialise(const Listener& listener, Vec3d source, f32 volume,
+                                   i32 attenuation_distance, bool relative) noexcept {
+    if (relative) {
+        const f32 gain = std::clamp(volume, 0.0F, 1.0F);
+        // Constant power at the centre: both ears at cos(pi/4), as a centred
+        // positional sound at the same gain — the interface is not louder than
+        // the world for being unpanned.
+        const f32 centre = gain * std::numbers::sqrt2_v<f32> / 2.0F;
+        return StereoGain{centre, centre};
+    }
+    const f64 dx       = source.x - listener.position.x;
+    const f64 dy       = source.y - listener.position.y;
+    const f64 dz       = source.z - listener.position.z;
+    const f32 gain     = attenuation(std::sqrt(dx * dx + dy * dy + dz * dz), volume,
+                                     attenuation_distance);
+    const f32 angle    = (pan(listener, source) + 1.0F) * std::numbers::pi_v<f32> / 4.0F;
+    return StereoGain{gain * std::cos(angle), gain * std::sin(angle)};
 }
 
 }  // namespace ov::audio

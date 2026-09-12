@@ -73,7 +73,10 @@ TEST_CASE("a mob given the falling behaviour falls when the world ticks",
     CHECK(item_y < 10.0);
     // Half the gravity is half the distance, tick for tick: the same closed
     // form with g halved. Not "roughly slower" — exactly half.
-    CHECK(10.0 - item_y == Catch::Approx((10.0 - mob_y) * 0.5).epsilon(1e-12));
+    // Half, to the float residue: a living thing's drag is 0.98F and an item's
+    // the exact 0.98, both read off the real server's trace (── movement
+    // physics ──), so the two falls differ past the seventh digit.
+    CHECK(10.0 - item_y == Catch::Approx((10.0 - mob_y) * 0.5).epsilon(1e-6));
 
     for (i64 tick = 5; tick < 200; ++tick) {
         world.tick(entity::TickContext{tick, &context});
