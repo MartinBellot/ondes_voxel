@@ -79,7 +79,8 @@ SHOT_REGIONS = {
     "14-mount-pig": ["faim", "xp"],
     "30-hopper": ["trémie"], "31-dispenser": ["screen"], "32-shulker": ["screen"],
     "33-anvil": ["screen"], "34-grindstone": ["screen"], "35-enchanting": ["screen"],
-    "36-brewing": ["screen"], "37-crafting": ["screen"], "38-chest": ["screen"],
+    "36-brewing": ["screen"], "37-crafting": ["screen"],
+    # 38-chest: the real client's click opened nothing ("screen none"); left out.
     "39-horse-inventory": ["screen"], "40-donkey-inventory": ["screen"],
     "41-llama-inventory": ["screen"],
     "h1-hurt": ["cœurs"], "h2-absorption": ["cœurs"], "h3-poison": ["cœurs"],
@@ -219,6 +220,26 @@ def cmd_boxes(args):
             print("  x %3d y %3d  %3dx%-3d  %d px" % (x, y, w, h, n))
 
 
+# Windows are compared pixel for pixel: F1 (hideGui) hides the HUD but *not*
+# an open screen, so the no-HUD twin shows the window too and the ink
+# difference is empty. The window is opaque over the dimmed world, so its
+# rectangle needs no background removed.
+DIRECT = {"screen", "trémie"}
+
+
+def compare_direct(v, o, region):
+    x0, y0, w, h = region
+    same = near = total = 0
+    for y in range(y0 * SCALE, (y0 + h) * SCALE):
+        for x in range(x0 * SCALE, (x0 + w) * SCALE):
+            a, b = v.px(x, y), o.px(x, y)
+            d = max(abs(a[i] - b[i]) for i in range(3))
+            total += 1
+            same += d == 0
+            near += d <= 8
+    return (total, total, 1.0, same / total, near / total)
+
+
 def compare_region(v, vb, o, ob, region):
     vm = ink_mask(v, vb, region, fine=True)
     om = ink_mask(o, ob, region, fine=True)
@@ -251,7 +272,10 @@ def cmd_compare(args):
         v, vb = Image(vpath), Image(nohud_of(vpath))
         o, ob = Image(opath), Image(nohud_of(opath))
         for name in (args.region.split(",") if args.region else SHOT_REGIONS[shot]):
-            r = compare_region(v, vb, o, ob, REGIONS[name])
+            if name in DIRECT:
+                r = compare_direct(v, o, REGIONS[name])
+            else:
+                r = compare_region(v, vb, o, ob, REGIONS[name])
             if r is None:
                 print("%-20s %-8s aucune encre" % (shot, name))
                 continue

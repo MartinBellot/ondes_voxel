@@ -277,6 +277,14 @@ restent refusés et nommés, comme avant.
 - **`spawn-animals=false` refuse aussi un cheval `/summon`é** : la première
   scène de monture n'avait aucun cheval (« No entity was found »).
   `doMobSpawning false` dans les scènes suffit à garder le monde vide.
+- **F1 ne cache pas un écran ouvert.** `hideGui` retire le HUD mais laisse la
+  fenêtre de conteneur : la capture « sans HUD » d'un écran le montre encore,
+  et la différence d'encre y est vide. Les fenêtres sont donc comparées
+  directement, pixel contre pixel dans leur rectangle de 176 de large —
+  opaque sur le monde assombri, il n'y a rien à soustraire.
+- **Le coffre de la passe « écrans » ne s'est pas ouvert** chez le vrai
+  client (« screen none » après le clic). Les huit autres fenêtres oui ; le
+  coffre, déjà mesuré (`interface.md`), sort de cette comparaison.
 - **Le disque.** Une capture PPM de notre client pèse 11 Mo, deux par scène ;
   un BMP intermédiaire 14,7 Mo. Nos captures sont récrites en PNG sans perte
   à la fin de la passe, et les BMP de comparaison lus puis effacés aussitôt.
