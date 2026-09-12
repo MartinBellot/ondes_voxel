@@ -246,8 +246,8 @@ void place_all(const GreatPyramid& pyramid, const GreatPyramidLayout& layout, Ma
 
 TEST_CASE("the set is its own: grid, salt and the JSON agree", "[great_pyramid]") {
     const RandomSpreadPlacement p = great_pyramid_placement();
-    REQUIRE(p.spacing == 48);
-    REQUIRE(p.separation == 24);
+    REQUIRE(p.spacing == 24);
+    REQUIRE(p.separation == 12);
     REQUIRE(p.salt == 20260911);
     std::ifstream in{std::filesystem::path{OV_SOURCE_DIR} / "data" / "ondes_voxel" /
                      "ov_structures" / "great_pyramid.json"};
@@ -255,8 +255,8 @@ TEST_CASE("the set is its own: grid, salt and the JSON agree", "[great_pyramid]"
     std::stringstream text;
     text << in.rdbuf();
     const std::string json = text.str();
-    REQUIRE(json.find("\"spacing\": 48") != std::string::npos);
-    REQUIRE(json.find("\"separation\": 24") != std::string::npos);
+    REQUIRE(json.find("\"spacing\": 24") != std::string::npos);
+    REQUIRE(json.find("\"separation\": 12") != std::string::npos);
     REQUIRE(json.find("\"salt\": 20260911") != std::string::npos);
     REQUIRE(json.find("\"ondes_voxel:great_pyramid\"") != std::string::npos);
 }
@@ -290,11 +290,11 @@ TEST_CASE("the footprint gates refuse by name", "[great_pyramid]") {
     REQUIRE(pyramid->decide(kSeed, c.x, c.z, &edge, nullptr, nullptr) == PyramidDecision::NotDesert);
 
     FakeSampler slope;
-    slope.ground = [x0](i32 x, i32) { return 80 + (x - x0) / 6; };  // 101 blocks: 16 up
+    slope.ground = [x0](i32 x, i32) { return 80 + (x - x0) / 4; };  // 101 blocks: 24 up
     REQUIRE(pyramid->decide(kSeed, c.x, c.z, &slope, nullptr, nullptr) == PyramidDecision::TooSteep);
 
     FakeSampler gentle;
-    gentle.ground = [x0](i32 x, i32) { return 80 + (x - x0) / 8; };  // 12 up: allowed
+    gentle.ground = [x0](i32 x, i32) { return 80 + (x - x0) / 5; };  // 20 up: allowed
     REQUIRE(pyramid->decide(kSeed, c.x, c.z, &gentle, nullptr, &layout) == PyramidDecision::Placed);
     REQUIRE(layout.base_y == 80);  // the median of a symmetric slope is its middle
 

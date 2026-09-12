@@ -88,4 +88,48 @@ mélangé) : identique bloc pour bloc et entité pour entité, et aucune écritu
 
 ## 4. Mesures
 
-*(complétées ci-dessous au fil des mesures)*
+Toutes par `tools/ov_pyramid`, build debug, notre bruit et nos biomes, le filtre vanilla du placeur
+branché. Rien n'est généré pour décider : la décision ne lit que le biome et la colonne de base.
+
+### 4.1 Premier réglage (48 / 24, pente ≤ 14, désert 22 / 25) — trop rare
+
+Graine 1234567890, carré de 1 920 × 1 920 chunks (3 686 400 chunks²), désert **2,94 %** de la
+surface (échantillonné tous les 4 chunks) :
+
+| grille | candidats | pas désert | trop pentu | trop bas | près de vanilla | **posées** |
+|---|---:|---:|---:|---:|---:|---:|
+| 48 / 24 | 1 600 | 1 575 | 17 | 1 | 6 | **1** |
+| 32 / 16 | 3 600 | 3 555 | 29 | 3 | 13 | **0** |
+| 24 / 12 | 6 400 | 6 323 | 58 | 4 | 13 | **2** |
+
+Deux portes refusaient presque tout ce que le désert offrait :
+- **l'emprise « désertique à 22 / 25 »** : le désert couvre 2,94 % de la surface, mais à peine
+  1,2 à 1,6 % des candidats passent — un désert de 1.18 est découpé de rivières et de franges ;
+- **la pente ≤ 14** : 17 des 25 sites désertiques à 48 / 24, dont 5 à 15-16 blocs (écarts relevés :
+  15 ×3, 16 ×2, 19 ×2, 21, 23, 26 ×2, 27, 31, 32, 39, 40, 42).
+
+Balayage de graines à ce réglage : **9 pyramides à moins de 96 chunks de l'origine sur 400 graines**
+(100 à 499), la plus proche à 952 blocs (graine 330).
+
+### 4.2 Réglage retenu : 24 / 12, pente ≤ 20, désert 18 / 25
+
+Les deux portes desserrées — **pente ≤ 20** (le remplissage sous le socle et le dégagement au-dessus,
+porté à `y` + 24, absorbent l'écart) et **18 / 25** échantillons désertiques (toujours « en majorité
+désert ») — puis les trois grilles remesurées sur le **même** carré :
+
+| grille | candidats | pas désert | trop pentu | trop bas | près de vanilla | **posées** | par 10 000 chunks² | par 10 000 chunks² de désert | paire la plus proche |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 48 / 24 | 1 600 | 1 565 | 14 | 7 | 12 | **2** | 0,005 | 0,2 | 1 336 chunks |
+| 32 / 16 | 3 600 | 3 524 | 35 | 15 | 24 | **2** | 0,005 | 0,2 | 768 chunks |
+| **24 / 12** | 6 400 | 6 274 | 63 | 15 | 34 | **14** | **0,038** | **1,3** | 46 chunks |
+
+Retenu : **24 / 12**. C'est le plus serré des trois, et deux départs n'y sont **jamais** à moins de
+séparation + 1 = **13 chunks** (208 blocs) — plus que la largeur d'une pyramide avec son sable et sa
+chaussée (≤ 124 blocs) : deux pyramides ne se chevauchent pas, par construction. Une pyramide pour
+~7 700 chunks² de désert, soit à peu près **une par grand désert** (un désert de 90 × 90 chunks),
+et non une par monde. L'écart aux structures vanilla est inchangé : villages et pyramides du désert à
+10 chunks, puits de mine hors de l'emprise, tout le reste à 6 chunks.
+
+Ce que ce réglage coûte en cohérence : sur un site à 20 blocs d'écart, un bord du socle est porté
+jusqu'à ~20 blocs au-dessus du sol (un soubassement de grès, jamais d'air sous le socle) et une colline
+peut être tranchée sur 24 blocs à l'autre bord.

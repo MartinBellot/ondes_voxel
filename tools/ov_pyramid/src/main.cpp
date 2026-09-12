@@ -58,6 +58,8 @@ struct Options {
     i32                   cells{12};     // density: grid cells per side
     i32                   side{3};       // cost: chunks per side around the centre
     bool                  features{false};
+    i32                   spacing{0};     // density: another grid than the set's (0 = the set's)
+    i32                   separation{0};
 };
 
 [[nodiscard]] Options parse(int argc, char** argv) {
@@ -84,6 +86,10 @@ struct Options {
             options.cells = std::stoi(rest);
         } else if (flag("--side=")) {
             options.side = std::stoi(rest);
+        } else if (flag("--spacing=")) {
+            options.spacing = std::stoi(rest);
+        } else if (flag("--separation=")) {
+            options.separation = std::stoi(rest);
         } else if (arg == "--features") {
             options.features = true;
         } else if (flag("--data=")) {
@@ -271,8 +277,11 @@ int scan(const Options& o, const registry::BlockRegistry& blocks,
                     print_layout(seed, layout);
                     ++found;
                 } else if (o.seeds == 1) {
-                    fmt::print("seed {} chunk ({}, {}): {}\n", seed, c.x, c.z,
-                               worldgen::to_string(decision));
+                    const i32 x = c.x * 16 + 8;
+                    const i32 z = c.z * 16 + 8;
+                    fmt::print("seed {} chunk ({}, {}): {} — biome {} at y 64, surface {}\n", seed,
+                               c.x, c.z, worldgen::to_string(decision),
+                               w.sampler->biome_at(x, 64, z), w.sampler->surface_height(x, z));
                 }
             }
         }
@@ -292,32 +301,81 @@ int density(const Options& o, const registry::BlockRegistry& blocks,
         !load_shared(s, o, blocks, *w.biomes, false)) {
         return 1;
     }
-    const auto grid = worldgen::great_pyramid_placement();
+    // The set's grid, or another one with the same salt, to compare spacings
+    // over the same world.
+    auto grid = worldgen::great_pyramid_placement();
+    if (o.spacing > 0) {
+        grid.spacing    = o.spacing;
+        grid.separation = o.separation > 0 ? o.separation : o.spacing / 2;
+    }
     std::map<worldgen::PyramidDecision, i32> counts;
-    const i32 half = o.cells / 2;
+    std::map<i32, i32>                       spreads;  // TooSteep, by spread
+    std::vector<ChunkPos>                    placed_at;
+    const i32  half  = o.cells / 2;
     const auto start = std::chrono::steady_clock::now();
     for (i32 gz = -half; gz < o.cells - half; ++gz) {
         for (i32 gx = -half; gx < o.cells - half; ++gx) {
-            const ChunkPos c        = grid.candidate(o.seed, gx, gz);
-            const auto     decision = pyramid->decide(o.seed, c.x, c.z, &*w.sampler, &*s.placer, nullptr);
+            const ChunkPos               c = grid.candidate(o.seed, gx, gz);
+            worldgen::GreatPyramidLayout layout;
+            const auto decision =
+                pyramid->decide_site(o.seed, c.x, c.z, &*w.sampler, &*s.placer, &layout);
             ++counts[decision];
             if (decision == worldgen::PyramidDecision::Placed) {
-                fmt::print("  placed at chunk ({}, {})\n", c.x, c.z);
+                placed_at.push_back(c);
+            } else if (decision == worldgen::PyramidDecision::TooSteep) {
+                const auto [lo, hi] = std::minmax_element(layout.samples.begin(), layout.samples.end());
+                ++spreads[*hi - *lo];
             }
         }
     }
     const f64 seconds =
         std::chrono::duration<f64>(std::chrono::steady_clock::now() - start).count();
-    const i64 cells  = static_cast<i64>(o.cells) * o.cells;
-    const f64 area   = static_cast<f64>(cells) * grid.spacing * grid.spacing;
-    const i32 placed = counts[worldgen::PyramidDecision::Placed];
-    fmt::print("seed {}: {} grid cells ({:.0f} chunks²), decided in {:.1f} s\n", o.seed, cells, area,
-               seconds);
+
+    // The desert's share of the same area: the biome at every fourth chunk's
+    // middle, at y 64.
+    const i32 x0 = -half * grid.spacing;
+    const i32 z0 = -half * grid.spacing;
+    const i32 side_chunks = o.cells * grid.spacing;
+    i64       sampled     = 0;
+    i64       desert      = 0;
+    for (i32 z = 0; z < side_chunks; z += 4) {
+        for (i32 x = 0; x < side_chunks; x += 4) {
+            ++sampled;
+            desert += w.sampler->biome_at((x0 + x) * 16 + 8, 64, (z0 + z) * 16 + 8) ==
+                              "minecraft:desert"
+                          ? 1
+                          : 0;
+        }
+    }
+    // Closest pair of placed starts, in chunks.
+    f64 closest = 0.0;
+    for (usize i = 0; i < placed_at.size(); ++i) {
+        for (usize j = i + 1; j < placed_at.size(); ++j) {
+            const f64 d = std::hypot(static_cast<f64>(placed_at[i].x - placed_at[j].x),
+                                     static_cast<f64>(placed_at[i].z - placed_at[j].z));
+            closest = closest == 0.0 ? d : std::min(closest, d);
+        }
+    }
+    const i64 cells       = static_cast<i64>(o.cells) * o.cells;
+    const f64 area        = static_cast<f64>(side_chunks) * side_chunks;
+    const f64 desert_area = area * static_cast<f64>(desert) / static_cast<f64>(sampled);
+    const i32 placed      = counts[worldgen::PyramidDecision::Placed];
+    fmt::print("seed {} grid {}/{}: {} cells, {:.0f} chunks², desert {:.2f} % ({:.0f} chunks²), "
+               "decided in {:.1f} s\n",
+               o.seed, grid.spacing, grid.separation, cells, area,
+               100.0 * static_cast<f64>(desert) / static_cast<f64>(sampled), desert_area, seconds);
     for (const auto& [decision, count] : counts) {
         fmt::print("  {:<14} {}\n", worldgen::to_string(decision), count);
     }
-    fmt::print("density: {} placed — {:.3f} per 10 000 chunks², one per {:.0f} chunks²\n", placed,
-               placed * 10000.0 / area, placed > 0 ? area / placed : 0.0);
+    std::string steep;
+    for (const auto& [spread, count] : spreads) {
+        steep += fmt::format(" {}:{}", spread, count);
+    }
+    fmt::print("  too_steep spreads (blocks:count):{}\n", steep);
+    fmt::print("density: {} placed — {:.3f} per 10 000 chunks², {:.1f} per 10 000 desert chunks², "
+               "closest pair {:.0f} chunks\n",
+               placed, placed * 10000.0 / area,
+               desert_area > 0 ? placed * 10000.0 / desert_area : 0.0, closest);
     return 0;
 }
 
