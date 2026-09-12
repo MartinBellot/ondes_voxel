@@ -186,6 +186,16 @@ le mettait en dernier, et c'était faux. La vision nocturne clignotait
 reconnaît pas, par élimination. Non mesurés : un effet ambiant après les
 autres, la couleur du tourbillon comme départage.
 
+**Le clignotement** des dix dernières secondes, lui, **n'est pas mesuré**.
+L'hypothèse (`effect_icon_alpha`) donne 0,575 / 0,400 / 0,601 / 0,461 aux
+durées 150, 135, 119 et 103 de la vision nocturne (11-effects a..d). L'opacité
+lue sur les captures — un ajustement « icône × a + cadre × (1 − a) » aux
+moindres carrés — donne 0,43 / 0,32 / 0,46 / 0,30 : la même alternance
+haut-bas-haut-bas, mais un niveau que la méthode ne sait pas lire. Étalonnée
+sur des icônes qui ne clignotent pas (opacité 1), elle rend 0,78 à 0,95 selon
+l'icône et le texel échantillonné : une erreur de ±0,2, trop grande pour
+trancher. La phase est cohérente ; la formule reste une hypothèse.
+
 La catégorie « bénéfique » vient du tableau « Effect » du wiki (1.20.1) ;
 confirmée par les nombres du vrai client pour les huit effets des scènes
 (`beneficial true/false`). Les neutres (lueur, mauvais présage) vont dans la
