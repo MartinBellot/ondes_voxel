@@ -75,6 +75,9 @@ private:
     std::atomic<bool>           closed_{false};
     /// Only touched on the executor.
     bool                        notified_{false};
+    /// close() was asked while packets were still queued: the socket is shut
+    /// once they are written. Only touched on the executor.
+    bool                        close_when_drained_{false};
     /// Read by send() on whichever thread calls it: a packet takes the
     /// threshold in force when it was sent, so Set Compression itself leaves
     /// uncompressed and everything after it compressed.
@@ -255,6 +258,14 @@ void AsioConnection::send(std::span<const u8> bytes) {
 void AsioConnection::write_next() {
     if (write_queue_.empty()) {
         writing_ = false;
+        if (close_when_drained_) {
+            // The last packet before a close — a kick's Disconnect — is out.
+            std::error_code ec;
+            timer_.cancel();
+            socket_.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+            socket_.close(ec);
+            notify_closed();
+        }
         return;
     }
     writing_ = true;
@@ -274,10 +285,19 @@ void AsioConnection::close() {
         return;
     }
     asio::post(socket_.get_executor(), [self = shared_from_this()] {
+        // Every send() made before this close() has been posted before it,
+        // so its bytes are in the queue now. Shut the socket only once they
+        // have been written: a kick sends a line and a Disconnect, then
+        // closes, and shutting down at once dropped everything behind the
+        // packet already being written — measured, the probe of a
+        // `ban-ip <player>` got the success line and neither the "affects"
+        // line nor its own Disconnect.
+        if (self->writing_ || !self->write_queue_.empty()) {
+            self->close_when_drained_ = true;
+            return;
+        }
         std::error_code ec;
         self->timer_.cancel();
-        // shutdown before close so anything already queued reaches the peer;
-        // closing outright can discard it.
         self->socket_.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
         self->socket_.close(ec);
         // A close the server asked for (a kick, a timeout, a refused packet)

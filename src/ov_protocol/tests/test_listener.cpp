@@ -11,13 +11,16 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <chrono>
 #include <memory>
+#include <vector>
 
 #if !defined(_WIN32)
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 #endif
 
@@ -74,6 +77,53 @@ TEST_CASE("a connection the server closes is reported, once", "[protocol][listen
     ::close(fd);
     (void)poll_until(*listener, [] { return false; });
     CHECK(closed == 1);
+    listener->stop();
+}
+
+TEST_CASE("what is sent before a close reaches the peer", "[protocol][listener]") {
+    // A kick: a chat line, a Disconnect, then close(). All of it must arrive
+    // before the end of the stream.
+    auto listener = net::Listener::bind(kPort);
+    if (!listener) {
+        SKIP("port " << kPort << " is busy");
+    }
+    net::ConnectionPtr opened;
+    int                closed = 0;
+    listener->on_connect([&](const net::ConnectionPtr& c) { opened = c; });
+    listener->on_disconnect([&](const net::ConnectionPtr&) { ++closed; });
+
+    const int fd = connect_local();
+    REQUIRE(fd >= 0);
+    REQUIRE(poll_until(*listener, [&] { return opened != nullptr; }));
+
+    std::vector<u8> sent;
+    for (int packet = 0; packet < 8; ++packet) {
+        const std::vector<u8> bytes(20000, static_cast<u8>(packet));
+        opened->send(bytes);
+        sent.insert(sent.end(), bytes.begin(), bytes.end());
+    }
+    opened->close();
+
+    std::vector<u8> received;
+    std::array<u8, 65536> buffer{};
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{3};
+    while (std::chrono::steady_clock::now() < deadline) {
+        listener->poll_for(5);
+        timeval wait{0, 1000};
+        (void)::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &wait, sizeof wait);
+        const ssize_t got = ::recv(fd, buffer.data(), buffer.size(), 0);
+        if (got == 0) {
+            break;  // the end of the stream, after everything
+        }
+        if (got > 0) {
+            received.insert(received.end(), buffer.begin(), buffer.begin() + got);
+        }
+    }
+    CHECK(received.size() == sent.size());
+    CHECK(received == sent);
+    CHECK(poll_until(*listener, [&] { return closed > 0; }));
+    CHECK(closed == 1);
+    ::close(fd);
     listener->stop();
 }
 
