@@ -902,18 +902,22 @@ TamingStats Taming::after_entity_tick(entity::EntityWorld& world,
             continue;
         }
         const gameplay::TameState& tame = mob->brain().tame;
-        if (tick % 40 == 0) {
-            // Which goals hold the ridden animal, every two seconds: an untamed
-            // horse that never decides has something holding Move instead of
-            // its tantrum (seen on the e2e run at 506 ticks without a decision).
+        if (!tame.tame || tick % 40 == 0) {
+            // Every tick of an untamed ride: its ticks, the tantrum's draws and
+            // the last value drawn (0 of kTantrumOdds decides), and the goals
+            // running. A tick without a new draw is a tantrum that did not
+            // tick; draws that never hit 0 are odds that are off. Seen on the
+            // e2e: a ridden wild horse going 506 ticks without a decision.
             mob->goals().running(running_);
             running_names_.clear();  // keeps its capacity: no allocation once grown
             for (const std::string_view name : running_) {
                 running_names_ += name;
                 running_names_ += ' ';
             }
-            OV_LOG_DEBUG("tame: tick {}: {} ridden {} ticks, temper {}, running [{}]", tick,
-                         type_name(state->type), tame.ridden_for, tame.temper, running_names_);
+            OV_LOG_DEBUG("tame: tick {}: {} ridden {} ticks, draw {} = {} (0 of {} decides), "
+                         "temper {}, running [{}]",
+                         tick, type_name(state->type), tame.ridden_for, tame.tantrum_draws,
+                         tame.tantrum_last, gameplay::kTantrumOdds, tame.temper, running_names_);
         }
         if (gameplay::rider_controls(tame)) {
             if (const auto move = moves.find(player); move != moves.end()) {
