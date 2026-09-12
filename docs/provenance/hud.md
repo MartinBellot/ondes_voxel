@@ -116,6 +116,27 @@ ticks 923, 937, 950 et 964 (10-regen-a..d) : seul 950 donne un indice sous 10
 
 ---
 
+### Les montures
+
+Lu sur les captures de `hud_scenes_mount.txt` (le vrai client, le même
+serveur) :
+
+| monture | à droite | barre du bas | fenêtre (E) |
+|---|---|---|---|
+| cheval 23/30 | 15 cœurs orange, 10 à y 441 et 5 à y 431, alignés à droite comme les haunches | **barre de saut**, pas de niveau | selle (8, 18), armure (8, 36), pas de coffre |
+| âne à coffre | ses cœurs | barre de saut | selle, **pas d'armure**, coffre de 5 colonnes |
+| lama force 3 | ses cœurs (53 → 27, trois rangées) | **barre d'expérience et niveau** | **pas de selle**, tapis (8, 36), coffre de 3 colonnes |
+| cochon sellé 7/10 | 5 cœurs | barre d'expérience et niveau | — |
+
+Un lama ne se dirige pas : il garde la barre d'expérience. Les cœurs du joueur
+restent à gauche. Et le vrai client écrit **de lui-même**, au moment où la
+monture commence, « Press Left Shift to Dismount » dans la barre d'action
+(`mount.onboard`) — le nôtre aussi désormais.
+
+Les cadres d'emplacement de la fenêtre du cheval sont sous la fenêtre dans
+`horse.png`, rangée y 220 : armure 0, selle 18, tapis de lama 36 ; la grille
+du coffre en (0, 166), 18 pixels par colonne.
+
 ## 3. Ce que le serveur envoie, et que notre client lit maintenant
 
 | élément | paquet | champ |
@@ -211,6 +232,33 @@ balise et pupitre **ne sont pas ouverts par notre serveur** : leurs écrans
 restent refusés et nommés, comme avant.
 
 ---
+
+## 7 bis. Pièges payés
+
+- **La dernière capture d'une passe était vide (0 octet).** Le jeu écrit une
+  capture sur son pool d'entrées-sorties, *après* le retour de
+  `Screenshot.grab` ; l'oracle arrêtait la JVM aussitôt la dernière scène
+  jouée. Deux captures perdues (`20-low-d-nohud`, `14-mount-pig-nohud`) : la
+  seconde de chaque passe. L'oracle attend désormais 3 s avant de s'arrêter,
+  et `compare_hud.py` nomme une capture vide au lieu de trébucher dessus.
+- **Deux passes, un port.** Les passes « hardcore » et « écrans » ont tourné
+  en même temps dans les deux emplacements de la voie java, toutes deux sur
+  25621 : le second serveur n'a pas pu ouvrir le port et le client « écrans »
+  est resté à « Connecting to 127.0.0.1, 25621 » jusqu'au délai. La passe
+  « écrans » tourne maintenant sur 25721.
+- **Échap injecté n'a pas fermé la fenêtre de la trémie.** Toutes les scènes
+  suivantes ont photographié la même trémie : chaque `use` tombait sur
+  l'écran resté ouvert, pas sur le nouveau bloc. Les nombres du jeu le
+  disaient sans le dire — les commandes passaient, aucune erreur. L'oracle
+  appelle désormais `LocalPlayer.closeContainer()` (ce qu'Échap appelle sur un
+  conteneur) quand un écran est encore ouvert, et note l'écran ouvert après
+  chaque `use` et chaque touche.
+- **`spawn-animals=false` refuse aussi un cheval `/summon`é** : la première
+  scène de monture n'avait aucun cheval (« No entity was found »).
+  `doMobSpawning false` dans les scènes suffit à garder le monde vide.
+- **Le disque.** Une capture PPM de notre client pèse 11 Mo, deux par scène ;
+  un BMP intermédiaire 14,7 Mo. Nos captures sont récrites en PNG sans perte
+  à la fin de la passe, et les BMP de comparaison lus puis effacés aussitôt.
 
 ## 8. Ce qui n'est pas fait, nommé
 
