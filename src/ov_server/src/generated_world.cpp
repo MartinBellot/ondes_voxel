@@ -201,10 +201,20 @@ std::unique_ptr<GeneratedWorld> GeneratedWorld::load(
         if (!impl->structures) {
             OV_LOG_ERROR("worldgen: {} will carry no structures (see above)", settings);
         }
+        // ── great pyramid ── Our own structures are part of the generator.
+        // `OV_ORIGINAL_STRUCTURES=0` is the parity instruments' switch, not a
+        // player option: a world measured against the game must be vanilla.
+        worldgen::OriginalStructures originals{};
+        if (const char* flag = std::getenv("OV_ORIGINAL_STRUCTURES");
+            flag != nullptr && std::string_view{flag} == "0") {
+            originals = worldgen::OriginalStructures::vanilla_parity();
+            OV_LOG_WARN("worldgen: OV_ORIGINAL_STRUCTURES=0; {} carries no {} — a parity instrument",
+                        settings, worldgen::kGreatPyramidId);
+        }
         for (auto& stack : impl->stacks) {
             if (impl->structures) {
-                stack->structures =
-                    impl->structures->make_stage(*stack->generator, blocks, registries, seed);
+                stack->structures = impl->structures->make_stage(*stack->generator, blocks,
+                                                                 registries, seed, originals);
                 stack->pipeline->set_structure_stage(stack->structures->stage.get());
             }
         }
