@@ -6300,6 +6300,43 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                     }
 
                     case net::serverbound::kCloseContainer: {
+                        // ── workstations ── Window 0, the player's own: the
+                        // cursor and then the 2x2 grid go back into the
+                        // inventory, as vanilla does (measured,
+                        // scripts/measure_window0.py); what does not fit is
+                        // thrown at the player's feet.
+                        if (const auto shut = net::parse_close_container(body);
+                            shut && *shut == 0) {
+                            const std::vector<net::ItemStack> thrown = close_player_window(
+                                registries ? &*registries : nullptr, player.inventory,
+                                player.carried, player.held_slot);
+                            std::vector<ItemEntity> items;
+                            for (const net::ItemStack& stack : thrown) {
+                                ItemEntity item;
+                                item.entity_id = next_entity_id.fetch_add(1);
+                                item.uuid      = net::Uuid{
+                                    0x4f564954454d0000ULL | static_cast<u64>(item.entity_id),
+                                    static_cast<u64>(item.entity_id) * 0x9E3779B97F4A7C15ULL};
+                                item.x            = player.x;
+                                item.y            = player.y + 1.0;
+                                item.z            = player.z;
+                                item.stack        = stack;
+                                item.born         = server_tick.load(std::memory_order_relaxed);
+                                item.pickup_delay = 40;
+                                items.push_back(std::move(item));
+                            }
+                            if (!items.empty()) {
+                                publish_items(items);
+                            }
+                            send_packet(net::clientbound::kContainerContent,
+                                        net::encode_container_content(
+                                            0, 0,
+                                            player_window_contents(
+                                                registries ? &*registries : nullptr,
+                                                recipe_book ? &*recipe_book : nullptr,
+                                                player.inventory),
+                                            player.carried));
+                        }
                         // ── villagers ── a trading screen closes on the tick
                         if (villagers) {
                             if (const auto shut = net::parse_close_container(body);
@@ -6414,7 +6451,7 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                             const auto outcome = apply_player_click(
                                 registries ? &*registries : nullptr,
                                 recipe_book ? &*recipe_book : nullptr, *click, player.inventory,
-                                player.carried, player.drag);
+                                player.carried, player.drag, player.held_slot);
 
                             for (const net::ItemStack& stack : outcome.dropped) {
                                 if (stack.empty()) {

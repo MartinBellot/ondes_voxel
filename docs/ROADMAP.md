@@ -947,9 +947,9 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       appariement nommées ; **2885 grilles posées, 2885 identiques** au vrai
       serveur — dont 120 arrangements qui doivent ne rien produire, le groupe
       qu'un apparieur trop gourmand rate. 248 combustibles mesurés sur 1254 ;
-      trois tables de cuisson et non une avec un diviseur. Restent la fenêtre
-      2×2 du joueur, les écrans de forge et de pierre de taille,
-      et `Place Recipe`. Les fours tournent comme bloc-entités, regardés ou
+      trois tables de cuisson et non une avec un diviseur. La fenêtre 2×2 du
+      joueur est mesurée (13 cas) et alignée. Restent les écrans de forge et
+      de pierre de taille, et `Place Recipe`. Les fours tournent comme bloc-entités, regardés ou
       non, dans les trois dimensions ; `RecipesUsed` est payé en orbes à
       l'extraction)*
 - [~] **Agriculture et élevage** : toutes les cultures, terre labourée,
