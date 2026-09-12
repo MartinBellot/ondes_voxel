@@ -13,6 +13,7 @@ ov_add_library(ov_gameplay
         src/dig_controller.cpp
         src/combat.cpp
         src/collision.cpp
+        src/block_motion.cpp
         src/damage.cpp
         src/durability.cpp
         src/enchanting.cpp
@@ -23,6 +24,7 @@ ov_add_library(ov_gameplay
         src/primed_tnt.cpp
         src/projectile.cpp
         src/fluid.cpp
+        src/fluid_push.cpp
         src/item_use.cpp
         src/nether_portal.cpp
         src/end_portal.cpp
@@ -103,6 +105,7 @@ ov_add_test(test_ov_gameplay
         tests/test_spawning.cpp
         tests/test_fluid_physics.cpp
         tests/test_physics.cpp
+        tests/test_block_motion.cpp
         tests/test_connections.cpp
         tests/test_redstone.cpp
         tests/test_rails.cpp

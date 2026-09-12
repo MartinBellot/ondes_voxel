@@ -32,6 +32,7 @@
 #include "ov/protocol/varint.hpp"
 #include "ov/registry/block_states.hpp"
 #include "ov/entity/world.hpp"
+#include "ov/gameplay/block_motion.hpp"  // ── movement physics ──
 #include "ov/gameplay/entity_physics.hpp"
 #include "ov/gameplay/mob_logic.hpp"
 #include "ov/protocol/entity.hpp"
@@ -929,6 +930,12 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     } else {
         OV_LOG_INFO("registry: {} blocks, {} states; codec {} bytes", blocks->block_count(),
                     blocks->state_count(), codec_bytes->size());
+    }
+    // ── movement physics ── what ice, ladders, slime, cobwebs and bubble
+    // columns do to a mob, resolved once from the registry.
+    std::optional<gameplay::BlockMotionTable> block_motion;
+    if (blocks) {
+        block_motion.emplace(*blocks);
     }
 
     // Item ids, needed to turn "the player is holding this" into a block.
@@ -9273,7 +9280,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 // ── end perf ──
                 WorldView              view;
                 view.read = [&](i32 bx, i32 by, i32 bz) { return resident_block(bx, by, bz); };
-                const gameplay::CollisionWorld collisions{*blocks, &WorldView::look_up, &view};
+                const gameplay::CollisionWorld collisions{
+                    *blocks, &WorldView::look_up, &view,
+                    block_motion ? &*block_motion : nullptr};  // ── movement physics ──
 
                 // The behaviour runs here, through the entity world, rather
                 // than being applied to each state by hand: the whole point of

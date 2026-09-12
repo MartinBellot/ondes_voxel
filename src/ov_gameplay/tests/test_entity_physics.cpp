@@ -98,7 +98,11 @@ TEST_CASE("the terminal speed is the one a long fall converges on", "[gameplay][
     }
     // -g·d/(1-d) = -3.92. The measurement's fastest observed sample was -3.58,
     // still on its way here.
-    CHECK(state.velocity.y == Catch::Approx(-3.92).epsilon(1e-9));
+    // With the game's float drag, 0.98F, the limit sits a hair past -3.92.
+    const f64 terminal =
+        -constants.gravity * constants.vertical_drag / (1.0 - constants.vertical_drag);
+    CHECK(state.velocity.y == Catch::Approx(terminal).epsilon(1e-9));
+    CHECK(state.velocity.y == Catch::Approx(-3.92).epsilon(1e-5));
 
     // A dropped stack falls at half the gravity, and so converges on half the
     // speed. Measured separately, and the fit was exact.
