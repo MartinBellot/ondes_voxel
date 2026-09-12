@@ -77,6 +77,7 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`protocole-763.md`](provenance/protocole-763.md) | Les 176 paquets de 763 (deux sources d'accord sur chaque id), la matrice de conformité générée depuis le code, et Set Cooldown qui partait en 0x16 |
 | **Client** | |
 | [`interface.md`](provenance/interface.md) | Police, HUD, inventaire : 2414 glyphes validés glyphe par glyphe |
+| [`hud.md`](provenance/hud.md) | Le HUD complet et les écrans manquants, mesurés sur le vrai client joué contre le même serveur vanilla : l'absorption après les cœurs et non dessus, les cœurs qui tremblent reproduits dix sur dix |
 | [`inventaire-creatif.md`](provenance/inventaire-creatif.md) | Les 14 onglets demandés au jar serveur, 1689 cases, et la géométrie comptée dans les pixels |
 | [`rendu-entites.md`](provenance/rendu-entites.md) | Les ~200 modèles d'entités lus du vrai client pendant qu'il tourne, textures par métadonnées, et chaque espèce mesurée contre lui — et la vache qui se tenait debout |
 | [`persistance-entites.md`](provenance/persistance-entites.md) | Objets, orbes, flèches, TNT, sable, nuages, mobs du Nether, dragon et cristaux, et le wagonnet du joueur : sauvés au type près mesuré sur le vrai serveur, un écrivain par dimension |
