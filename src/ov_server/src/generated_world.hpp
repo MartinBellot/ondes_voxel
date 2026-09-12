@@ -107,6 +107,15 @@ public:
 
     [[nodiscard]] i64 seed() const noexcept;
 
+    /// ── streaming ── The shared terrain cache's counters, one line, or empty
+    /// when the cache is off (`OV_TERRAIN_CACHE=0`). See terrain_cache.hpp.
+    [[nodiscard]] std::string terrain_cache_report() const;
+
+    /// ── streaming ── Forget every cached chunk of terrain, as if just loaded.
+    /// For measurements: an arm timed on a cache another arm warmed would time
+    /// copies. Call only while no stack is generating.
+    void clear_terrain_cache();
+
     GeneratedWorld(const GeneratedWorld&)            = delete;
     GeneratedWorld& operator=(const GeneratedWorld&) = delete;
     ~GeneratedWorld();

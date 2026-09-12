@@ -188,13 +188,23 @@ TEST_CASE("the answer does not depend on the order of the questions", "[worldgen
     for (const auto& p : positions) {
         forward_answers.push_back(forward.compute(p[0], p[1], p[2], -0.05));
     }
-    AquiferSampler backward{aquifer};
+    // ── streaming ── The statuses and surfaces are remembered by the
+    // `Aquifer`, for its whole stack, not by the sampler. So the backward walk
+    // gets an `Aquifer` of its own — a cold memo that computes every value
+    // again in the other order — and a third walk goes back to the first,
+    // warm one: what the memo hands out must be what a cold computation gives.
+    const Aquifer  cold{*router, kSeed};
+    AquiferSampler backward{cold};
+    AquiferSampler warm{aquifer};
     usize          fluids = 0;
     for (usize i = positions.size(); i-- > 0;) {
         const auto& p      = positions[i];
         const auto  answer = backward.compute(p[0], p[1], p[2], -0.05);
         REQUIRE(answer.substance == forward_answers[i].substance);
         REQUIRE(answer.schedule == forward_answers[i].schedule);
+        const auto again = warm.compute(p[0], p[1], p[2], -0.05);
+        REQUIRE(again.substance == answer.substance);
+        REQUIRE(again.schedule == answer.schedule);
         if (answer.substance == Substance::Water || answer.substance == Substance::Lava) {
             ++fluids;
         }

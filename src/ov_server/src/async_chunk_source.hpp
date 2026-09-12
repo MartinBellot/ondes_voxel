@@ -12,8 +12,9 @@
 //     its own noise router, its own surface rules, its own pipeline. That is
 //     not thrift being ignored: the router and the interpolated density nodes
 //     keep `mutable` memo caches, so one router driven by two threads is a data
-//     race, and `src/ov_worldgen/` is not this file's to change. N stacks costs
-//     memory and buys a design with no locks in it at all.
+//     race. N stacks costs memory and buys a design with no locks in it at all.
+//     (The terrain cache every stack of one world shares is the exception, and
+//     it holds only finished, never-written terrain: terrain_cache.hpp.)
 //
 //  2. **The tick thread is the only writer of a published chunk.** A worker
 //     builds chunks nothing else can see, moves them into a result queue, and
@@ -31,18 +32,34 @@
 //     makes the block's contents a pure function of the seed and the block's
 //     coordinates — the same on one worker or eight, in any order, on any run.
 //
-// The cost of invariant 3 is measured rather than assumed: a block of
-// `kBlockChunks` squared output chunks needs `(kBlockChunks + 4)` squared
-// terrain generations and `(kBlockChunks + 2)` squared decorations, and
-// docs/provenance/chunkmap.md gives the numbers for the size chosen.
+// ── streaming: which block next ─────────────────────────────────────────────
+//
+// A worker does not get a block when the block is asked for; it takes the best
+// block **when it becomes free**. The tick thread hands over, every tick, the
+// chunks the tickets want and the map has not got, nearest first
+// (`prioritise`); a free worker takes the first block of that list that nobody
+// is generating. Two things follow, both measured in
+// docs/provenance/chargement-terrain.md:
+//
+//   * **nearest first at the moment the work starts**, not at the moment it
+//     was asked for — a player who flew on in the meantime is served where
+//     they are now;
+//   * **cancellation for free**: a block that was wanted and is not any more is
+//     simply not in the next list, and is never started. Only a block already
+//     running is finished (a job cannot be interrupted halfway through a
+//     decoration, and its chunks are the ones the player just left: cheap to
+//     keep, published as usual).
 #pragma once
 
 #include "generated_world.hpp"
+#include "ov/base/thread.hpp"
 #include "ov/base/types.hpp"
 #include "ov/math/block_pos.hpp"
 #include "ov/world/chunk.hpp"
 
+#include <functional>
 #include <memory>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -69,10 +86,9 @@ public:
     /// Four is a measured compromise, not a round number — see
     /// docs/provenance/chunkmap.md § 3. Larger blocks amortise the support ring
     /// better (a block of side S pays (S+4)^2 terrain for S^2 chunks) and
-    /// generate more chunks nobody asked for; smaller blocks do the reverse. At
-    /// four, filling a view distance of eight generates about twice the chunks
-    /// the client is waiting for, and every one of them is a chunk the player
-    /// walks into next.
+    /// generate more chunks nobody asked for; smaller blocks do the reverse. It
+    /// is also part of the world's definition: what a chunk contains depends on
+    /// the square it was decorated in, so changing it changes the world.
     static constexpr i32 kBlockChunks = 4;
 
     [[nodiscard]] static constexpr i32 block_of(i32 chunk_coordinate) noexcept {
@@ -80,21 +96,42 @@ public:
                                      : -(((-chunk_coordinate) + kBlockChunks - 1) / kBlockChunks);
     }
 
+    /// Generate one square on a stack:
+    /// `(stack, origin_x, origin_z, side, out, fluid_wakeups)`, the shape of
+    /// `GeneratedWorld::generate_square` (── worldgen-3 ── the wakeups may be
+    /// null).
+    using Generate =
+        std::function<void(usize, i32, i32, i32, std::vector<std::pair<ChunkPos, world::Chunk>>&,
+                           std::vector<BlockPos>*)>;
+
     /// `world` is borrowed and must outlive this. It must have been loaded with
-    /// at least `workers` stacks, one per worker plus the tick thread's own.
-    AsyncChunkSource(GeneratedWorld& world, usize workers);
+    /// at least `workers + 1` stacks, one per worker plus the tick thread's own.
+    /// `role` is the scheduling class of the workers (see thread.hpp and
+    /// docs/provenance/chargement-terrain.md for why it is not a detail).
+    AsyncChunkSource(GeneratedWorld& world, usize workers, ThreadRole role = ThreadRole::Worker);
+
+    /// Any generator: the tests' stand-in, whose blocks cost nothing and which
+    /// records the order it was asked in. Worker `i` is handed stack `i + 1`.
+    AsyncChunkSource(Generate generate, usize workers, ThreadRole role = ThreadRole::Worker);
 
     AsyncChunkSource(const AsyncChunkSource&)            = delete;
     AsyncChunkSource& operator=(const AsyncChunkSource&) = delete;
     ~AsyncChunkSource();
 
-    /// Ask for the block containing this chunk.
+    /// ── streaming ── What the workers should do next, best first.
     ///
-    /// Returns false when the request was refused — either the block is already
-    /// queued or running, or the queue is at its depth limit. A refusal is not
-    /// an error: the caller asks again next tick, which is what keeps the queue
-    /// tracking where the player is now rather than where they were a minute
-    /// ago.
+    /// `wanted` is the chunks the tickets want and the map has not got, in the
+    /// order they should arrive. Replaces the previous list: a block that is
+    /// not in it any more is never started. Blocks running, or finished and not
+    /// yet drained, are skipped. Call from the tick thread, once a tick.
+    void prioritise(std::span<const ChunkPos> wanted);
+
+    /// Ask for the block containing this chunk, behind whatever is waiting.
+    ///
+    /// Returns false when the request was refused — the block is already
+    /// waiting, running or finished, or the waiting list is at its limit. The
+    /// determinism check drives the source this way; the server uses
+    /// `prioritise`.
     bool request(ChunkPos pos);
 
     /// Move every finished block out. Call from the tick thread only.
@@ -103,12 +140,17 @@ public:
     /// so a caller can reuse one vector across ticks without reallocating.
     usize drain(std::vector<GeneratedBlock>& out);
 
-    /// Blocks queued or running.
+    /// Blocks waiting or running.
     [[nodiscard]] usize in_flight() const;
 
     /// Blocks finished since start-up, and the chunks they carried.
     [[nodiscard]] u64 blocks_done() const;
     [[nodiscard]] u64 chunks_done() const;
+
+    /// Seconds of worker time spent generating, summed over every worker.
+    [[nodiscard]] f64 busy_seconds() const;
+
+    [[nodiscard]] usize worker_count() const noexcept;
 
     /// Generate one block on the calling thread, bypassing the pool.
     ///

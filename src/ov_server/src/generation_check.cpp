@@ -13,6 +13,8 @@
 
 #include <fmt/format.h>
 
+#include <algorithm>
+#include <array>
 #include <chrono>
 #include <map>
 #include <string>
@@ -56,6 +58,58 @@ void compare(const world::Chunk& a, const world::Chunk& b, GenerationCheck& out)
     }
 }
 
+/// ── streaming ── Fold one chunk into an FNV-1a digest.
+///
+/// Here the hash is the point, where `compare` above refuses one: the two
+/// worlds being compared live in two different binaries — the generator
+/// before an optimisation and after it — and cannot be put side by side in
+/// one process. The count says *how* different two worlds are; this says
+/// *whether*, across builds, and a single differing cell changes it.
+void digest_chunk(u64 key, const world::Chunk& chunk, u64& hash) {
+    const auto mix = [&hash](u64 value) {
+        for (int byte = 0; byte < 8; ++byte) {
+            hash ^= (value >> (byte * 8)) & 0xFFU;
+            hash *= 0x100000001B3ULL;
+        }
+    };
+    mix(key);
+    const auto shape = chunk.shape();
+    for (i32 y = shape.min_y; y <= shape.max_y(); ++y) {
+        for (usize z = 0; z < 16; ++z) {
+            for (usize x = 0; x < 16; ++x) {
+                mix(static_cast<u64>(chunk.get_block(x, y, z).value()));
+            }
+        }
+    }
+    for (i32 y = shape.min_y; y <= shape.max_y(); y += 4) {
+        for (usize z = 0; z < 16; z += 4) {
+            for (usize x = 0; x < 16; x += 4) {
+                mix(static_cast<u64>(chunk.get_biome(x, y, z)));
+            }
+        }
+    }
+    constexpr std::array kStored{world::HeightmapType::WorldSurface,
+                                 world::HeightmapType::MotionBlocking,
+                                 world::HeightmapType::MotionBlockingNoLeaves,
+                                 world::HeightmapType::OceanFloor};
+    for (const world::HeightmapType type : kStored) {
+        const world::Heightmap& map = chunk.heightmap(type);
+        for (usize z = 0; z < 16; ++z) {
+            for (usize x = 0; x < 16; ++x) {
+                mix(static_cast<u64>(static_cast<i64>(map.first_free(x, z))));
+            }
+        }
+    }
+    for (const world::BlockEntity& entity : chunk.block_entities()) {
+        mix(entity.x);
+        mix(static_cast<u64>(static_cast<i64>(entity.y)));
+        mix(entity.z);
+        for (const char c : entity.type) {
+            mix(static_cast<u64>(static_cast<unsigned char>(c)));
+        }
+    }
+}
+
 [[nodiscard]] f64 seconds_since(std::chrono::steady_clock::time_point start) {
     return std::chrono::duration<f64>(std::chrono::steady_clock::now() - start).count();
 }
@@ -64,7 +118,7 @@ void compare(const world::Chunk& a, const world::Chunk& b, GenerationCheck& out)
 
 GenerationCheck check_generation_determinism(const std::filesystem::path& data_root, i64 seed,
                                              i32 origin_block_x, i32 origin_block_z, i32 side,
-                                             usize workers) {
+                                             usize workers, bool parallel_arm) {
     GenerationCheck result;
 
     const auto pack = data_root / "vanilla" / "1.20.1" / "registry.ovpack";
@@ -114,6 +168,34 @@ GenerationCheck check_generation_determinism(const std::filesystem::path& data_r
         }
     }
     result.serial_seconds = seconds_since(serial_start);
+    if (const std::string line = world->terrain_cache_report(); !line.empty()) {
+        OV_LOG_INFO("serial arm: {}", line);  // ── streaming ──
+    }
+
+    // ── streaming ── The digest, in key order: an unordered_map's iteration
+    // order is not part of what is being hashed.
+    {
+        std::vector<u64> keys;
+        keys.reserve(serial.size());
+        for (const auto& [key, chunk] : serial) {
+            keys.push_back(key);
+        }
+        std::ranges::sort(keys);
+        u64 hash = 0xCBF29CE484222325ULL;
+        for (const u64 key : keys) {
+            digest_chunk(key, serial.at(key), hash);
+        }
+        result.digest = hash;
+    }
+    if (!parallel_arm) {
+        result.chunks = serial.size();
+        return result;
+    }
+    // ── streaming ── A cold terrain cache for the parallel arm: on the one the
+    // serial arm warmed, it would copy every chunk of terrain and its timing
+    // would measure copies (the first run of this measured 0.9 s for 144
+    // chunks, which is what that looks like).
+    world->clear_terrain_cache();
 
     // ── Parallel arm ────────────────────────────────────────────────────────
     //
@@ -123,7 +205,13 @@ GenerationCheck check_generation_determinism(const std::filesystem::path& data_r
     std::unordered_map<u64, world::Chunk> parallel;
     const auto                            parallel_start = std::chrono::steady_clock::now();
     {
-        AsyncChunkSource source{*world, workers};
+        // ── streaming ── the server's scheduling class, and its switch
+        ThreadRole role = ThreadRole::Generation;
+        if (const char* qos = std::getenv("OV_WORKER_QOS");
+            qos != nullptr && std::string_view{qos} == "utility") {
+            role = ThreadRole::Worker;
+        }
+        AsyncChunkSource source{*world, workers, role};
 
         std::vector<ChunkPos> pending;
         for (i32 dz = 0; dz < side; ++dz) {

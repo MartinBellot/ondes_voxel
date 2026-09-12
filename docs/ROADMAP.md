@@ -306,7 +306,14 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] Heightmaps : stockage, packing 9 bits, sémantique vérifiée sur monde réel
 - [x] `WORLD_SURFACE` calculé et maintenu incrémentalement *(air suffit)*
 - [x] `MOTION_BLOCKING`, `MOTION_BLOCKING_NO_LEAVES` et `OCEAN_FLOOR` : prédicats mesurés sur 996 des 1003 blocs
-- [x] Streaming de chunks selon la distance de vue *(envoi et déchargement)*
+- [x] Streaming de chunks selon la distance de vue *(envoi et déchargement ; **2026-09-12** —
+      génération 3,5× plus rapide à monde identique au bit près (condensé `ov_gendet`),
+      blocs pris du plus proche au plus loin au moment où un ouvrier se libère, ouvriers en
+      QoS `USER_INITIATED`, sauvegarde automatique hors du tick : en Release, spawn prêt en
+      3,6 s au lieu de 10,2, distance de vue remplie en 15-28 s après un téléport de 1000
+      blocs au lieu de 3 min, **aucun chunk manquant sous le joueur au sprint ni en vol
+      créatif** ; l'élytre (33 m/s) va encore plus vite que la génération. Voir
+      `docs/provenance/chargement-terrain.md`)*
 - [x] Collisions : boîtes par état, chevauchement et glissement axe par axe
 - [x] Physique du joueur : marche, sprint, accroupissement, saut, chute — ajustés sur une trace du vrai client
 - [~] Nage, échelles, glace et slime : glissance par bloc

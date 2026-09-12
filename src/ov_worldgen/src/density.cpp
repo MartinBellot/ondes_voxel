@@ -498,14 +498,31 @@ public:
         const f64 ty = static_cast<f64>(at.y - min_y_ - cell_y * cell_height_) /
                        static_cast<f64>(cell_height_);
 
-        const f64 c000 = corner(cell_x, cell_y, cell_z);
-        const f64 c001 = corner(cell_x, cell_y, cell_z + 1);
-        const f64 c010 = corner(cell_x, cell_y + 1, cell_z);
-        const f64 c011 = corner(cell_x, cell_y + 1, cell_z + 1);
-        const f64 c100 = corner(cell_x + 1, cell_y, cell_z);
-        const f64 c101 = corner(cell_x + 1, cell_y, cell_z + 1);
-        const f64 c110 = corner(cell_x + 1, cell_y + 1, cell_z);
-        const f64 c111 = corner(cell_x + 1, cell_y + 1, cell_z + 1);
+        // ── streaming ── The 128 blocks of a cell share its eight corners, and
+        // the noise pass walks each column upwards: seven blocks in eight ask
+        // for the cell the previous block asked for. Keep those eight values.
+        if (!last_valid_ || cell_x != last_x_ || cell_y != last_y_ || cell_z != last_z_) {
+            last_[0]   = corner(cell_x, cell_y, cell_z);
+            last_[1]   = corner(cell_x, cell_y, cell_z + 1);
+            last_[2]   = corner(cell_x, cell_y + 1, cell_z);
+            last_[3]   = corner(cell_x, cell_y + 1, cell_z + 1);
+            last_[4]   = corner(cell_x + 1, cell_y, cell_z);
+            last_[5]   = corner(cell_x + 1, cell_y, cell_z + 1);
+            last_[6]   = corner(cell_x + 1, cell_y + 1, cell_z);
+            last_[7]   = corner(cell_x + 1, cell_y + 1, cell_z + 1);
+            last_x_    = cell_x;
+            last_y_    = cell_y;
+            last_z_    = cell_z;
+            last_valid_ = true;
+        }
+        const f64 c000 = last_[0];
+        const f64 c001 = last_[1];
+        const f64 c010 = last_[2];
+        const f64 c011 = last_[3];
+        const f64 c100 = last_[4];
+        const f64 c101 = last_[5];
+        const f64 c110 = last_[6];
+        const f64 c111 = last_[7];
 
         // y first, then x, then z.
         const f64 xz00 = lerp(ty, c000, c010);
@@ -543,20 +560,42 @@ private:
         const u64 key = (static_cast<u64>(static_cast<u32>(cell_x) & 0xFFFFFFU) << 40) |
                         (static_cast<u64>(static_cast<u32>(cell_z) & 0xFFFFFFU) << 16) |
                         static_cast<u64>(static_cast<u32>(cell_y) & 0xFFFFU);
-        if (const auto found = cache_.find(key); found != cache_.end()) {
-            return found->second;
+        // ── streaming ── A direct-mapped table rather than a hash map: one slot
+        // per (x & 7, z & 7, y & 63) cell, holding the full key. A chunk's
+        // corners are 5 x 5 x 49 and never collide with each other; a
+        // neighbouring chunk's evict them. A corner is always the inner
+        // function at the same point, so a slot reused, missed or refilled
+        // returns the number a fresh evaluation would — the world is unchanged
+        // (ov_gendet's digest, docs/provenance/chargement-terrain.md), only the
+        // hashing and the node allocations are gone.
+        if (slots_.empty()) {
+            slots_.resize(kSlots);
+        }
+        Slot& slot = slots_[slot_of(cell_x, cell_y, cell_z)];
+        if (slot.used && slot.key == key) {
+            return slot.value;
         }
         const FunctionContext at{cell_x * cell_width_, min_y_ + cell_y * cell_height_,
                                  cell_z * cell_width_};
         const f64             value = inner_->compute(at);
-        // Bounded, so a long generation run does not grow without limit. A
-        // chunk needs about 1225 corners per interpolated node; clearing at a
-        // hundred thousand keeps several chunks' worth and costs a refill.
-        if (cache_.size() > 100000) {
-            cache_.clear();
-        }
-        cache_.emplace(key, value);
+        slot.key                    = key;
+        slot.value                  = value;
+        slot.used                   = true;
         return value;
+    }
+
+    struct Slot {
+        u64  key{0};
+        f64  value{0.0};
+        bool used{false};
+    };
+    static constexpr usize kSlots = 8 * 8 * 64;
+
+    [[nodiscard]] static usize slot_of(i32 cell_x, i32 cell_y, i32 cell_z) noexcept {
+        const usize x = static_cast<u32>(cell_x) & 7U;
+        const usize z = static_cast<u32>(cell_z) & 7U;
+        const usize y = static_cast<u32>(cell_y) & 63U;
+        return (x * 8U + z) * 64U + y;
     }
 
     DensityRef inner_;
@@ -564,7 +603,13 @@ private:
     i32        cell_height_{8};
     i32        min_y_{-64};
 
-    mutable std::unordered_map<u64, f64> cache_;
+    mutable std::vector<Slot> slots_;  ///< allocated at the first corner asked
+    // ── streaming ── the cell the previous call interpolated in, and its corners
+    mutable f64  last_[8]{};
+    mutable i32  last_x_{0};
+    mutable i32  last_y_{0};
+    mutable i32  last_z_{0};
+    mutable bool last_valid_{false};
 };
 
 /// The old terrain noise, as a node.

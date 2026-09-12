@@ -15,6 +15,7 @@
 namespace ov::base {
 
 struct JobPool::Impl {
+    ThreadRole                                    role{ThreadRole::Worker};
     mutable std::mutex                            mutex;
     std::condition_variable                       work;
     std::condition_variable                       idle;
@@ -28,7 +29,7 @@ struct JobPool::Impl {
         // requires: an unclassified thread on Apple Silicon migrates onto an
         // efficiency core under load, which is exactly the load this pool
         // exists for.
-        set_thread_role("ov-gen" + std::to_string(index), ThreadRole::Worker);
+        set_thread_role("ov-gen" + std::to_string(index), role);
 
         while (true) {
             std::function<void(usize)> job;
@@ -54,7 +55,8 @@ struct JobPool::Impl {
     }
 };
 
-JobPool::JobPool(usize workers) : impl_(std::make_unique<Impl>()) {
+JobPool::JobPool(usize workers, ThreadRole role) : impl_(std::make_unique<Impl>()) {
+    impl_->role = role;  // before any thread starts: each reads it once, at start
     // `impl`, not `this`. A worker thread outlives the start of `~JobPool`, and
     // libc++'s `~unique_ptr` nulls its stored pointer before running the
     // deleter — so a thread that read `impl_` during destruction would read a

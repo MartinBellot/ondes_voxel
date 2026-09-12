@@ -20,8 +20,10 @@
 
 #include <asio.hpp>
 
+#include <algorithm>  // ── streaming ── query_spawn_progress
 #include <atomic>
 #include <mutex>
+#include <string_view>
 #include <thread>
 
 namespace ov::netclient {
@@ -1187,6 +1189,93 @@ Client::~Client() {
     if (impl_->thread.joinable()) {
         impl_->thread.join();
     }
+}
+
+// ── streaming ──
+std::optional<i32> Client::query_spawn_progress(const std::string& host, u16 port) {
+    asio::io_context        io;
+    asio::ip::tcp::socket   socket(io);
+    asio::error_code        error;
+    asio::ip::tcp::resolver resolver(io);
+    const auto              endpoints = resolver.resolve(host, std::to_string(port), error);
+    if (error) {
+        return std::nullopt;
+    }
+    asio::connect(socket, endpoints, error);
+    if (error) {
+        return std::nullopt;
+    }
+    // A server on this machine answers in microseconds; one that has stopped
+    // answering must not freeze the frame that asked.
+#if defined(_WIN32)
+    const DWORD timeout_ms = 500;
+    ::setsockopt(socket.native_handle(), SOL_SOCKET, SO_RCVTIMEO,
+                 reinterpret_cast<const char*>(&timeout_ms), static_cast<int>(sizeof timeout_ms));
+#else
+    timeval timeout{};
+    timeout.tv_usec = 500000;
+    ::setsockopt(socket.native_handle(), SOL_SOCKET, SO_RCVTIMEO, &timeout,
+                 static_cast<socklen_t>(sizeof timeout));
+#endif
+
+    const auto send_frame = [&](i32 id, std::span<const u8> body) {
+        io::ByteWriter packet;
+        net::write_varint(packet, id);
+        packet.write_bytes(body);
+        io::ByteWriter frame;
+        net::write_varint(frame, static_cast<i32>(packet.data().size()));
+        frame.write_bytes(packet.data());
+        const std::span<const u8> bytes = frame.data();
+        asio::write(socket, asio::buffer(bytes.data(), bytes.size()), error);
+    };
+    {
+        io::ByteWriter handshake;
+        net::write_varint(handshake, kProtocolVersion);
+        net::write_string(handshake, host);
+        handshake.write_i16(static_cast<i16>(port));
+        net::write_varint(handshake, 1);  // next state: status
+        send_frame(0x00, handshake.data());
+    }
+    send_frame(0x00, {});  // Status Request
+    if (error) {
+        return std::nullopt;
+    }
+
+    // One frame back: a VarInt length, the packet id 0x00, one JSON string.
+    const auto read_varint_byte = [&]() -> std::optional<i32> {
+        i32 value = 0;
+        for (i32 shift = 0; shift < 35; shift += 7) {
+            u8 byte = 0;
+            asio::read(socket, asio::buffer(&byte, 1), error);
+            if (error) {
+                return std::nullopt;
+            }
+            value |= static_cast<i32>(byte & 0x7F) << shift;
+            if ((byte & 0x80) == 0) {
+                return value;
+            }
+        }
+        return std::nullopt;
+    };
+    const auto length = read_varint_byte();
+    if (!length || *length <= 0 || *length > (1 << 20)) {
+        return std::nullopt;
+    }
+    std::string body(static_cast<usize>(*length), '\0');
+    asio::read(socket, asio::buffer(body.data(), body.size()), error);
+    if (error) {
+        return std::nullopt;
+    }
+    constexpr std::string_view kKey = "\"ondesSpawnProgress\":";
+    const auto                 at   = body.find(kKey);
+    if (at == std::string::npos) {
+        return 100;
+    }
+    i32 progress = 0;
+    for (usize i = at + kKey.size(); i < body.size() && body[i] >= '0' && body[i] <= '9'; ++i) {
+        progress = std::min(progress * 10 + (body[i] - '0'), 100);
+    }
+    return progress;
 }
 
 std::expected<std::unique_ptr<Client>, ClientError> Client::connect(const ClientDesc& desc) {

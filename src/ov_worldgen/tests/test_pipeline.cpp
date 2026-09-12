@@ -33,7 +33,10 @@
 #include <algorithm>
 #include <filesystem>
 #include <set>
+#include <string_view>
+#include <unordered_map>
 #include <utility>
+#include <vector>
 
 using namespace ov;
 using namespace ov::worldgen;
@@ -397,4 +400,155 @@ TEST_CASE("two chunks of one exclusion class never write into the same chunk",
         }
     }
     CHECK(seen.size() == 9);
+}
+
+// ── streaming ── The shared terrain cache changes how often terrain is
+// computed, never what it is (TerrainCache in pipeline.hpp).
+namespace {
+
+/// The simplest correct cache: a map, no eviction, counted.
+class MapTerrainCache final : public TerrainCache {
+public:
+    [[nodiscard]] bool fetch(i32 chunk_x, i32 chunk_z, world::Chunk& chunk,
+                             std::vector<std::string_view>& starts,
+                             std::vector<BlockPos>&         fluid_wakeups) override {
+        const auto found = items_.find(ChunkPos{chunk_x, chunk_z}.packed());
+        if (found == items_.end()) {
+            return false;
+        }
+        chunk         = found->second.chunk;
+        starts        = found->second.starts;
+        fluid_wakeups = found->second.fluid_wakeups;
+        ++hits;
+        return true;
+    }
+
+    void offer(i32 chunk_x, i32 chunk_z, const world::Chunk& chunk,
+               const std::vector<std::string_view>& starts,
+               const std::vector<BlockPos>&         fluid_wakeups) override {
+        items_.try_emplace(ChunkPos{chunk_x, chunk_z}.packed(),
+                           Stored{chunk, starts, fluid_wakeups});
+        ++offers;
+    }
+
+    usize hits{0};
+    usize offers{0};
+
+private:
+    struct Stored {
+        world::Chunk                  chunk;
+        std::vector<std::string_view> starts;
+        std::vector<BlockPos>         fluid_wakeups;
+    };
+    std::unordered_map<u64, Stored> items_;
+};
+
+/// Cells, biome cells and heightmap columns that differ between two chunks.
+[[nodiscard]] usize differences(const world::Chunk& a, const world::Chunk& b) {
+    usize      differing = 0;
+    const auto shape     = a.shape();
+    for (i32 y = shape.min_y; y <= shape.max_y(); ++y) {
+        for (usize z = 0; z < 16; ++z) {
+            for (usize x = 0; x < 16; ++x) {
+                differing += a.get_block(x, y, z) != b.get_block(x, y, z) ? 1U : 0U;
+                if ((y & 3) == 0 && (x & 3) == 0 && (z & 3) == 0) {
+                    differing += a.get_biome(x, y, z) != b.get_biome(x, y, z) ? 1U : 0U;
+                }
+            }
+        }
+    }
+    for (const auto type : {world::HeightmapType::WorldSurface, world::HeightmapType::OceanFloor,
+                            world::HeightmapType::MotionBlocking,
+                            world::HeightmapType::MotionBlockingNoLeaves}) {
+        for (usize z = 0; z < 16; ++z) {
+            for (usize x = 0; x < 16; ++x) {
+                differing += a.heightmap(type).first_free(x, z) != b.heightmap(type).first_free(x, z)
+                                 ? 1U
+                                 : 0U;
+            }
+        }
+    }
+    return differing;
+}
+
+}  // namespace
+
+TEST_CASE("terrain copied out of the cache is the terrain carved in place",
+          "[worldgen][pipeline][streaming]") {
+    if (!data_present()) {
+        SKIP("vanilla data absent; run tools/ov_datagen first");
+    }
+    auto blocks = registry::BlockRegistry::load(registry_pack());
+    REQUIRE(blocks.has_value());
+    auto registries = registry::Registries::load(registry_pack());
+    REQUIRE(registries.has_value());
+    auto router = NoiseRouter::load(data_root(), "overworld", kSeed);
+    REQUIRE(router.has_value());
+    auto biomes = BiomeSource::load(reports_root(), "overworld");
+    REQUIRE(biomes.has_value());
+    auto surface = SurfaceSystem::load(data_root(), "overworld", kSeed, *blocks);
+    REQUIRE(surface.has_value());
+    const CarvingContext carving{router->min_y(), router->height()};
+    const CarverStage    carvers{kSeed, carving};
+    ChunkGenerator       generator{*router, *biomes, *blocks};
+    generator.set_surface_system(&*surface);
+    REQUIRE(generator.set_carvers(&carvers, *registries).has_value());
+    const auto shape = world::WorldShape::overworld();
+    const auto air   = world::AirStates::from(*blocks);
+
+    // Without a decorator the features stage does nothing at all — not even
+    // carve the neighbours — so each three-by-three is carved explicitly.
+    const auto carve_around = [](ChunkPipeline& pipeline, i32 centre_x, i32 centre_z) {
+        for (i32 dz = -1; dz <= 1; ++dz) {
+            for (i32 dx = -1; dx <= 1; ++dx) {
+                (void)pipeline.promote(centre_x + dx, centre_z + dz, ChunkStatus::Carvers);
+            }
+        }
+    };
+
+    // The reference carves everything itself, on demand, below.
+    ChunkPipeline reference{generator, nullptr, *blocks, shape, kSeed};
+
+    // One pipeline fills the cache; a second, next door, copies what it can.
+    MapTerrainCache cache;
+    ChunkPipeline   filler{generator, nullptr, *blocks, shape, kSeed};
+    filler.set_terrain_cache(&cache);
+    carve_around(filler, 0, 0);
+    CHECK(cache.offers == 9);
+    CHECK(filler.stats().terrain_hits == 0);
+
+    ChunkPipeline copier{generator, nullptr, *blocks, shape, kSeed};
+    copier.set_terrain_cache(&cache);
+    carve_around(copier, 1, 0);  // x 0..2: six cached, three not
+    CHECK(copier.stats().terrain_hits == 6);
+    CHECK(cache.offers == 12);
+
+    for (const auto [x, z] : {std::pair{0, 0}, std::pair{1, 0}, std::pair{1, -1}, std::pair{0, 1}}) {
+        CHECK(differences(copier.promote(x, z, ChunkStatus::Carvers),
+                          reference.promote(x, z, ChunkStatus::Carvers)) == 0);
+    }
+
+    // ── worldgen-3 ── The fluids to wake travel with the copy. They are not in
+    // the chunk — they ride beside it on the pipeline's entry — so a cache that
+    // left them behind would give the same blocks, every generated waterfall
+    // frozen, and no digest of blocks could tell. (1, 0) came out of the cache.
+    ChunkPipeline         fresh{generator, nullptr, *blocks, shape, kSeed};
+    std::vector<BlockPos> carved_wakeups;
+    std::vector<BlockPos> copied_wakeups;
+    (void)fresh.take(1, 0, &carved_wakeups);
+    (void)copier.take(1, 0, &copied_wakeups);
+    CHECK(copied_wakeups == carved_wakeups);
+
+    // A copy is the copier's own: writing into it leaves the cached chunk,
+    // and the next copy, as they were (copy-on-write sections).
+    world::Chunk                  mine{ChunkPos{0, 0}, shape, air, &*blocks};
+    std::vector<std::string_view> starts;
+    REQUIRE(cache.fetch(0, 0, mine, starts));
+    const auto original = mine.get_block(1, 0, 1);
+    mine.set_block(1, 0, 1,
+                   original == registry::kAirState ? registry::BlockStateId{1} : registry::kAirState);
+    world::Chunk again{ChunkPos{0, 0}, shape, air, &*blocks};
+    REQUIRE(cache.fetch(0, 0, again, starts));
+    CHECK(again.get_block(1, 0, 1) == original);
+    CHECK(differences(again, reference.promote(0, 0, ChunkStatus::Carvers)) == 0);
 }

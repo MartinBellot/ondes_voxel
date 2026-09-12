@@ -120,6 +120,49 @@ struct PipelineStats {
     /// Chunks resident in the cache right now, and the high-water mark.
     u64 resident{0};
     u64 peak_resident{0};
+
+    /// ── streaming ── Chunks that reached `Carvers` by a copy out of the
+    /// `TerrainCache` rather than by running the four terrain stages.
+    u64 terrain_hits{0};
+};
+
+/// ── streaming ── Carved terrain, shared between pipelines.
+///
+/// Everything up to and including `Carvers` is a pure function of the seed and
+/// the chunk's position: no stage before the features reads a neighbour, or
+/// anything this pipeline did before (the carving mask is recomputed from the
+/// position, never kept). A chunk carved by one pipeline is therefore exactly
+/// the chunk any other pipeline would carve, and a cache of them changes how
+/// often terrain is computed — never what it is. The server generates squares
+/// of 4x4 chunks that each need an 8x8 of terrain; three quarters of that ring
+/// is the neighbouring squares' own terrain.
+///
+/// Implementations are called by several pipelines on several threads at once
+/// and must be safe for that. `fetch` copies: the pipeline's copy is its own and
+/// the decoration writes into it.
+class TerrainCache {
+public:
+    TerrainCache()                               = default;
+    TerrainCache(const TerrainCache&)            = delete;
+    TerrainCache& operator=(const TerrainCache&) = delete;
+    virtual ~TerrainCache()                      = default;
+
+    /// Copy a carved chunk, the structures that start in it, and the fluids
+    /// its noise and carvers marked for waking (── worldgen-3 ──), out of the
+    /// cache. False when it is not there.
+    ///
+    /// The wakeups are not in the chunk: they travel beside it, on the
+    /// pipeline's entry, and a copy that left them behind would be the same
+    /// blocks with every generated waterfall frozen — which no block digest
+    /// can see.
+    [[nodiscard]] virtual bool fetch(i32 chunk_x, i32 chunk_z, world::Chunk& chunk,
+                                     std::vector<std::string_view>& starts,
+                                     std::vector<BlockPos>&         fluid_wakeups) = 0;
+
+    /// A chunk that has just reached `Carvers`, offered for others to copy.
+    virtual void offer(i32 chunk_x, i32 chunk_z, const world::Chunk& chunk,
+                       const std::vector<std::string_view>& starts,
+                       const std::vector<BlockPos>&         fluid_wakeups) = 0;
 };
 
 /// Drives chunks through the statuses, holding the neighbourhood decoration
@@ -192,6 +235,10 @@ public:
     /// Give the pipeline the stage that writes structure blocks at `features`,
     /// before the decoration. Borrowed; null, the default, writes none.
     void set_structure_stage(StructureStage* stage) noexcept;
+
+    /// ── streaming ── Share carved terrain with other pipelines. Borrowed;
+    /// null, the default, generates every chunk's terrain here.
+    void set_terrain_cache(TerrainCache* cache) noexcept;
 
     /// Drop cached chunks that no chunk within `keep` of `centre` needs.
     ///

@@ -194,32 +194,45 @@ std::array<i32, 3> Aquifer::centre(i32 gx, i32 gy, i32 gz) const noexcept {
 
 // ── The per-chunk half ─────────────────────────────────────────────────────
 
+// ── streaming ── Both memos live on the stack's `Aquifer`, not on the sampler:
+// see the members' comment in the header. At these sizes a clear comes every
+// few hundred chunks, and costs a recomputation of the same values.
+constexpr usize kSurfaceMemo = usize{1} << 16;
+constexpr usize kStatusMemo  = usize{1} << 16;
+
 i32 AquiferSampler::preliminary_surface(i32 x, i32 z) {
-    const i64 key = pack(x, 0, z);
-    if (const auto found = surfaces_.find(key); found != surfaces_.end()) {
+    const Aquifer& aquifer = *aquifer_;
+    const i64      key     = pack(x, 0, z);
+    if (const auto found = aquifer.surfaces_.find(key); found != aquifer.surfaces_.end()) {
         return found->second;
     }
-    const Aquifer& aquifer = *aquifer_;
-    const i32      step    = std::max(1, aquifer.tuning_.surface_step);
-    i32            surface = kNoSurface;
+    const i32 step    = std::max(1, aquifer.tuning_.surface_step);
+    i32       surface = kNoSurface;
     for (i32 y = aquifer.min_y_ + aquifer.height_; y >= aquifer.min_y_; y -= step) {
         if (aquifer.surface_density_->compute(FunctionContext{x, y, z}) > kSurfaceThreshold) {
             surface = y;
             break;
         }
     }
-    surfaces_.emplace(key, surface);
+    if (aquifer.surfaces_.size() >= kSurfaceMemo) {
+        aquifer.surfaces_.clear();
+    }
+    aquifer.surfaces_.emplace(key, surface);
     return surface;
 }
 
 FluidStatus AquiferSampler::status_of_cell(i32 gx, i32 gy, i32 gz) {
-    const i64 key = pack(gx, gy, gz);
-    if (const auto found = statuses_.find(key); found != statuses_.end()) {
+    const Aquifer& aquifer = *aquifer_;
+    const i64      key     = pack(gx, gy, gz);
+    if (const auto found = aquifer.statuses_.find(key); found != aquifer.statuses_.end()) {
         return found->second;
     }
-    const auto        at     = aquifer_->centre(gx, gy, gz);
+    const auto        at     = aquifer.centre(gx, gy, gz);
     const FluidStatus status = compute_status(at[0], at[1], at[2]);
-    statuses_.emplace(key, status);
+    if (aquifer.statuses_.size() >= kStatusMemo) {
+        aquifer.statuses_.clear();
+    }
+    aquifer.statuses_.emplace(key, status);
     return status;
 }
 

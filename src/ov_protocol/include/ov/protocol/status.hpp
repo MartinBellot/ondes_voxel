@@ -52,6 +52,14 @@ struct ServerStatus {
     /// claiming otherwise makes a client expect signatures it will not get.
     bool enforces_secure_chat{false};
 
+    /// ── streaming ── How much of its spawn area the server has prepared, 0 to
+    /// 99, while it is preparing it; -1, the default and the value once ready,
+    /// leaves the key out. Not a vanilla key — the game's own client ignores
+    /// keys it does not know — read by ours to draw "Preparing spawn area: N%"
+    /// instead of knocking at the login door once a second
+    /// (docs/provenance/chargement-terrain.md).
+    i32 spawn_progress{-1};
+
     /// Serialize to the JSON the client expects.
     ///
     /// Hand-written rather than routed through a JSON library: this is one

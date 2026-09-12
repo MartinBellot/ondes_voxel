@@ -87,6 +87,10 @@ std::string ServerStatus::to_json() const {
     if (enforces_secure_chat) {
         json += R"(,"enforcesSecureChat":true)";
     }
+    if (spawn_progress >= 0) {  // ── streaming ── see the header
+        json += R"(,"ondesSpawnProgress":)";
+        json += std::to_string(spawn_progress);
+    }
     json += "}";
 
     return json;

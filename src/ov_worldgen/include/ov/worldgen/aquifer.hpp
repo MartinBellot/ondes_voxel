@@ -27,9 +27,11 @@
 //
 // Two traps, both of the "looks right, is wrong" kind:
 //
-//   * the object is **per chunk and per thread**. It memoises every cell status
-//     and every preliminary surface it computes, and the router beneath it has
-//     mutable caches of its own. Build one per chunk; never share one.
+//   * **one thread per `Aquifer`**. The sampler is per chunk; the `Aquifer`
+//     beneath it is per generator stack and memoises every preliminary surface
+//     and cell status the stack has asked for (── streaming ──, see the members),
+//     and the router beneath both has mutable caches of its own. A stack is
+//     driven by one thread at a time; never share either object between two.
 //   * the carvers ask the aquifer too, with a density of exactly zero. A carved
 //     cell below an aquifer's level fills with that aquifer's fluid, and a
 //     carved cell on a barrier is not carved at all.
@@ -166,7 +168,7 @@ struct AquiferTuning {
 };
 
 /// The seed-level half: the noises, the factory, the constants. Built once per
-/// generator stack, immutable afterwards.
+/// generator stack; its answers never change afterwards, and it remembers them.
 class Aquifer {
 public:
     /// Build from a router. `enabled()` is false, and the reason is in
@@ -217,6 +219,22 @@ private:
     i32 height_{384};
 
     std::vector<std::string> missing_;
+
+    /// ── streaming ── Every preliminary surface and every cell status this
+    /// stack has computed, kept across chunks.
+    ///
+    /// Both are pure functions of the seed and the position: a surface is the
+    /// first height, scanning down, where one router entry crosses a threshold;
+    /// a status reads thirteen surfaces and three noises at the cell's centre.
+    /// Kept per sampler — per chunk and per stage — the same columns were
+    /// scanned again for each of the four chunks a cell touches, and again for
+    /// the carvers: 75 % of all generation time, measured
+    /// (docs/provenance/chargement-terrain.md). Kept here they are scanned
+    /// once. Bounded by clearing: a cleared entry is recomputed to the same
+    /// value, so the bound costs time, never the world. Mutable, and confined
+    /// to the stack's one thread like the router's own caches.
+    mutable std::unordered_map<i64, i32>         surfaces_;
+    mutable std::unordered_map<i64, FluidStatus> statuses_;
 };
 
 /// The four nearest centres of a block, nearest first, and their statuses.
@@ -227,10 +245,11 @@ struct AquiferNeighbourhood {
     std::array<FluidStatus, 4> status{};
 };
 
-/// The per-chunk half: memoised statuses and surfaces.
+/// The per-chunk half: the nearest centres, and the block being answered.
 ///
 /// Cheap to build and meant to be thrown away with the chunk. Not thread-safe
-/// and not meant to be: see the header.
+/// and not meant to be: see the header. The statuses and surfaces it asks for
+/// are remembered by its `Aquifer`, for the whole stack.
 class AquiferSampler {
 public:
     explicit AquiferSampler(const Aquifer& aquifer) : aquifer_(&aquifer) {}
@@ -268,9 +287,7 @@ private:
     f64  barrier_value_{0.0};
     bool barrier_known_{false};
 
-    std::unordered_map<i64, FluidStatus>        statuses_;
     std::unordered_map<i64, std::array<i32, 3>> centres_;
-    std::unordered_map<i64, i32>                surfaces_;
 };
 
 [[nodiscard]] std::string_view to_string(Substance substance) noexcept;

@@ -392,6 +392,14 @@ struct ClientEvents {
 
 class Client {
 public:
+    /// ── streaming ── Ask a server, through a status ping, how far along its
+    /// spawn preparation is: 0 to 99 while it prepares, 100 once it says
+    /// nothing (ready, or a server that does not report it), nullopt when it
+    /// cannot be reached. Blocking, bounded by a half-second read timeout; for
+    /// the loading screen of a server on this machine.
+    [[nodiscard]] static std::optional<i32> query_spawn_progress(const std::string& host,
+                                                                 u16                port);
+
     [[nodiscard]] static std::expected<std::unique_ptr<Client>, ClientError> connect(
         const ClientDesc& desc);
 
