@@ -72,9 +72,28 @@ place. Le témoin décalé ne tombe sur aucun pilier : l'échantillon ne compte 
 (trois chunks d'océan gelé), trop peu pour qu'un décalage retombe dans une zone de piliers ; il est
 donné tel quel et il ne prouve rien de plus que « le motif n'est pas partout ».
 
-Reste un excès : 1 986 cellules de glace chez nous que le jeu n'a pas. Le diagnostic (au-dessus
-ou au-dessous de la mer, sommet ou fond de colonne décalé) est ajouté au harnais et sa mesure est
-en cours ; tant qu'il ne l'est pas, cet excès n'est **pas** expliqué.
+Reste un excès : 1 986 cellules de glace chez nous que le jeu n'a pas. Le diagnostic ajouté au
+harnais le localise : 934 au-dessus de la mer, 1 016 au-dessous, et surtout **54 colonnes où nous
+seuls gelons** — là où les deux côtés ont de la glace, notre sommet est celui du jeu dans 182
+colonnes sur 190. Le zoom des biomes (§ 1.1) n'en retire que trois (54 → 51) : ce n'est donc
+**pas** un effet de bord de biome, et l'excès reste **non expliqué**.
+
+### 1.1 Les règles de surface à travers le zoom
+
+Le contexte des règles de surface lit lui aussi son biome à travers `BiomeManager` dans le jeu.
+`ZoomedQueries` le fait maintenant pour les règles et pour les deux passes ; une cellule d'un
+voisin, que le zoom atteint au bord du chunk, est répondue par la source de biomes (exacte à la
+cellule près) — dans le générateur comme dans `ov_surfparity`. `OV_BIOME_ZOOM=0` pour l'avant,
+même binaire, 250 chunks :
+
+| | blocs | colonnes entières | erreurs au bord d'une cellule de biome |
+|---|---:|---:|---:|
+| sans zoom | 429 999 / 439 111 (97,925 %) | 58 489 / 64 000 (91,389 %) | 2 224 |
+| **avec zoom** | **431 596 / 439 241 (98,259 %)** | **59 052 / 64 000 (92,269 %)** | **1 015** |
+
+Le passage sans zoom reproduit au bloc près la mesure d'avant ce changement. Les erreurs au
+bord d'une cellule de biome — 22,9 % du reste dans `surface-rules.md` § 5 — sont plus que
+divisées par deux.
 
 ## 2. Les features construites
 

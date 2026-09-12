@@ -548,8 +548,10 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       (0 passe coupée), avec 1 986 de trop concentrées sur 54 colonnes où seul
       notre biome dit « océan gelé » ; `frozen_ocean` 65 → 92,2 % une fois la glace
       retirée du terrain comparé. Piliers des badlands érodées : pas d'oracle —
-      48 colonnes dans la référence, notre bruit n'y lève aucun pilier. Voir
-      `docs/provenance/worldgen-3.md` § 1)*
+      48 colonnes dans la référence, notre bruit n'y lève aucun pilier. Règles
+      de surface à travers le zoom flou des biomes : blocs 97,93 → **98,26 %**,
+      colonnes 91,39 → 92,27 %, erreurs au bord d'une cellule de biome 2 224 →
+      1 015 (même binaire). Voir `docs/provenance/worldgen-3.md` §§ 1, 1.1)*
 - [x] Carvers : grottes et ravins
       *(**masques bit-exacts : 1200/1200 chunks, 1 615 858 cellules**, aucune
       chez nous seule, aucune chez le jeu seul. L'oracle est un chunk que le
