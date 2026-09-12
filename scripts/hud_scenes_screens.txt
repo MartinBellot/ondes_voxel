@@ -1,9 +1,12 @@
-# The container screens the server opens: each block set under the player's
-# feet, looked at straight down, right-clicked with the sword in hand.
-# scripts/measure_hud.py <which> --tag screens --scenes scripts/hud_scenes_screens.txt
-# The screens are compared whole: scripts/compare_hud.py compare … --region screen
+# The container screens the server opens: each block set at one fixed place,
+# the player teleported onto it looking straight down, and a right click with
+# the sword in hand.
+# scripts/measure_hud.py <which> --tag screens --scenes scripts/hud_scenes_screens.txt --port 25721
+#
+# Fixed coordinates, not `~ ~-1 ~`: standing on a hopper the player sinks into
+# its bowl, so the block under the feet is the dirt below it, and every later
+# setblock replaced that dirt while the hopper stayed (the first screens run).
 
-look 0 90
 cmd gamerule sendCommandFeedback false
 cmd gamerule naturalRegeneration false
 cmd gamerule doDaylightCycle false
@@ -15,66 +18,84 @@ cmd clear @s
 cmd item replace entity @s hotbar.0 with minecraft:diamond_sword
 cmd item replace entity @s hotbar.1 with minecraft:cobblestone 37
 cmd item replace entity @s inventory.0 with minecraft:oak_log 12
-wait 60
+wait 40
 
-cmd execute at @s run setblock ~ ~-1 ~ minecraft:hopper
+cmd setblock 0 -61 0 minecraft:hopper
+cmd tp @s 0.5 -59.5 0.5 0 90
 wait 20
+look 0 90
 use
 wait 20
 shot 30-hopper
 key esc tap
 wait 10
-cmd execute at @s run setblock ~ ~-1 ~ minecraft:dispenser[facing=up]
+cmd setblock 0 -61 0 minecraft:dispenser[facing=up]
+cmd tp @s 0.5 -59.5 0.5 0 90
 wait 20
+look 0 90
 use
 wait 20
 shot 31-dispenser
 key esc tap
 wait 10
-cmd execute at @s run setblock ~ ~-1 ~ minecraft:shulker_box
+cmd setblock 0 -61 0 minecraft:shulker_box
+cmd tp @s 0.5 -59.5 0.5 0 90
 wait 20
+look 0 90
 use
 wait 30
 shot 32-shulker
 key esc tap
 wait 10
-cmd execute at @s run setblock ~ ~-1 ~ minecraft:anvil
+cmd setblock 0 -61 0 minecraft:anvil
+cmd tp @s 0.5 -59.5 0.5 0 90
 wait 20
+look 0 90
 use
 wait 20
 shot 33-anvil
 key esc tap
 wait 10
-cmd execute at @s run setblock ~ ~-1 ~ minecraft:grindstone[face=floor]
+cmd setblock 0 -61 0 minecraft:grindstone[face=floor]
+cmd tp @s 0.5 -59.5 0.5 0 90
 wait 20
+look 0 90
 use
 wait 20
 shot 34-grindstone
 key esc tap
 wait 10
-cmd execute at @s run setblock ~ ~-1 ~ minecraft:enchanting_table
-wait 30
+cmd setblock 0 -61 0 minecraft:enchanting_table
+cmd tp @s 0.5 -59.5 0.5 0 90
+wait 20
+look 0 90
 use
 wait 20
 shot 35-enchanting
 key esc tap
 wait 10
-cmd execute at @s run setblock ~ ~-1 ~ minecraft:brewing_stand
-wait 30
+cmd setblock 0 -61 0 minecraft:brewing_stand
+cmd tp @s 0.5 -59.5 0.5 0 90
+wait 20
+look 0 90
 use
 wait 20
 shot 36-brewing
 key esc tap
 wait 10
-cmd execute at @s run setblock ~ ~-1 ~ minecraft:crafting_table
+cmd setblock 0 -61 0 minecraft:crafting_table
+cmd tp @s 0.5 -59.5 0.5 0 90
 wait 20
+look 0 90
 use
 wait 20
 shot 37-crafting
 key esc tap
 wait 10
-cmd execute at @s run setblock ~ ~-1 ~ minecraft:chest
+cmd setblock 0 -61 0 minecraft:chest
+cmd tp @s 0.5 -59.5 0.5 0 90
 wait 20
+look 0 90
 use
 wait 20
 shot 38-chest
