@@ -29,6 +29,7 @@
 #include "world_state.hpp"
 
 #include "../effect_session.hpp"
+#include "../scoreboard/scoreboard.hpp"  // ── scoreboard ──
 #include "../survival_session.hpp"
 
 #include "ov/math/random.hpp"
@@ -46,6 +47,10 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+namespace ov::server::admin {
+class ServerAdmin;  // ── dedicated server administration ──
+}
 
 namespace ov::server::cmd {
 
@@ -82,6 +87,9 @@ struct PlayerRef {
     std::function<void(i32, std::span<const u8>)> send;
     /// To everyone but this player.
     std::function<void(i32, std::span<const u8>)> broadcast_others;
+    /// ── dedicated server administration ── the address they came from, no
+    /// port: what `ban-ip <player>` bans.
+    std::string address;
 };
 
 struct BlockChange {
@@ -131,6 +139,13 @@ struct CommandHost {
     std::function<void()> save;
     std::function<void()> stop;
     std::function<void(i32 x, i32 y, i32 z, f32 angle)> set_world_spawn;
+    // ── dedicated server administration ──
+    /// Write one key of server.properties (the dedicated server keeps
+    /// `white-list`, `player-idle-timeout`… there, as vanilla does). Empty on
+    /// an integrated server.
+    std::function<void(std::string_view key, std::string value)> set_property;
+    /// Ticks the server has run, for `/debug stop`.
+    std::function<i64()> tick_count;
 };
 
 struct ServiceConfig {
@@ -148,6 +163,14 @@ struct ServiceConfig {
     // one player an integrated server's Allow Cheats applies to. Last, so the
     // positional initialisations above it keep their meaning.
     std::string host_player;
+    // ── dedicated server administration ── the ban lists and the whitelist;
+    // null on an integrated server, which has neither.
+    admin::ServerAdmin* admin{nullptr};
+    /// server.properties' op-permission-level: the level `op` grants.
+    i32 op_permission_level{4};
+    /// broadcast-console-to-ops / broadcast-rcon-to-ops.
+    bool broadcast_console_to_ops{true};
+    bool broadcast_rcon_to_ops{true};
 };
 
 // ── allow-commands ──
@@ -176,6 +199,29 @@ public:
 
     void enqueue(i32 player_entity_id, std::string command, i64 timestamp, i64 salt);
     void enqueue_console(std::string command);
+    /// ── scoreboard ── A chat line, broadcast on the tick: the sender's name
+    /// wears its team, and the teams are the tick thread's to read.
+    void enqueue_chat(i32 player_entity_id, std::string message, i64 timestamp, i64 salt);
+    /// ── scoreboard ── A kill, for the kill criteria on the next tick: the
+    /// holder names (a player's name, anything else's UUID). Any thread.
+    void enqueue_kill(std::string killer, std::string victim, bool victim_is_player);
+    /// ── dedicated server administration ── A console-like source with its own
+    /// name ("Rcon"): what it would print is collected and handed to `done`
+    /// on the tick thread once the command has run.
+    void enqueue_captured(std::string command, std::string source_name,
+                          std::function<void(std::string)> done);
+
+    /// `save-off` / `save-on`: whether the periodic save runs.
+    [[nodiscard]] bool autosave_enabled() const noexcept {
+        return autosave_.load(std::memory_order_relaxed);
+    }
+    /// `setidletimeout`, in minutes; 0 is none.
+    [[nodiscard]] i32 idle_timeout() const noexcept {
+        return idle_timeout_.load(std::memory_order_relaxed);
+    }
+    void set_idle_timeout(i32 minutes) noexcept {
+        idle_timeout_.store(minutes, std::memory_order_relaxed);
+    }
 
     [[nodiscard]] net::SuggestionsResponse suggest(const CommandSource& source, i32 transaction,
                                                    std::string_view                text,
@@ -186,11 +232,24 @@ public:
     }
 
     /// The Player Chat Message a chat line becomes: unsigned, chat type
-    /// `minecraft:chat`, the sender's display name.
-    [[nodiscard]] static std::vector<u8> chat_packet(std::string_view name, const net::Uuid& uuid,
-                                                     std::string_view message, i64 timestamp,
-                                                     i64 salt, i32 chat_type,
-                                                     const std::optional<Text>& target = std::nullopt);
+    /// `minecraft:chat`, the sender's display name — with its team's colour,
+    /// prefix and suffix (── scoreboard ──: a member, since it reads the
+    /// teams). Tick thread.
+    [[nodiscard]] std::vector<u8> chat_packet(std::string_view name, const net::Uuid& uuid,
+                                              std::string_view message, i64 timestamp, i64 salt,
+                                              i32 chat_type,
+                                              const std::optional<Text>& target = std::nullopt) const;
+
+    // ── scoreboard ── Tick thread, like the rest of the world's state.
+    [[nodiscard]] Scoreboard&       scoreboard() noexcept { return scoreboard_; }
+    [[nodiscard]] const Scoreboard& scoreboard() const noexcept { return scoreboard_; }
+    /// Every player name in `text` — a component with a player's hover —
+    /// dressed in its team: colour, prefix, suffix. What vanilla's display
+    /// name is, and what every feedback line naming a player shows.
+    [[nodiscard]] Text decorate(Text text) const;
+    /// Send what the scoreboard queued. The server calls it after feeding the
+    /// criteria; commands flush on their own, before each line they answer.
+    void flush_scoreboard(const std::function<void(i32, std::span<const u8>)>& send);
 
     /// Player Abilities for a game mode, as vanilla sends them.
     [[nodiscard]] static std::vector<u8> abilities_for(u8 game_mode);
@@ -237,9 +296,36 @@ private:
         std::string command;
         i64         timestamp{0};
         i64         salt{0};
+        bool        chat{false};  // ── scoreboard ── a chat line, not a command
+        // ── dedicated server administration ── enqueue_captured's.
+        std::string                      source_name;
+        std::function<void(std::string)> done;
     };
 
     void register_commands();
+    // ── scoreboard ── scoreboard_commands.cpp, each called at vanilla's place
+    // in the registration order.
+    void register_scoreboard_command();
+    void register_team_commands();
+    void register_trigger_command();
+    /// `single`: a `*` names nobody there, as the capture's `players list *`.
+    [[nodiscard]] Parsed<std::vector<std::string>> score_holders(const CommandContext& ctx,
+                                                                 std::string_view     name,
+                                                                 bool                 single = false);
+    void flush_scoreboard();
+    // ── dedicated server administration (admin_commands.cpp) ──
+    // Each registers its commands at their place in vanilla's order.
+    using TopFn = std::function<u32(std::string, i32, Executor)>;
+    void register_debug(const TopFn& top);            // after datapack
+    void register_bans(const TopFn& top);             // ban-ip, banlist, ban
+    void register_pardons(const TopFn& top);          // pardon, pardon-ip
+    void register_save_switches(const TopFn& top);    // save-off, save-on, setidletimeout
+    void register_whitelist(const TopFn& top);        // whitelist, last
+    void register_publish(const TopFn& top);          // integrated only, after all
+    [[nodiscard]] Parsed<std::vector<std::pair<std::string, net::Uuid>>> game_profiles(
+        const CommandContext& ctx, std::string_view name);
+    /// Tell the door who the operators are.
+    void sync_admin_ops();
 
     // Players.
     void refresh_players();
@@ -272,6 +358,7 @@ private:
     ParseEnv               env_;
     Dispatcher             dispatcher_;
     WorldState             world_;
+    Scoreboard             scoreboard_;  // ── scoreboard ──
     OpList                 ops_;
     std::optional<Lang>    lang_;
     std::array<std::vector<u8>, 5> graphs_;
@@ -279,6 +366,17 @@ private:
     mutable std::mutex     queue_mutex_;
     std::vector<Pending>   queue_;
     std::vector<Pending>   running_;
+    // ── scoreboard ── kills waiting for the tick (under queue_mutex_), who
+    // was dead at the last look (a death is the edge), who is tracked for the
+    // player criteria.
+    struct Kill {
+        std::string killer;
+        std::string victim;
+        bool        victim_is_player{false};
+    };
+    std::vector<Kill>                    kills_;
+    std::unordered_set<i32>              dead_;
+    std::unordered_map<i32, std::string> criteria_names_;
     std::vector<Broadcast> outbox_;
     std::unordered_set<i32> welcomed_;
     std::unordered_map<std::string, PersonalSpawn> spawns_;
@@ -292,6 +390,15 @@ private:
     std::vector<EntityInfo> world_snapshot_;
     i64                     timestamp_{0};
     i64                     salt_{0};
+    Text                    source_shown_;  // ── scoreboard ── the source's name, at the start
+
+    // ── dedicated server administration ──
+    std::atomic<bool> autosave_{true};
+    std::atomic<i32>  idle_timeout_{0};
+    /// `/debug start`: when, and at which tick. None when not profiling.
+    std::optional<std::pair<i64, i64>> debug_started_;
+    /// While a captured command runs, where its words go.
+    std::string* capture_{nullptr};
 };
 
 }  // namespace ov::server::cmd

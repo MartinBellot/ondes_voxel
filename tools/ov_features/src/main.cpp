@@ -27,9 +27,11 @@
 #include "ov/nbt/region.hpp"
 #include "ov/registry/block_states.hpp"
 #include "ov/worldgen/biome_source.hpp"
+#include "ov/worldgen/biome_zoom.hpp"  // ── worldgen-3 ──
 #include "ov/worldgen/decoration.hpp"
 #include "ov/worldgen/density.hpp"
 #include "ov/worldgen/feature.hpp"
+#include "ov/worldgen/structure_template.hpp"
 
 #include <fmt/format.h>
 
@@ -40,6 +42,8 @@
 #include <tuple>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <map>
 #include <set>
 #include <string>
@@ -115,6 +119,9 @@ struct Options {
     /// biome, the neighbours and the placer are all mixed — into "this placer
     /// is right in 1291 of 1329 trees", which is a fact about the placer.
     bool probe{false};
+    /// ── worldgen-3 ── `freeze_top_layer` against the reference world: snow,
+    /// ice and `snowy` stripped from each chunk and put back by our feature.
+    bool freeze{false};
     /// The configured feature the probe world was built with.
     std::string feature;
     /// Its index at the step, as the probe datapack wrote it.
@@ -127,6 +134,8 @@ struct Options {
     /// control. That is what measures a geode, a lake or a huge mushroom,
     /// none of which is made of logs and leaves.
     std::filesystem::path control;
+    /// ── worldgen-3 ── The server jar the fossils' templates are read from.
+    std::filesystem::path jar{"tools/vanilla/server.jar"};
 };
 
 [[nodiscard]] Options parse(int argc, char** argv) {
@@ -170,6 +179,8 @@ struct Options {
             options.only = value("--only=");
         } else if (argument == "--matched") {
             options.matched = true;
+        } else if (argument == "--freeze") {
+            options.freeze = true;
         } else if (argument == "--probe") {
             options.probe = true;
             options.step  = 9;
@@ -177,6 +188,8 @@ struct Options {
             options.feature = value("--feature=");
         } else if (argument.starts_with("--control=")) {
             options.control = value("--control=");
+        } else if (argument.starts_with("--jar=")) {
+            options.jar = value("--jar=");
         } else if (argument.starts_with("--index=")) {
             options.index = std::atoi(value("--index=").c_str());
         } else if (argument.starts_with("--min-logs=")) {
@@ -410,10 +423,13 @@ public:
         if (local_x < 0 || local_x >= 48 || local_z < 0 || local_z >= 48) {
             return min_y();
         }
-        const bool motion = type == world::HeightmapType::OceanFloor ||
-                            type == world::HeightmapType::OceanFloorWG ||
-                            type == world::HeightmapType::MotionBlocking;
-        const usize slot = static_cast<usize>(local_z * 48 + local_x) * 2 + (motion ? 1U : 0U);
+        // ── worldgen-3 ── Three maps, not two: MOTION_BLOCKING counts a fluid
+        // (the frozen river's water is its top), the ocean floor does not.
+        const bool floor  = type == world::HeightmapType::OceanFloor ||
+                           type == world::HeightmapType::OceanFloorWG;
+        const bool motion = type == world::HeightmapType::MotionBlocking;
+        const usize slot  = static_cast<usize>(local_z * 48 + local_x) * 3 +
+                           (floor ? 1U : (motion ? 2U : 0U));
         if (heights_[slot] != std::numeric_limits<i32>::min()) {
             return heights_[slot];
         }
@@ -421,7 +437,9 @@ public:
         for (i32 y = max_y(); y >= min_y(); --y) {
             const auto state = block_at(x, y, z);
             const auto block = blocks_->block_of(state);
-            const bool counts = motion ? blocks_->blocks_motion(block) : !blocks_->is_air(block);
+            const bool counts = floor    ? blocks_->blocks_motion(block)
+                                : motion ? blocks_->blocks_motion(block) || blocks_->holds_fluid(state)
+                                         : !blocks_->is_air(block);
             if (counts) {
                 found = y + 1;
                 break;
@@ -518,7 +536,7 @@ private:
     std::vector<std::tuple<i32, i64, registry::BlockStateId>> group_writes_;
     i32                                                       current_group_{-1};
     /// Two heightmaps per column of the 48 by 48 block, memoised.
-    mutable std::array<i32, 48 * 48 * 2> heights_{};
+    mutable std::array<i32, 48 * 48 * 3> heights_{};
 };
 
 /// What an ore block replaced.
@@ -765,7 +783,7 @@ int main(int argc, char** argv) {
         // regions of unfinished edge chunks ahead of its patch in region
         // order, and cutting the list here left the ocean probe comparing
         // nothing but those edges.
-        if (!options.trees && options.control.empty() &&
+        if (!options.trees && !options.freeze && options.control.empty() &&
             candidates.size() >= static_cast<usize>(options.chunks) * 4) {
             break;
         }
@@ -779,7 +797,7 @@ int main(int argc, char** argv) {
     // one in coordinate order can easily be ocean — which is exactly what
     // happened, and read as "no trees anywhere" rather than as "no trees here".
     // So this takes a handful of interior chunks from every patch instead.
-    if (options.trees) {
+    if (options.trees || options.freeze) {  // ── worldgen-3 ── the snow is not everywhere either
         std::vector<std::pair<i32, i32>> spread;
         std::map<std::pair<i32, i32>, i32> per_region;
         for (const auto& [chunk_x, chunk_z] : candidates) {
@@ -872,7 +890,9 @@ int main(int argc, char** argv) {
             const worldgen::Feature*       feature{nullptr};
             const worldgen::PlacedFeature* placed{nullptr};
         };
-        std::vector<Entry> entries;
+        std::vector<Entry>                                            entries;
+        std::vector<std::shared_ptr<const worldgen::PlacedFeature>> owned_placed;
+        owned_placed.reserve(16);
         for (usize start = 0; start <= options.feature.size();) {
             const auto  stop = options.feature.find(',', start);
             std::string name = options.feature.substr(
@@ -881,6 +901,21 @@ int main(int argc, char** argv) {
             if (!name.empty() && name.front() == '=') {
                 entry.name   = name.substr(1);
                 entry.placed = features->placed(entry.name);
+            } else if (!name.empty() && name.front() == '%') {
+                // A placed feature of the probe's own (scripts/probe_tree.py
+                // `%file.json`), parsed against the registry.
+                entry.name = fmt::format("probe:tree{}", entries.size());
+                std::ifstream     file{name.substr(1)};
+                const std::string text{std::istreambuf_iterator<char>(file),
+                                       std::istreambuf_iterator<char>()};
+                auto built = features->parse_placed(text, entry.name, *pack);
+                if (!built) {
+                    fmt::print("{} did not parse ({})\n", name,
+                               worldgen::to_string(built.error()));
+                    return 1;
+                }
+                owned_placed.push_back(*built);
+                entry.placed = owned_placed.back().get();
             } else {
                 entry.name    = name;
                 entry.feature = features->configured(name);
@@ -904,6 +939,17 @@ int main(int argc, char** argv) {
             }
         };
         const AlwaysListed listed;
+
+        // ── worldgen-3 ── The fossils are templates from the server jar. Read
+        // once; without the jar a fossil places nothing, and that is said.
+        static constexpr std::array<std::string_view, 1> kTemplateFamilies{"fossil/"};
+        std::string detail;
+        auto        templates = worldgen::TemplateLibrary::open(options.jar, *pack,
+                                                                 kTemplateFamilies, &detail);
+        if (!templates) {
+            fmt::print("no templates from {} ({}): fossils will place nothing\n",
+                       options.jar.string(), detail);
+        }
 
         const auto build_control = [&](i32 chunk_x, i32 chunk_z) -> std::shared_ptr<ReferenceLevel> {
             auto level = std::make_shared<ReferenceLevel>(*pack, chunk_x, chunk_z);
@@ -978,6 +1024,7 @@ int main(int argc, char** argv) {
                         context.feature_name = entry.name;
                         context.biomes       = &listed;
                         context.level_seed   = options.seed;
+                        context.templates    = templates ? &*templates : nullptr;
                         if (entry.placed != nullptr) {
                             worldgen::expand(entry.placed->placement, context, *control, random,
                                              {origin_x, control->min_y(), origin_z},
@@ -1094,6 +1141,167 @@ int main(int argc, char** argv) {
             const auto& [name, count] = sorted[i];
             fmt::print("  {:<40} {:>8} {:>8} {:>8}  {:.1f} %\n", name, count.theirs, count.ours,
                        count.same, percent(count.same, count.theirs));
+        }
+        return 0;
+    }
+
+    if (options.freeze) {
+        // ── worldgen-3 ── `freeze_top_layer` on the game's own terrain. The
+        // feature is the last of the chunk and writes only its own columns, so
+        // the protocol is exact up to what ran after it: every snow layer of
+        // the centre chunk is taken away, every ice block goes back to a water
+        // source, every `snowy` goes back to false — and our feature runs on
+        // what is left. Snow, ice and `snowy` are compared cell for cell.
+        // `OV_CLIMATE_FLAT=1` is the control: base temperatures, no noise.
+        const worldgen::Feature* freeze = features->configured("minecraft:freeze_top_layer");
+        if (freeze == nullptr) {
+            fmt::print("freeze_top_layer was not built; --missing says why\n");
+            return 1;
+        }
+        const auto snow  = pack->find_block("minecraft:snow");
+        const auto ice   = pack->find_block("minecraft:ice");
+        const auto water = pack->find_block("minecraft:water");
+        if (!snow || !ice || !water) {
+            return 1;
+        }
+        struct Tally {
+            i64 theirs{0};
+            i64 ours{0};
+            i64 both{0};
+        };
+        Tally                       snow_t;
+        Tally                       ice_t;
+        Tally                       snowy_t;
+        std::map<std::string, Tally> snow_by_biome;
+        i64                         chunks_done = 0;
+        const auto                  kind        = worldgen::configured_feature_random();
+        for (const auto& [chunk_x, chunk_z] : usable) {
+            if (chunks_done >= options.chunks) {
+                break;
+            }
+            auto level = build_level(chunk_x, chunk_z);
+            if (level == nullptr) {
+                continue;
+            }
+            ++chunks_done;
+            const i32 base_x = chunk_x * 16;
+            const i32 base_z = chunk_z * 16;
+            enum Mark : u8 { kSnow = 1, kIce = 2, kSnowy = 4 };
+            const auto marks = [&](registry::BlockStateId state) -> u8 {
+                const auto block = pack->block_of(state);
+                if (block == *snow) {
+                    return kSnow;
+                }
+                if (block == *ice) {
+                    return kIce;
+                }
+                if (const auto prop = pack->find_property(block, "snowy")) {
+                    return pack->property_value(state, *prop) == "true" ? kSnowy : 0;
+                }
+                return 0;
+            };
+            std::map<i64, u8> theirs;
+            for (i32 y = level->min_y(); y <= level->max_y(); ++y) {
+                for (i32 z = 0; z < 16; ++z) {
+                    for (i32 x = 0; x < 16; ++x) {
+                        const i32  wx    = base_x + x;
+                        const i32  wz    = base_z + z;
+                        const auto state = level->block_at(wx, y, wz);
+                        const u8   mark  = marks(state);
+                        if (mark == 0) {
+                            continue;
+                        }
+                        // `snowy` only under a snow *layer*: a snow block or
+                        // powder snow above sets it too in the game, and the top
+                        // layer never places those — stripping them would count
+                        // flags our feature cannot put back. (The loop goes up,
+                        // so the block above is still the game's.)
+                        if (mark == kSnowy &&
+                            pack->block_of(level->block_at(wx, y + 1, wz)) != *snow) {
+                            continue;
+                        }
+                        theirs[ReferenceLevel::pack(wx, y, wz)] = mark;
+                        if (mark == kSnow) {
+                            level->restore(wx, y, wz, registry::kAirState);
+                        } else if (mark == kIce) {
+                            level->restore(wx, y, wz, pack->default_state(*water));
+                        } else {
+                            const std::array<std::pair<std::string_view, std::string_view>, 1> off{
+                                std::pair{std::string_view("snowy"), std::string_view("false")}};
+                            if (const auto plain = pack->state_for(pack->block_of(state), off)) {
+                                level->restore(wx, y, wz, *plain);
+                            }
+                        }
+                    }
+                }
+            }
+            worldgen::FeatureRandom  random{kind, 0};
+            worldgen::FeatureContext context;
+            context.blocks       = &*pack;
+            context.feature_name = "minecraft:freeze_top_layer";
+            context.level_seed   = options.seed;
+            // The game asks the biome through its zoom; OV_BIOME_ZOOM=0 asks the
+            // raw cell, the "before".
+            {
+                const char* setting  = std::getenv("OV_BIOME_ZOOM");
+                context.fuzzy_biomes = setting == nullptr || std::string_view(setting) != "0";
+                context.biome_zoom_seed = worldgen::obfuscate_biome_seed(options.seed);
+            }
+            (void)freeze->place(context, *level, random, {base_x, level->min_y(), base_z});
+            for (i32 y = level->min_y(); y <= level->max_y(); ++y) {
+                for (i32 z = 0; z < 16; ++z) {
+                    for (i32 x = 0; x < 16; ++x) {
+                        const i32  wx    = base_x + x;
+                        const i32  wz    = base_z + z;
+                        u8 ours = marks(level->block_at(wx, y, wz));
+                        // The same rule on our side: `snowy` counts under a layer.
+                        if (ours == kSnowy &&
+                            pack->block_of(level->block_at(wx, y + 1, wz)) != *snow) {
+                            ours = 0;
+                        }
+                        const auto found = theirs.find(ReferenceLevel::pack(wx, y, wz));
+                        const u8   game  = found == theirs.end() ? 0 : found->second;
+                        if (ours == 0 && game == 0) {
+                            continue;
+                        }
+                        for (const auto& [bit, tally] :
+                             std::array<std::pair<u8, Tally*>, 3>{std::pair{u8{kSnow}, &snow_t},
+                                                                   std::pair{u8{kIce}, &ice_t},
+                                                                   std::pair{u8{kSnowy}, &snowy_t}}) {
+                            const bool g = (game & bit) != 0;
+                            const bool o = (ours & bit) != 0;
+                            tally->theirs += g ? 1 : 0;
+                            tally->ours += o ? 1 : 0;
+                            tally->both += (g && o) ? 1 : 0;
+                        }
+                        if (((game | ours) & kSnow) != 0) {
+                            Tally& per = snow_by_biome[std::string(level->biome_at(wx, y, wz))];
+                            per.theirs += (game & kSnow) != 0 ? 1 : 0;
+                            per.ours += (ours & kSnow) != 0 ? 1 : 0;
+                            per.both += ((game & ours) & kSnow) != 0 ? 1 : 0;
+                        }
+                    }
+                }
+            }
+        }
+        const auto share = [](i64 part, i64 whole) {
+            return whole == 0 ? 0.0 : 100.0 * static_cast<f64>(part) / static_cast<f64>(whole);
+        };
+        fmt::print("\nfreeze_top_layer on {} chunks of {}, seed {}{}\n", chunks_done,
+                   options.world.string(), options.seed,
+                   std::getenv("OV_CLIMATE_FLAT") != nullptr ? " (OV_CLIMATE_FLAT)" : "");
+        for (const auto& [name, tally] : std::array<std::pair<std::string_view, const Tally*>, 3>{
+                 std::pair{std::string_view("snow layer"), &snow_t},
+                 std::pair{std::string_view("ice"), &ice_t},
+                 std::pair{std::string_view("snowy"), &snowy_t}}) {
+            fmt::print("  {:<11} game {:>7}  ours {:>7}  both {:>7}   recall {:7.3f} %  "
+                       "precision {:7.3f} %\n",
+                       name, tally->theirs, tally->ours, tally->both,
+                       share(tally->both, tally->theirs), share(tally->both, tally->ours));
+        }
+        fmt::print("\nsnow layers by biome (game / ours / both):\n");
+        for (const auto& [name, tally] : snow_by_biome) {
+            fmt::print("  {:<36} {:>7} {:>7} {:>7}\n", name, tally.theirs, tally.ours, tally.both);
         }
         return 0;
     }

@@ -185,6 +185,9 @@ struct ChunkPipeline::Impl {
         /// side table would leak one row per chunk generated for the life of
         /// the world.
         std::vector<std::string_view> starts;
+        /// ── worldgen-3 ── The fluids to wake once the chunk exists, from the
+        /// noise stage and the carvers. Travels with the chunk, like `starts`.
+        std::vector<BlockPos> fluid_wakeups;
     };
 
     const ChunkGenerator*          generator;
@@ -216,6 +219,7 @@ struct ChunkPipeline::Impl {
                           .emplace(key, Entry{world::Chunk{ChunkPos{chunk_x, chunk_z}, shape, air,
                                                            blocks},
                                               ChunkStatus::Empty,
+                                              {},
                                               {}})
                           .first->second;
         stats.reached[static_cast<usize>(ChunkStatus::Empty)] += 1;
@@ -267,13 +271,13 @@ struct ChunkPipeline::Impl {
                 generator->generate_biomes(entry.chunk);
                 break;
             case ChunkStatus::Noise:
-                generator->generate_noise(entry.chunk);
+                generator->generate_noise(entry.chunk, &entry.fluid_wakeups);
                 break;
             case ChunkStatus::Surface:
                 generator->generate_surface(entry.chunk);
                 break;
             case ChunkStatus::Carvers:
-                generator->generate_carvers(entry.chunk);
+                generator->generate_carvers(entry.chunk, &entry.fluid_wakeups);
                 // Rebuilt here rather than at the end of everything: a carved
                 // cell can be the block a heightmap was pointing at, and the
                 // decoration that comes next asks this chunk how high its
@@ -384,10 +388,14 @@ const world::Chunk& ChunkPipeline::promote(i32 chunk_x, i32 chunk_z, ChunkStatus
     return impl_->advance(chunk_x, chunk_z, status).chunk;
 }
 
-world::Chunk ChunkPipeline::take(i32 chunk_x, i32 chunk_z) {
+world::Chunk ChunkPipeline::take(i32 chunk_x, i32 chunk_z, std::vector<BlockPos>* fluid_wakeups) {
     (void)impl_->advance(chunk_x, chunk_z, ChunkStatus::Full);
     const auto  it    = impl_->cache.find(key_of(chunk_x, chunk_z));
     world::Chunk chunk = std::move(it->second.chunk);
+    if (fluid_wakeups != nullptr) {  // ── worldgen-3 ──
+        fluid_wakeups->insert(fluid_wakeups->end(), it->second.fluid_wakeups.begin(),
+                              it->second.fluid_wakeups.end());
+    }
     impl_->cache.erase(it);
     impl_->stats.resident = impl_->cache.size();
     return chunk;

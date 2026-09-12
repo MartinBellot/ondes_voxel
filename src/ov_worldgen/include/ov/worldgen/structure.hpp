@@ -45,6 +45,8 @@
 
 namespace ov::worldgen {
 
+class JigsawLibrary;  // ── jigsaw ── jigsaw.hpp
+
 /// The `type` field of a structure. Every one 1.20.1 has, named — including the
 /// ones whose geometry we do not build, because the *placement* of a structure
 /// we cannot build is still exactly measurable and still worth having right.
@@ -244,6 +246,9 @@ enum class PlacementDecision : u8 {
     /// happily "places" a nether fossil every second chunk — 1 286 of them in
     /// 5 092 chunks, measured, before the filter was added.
     OtherDimension,
+    /// ── jigsaw ── The structure's own start refused: its start pool drew the
+    /// empty element, or its start piece lacks the named start jigsaw.
+    StartRefused,
 };
 
 [[nodiscard]] std::string_view to_string(PlacementDecision decision) noexcept;
@@ -273,6 +278,11 @@ public:
     /// `OtherDimension` from then on. Calling this with an empty list leaves
     /// every set active — the honest reading of "no dimension was named".
     void restrict_to_biomes(const std::vector<std::string_view>& biomes);
+
+    /// ── jigsaw ── Read the jigsaw structures' biome where their start piece
+    /// lands rather than at a fixed column. Borrowed; null goes back to the
+    /// fixed column (the measuring instrument of § 5).
+    void set_jigsaw(const JigsawLibrary* library) noexcept;
 
     /// Every set's verdict for one chunk, in set order.
     ///

@@ -60,6 +60,10 @@ public:
 private:
     std::filesystem::path path_;
     std::vector<OpEntry>  entries_;
+    /// ── dedicated server administration ── the most entries the list ever
+    /// held: vanilla's HashMap never shrinks, and its size decides the order
+    /// the file is written in (admin/java_compat.hpp).
+    usize high_water_{0};
 };
 
 }  // namespace ov::server::cmd

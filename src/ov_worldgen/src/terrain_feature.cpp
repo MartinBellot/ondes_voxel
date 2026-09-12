@@ -37,15 +37,10 @@ ClaimedFeature parse_terrain_feature(std::string_view kind, Json config,
                      "asks for it, and holds a loot-table block entity; out of scope here");
         return std::unexpected(FeatureError::Unsupported);
     }
-    if (kind == "freeze_top_layer") {
-        // Snow and ice need `Biome.shouldFreeze` / `shouldSnow`, which read the
-        // biome's temperature *with* its height adjustment and the frozen-ocean
-        // modifier — two PerlinSimplexNoise fields this generator does not
-        // build. A guess here would put snow on the wrong side of every
-        // mountain line.
-        OV_LOG_ERROR("worldgen: freeze_top_layer needs the biome temperature noise, which is not "
-                     "built");
-        return std::unexpected(FeatureError::Unsupported);
+    // ── worldgen-3 ── Built now that the two temperature noises are
+    // (climate_noise.cpp): freeze_feature.cpp.
+    if (auto claimed = parse_freeze_feature(kind, blocks, tags)) {
+        return claimed;
     }
     return std::nullopt;
 }

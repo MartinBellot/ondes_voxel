@@ -24,6 +24,7 @@ void put(nbt::Tag& compound, std::string name, nbt::Tag value) {
         case PieceKind::BuriedTreasure: return "minecraft:btp";
         case PieceKind::NetherFossil: return "minecraft:nefos";
         case PieceKind::Scattered: break;  // ── temples ── by its own kind
+        case PieceKind::Jigsaw: return "minecraft:jigsaw";  // ── jigsaw ──
     }
     return "minecraft:unknown";
 }
@@ -31,6 +32,9 @@ void put(nbt::Tag& compound, std::string name, nbt::Tag value) {
 }  // namespace
 
 nbt::Tag piece_to_nbt(const StructurePiece& piece) {
+    if (piece.kind == PieceKind::Jigsaw) {  // ── jigsaw ── jigsaw_nbt.cpp
+        return jigsaw_piece_to_nbt(piece);
+    }
     nbt::Tag out = nbt::Tag::make_compound();
     const bool scattered = piece.kind == PieceKind::Scattered;  // ── temples ──
     put(out, "id",
@@ -95,6 +99,7 @@ nbt::Tag piece_to_nbt(const StructurePiece& piece) {
         }
         case PieceKind::BuriedTreasure:
         case PieceKind::Scattered: break;  // ── temples ── returned above
+        case PieceKind::Jigsaw: break;     // ── jigsaw ── returned above
     }
     return out;
 }

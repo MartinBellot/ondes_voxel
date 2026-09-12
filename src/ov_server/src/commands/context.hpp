@@ -66,6 +66,11 @@ struct EntityInfo {
     /// the capture's `kill @e[gamemode=creative]` found nobody while the
     /// probe lay dead.
     bool alive{true};
+    /// ── scoreboard ── The team its holder name (a player's name, anything
+    /// else's UUID) is on; empty for none. What `team=` tests.
+    std::string team;
+    /// ── scoreboard ── Its scores, objective by objective: what `scores=` tests.
+    std::vector<std::pair<std::string, i32>> scores;
 };
 
 /// One coordinate of `~1 ^ 5`: whether it is relative, and its number.

@@ -264,6 +264,8 @@ void CommandService::register_commands() {
         d.argument(item, "maxCount", ArgumentType::integer_at_least(0), run);
     }
 
+    register_debug(top);  // ── dedicated server administration ──
+
     // ── defaultgamemode ─────────────────────────────────────────────────────
     {
         const u32 node = top("defaultgamemode", kPermissionGameMaster);
@@ -978,9 +980,9 @@ void CommandService::register_commands() {
                             const Text death = Text::translatable(
                                 "death.attack.genericKill", {player_display_name(p->name, p->uuid)});
                             host_->broadcast(net::clientbound::kSystemChat,
-                                             net::encode_system_chat(to_json(death), false));
+                                             net::encode_system_chat(to_json(decorate(death)), false));
                             if (console) {
-                                console(plain(death, lang()));
+                                console(plain(decorate(death), lang()));
                             }
                         }
                     }
@@ -1099,6 +1101,8 @@ void CommandService::register_commands() {
                        return 1;
                    });
     }
+
+    register_scoreboard_command();  // ── scoreboard ── after say, before seed: vanilla's place
 
     // ── seed ────────────────────────────────────────────────────────────────
     top("seed", kPermissionGameMaster, [this](const CommandContext& ctx) -> Parsed<i32> {
@@ -1263,6 +1267,8 @@ void CommandService::register_commands() {
         const u32 pos = d.argument(entity, "pos", ArgumentType::vec3(), run);
         d.argument(pos, "nbt", ArgumentType::nbt_compound(), run);
     }
+
+    register_team_commands();  // ── scoreboard ── team, teammsg, tm: after summon (and tag)
 
     // ── teleport / tp ───────────────────────────────────────────────────────
     {
@@ -1466,7 +1472,8 @@ void CommandService::register_commands() {
                        const Text& message = *ctx.find<Text>("message");
                        for (PlayerRef* p : *found) {
                            p->send(net::clientbound::kSystemChat,
-                                   net::encode_system_chat(to_json(resolve(message, ctx.source())), false));
+                                   net::encode_system_chat(
+                                       to_json(decorate(resolve(message, ctx.source()))), false));  // ── scoreboard ──
                        }
                        return static_cast<i32>(found->size());
                    });
@@ -1544,7 +1551,8 @@ void CommandService::register_commands() {
         const auto show = [this](i32 packet) {
             return [this, packet](PlayerRef& p, const CommandContext& ctx) {
                 const Text& title = *ctx.find<Text>("title");
-                p.send(packet, net::encode_component_packet(to_json(resolve(title, ctx.source()))));
+                p.send(packet, net::encode_component_packet(
+                                   to_json(decorate(resolve(title, ctx.source())))));  // ── scoreboard ──
             };
         };
         const u32 node    = top("title", kPermissionGameMaster);
@@ -1572,6 +1580,8 @@ void CommandService::register_commands() {
                                                                 ctx.find<TimeArg>("fadeOut")->ticks));
                    }));
     }
+
+    register_trigger_command();  // ── scoreboard ── after title, before weather
 
     // ── weather ─────────────────────────────────────────────────────────────
     {
@@ -1615,6 +1625,8 @@ void CommandService::register_commands() {
         }
     }
 
+    register_bans(top);  // ── dedicated server administration ──
+
     // ── deop / op ───────────────────────────────────────────────────────────
     {
         // The profiles a `targets` argument names: a selector's players, or a
@@ -1652,7 +1664,14 @@ void CommandService::register_commands() {
                     return out;
                 }
             }
-            out.emplace_back(arg.name, net::Uuid::offline_player(arg.name));
+            // ── dedicated server administration ── a name nobody here has:
+            // the jar's offline profile of the name in lower case (measured:
+            // `op Ovq_dave` answers "Made ovq_dave a server operator").
+            std::string lowered = arg.name;
+            std::ranges::transform(lowered, lowered.begin(), [](unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+            out.emplace_back(lowered, net::Uuid::offline_player(lowered));
             return out;
         };
         const auto change = [this, profiles](bool grant) {
@@ -1663,7 +1682,8 @@ void CommandService::register_commands() {
                 }
                 i32 changed = 0;
                 for (const auto& [name, uuid] : *found) {
-                    const bool done = grant ? ops_.add(OpEntry{uuid, name, kPermissionOwner, false})
+                    // ── dedicated server administration ── op-permission-level
+                    const bool done = grant ? ops_.add(OpEntry{uuid, name, config_.op_permission_level, false})
                                             : ops_.remove(uuid);
                     if (!done) {
                         continue;
@@ -1671,7 +1691,7 @@ void CommandService::register_commands() {
                     ++changed;
                     for (PlayerRef& p : players_) {
                         if (p.uuid == uuid && !config_.integrated) {
-                            set_permission(p, grant ? kPermissionOwner : 0);
+                            set_permission(p, grant ? config_.op_permission_level : 0);
                         }
                     }
                     success(ctx.source(),
@@ -1683,6 +1703,7 @@ void CommandService::register_commands() {
                     return std::unexpected{error(grant ? "commands.op.failed" : "commands.deop.failed")};
                 }
                 (void)ops_.save();
+                sync_admin_ops();  // ── dedicated server administration ──
                 return changed;
             };
         };
@@ -1698,22 +1719,38 @@ void CommandService::register_commands() {
                    "minecraft:ask_server");
     }
 
+    register_pardons(top);  // ── dedicated server administration ──
+
     // ── save-all / stop ─────────────────────────────────────────────────────
     {
-        const Executor save = [this](const CommandContext& ctx) -> Parsed<i32> {
-            success(ctx.source(), Text::translatable("commands.save.saving"), false);
-            host_->save();
-            success(ctx.source(), Text::translatable("commands.save.success"), true);
-            return 0;
+        const auto save = [this](bool flush) {
+            return Executor{[this, flush](const CommandContext& ctx) -> Parsed<i32> {
+                success(ctx.source(), Text::translatable("commands.save.saving"), false);
+                host_->save();
+                // ── dedicated server administration ── `flush` logs what the
+                // jar's chunk storage logs, one line per level then the total,
+                // before the success line (measured on its console).
+                if (flush && console) {
+                    console("ThreadedAnvilChunkStorage (world): All chunks are saved");
+                    console("ThreadedAnvilChunkStorage (DIM1): All chunks are saved");
+                    console("ThreadedAnvilChunkStorage (DIM-1): All chunks are saved");
+                    console("ThreadedAnvilChunkStorage: All dimensions are saved");
+                }
+                success(ctx.source(), Text::translatable("commands.save.success"), true);
+                return 0;
+            }};
         };
-        const u32 node = top("save-all", kPermissionOwner, save);
-        d.literal(node, "flush", save);
+        const u32 node = top("save-all", kPermissionOwner, save(false));
+        d.literal(node, "flush", save(true));
+        register_save_switches(top);  // ── dedicated server administration ──
         top("stop", kPermissionOwner, [this](const CommandContext& ctx) -> Parsed<i32> {
             success(ctx.source(), Text::translatable("commands.stop.stopping"), true);
             host_->stop();
             return 1;
         });
     }
+    register_whitelist(top);  // ── dedicated server administration ──
+    register_publish(top);    // ── dedicated server administration ──
 }
 
 }  // namespace ov::server::cmd

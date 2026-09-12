@@ -79,6 +79,13 @@ struct ProjectileHost {
     /// Hurt a player. True when it landed — false for a creative player or an
     /// open window, which makes an arrow bounce.
     std::function<bool(i32 player, f32 damage, gameplay::DamageKind kind)> hurt_player;
+    /// ── scoreboard ── May the player `owner` hurt the player `target`? False
+    /// when both are on a team with friendly fire off: the arrow bounces, as
+    /// off a creative player. Empty: always.
+    std::function<bool(i32 owner, i32 target)> may_hurt;
+    /// ── scoreboard ── A player's arrow landed on another player — who may
+    /// have died of it (the kill criteria).
+    std::function<void(i32 owner, i32 target)> player_struck;
     /// Give a player a stack. Returns how many were taken.
     std::function<i8(i32 player, const net::ItemStack& stack)> give;
     /// Move a player (an ender pearl landed).

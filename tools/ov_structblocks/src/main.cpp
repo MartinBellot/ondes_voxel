@@ -128,9 +128,13 @@ struct Options {
     return name == "minecraft:igloo" || name.starts_with("minecraft:shipwreck") ||
            name.starts_with("minecraft:ocean_ruin") ||
            name.starts_with("minecraft:ruined_portal") || name == "minecraft:buried_treasure" ||
-           // ── temples ── the scattered pieces: facing and footprint so far
+           // ── temples ── the scattered pieces
            name == "minecraft:swamp_hut" || name == "minecraft:desert_pyramid" ||
-           name == "minecraft:jungle_pyramid";
+           name == "minecraft:jungle_pyramid" ||
+           // ── jigsaw ──
+           name.starts_with("minecraft:village_") || name == "minecraft:pillager_outpost" ||
+           name == "minecraft:bastion_remnant" || name == "minecraft:ancient_city" ||
+           name == "minecraft:trail_ruins";
 }
 
 [[nodiscard]] std::string label(const registry::BlockRegistry& blocks,
