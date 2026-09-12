@@ -33,6 +33,7 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`features.md`](provenance/features.md) | L'ensemencement de la décoration, et pourquoi `WorldgenRandom` n'est pas la source qu'il enveloppe |
 | [`pipeline-de-chunks.md`](provenance/pipeline-de-chunks.md) | La couche qui possède neuf chunks : 27,97 % des écritures franchissent une frontière |
 | [`structures.md`](provenance/structures.md) | Le placement des 19 `structure_set`, exact au chunk près — et le mineshaft comme oracle pur des réducteurs ; § 20 : les structures posées par le serveur, `structures.starts` et `References` au format du jeu |
+| [`grande-pyramide.md`](provenance/grande-pyramide.md) | **Structure originale, pas du contenu Minecraft** : la Grande Pyramide `ondes_voxel:great_pyramid` (101 × 101), son placement, son plan, ses pièges, son butin, l'interrupteur de parité et ses mesures |
 | [`chunkmap.md`](provenance/chunkmap.md) | Tickets, pool de jobs, génération hors du thread de tick, déterminisme sous TSan |
 | **Jeu** | |
 | [`fluides.md`](provenance/fluides.md) | Écoulement, recherche du trou, mélanges : 3172/3172 positions |
@@ -62,6 +63,7 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`dragon.md`](provenance/dragon.md) | Le combat contre l'Ender Dragon : phases, cristaux qui explosent (puissance 6), souffle, 12 000 points en 66 orbes, `DragonFight` aux clés du jeu, réinvocation en 604 ticks — mesurés contre le vrai serveur |
 | [`mobs-2.md`](provenance/mobs-2.md) | La loi de marche, l'apparition par biome, douze espèces, et les monstres qui n'apparaissaient jamais en surface la nuit |
 | [`mobs-3.md`](provenance/mobs-3.md) | Le coup des mobs hostiles (22/22 cellules difficulté × armure), le despawn mesuré, les mobs dans `entities/`, et le villageois zombie — et des zombies qui ne voyaient pas les joueurs |
+| [`mobs-4.md`](provenance/mobs-4.md) | Les effets de statut portés par un mob : corps, marche, table des effets, `/effect`, potions et sauvegarde — branchés, mesure en attente |
 | [`nether.md`](provenance/nether.md) | Le Nether à 99,9 %, des portails là où le jeu les met, et le bruit de l'Overworld qui lisait ses octaves à l'envers |
 | [`nether-2.md`](provenance/nether-2.md) | Les features du Nether, ses fossiles à 185 départs sur 185, et ses mobs dans un monde à eux : troc, salves, boules de feu |
 | [`son.md`](provenance/son.md) | Les sons de 1003 blocs et 79 créatures, relevés sur le fil, et le client qui les joue |
@@ -82,6 +84,7 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`interface.md`](provenance/interface.md) | Police, HUD, inventaire : 2414 glyphes validés glyphe par glyphe |
 | [`inventaire-creatif.md`](provenance/inventaire-creatif.md) | Les 14 onglets demandés au jar serveur, 1689 cases, et la géométrie comptée dans les pixels |
 | [`rendu-entites.md`](provenance/rendu-entites.md) | Les ~200 modèles d'entités lus du vrai client pendant qu'il tourne, textures par métadonnées, et chaque espèce mesurée contre lui — et la vache qui se tenait debout |
+| [`serveur-dedie.md`](provenance/serveur-dedie.md) | Le serveur dédié administré comme vanilla : `server.properties` et les quatre listes dans l'ordre même des tables de hachage du JDK 17, la porte, RCON, Query, le chien de garde — et la fermeture côté serveur que l'écouteur ne signalait jamais |
 | [`persistance-entites.md`](provenance/persistance-entites.md) | Objets, orbes, flèches, TNT, sable, nuages, mobs du Nether, dragon et cristaux, et le wagonnet du joueur : sauvés au type près mesuré sur le vrai serveur, un écrivain par dimension |
 
 ---
@@ -162,6 +165,7 @@ Une ligne par système non trivial, ajoutée au moment de son implémentation.
 | VarInt / VarLong | `ov_protocol` | archive protocole 763, *Data types* | ≤ 5 et ≤ 10 octets. Un négatif occupe **toujours** la taille maximale (complément à deux). |
 | Chaînes du protocole | `ov_protocol` | archive protocole 763, *Data types* | Préfixe VarInt en **octets** ; la limite déclarée est en unités UTF-16, donc la borne en octets vaut 3×. |
 | Registres et blockstates | `ov_datagen` | data generator officiel, `server.jar` 1.20.1 (SHA-1 `84194a2f286ef7c14ed7ce0090dba59902951553`) | Voir les deux pièges ci-dessous. |
+| Grande Pyramide (structure originale) | `ov_worldgen`, `ov_server` | aucune : conçue ici, à la demande de l'utilisateur ; l'agencement évoque Khéops (connaissance générale) | Pas du contenu Minecraft, espace de noms `ondes_voxel:`. Tables de butin écrites ici, aucune copiée. Voir `provenance/grande-pyramide.md` et `ARCHITECTURE.md` § 9.1. |
 | Musique, disques, sous-titres du client | `ov_audio`, `ov_client` | wiki *Music*, *Subtitles*, *Jukebox* ; archive protocole 763 (World Event, Boss Bar, Login, Respawn) ; mesure sur le vrai serveur (`scripts/measure_jukebox_events.py`) | 1010 = id d'objet du disque, 1011 = arrêt (éjection et casse), reçus par l'acteur aussi. Durées de fondu et de sous-titre, volume du clic, priorité des voix : les nôtres. Voir `docs/provenance/son-client.md`. |
 
 ---

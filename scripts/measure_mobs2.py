@@ -63,7 +63,9 @@ NAMED = re.compile(r"(m\d+) has the following entity data: \[([-0-9.Ee]+)d?, ([-
                    r"([-0-9.Ee]+)d?\]")
 # "Value of attribute Movement Speed for m3 is 0.2" — the attribute's display
 # name has spaces, which is why the first version of this pattern read nothing.
-ATTR = re.compile(r"attribute .+ for (m\d+) is ([-0-9.Ee]+)")
+# ── mobs-4 ── and "… Speed for entity m1 is 0.23": 1.20.1 names it an entity,
+# which this pattern did not expect, and every reading came back None.
+ATTR = re.compile(r"attribute .+ for (?:entity )?(m\d+) is ([-0-9.Ee]+)")
 
 # The law the husbandry wave fitted, and what it predicts for a speed `s`.
 LAW = 2.1586

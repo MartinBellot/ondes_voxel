@@ -1,6 +1,7 @@
 #include "player_inventory.hpp"
 
 #include <algorithm>
+#include <string_view>
 #include <utility>
 
 namespace ov::server {
@@ -70,17 +71,105 @@ void push_into(std::span<net::ItemStack> inventory, net::ItemStack& from, i16 fi
     }
 }
 
+/// The same as `push_into`, walking the range from its end: vanilla's
+/// `moveItemStackTo(…, reverse)`. A shift-click on the craft result fills that
+/// way — measured, sixteen planks land in the last hotbar slot.
+void push_into_reverse(std::span<net::ItemStack> inventory, net::ItemStack& from, i16 first,
+                       i16 last, const registry::Registries* registries) {
+    if (from.empty()) {
+        return;
+    }
+    const i8 limit = stack_limit(registries, from.item_id);
+    for (i16 index = static_cast<i16>(last - 1); index >= first && !from.empty(); --index) {
+        net::ItemStack& into = inventory[static_cast<usize>(index)];
+        if (into.empty() || into.item_id != from.item_id || into.count >= limit) {
+            continue;
+        }
+        const i8 moved = std::min(static_cast<i8>(limit - into.count), from.count);
+        into.count     = static_cast<i8>(into.count + moved);
+        from.count     = static_cast<i8>(from.count - moved);
+        if (from.count <= 0) {
+            from = {};
+        }
+    }
+    for (i16 index = static_cast<i16>(last - 1); index >= first && !from.empty(); --index) {
+        net::ItemStack& into = inventory[static_cast<usize>(index)];
+        if (into.empty()) {
+            into = std::exchange(from, net::ItemStack{});
+        }
+    }
+}
+
+[[nodiscard]] std::string_view item_name(const registry::Registries* registries, i32 item_id) {
+    if (registries == nullptr) {
+        return {};
+    }
+    const auto items = registries->find("minecraft:item");
+    return items ? registries->entry_of(*items, static_cast<registry::ProtocolId>(item_id))
+                 : std::string_view{};
+}
+
+/// Where a shift-click wears this item, or -1.
+///
+/// Measured: an iron helmet goes to the head slot and a shield to the off
+/// hand. The rest follows the wiki's list of wearable items — armour by its
+/// suffix, the elytra, the carved pumpkin and the mob heads.
+[[nodiscard]] i16 equipment_slot(std::string_view name) {
+    const auto ends = [&](std::string_view suffix) {
+        return name.size() >= suffix.size() && name.substr(name.size() - suffix.size()) == suffix;
+    };
+    if (ends("_helmet") || ends("_head") || ends("_skull") || name == "minecraft:carved_pumpkin") {
+        return kArmourFirst;
+    }
+    if (ends("_chestplate") || name == "minecraft:elytra") {
+        return static_cast<i16>(kArmourFirst + 1);
+    }
+    if (ends("_leggings")) {
+        return static_cast<i16>(kArmourFirst + 2);
+    }
+    if (ends("_boots")) {
+        return static_cast<i16>(kArmourFirst + 3);
+    }
+    if (name == "minecraft:shield") {
+        return kOffhandSlot;
+    }
+    return -1;
+}
+
+/// The window slot of the n-th storage slot as vanilla's inventory counts
+/// them: 0..8 the hotbar, 9..35 the backpack.
+[[nodiscard]] usize storage_slot(usize n) {
+    return n < 9 ? static_cast<usize>(kHotbarFirst) + n : n;
+}
+
 /// Where a shift-click sends a stack, in the order vanilla tries.
 ///
 /// Not one range but a list, because the player's window has three halves and
 /// not two: the hotbar and the backpack trade with each other, and everything
 /// else — armour, the grid, the off hand — empties into the backpack first and
-/// the hotbar after.
+/// the hotbar after. A wearable item from the backpack or the hotbar goes to
+/// where it is worn first, if that is free.
 void shift_move(std::span<net::ItemStack> inventory, i16 slot,
                 const registry::Registries* registries) {
     net::ItemStack& from = inventory[static_cast<usize>(slot)];
     if (from.empty()) {
         return;
+    }
+    if (slot >= kBackpackFirst && slot < kOffhandSlot) {
+        const i16 worn = equipment_slot(item_name(registries, from.item_id));
+        if (worn >= 0 && inventory[static_cast<usize>(worn)].empty()) {
+            // An armour slot holds one; the off hand a whole stack.
+            net::ItemStack& into = inventory[static_cast<usize>(worn)];
+            into                 = from;
+            if (worn != kOffhandSlot) {
+                into.count = 1;
+            }
+            from.count = static_cast<i8>(from.count - into.count);
+            if (from.count <= 0) {
+                from = {};
+            }
+            return;
+        }
     }
     if (slot >= kHotbarFirst && slot < kOffhandSlot) {
         push_into(inventory, from, kBackpackFirst, kHotbarFirst, registries);
@@ -97,6 +186,62 @@ void shift_move(std::span<net::ItemStack> inventory, i16 slot,
 }
 
 }  // namespace
+
+net::ItemStack add_to_inventory(const registry::Registries* registries,
+                                std::span<net::ItemStack> inventory, net::ItemStack stack,
+                                i16 selected) {
+    if (stack.empty() || inventory.size() < kPlayerWindowSlots) {
+        return stack;
+    }
+    const i8   limit      = stack_limit(registries, stack.item_id);
+    const auto merge_into = [&](usize slot) {
+        net::ItemStack& into = inventory[slot];
+        if (stack.empty() || into.empty() || into.item_id != stack.item_id ||
+            into.nbt != stack.nbt || into.count >= limit) {
+            return;
+        }
+        const i8 moved = std::min(static_cast<i8>(limit - into.count), stack.count);
+        into.count     = static_cast<i8>(into.count + moved);
+        stack.count    = static_cast<i8>(stack.count - moved);
+        if (stack.count <= 0) {
+            stack = {};
+        }
+    };
+    merge_into(static_cast<usize>(kHotbarFirst + std::clamp<i16>(selected, 0, 8)));
+    merge_into(static_cast<usize>(kOffhandSlot));
+    for (usize n = 0; n < 36 && !stack.empty(); ++n) {
+        merge_into(storage_slot(n));
+    }
+    for (usize n = 0; n < 36 && !stack.empty(); ++n) {
+        net::ItemStack& into = inventory[storage_slot(n)];
+        if (into.empty()) {
+            into = std::exchange(stack, net::ItemStack{});
+        }
+    }
+    return stack;
+}
+
+std::vector<net::ItemStack> close_player_window(const registry::Registries* registries,
+                                                std::span<net::ItemStack>   inventory,
+                                                net::ItemStack& carried, i16 selected) {
+    std::vector<net::ItemStack> thrown;
+    if (inventory.size() < kPlayerWindowSlots) {
+        return thrown;
+    }
+    const auto give_back = [&](net::ItemStack stack) {
+        net::ItemStack left = add_to_inventory(registries, inventory, std::move(stack), selected);
+        if (!left.empty()) {
+            thrown.push_back(std::move(left));
+        }
+    };
+    // Measured: the cursor first (dirt to hotbar 0), then the grid (logs to
+    // hotbar 1).
+    give_back(std::exchange(carried, net::ItemStack{}));
+    for (i16 slot = kCraftGridFirst; slot <= kCraftGridLast; ++slot) {
+        give_back(std::exchange(inventory[static_cast<usize>(slot)], net::ItemStack{}));
+    }
+    return thrown;
+}
 
 net::ItemStack player_craft_result(const registry::Registries*     registries,
                                    const gameplay::RecipeBook*     book,
@@ -125,7 +270,7 @@ PlayerClickOutcome apply_player_click(const registry::Registries* registries,
                                       const gameplay::RecipeBook* book,
                                       const net::ContainerClick& click,
                                       std::span<net::ItemStack> inventory, net::ItemStack& carried,
-                                      DragState& drag) {
+                                      DragState& drag, i16 selected) {
     PlayerClickOutcome outcome;
     if (inventory.size() < kPlayerWindowSlots) {
         return outcome;
@@ -149,7 +294,17 @@ PlayerClickOutcome apply_player_click(const registry::Registries* registries,
     // Handled before everything else because it is the one slot whose contents
     // are computed rather than stored, and because every mode reaches it
     // differently while all of them mean the same thing: take one craft.
-    if (click.slot == kCraftResultSlot && book != nullptr && click.mode != 5) {
+    //
+    // Measured on the real server, window 0 with a log in the grid: a click
+    // (either button) puts one craft on the cursor; a shift-click crafts until
+    // the grid runs out, filling the inventory **from its end**; a number key
+    // puts one craft in that hotbar slot if it is empty and does nothing if it
+    // is not; a throw — either button — throws exactly one craft, whole.
+    if (click.slot == kCraftResultSlot && book != nullptr) {
+        if (click.mode != 0 && click.mode != 1 && click.mode != 2 && click.mode != 4) {
+            outcome.handled = true;  // a drag or a double click on it: nothing
+            return outcome;
+        }
         const gameplay::CraftingGrid grid  = grid_of(inventory);
         const auto                   match = gameplay::match_crafting(*book, grid);
         if (!match) {
@@ -159,13 +314,26 @@ PlayerClickOutcome apply_player_click(const registry::Registries* registries,
         const net::ItemStack result = from_recipe(match->result);
         const i8             limit  = stack_limit(registries, result.item_id);
 
+        net::ItemStack* hotbar = nullptr;
+        if (click.mode == 2) {
+            if (click.button < 0 || click.button > 8) {
+                outcome.handled = true;
+                return outcome;
+            }
+            hotbar = &inventory[static_cast<usize>(kHotbarFirst + click.button)];
+            if (!hotbar->empty()) {
+                outcome.handled = true;  // measured: nothing moves, nothing is made
+                return outcome;
+            }
+        }
+
         // How many times the player is allowed to take one. A shift-click
         // crafts in a loop until the grid runs out — the one click in the game
         // that does an unbounded amount of work, so the bound is explicit.
         i32 wanted = 1;
         if (click.mode == 1) {
             wanted = gameplay::max_crafts(*book, grid, *match);
-        } else if (!carried.empty()) {
+        } else if (click.mode == 0 && !carried.empty()) {
             // An ordinary click only works onto an empty cursor or onto more of
             // the same, and only while there is room.
             if (carried.item_id != result.item_id ||
@@ -184,11 +352,15 @@ PlayerClickOutcome apply_player_click(const registry::Registries* registries,
             const net::ItemStack made = from_recipe(step->result);
             if (click.mode == 1) {
                 net::ItemStack into = made;
-                push_into(inventory, into, kBackpackFirst, kOffhandSlot, registries);
+                push_into_reverse(inventory, into, kBackpackFirst, kOffhandSlot, registries);
                 if (!into.empty()) {
                     // Nowhere left to put it: stop rather than destroy it.
                     break;
                 }
+            } else if (click.mode == 2) {
+                *hotbar = made;
+            } else if (click.mode == 4) {
+                outcome.dropped.push_back(made);
             } else {
                 if (carried.empty()) {
                     carried = made;
@@ -202,9 +374,12 @@ PlayerClickOutcome apply_player_click(const registry::Registries* registries,
             const gameplay::CraftConsumption after =
                 gameplay::consume_craft(*book, working, *step);
             working = after.grid;
+            // A remainder whose cell still holds the ingredient goes where
+            // `Inventory.add` puts it — measured, the glass bottle of a honey
+            // bottle lands in the first hotbar slot — or on the ground.
             for (usize i = 0; i < after.overflow_count; ++i) {
-                net::ItemStack spare = from_recipe(after.overflow[i]);
-                push_into(inventory, spare, kBackpackFirst, kOffhandSlot, registries);
+                net::ItemStack spare =
+                    add_to_inventory(registries, inventory, from_recipe(after.overflow[i]), selected);
                 if (!spare.empty()) {
                     outcome.dropped.push_back(std::move(spare));
                 }
@@ -380,12 +555,45 @@ PlayerClickOutcome apply_player_click(const registry::Registries* registries,
             break;
         }
 
+        // ── Double click: gather the cursor's item ──────────────────────────
+        //
+        // Measured: a cursor of ten dirt, with five and three elsewhere, ends
+        // at eighteen. Never from the result slot. Stacks that are not full
+        // are taken before full ones; button 0 walks the window forward,
+        // button 1 backward.
+        case 6: {
+            if (!carried.empty()) {
+                const i8 limit = stack_limit(registries, carried.item_id);
+                const bool forward = click.button == 0;
+                for (int pass = 0; pass < 2 && carried.count < limit; ++pass) {
+                    for (usize k = 1; k < kPlayerWindowSlots && carried.count < limit; ++k) {
+                        const usize     index = forward ? k : kPlayerWindowSlots - k;
+                        net::ItemStack& slot  = inventory[index];
+                        if (slot.empty() || slot.item_id != carried.item_id ||
+                            slot.nbt != carried.nbt) {
+                            continue;
+                        }
+                        if (pass == 0 && slot.count >= limit) {
+                            continue;
+                        }
+                        const i8 moved = std::min(static_cast<i8>(limit - carried.count), slot.count);
+                        carried.count  = static_cast<i8>(carried.count + moved);
+                        slot.count     = static_cast<i8>(slot.count - moved);
+                        if (slot.count <= 0) {
+                            slot = {};
+                        }
+                    }
+                }
+            }
+            outcome.handled = true;
+            break;
+        }
+
         default:
             // Mode 3 is creative middle-click, and the client resolves it on
-            // its own and tells us through `Set Creative Slot`. Nothing else
-            // exists in 1.20.1. An unknown mode is left unhandled rather than
-            // guessed, and the caller resends the window, which puts the
-            // client back in step.
+            // its own and tells us through `Set Creative Slot`. An unknown mode
+            // is left unhandled rather than guessed, and the caller resends
+            // the window, which puts the client back in step.
             break;
     }
 

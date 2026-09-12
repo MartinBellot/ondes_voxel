@@ -79,8 +79,20 @@ struct FurnaceTick {
 /// burn down first, then light if dark, then cook. Lighting after burning down
 /// is what makes a fuel last exactly its measured number of ticks rather than
 /// one fewer.
+///
+/// `cook_total` is **not** read again here: an item finishes when `cook_time`
+/// reaches it exactly, and it is recomputed only after an item and by
+/// `furnace_input_changed`. Measured: a furnace placed without a total counts
+/// `CookTime` up to 1202 and never finishes anything.
 [[nodiscard]] FurnaceTick furnace_tick(const RecipeBook& book, FurnaceKind kind,
                                        FurnaceSlots& slots, FurnaceState& state);
+
+/// The input slot now holds something else than it did — another item, other
+/// tags, or nothing — because someone other than the furnace put it there.
+/// The progress is lost and the total is the new input's recipe's, as vanilla
+/// does when its input slot is set.
+void furnace_input_changed(const RecipeBook& book, FurnaceKind kind, const FurnaceSlots& slots,
+                           FurnaceState& state);
 
 /// How long one of this item keeps that furnace alight, in ticks. Zero when it
 /// is not a fuel.
