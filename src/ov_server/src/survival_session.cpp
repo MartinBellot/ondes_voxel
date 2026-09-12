@@ -151,9 +151,12 @@ gameplay::DamageResult SurvivalSession::hurt(gameplay::DamageKind kind, f32 amou
     // the damage type that says how much.
     gameplay::add_exhaustion(food, gameplay::damage_type(kind).exhaustion, constants_food);
 
-    // Damage Event and nothing else. There is no Hurt Animation packet in
-    // 1.20.1 — the client derives the flinch from this one. Measured: two hits
-    // of different types produced exactly one packet each.
+    // Damage Event and nothing else, for the hits measured here: two
+    // environmental and mob hits of different types produced exactly one packet
+    // each, and the client derives the flinch from it. A player's blow is the
+    // exception — the real server then also sends the victim a Hurt Animation
+    // (the scoreboard wave's two-probe capture) — and server.cpp's PvP path
+    // sends it; this function does not.
     const std::vector<u8> payload =
         net::encode_damage_event(entity_id, damage_type_id(kind), source, source);
     if (io.send) {

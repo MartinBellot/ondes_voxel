@@ -1068,7 +1068,9 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       pas —, 15/15 fenêtres d'invulnérabilité, 41/41 coûts de niveau, 12/12
       lâchers d'XP, 44/44 dans l'ordre du codec `damage_type`. Deux corrections
       de protocole : Combat Death **ne porte pas** l'id du tueur en 1.20.1, et
-      il n'y a **pas** de Hurt Animation. Restent les sources de dégâts au
+      il n'y a **pas** de Hurt Animation pour les coups mesurés (environnement,
+      mob) — un coup de joueur à joueur en envoie une à la victime, mesuré par la
+      vague scoreboard le 2026-09-12. Restent les sources de dégâts au
       corps à corps, projectile et feu, la réapparition au lit, l'armure, et
       l'XP de minage dont la sonde est intermittente)*
       *(**2026-09-11 — mobs-3** : **les mobs hostiles frappent** — ils ne
