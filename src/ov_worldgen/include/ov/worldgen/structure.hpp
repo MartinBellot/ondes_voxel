@@ -31,6 +31,7 @@
 #pragma once
 
 #include "ov/base/types.hpp"
+#include "ov/worldgen/aquifer.hpp"  // ── portals ── Substance
 #include "ov/worldgen/structure_set.hpp"
 
 #include <array>
@@ -196,6 +197,22 @@ public:
     /// Nether fossil looks for its floor in it. Nothing: this sampler cannot
     /// say, and a structure that needs it is refused rather than guessed.
     [[nodiscard]] virtual std::optional<bool> base_solid(i32 /*x*/, i32 /*y*/, i32 /*z*/) const {
+        return std::nullopt;
+    }
+
+    /// ── portals ── What the base column holds here: the noise and the
+    /// aquifer, before surface rules and carvers — stone, water, lava or air.
+    /// A ruined portal settles by it. Nothing: this sampler cannot say.
+    [[nodiscard]] virtual std::optional<Substance> base_substance(i32 /*x*/, i32 /*y*/,
+                                                                  i32 /*z*/) const {
+        return std::nullopt;
+    }
+
+    /// ── portals ── The biome's temperature at a position, with the frozen
+    /// patches and the height adjustment — the one snow is decided by. A ruined
+    /// portal is cold below 0.15. Nothing: this sampler cannot say.
+    [[nodiscard]] virtual std::optional<f32> temperature_at(i32 /*x*/, i32 /*y*/,
+                                                            i32 /*z*/) const {
         return std::nullopt;
     }
 };

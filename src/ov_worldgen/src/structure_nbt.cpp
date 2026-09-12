@@ -1,5 +1,7 @@
 #include "ov/worldgen/structure_nbt.hpp"
 
+#include "scattered.hpp"  // ── temples ──
+
 #include <algorithm>
 #include <string_view>
 #include <utility>
@@ -21,6 +23,7 @@ void put(nbt::Tag& compound, std::string name, nbt::Tag value) {
         case PieceKind::RuinedPortal: return "minecraft:rupo";
         case PieceKind::BuriedTreasure: return "minecraft:btp";
         case PieceKind::NetherFossil: return "minecraft:nefos";
+        case PieceKind::Scattered: break;  // ── temples ── by its own kind
         case PieceKind::Jigsaw: return "minecraft:jigsaw";  // ── jigsaw ──
     }
     return "minecraft:unknown";
@@ -33,14 +36,25 @@ nbt::Tag piece_to_nbt(const StructurePiece& piece) {
         return jigsaw_piece_to_nbt(piece);
     }
     nbt::Tag out = nbt::Tag::make_compound();
-    put(out, "id", nbt::Tag{std::string{piece_id(piece.kind)}});
+    const bool scattered = piece.kind == PieceKind::Scattered;  // ── temples ──
+    put(out, "id",
+        nbt::Tag{std::string{scattered ? scattered_piece_id(piece.scattered.kind)
+                                       : piece_id(piece.kind)}});
     put(out, "BB", nbt::Tag{nbt::Tag::IntArray{piece.box.min_x, piece.box.min_y, piece.box.min_z,
                                                piece.box.max_x, piece.box.max_y, piece.box.max_z}});
     put(out, "GD", nbt::Tag{i32{0}});
     // The orientation a template piece reports is south (2); the buried
-    // treasure has none (-1). Read, never derived.
-    put(out, "O", nbt::Tag{piece.kind == PieceKind::BuriedTreasure ? i32{-1} : i32{2}});
+    // treasure has none (-1); a scattered piece its own facing. Read, never
+    // derived.
+    const i32 orientation = scattered                                ? piece.scattered.orientation
+                            : piece.kind == PieceKind::BuriedTreasure ? i32{-1}
+                                                                      : i32{2};
+    put(out, "O", nbt::Tag{orientation});
     if (piece.kind == PieceKind::BuriedTreasure) {
+        return out;
+    }
+    if (scattered) {
+        scattered_to_nbt(piece, out);
         return out;
     }
 
@@ -84,7 +98,8 @@ nbt::Tag piece_to_nbt(const StructurePiece& piece) {
             break;
         }
         case PieceKind::BuriedTreasure:
-        case PieceKind::Jigsaw: break;  // ── jigsaw ── returned above
+        case PieceKind::Scattered: break;  // ── temples ── returned above
+        case PieceKind::Jigsaw: break;     // ── jigsaw ── returned above
     }
     return out;
 }
