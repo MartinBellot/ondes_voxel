@@ -236,6 +236,15 @@ public:
     [[nodiscard]] std::optional<bool> base_solid(i32 x, i32 y, i32 z) const override {
         return inner_->base_solid(x, y, z);
     }
+    // Every question is forwarded: a default left in place would answer
+    // "cannot say" for the sampler it wraps, and a ruined portal would settle
+    // nowhere.
+    [[nodiscard]] std::optional<Substance> base_substance(i32 x, i32 y, i32 z) const override {
+        return inner_->base_substance(x, y, z);
+    }
+    [[nodiscard]] std::optional<f32> temperature_at(i32 x, i32 y, i32 z) const override {
+        return inner_->temperature_at(x, y, z);
+    }
 
     [[nodiscard]] u64 heights() const noexcept { return heights_; }
     [[nodiscard]] u64 biomes() const noexcept { return biomes_; }
