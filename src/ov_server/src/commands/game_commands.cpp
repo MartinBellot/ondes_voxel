@@ -1007,9 +1007,9 @@ void CommandService::register_commands() {
                             const Text death = Text::translatable(
                                 "death.attack.genericKill", {player_display_name(p->name, p->uuid)});
                             host_->broadcast(net::clientbound::kSystemChat,
-                                             net::encode_system_chat(to_json(death), false));
+                                             net::encode_system_chat(to_json(decorate(death)), false));
                             if (console) {
-                                console(plain(death, lang()));
+                                console(plain(decorate(death), lang()));
                             }
                         }
                     }
@@ -1128,6 +1128,8 @@ void CommandService::register_commands() {
                        return 1;
                    });
     }
+
+    register_scoreboard_command();  // ── scoreboard ── after say, before seed: vanilla's place
 
     // ── seed ────────────────────────────────────────────────────────────────
     top("seed", kPermissionGameMaster, [this](const CommandContext& ctx) -> Parsed<i32> {
@@ -1292,6 +1294,8 @@ void CommandService::register_commands() {
         const u32 pos = d.argument(entity, "pos", ArgumentType::vec3(), run);
         d.argument(pos, "nbt", ArgumentType::nbt_compound(), run);
     }
+
+    register_team_commands();  // ── scoreboard ── team, teammsg, tm: after summon (and tag)
 
     // ── teleport / tp ───────────────────────────────────────────────────────
     {
@@ -1495,7 +1499,8 @@ void CommandService::register_commands() {
                        const Text& message = *ctx.find<Text>("message");
                        for (PlayerRef* p : *found) {
                            p->send(net::clientbound::kSystemChat,
-                                   net::encode_system_chat(to_json(resolve(message, ctx.source())), false));
+                                   net::encode_system_chat(
+                                       to_json(decorate(resolve(message, ctx.source()))), false));  // ── scoreboard ──
                        }
                        return static_cast<i32>(found->size());
                    });
@@ -1573,7 +1578,8 @@ void CommandService::register_commands() {
         const auto show = [this](i32 packet) {
             return [this, packet](PlayerRef& p, const CommandContext& ctx) {
                 const Text& title = *ctx.find<Text>("title");
-                p.send(packet, net::encode_component_packet(to_json(resolve(title, ctx.source()))));
+                p.send(packet, net::encode_component_packet(
+                                   to_json(decorate(resolve(title, ctx.source())))));  // ── scoreboard ──
             };
         };
         const u32 node    = top("title", kPermissionGameMaster);
@@ -1601,6 +1607,8 @@ void CommandService::register_commands() {
                                                                 ctx.find<TimeArg>("fadeOut")->ticks));
                    }));
     }
+
+    register_trigger_command();  // ── scoreboard ── after title, before weather
 
     // ── weather ─────────────────────────────────────────────────────────────
     {

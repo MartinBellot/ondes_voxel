@@ -705,6 +705,54 @@ def campaign_zoo(rig: Oracle) -> dict:
     return {"zoo": [m for m, _ in ZOO], "data_get": dump}
 
 
+def campaign_noai(rig: Oracle) -> dict:
+    """`NoAI` on a Mob: no brain *and* no physics.
+
+    A zombie summoned six blocks up with `NoAI` should stay there; a cow given
+    `Motion:[0.5,0,0]` should not move while its Motion decays by 0.98 a tick
+    (explosions.md § 4 saw the decay on knocked-back zombies). And a zombie
+    without `NoAI`: does vanilla write the key as 0b, or leave it out?
+    """
+    x0, z0 = 40.5, 40.5
+    # Cows, not zombies: the rig runs on peaceful, where the real server
+    # deletes a hostile mob the moment it appears (the first run read no
+    # zombie at all, and "absent" for a key on an entity that was gone).
+    rig.server.batch([
+        f'summon minecraft:cow {x0} {Y + 6} {z0} {{NoAI:1b,Silent:1b,Tags:["noai_air"]}}',
+        f'summon minecraft:cow {x0 + 4} {Y} {z0} '
+        f'{{NoAI:1b,Silent:1b,Motion:[0.5d,0.0d,0.0d],Tags:["noai_push"]}}',
+        f'summon minecraft:cow {x0 + 8} {Y} {z0} {{Silent:1b,Tags:["with_ai"]}}',
+    ])
+    samples = []
+    for _ in range(8):
+        raw = rig.ask(["time query gametime",
+                       "data get entity @e[tag=noai_air,limit=1] Pos",
+                       "data get entity @e[tag=noai_air,limit=1] Motion",
+                       "data get entity @e[tag=noai_push,limit=1] Pos",
+                       "data get entity @e[tag=noai_push,limit=1] Motion"])
+        time_match = GAMETIME.search(" ".join(raw[0]))
+        samples.append({
+            "gametime": int(time_match.group(1)) if time_match else None,
+            # pos_of reads one string; each reply here is a list of lines.
+            "air_pos": pos_of(" ".join(raw[1])), "air_motion": pos_of(" ".join(raw[2])),
+            "push_pos": pos_of(" ".join(raw[3])), "push_motion": pos_of(" ".join(raw[4])),
+        })
+        print(f"  {samples[-1]}", flush=True)
+        time.sleep(0.5)
+    full = value_of(rig.ask(["data get entity @e[tag=with_ai,limit=1]"])[0])
+    rig.server.batch(["kill @e[tag=noai_air]", "kill @e[tag=noai_push]", "kill @e[tag=with_ai]"])
+    if full is None:
+        key = "mob missing"  # nothing was read: no answer, not "absent"
+    elif "NoAI: 0b" in full:
+        key = "NoAI: 0b"
+    elif "NoAI: 1b" in full:
+        key = "NoAI: 1b"
+    else:
+        key = "absent"
+    print(f"  NoAI on a mob without it: {key}", flush=True)
+    return {"samples": samples, "without_noai": key}
+
+
 OURS_ZOO = ROOT / ".scratch" / "tame-zoo-ours"
 
 
@@ -762,7 +810,7 @@ CAMPAIGNS = {"meta": campaign_meta, "tame": campaign_tame, "parrot": campaign_pa
              "ocelot": campaign_ocelot,
              "anger": campaign_anger, "wolf": campaign_wolf, "follow": campaign_follow,
              "spawn": campaign_spawn, "breed": campaign_breed, "temper": campaign_temper,
-             "zoo": campaign_zoo, "zoo_back": campaign_zoo_back}
+             "zoo": campaign_zoo, "zoo_back": campaign_zoo_back, "noai": campaign_noai}
 
 
 def main(argv: list[str]) -> int:

@@ -794,7 +794,9 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       d'un cheval et de ses poulains à la règle 1.20 (écarts-types à 12 % près
       sur 120 poulains ; la mule hérite sa vitesse) ; tempérament +5 par chute ;
       un cheval dompté, sellé et conduit par `Move Vehicle` de bout en bout, et
-      revenu de `entities/`. Lapin, renard, tortue, abeille, chèvre, dromadaire
+      revenu de `entities/` — dans trois exécutions sur six : dans deux, le
+      cheval monté ne décide pas (ouvert, journalisé). Lapin, renard, tortue,
+      abeille, chèvre, dromadaire
       et renifleur vivent, se nourrissent, se reproduisent et gardent leur type
       à la sauvegarde. Restent le vol et l'épaule du perroquet, la ruche, la
       mule née d'un croisement, l'inventaire du cheval. Voir
@@ -1224,7 +1226,18 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       nous ne modélisons pas repartent intactes. Bout en bout 45/45 à travers
       un redémarrage. Le solo écrit aussi `level.dat` → `Data.Player`. Voir
       `docs/provenance/donnees-joueur.md`)*
-- [ ] Scoreboard, équipes, objectifs, critères
+- [~] Scoreboard, équipes, objectifs, critères
+      *(**2026-09-11** : modèle, quatre paquets, `data/scoreboard.dat`, `/scoreboard`,
+      `/team`, `/trigger`, `/teammsg`/`tm`, les treize critères et le crochet des
+      statistiques, `team=` et `scores=`, composant `score`, nom dans son équipe partout.
+      Contre le vrai serveur : **189/189** réponses de l'opérateur (1 dans un autre ordre,
+      l'ordre d'identité du jar), arrivée identique paquet pour paquet, console **5/5**,
+      journal des opérateurs **120/120** ; fichier du jar relu et réécrit **43/43 faits**,
+      notre fichier relu par le jar : **39/39 faits conservés**, 19/19 paquets d'arrivée
+      identiques. Restent : le coup d'épée entre joueurs (absent du serveur, donc le tir
+      ami et `playerKillCount` ne jouent que pour la flèche), `armor` à 0, la barre
+      latérale de notre client non mesurée, belowName non dessiné. Voir
+      `docs/provenance/scoreboard.md`)*
 - [ ] **Tous les succès** (story, nether, end, adventure, husbandry) et leurs
       déclencheurs
 - [ ] **Toutes les statistiques** (custom, mined, crafted, used, broken,
