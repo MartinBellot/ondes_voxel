@@ -133,3 +133,45 @@ et non une par monde. L'écart aux structures vanilla est inchangé : villages e
 Ce que ce réglage coûte en cohérence : sur un site à 20 blocs d'écart, un bord du socle est porté
 jusqu'à ~20 blocs au-dessus du sol (un soubassement de grès, jamais d'air sous le socle) et une colline
 peut être tranchée sur 24 blocs à l'autre bord.
+
+### 4.3 Chercher une graine : le balayage sans génération
+
+`ov_pyramid --mode=scan --seed=<première> --seeds=<n> --radius=<chunks>` ne génère **aucun** chunk :
+pour chaque graine il construit le bruit et la source de biomes, prend les candidats de la grille à
+moins de `radius` chunks de l'origine et leur pose les portes (biome, pente sur la colonne de base,
+voisinage vanilla). Au réglage retenu : **27 pyramides à moins de 94 chunks (≈ 1 500 blocs) de
+l'origine sur 300 graines** (1 à 300), contre 9 sur 400 au premier réglage. Les plus proches :
+
+| graine | centre (x, z) | sol y | entrée | distance à l'origine |
+|---:|---|---:|---|---:|
+| **138** | (120, 8) | 70 | face nord, (120, 70, −44) | **120 blocs** |
+| 55 | (120, 120) | 70 | face est, (172, 70, 120) | 170 blocs |
+| 185 | (552, −216) | 65 | face ouest, (500, 65, −216) | 593 blocs |
+| 248 | (−248, 568) | 66 | face ouest, (−300, 66, 568) | 620 blocs |
+
+## 5. Aller la voir
+
+**Graine 138.** Le point d'apparition d'un monde généré est l'origine (x 0, z 0) ; la pyramide est
+à **120 blocs à l'est**, son entrée sur la face **nord**.
+
+| | coordonnées |
+|---|---|
+| centre, sommet d'or | (120, 120, 8) |
+| entrée monumentale (piliers, lanternes) | (120, 70, −44) — la chaussée descend vers le nord |
+| salle hypostyle | (120, 70, −7) |
+| trappe de l'escalier caché (sol de la salle) | (134, 69, 5) |
+| porte secrète, levier (dernière volée de la galerie) | levier (118, 97, 9), porte (120, 96, 11) |
+| chambre du Pharaon | (120, 96, 16) |
+| crypte, générateur de husks | (120, 58, 8) |
+
+Dans notre client, le plus simple : `scripts/play.sh --debug`, **Solo → Créer un monde**, graine
+**138** (en mode créatif si l'on veut voler), puis cap à l'est : 120 blocs. Ou sur un serveur
+dédié :
+
+```bash
+./build/macos-debug/bin/ov_dedicated --world=run/pyramide-138 --seed=138
+scripts/play.sh --debug --connect=localhost:25565
+```
+
+(`--debug` utilise le build existant ; sans lui, `play.sh` configure et construit le preset release,
+plus rapide à jouer mais plusieurs Go de plus sur le disque.)

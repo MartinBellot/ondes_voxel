@@ -120,6 +120,7 @@ ov_add_test(test_ov_server
         tests/test_tame_server.cpp  # ── tame ──
         tests/test_world_structures.cpp  # ── structures ──
         tests/test_great_pyramid_traps.cpp  # ── great pyramid ──
+        tests/test_great_pyramid_world.cpp  # ── great pyramid ── [.slow]: run by name
     DEPS ov_server
     LABELS unit
 )

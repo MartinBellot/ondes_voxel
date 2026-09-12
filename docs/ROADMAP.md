@@ -636,6 +636,18 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       trésor enfoui, portail en ruine ×7, manoir, forteresse du Nether,
       bastion ×4, fossile du Nether, cité de l'End, **cité antique**,
       **ruines de sentier**, puits du désert, donjon, fossile, geode
+- [x] **Structure originale Ondes VOXEL : la Grande Pyramide** (101 × 101, 51 assises) —
+      *pas du contenu Minecraft*, `ondes_voxel:great_pyramid`, ajoutée à vanilla dans le désert
+      *(**2026-09-11** : décision produit, `ARCHITECTURE.md` § 9.1. Socle 105 × 105 à la médiane de
+      13 échantillons, rempli jusqu'au sol ; entrée, salle hypostyle, grande galerie en
+      encorbellement, chambres de la Reine et du Pharaon (conduits d'aération), labyrinthe parfait
+      de 576 cellules, crypte avec générateur de husks et sable suspect ; pièges à plaque et TNT, à
+      fil et flèches, porte à pistons collants et levier caché — tous **déclenchés par notre
+      redstone** en test ; butin à nous (`data/ondes_voxel/`). Grille 24 / 12, **1,3 pour 10 000
+      chunks² de désert**, jamais à moins de 13 chunks l'une de l'autre ni près d'une structure
+      vanilla ; identique bloc pour bloc quel que soit l'ordre des chunks. Interrupteur de parité
+      `OriginalStructures` / `OV_ORIGINAL_STRUCTURES=0`, coupé par les outils de parité. Graine 138 :
+      une pyramide à 120 blocs du point d'apparition. Voir `docs/provenance/grande-pyramide.md`)*
 - [ ] Jigsaw, pools de structures, ancrages
 - [x] **Nether** : portails, allumage, ratio 1:8, liaison de portails
       *(**2026-09-11** : génération du Nether contre le vrai serveur à la graine
