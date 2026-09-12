@@ -389,6 +389,21 @@ neuvième la change en arbre ; neuf clés croissantes font de la quatrième la r
 l'ordre 192, 0, 64, 128, 256, … 512 puis le reste. Vert. `OV_HASHMAP=legacy` rend l'ancien
 modèle, depuis le même binaire, pour la mesure.
 
+**Mesure, premier échantillon** — `ov_features --trees`, 300 chunks de
+`run/reference-1234567890` (forêts de bouleaux et de chênes, jungle), même binaire :
+
+| | troncs au bon endroit | formes identiques (sur un tronc du jeu) | blocs de bois et de feuilles |
+|---|---:|---:|---:|
+| ancien modèle (`OV_HASHMAP=legacy`) | 239 (44,26 %) | 112 (46,86 %) | 15 851 (44,86 %) |
+| modèle arborescent | 239 (44,26 %) | 112 (46,86 %) | 15 851 (44,86 %) |
+| témoin, mauvaise graine | 16 (2,96 %) | 0 | 5 359 (15,17 %) |
+
+**Identiques** : cet échantillon ne remplit jamais une case de neuf dans une table de 64 — il
+ne dit donc rien du correctif, dans un sens ni dans l'autre. D'où un compteur de cases
+arborescentes (`java_hash_treeified_bins`, imprimé par le rapport des arbres), et la même mesure
+sur le monde hors échantillon 987654321, qui a la forêt noire et la vieille taïga d'épicéas, les
+grands arbres.
+
 ## 3. Les fluides à réveiller
 
 L'aquifère marquait déjà les fluides que le jeu réveille (`aquiferes.md` § 10.4, règle
