@@ -13,10 +13,12 @@
 
 #include "ov/base/types.hpp"
 #include "ov/nbt/tag.hpp"
+#include "ov/world/chunk.hpp"
 
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace ov::net {
@@ -47,5 +49,11 @@ struct LoginWorld {
 
 /// Respawn's dimension name: its second field, after the dimension type.
 [[nodiscard]] std::optional<std::string> read_respawn_dimension(std::span<const u8> respawn);
+
+/// The vertical extent of a dimension, by the name Login (play) and Respawn
+/// give it: what a client must parse that dimension's chunk packets with. A
+/// Nether chunk carries 16 sections, an Overworld one 24; read with the wrong
+/// shape, every one of them fails. Anything unknown is taken for the Overworld.
+[[nodiscard]] world::WorldShape dimension_shape(std::string_view dimension) noexcept;
 
 }  // namespace ov::net

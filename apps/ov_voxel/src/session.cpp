@@ -259,6 +259,26 @@ void Session::apply(netclient::ClientEvents& events) {
     }
 }
 
+void Session::clear_level(world::LightRules rules) {
+    for (const auto& [key, section] : slots_) {
+        if (!section.live) {
+            continue;
+        }
+        for (const u32 slot : section.slots) {
+            if (slot != ~0U) {
+                terrain_->remove_section(slot);
+                --resident_;
+            }
+        }
+    }
+    slots_.clear();
+    chunks_.clear();
+    dirty_.clear();
+    dirty_set_.clear();
+    dirty_sorted_ = false;
+    light_        = std::make_unique<world::LightEngine>(*blocks_, rules);
+}
+
 void Session::release(const SectionKey& key) {
     const auto found = slots_.find(key);
     if (found == slots_.end() || !found->second.live) {

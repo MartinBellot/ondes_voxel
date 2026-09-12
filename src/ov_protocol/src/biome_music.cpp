@@ -90,4 +90,14 @@ std::optional<std::string> read_respawn_dimension(std::span<const u8> respawn) {
     return std::string(*name);
 }
 
+world::WorldShape dimension_shape(std::string_view dimension) noexcept {
+    if (dimension == "minecraft:the_nether") {
+        return world::WorldShape::nether();
+    }
+    if (dimension == "minecraft:the_end") {
+        return world::WorldShape::the_end();
+    }
+    return world::WorldShape::overworld();
+}
+
 }  // namespace ov::net

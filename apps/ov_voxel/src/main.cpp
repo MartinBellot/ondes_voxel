@@ -2457,6 +2457,20 @@ int main(int argc, char** argv) {
         if (online && client->connected()) {
 
             client->poll(events);
+            // A new level — Login (play), or a Respawn into another dimension.
+            // The client has already dropped what the old one had queued; the
+            // replica and what stood in it go too, before this poll's chunks
+            // are applied. Kept, the Overworld's terrain stayed on screen and
+            // the player walked it while the server had them in the Nether —
+            // back into the portal there, and out through a second one.
+            if (events.world_reset && session) {
+                world::LightRules rules;
+                rules.has_sky = !events.dimension || *events.dimension == "minecraft:overworld";
+                session->clear_level(rules);
+                entity_world = demo::EntityWorld{};
+                last_drawn.clear();
+                bolts_seen.clear();
+            }
             // ── streaming ── Login and Respawn both carry the dimension: they
             // are the way into a level, and the only time Loading terrain shows.
             if (events.dimension || events.respawned) {

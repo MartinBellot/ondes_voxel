@@ -60,3 +60,12 @@ TEST_CASE("Respawn: the dimension name is the second field", "[protocol][music]"
     CHECK(*name == "minecraft:the_end");
     CHECK_FALSE(net::read_respawn_dimension(std::span<const u8>{}).has_value());
 }
+
+TEST_CASE("A dimension's name gives the shape its chunks are parsed with", "[protocol][music]") {
+    CHECK(net::dimension_shape("minecraft:overworld").min_y == -64);
+    CHECK(net::dimension_shape("minecraft:overworld").section_count() == 24);
+    CHECK(net::dimension_shape("minecraft:the_nether").min_y == 0);
+    CHECK(net::dimension_shape("minecraft:the_nether").section_count() == 16);
+    CHECK(net::dimension_shape("minecraft:the_end").section_count() == 16);
+    CHECK(net::dimension_shape("example:unknown").section_count() == 24);
+}
