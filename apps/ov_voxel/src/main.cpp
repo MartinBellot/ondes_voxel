@@ -1734,6 +1734,11 @@ int main(int argc, char** argv) {
     if (online && !open_connection(options.connect, options.singleplayer ? 200 : 1)) {
         return 1;
     }
+    if (online) {
+        // ── hud ── A world joined from the command line is a game too: F3
+        // draws only in game, and --connect never told the menus so.
+        menus->set_in_game(true, options.singleplayer);
+    }
     {  // ── screens ── the sound starts whether or not a world is joined yet
 
         // ── sound ── sounds.json, the device, and what decides what is heard.
@@ -1893,6 +1898,12 @@ int main(int argc, char** argv) {
         std::filesystem::create_directories(options.hud_shots, ignored);
         OV_LOG_INFO("hud scenes: {} steps from {}", hud_script->size(), options.hud_script);
     }
+    // The copy out of the mapped buffer is the only part on the frame; the
+    // swizzle and the 11 MB write go to a thread, as the real client writes
+    // its screenshots on an I/O pool. Written synchronously, each shot held
+    // the frame loop half a second longer than the real client's, and the
+    // title of the next scene was a dozen ticks further into its fade.
+    std::vector<std::thread> hud_writers;
     const auto write_hud_shot = [&](const std::string& path) {
         const u32   w      = device.swapchain_width();
         const u32   h      = device.swapchain_height();
@@ -1901,15 +1912,18 @@ int main(int argc, char** argv) {
             return;
         }
         std::vector<u8> pixels(mapped, mapped + static_cast<usize>(w) * h * 4);
-        const auto      format = device.swapchain_format();
-        if (format == rhi::Format::Bgra8Srgb || format == rhi::Format::Bgra8Unorm) {
-            for (usize i = 0; i + 3 < pixels.size(); i += 4) {
-                std::swap(pixels[i], pixels[i + 2]);
+        const bool      swizzle = device.swapchain_format() == rhi::Format::Bgra8Srgb ||
+                             device.swapchain_format() == rhi::Format::Bgra8Unorm;
+        hud_writers.emplace_back([path, w, h, swizzle, pixels = std::move(pixels)]() mutable {
+            if (swizzle) {
+                for (usize i = 0; i + 3 < pixels.size(); i += 4) {
+                    std::swap(pixels[i], pixels[i + 2]);
+                }
             }
-        }
-        if (!write_ppm(path, pixels, w, h)) {
-            OV_LOG_ERROR("could not write {}", path);
-        }
+            if (!write_ppm(path, pixels, w, h)) {
+                OV_LOG_ERROR("could not write {}", path);
+            }
+        });
     };
     // ── end hud ──
 
@@ -3617,13 +3631,17 @@ int main(int argc, char** argv) {
         }
 
         const bool last_frame = options.frames != 0 && rendered + 1 >= options.frames;
-        if (readback.valid() && (last_frame || hud_shot_phase != 0)) {  // ── hud ── or a scene
+        // ── hud ── the final --screenshot only when one was asked for: the
+        // readback also exists for the scenes, and a run with a script and a
+        // frame count otherwise failed on its last frame writing to "".
+        const bool final_shot = last_frame && !options.screenshot.empty();
+        if (readback.valid() && (final_shot || hud_shot_phase != 0)) {
             cmd.transition_swapchain(rhi::ResourceState::ColourAttachment,
                                      rhi::ResourceState::TransferSource);
             cmd.copy_swapchain_to_buffer(readback);
             cmd.transition_swapchain(rhi::ResourceState::TransferSource,
                                      rhi::ResourceState::Present);
-            captured = captured || last_frame;
+            captured = captured || final_shot;
         } else {
             cmd.transition_swapchain(rhi::ResourceState::ColourAttachment,
                                      rhi::ResourceState::Present);
@@ -3684,6 +3702,10 @@ int main(int argc, char** argv) {
     }
 
     device.wait_idle();
+
+    for (std::thread& writer : hud_writers) {  // ── hud ── every scene's file on disk
+        writer.join();
+    }
 
     // The client goes first: a server torn down under a live connection logs a
     // disconnection that did not happen.
