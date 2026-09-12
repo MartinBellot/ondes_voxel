@@ -505,9 +505,12 @@ int order(const Options& o, const registry::BlockRegistry& blocks,
         return 1;
     }
     print_layout(o.seed, *layout);
+    // The start chunk and `side` chunks around it: every chunk of it holds a
+    // part of the pyramid, and the whole box (about 11 x 11 chunks, three
+    // times, in debug) is out of reach on a shared machine.
     std::vector<ChunkPos> area;
-    for (i32 z = layout->box.min_z >> 4; z <= layout->box.max_z >> 4; ++z) {
-        for (i32 x = layout->box.min_x >> 4; x <= layout->box.max_x >> 4; ++x) {
+    for (i32 z = layout->chunk_z - o.side; z <= layout->chunk_z + o.side; ++z) {
+        for (i32 x = layout->chunk_x - o.side; x <= layout->chunk_x + o.side; ++x) {
             area.push_back({x, z});
         }
     }
