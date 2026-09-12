@@ -9,20 +9,26 @@
 // The old code lives below, as it stood in server.cpp before the move.
 #include "../src/relight.hpp"
 
+#include "ov/nbt/region.hpp"
 #include "ov/registry/block_states.hpp"
 #include "ov/world/chunk.hpp"
 #include "ov/world/chunk_section.hpp"
+#include "ov/world/chunk_storage.hpp"
 #include "ov/world/heightmap.hpp"
+#include "ov/world/light_engine.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <map>
+#include <memory>
 #include <optional>
 #include <random>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -468,5 +474,142 @@ TEST_CASE("relight cost per edit, previous engine and rewrite", "[.relight-bench
     });
     std::printf("  sky over the 3x3: previous %.0f us, rewrite %.0f us\n", old_sky, new_sky);
     std::printf("  block light, 9 chunks: previous %.0f us, rewrite %.0f us\n", old_blk, new_blk);
+    SUCCEED();
+}
+
+// ── light ── The 3x3 recompute against the incremental engine, per edit, on
+// real terrain. Timing, not a test: `test_ov_server "[.relight-bench-incremental]"`.
+namespace {
+
+struct RealChunks final : world::LightChunkSource {
+    std::map<std::pair<i32, i32>, std::unique_ptr<world::Chunk>> chunks;
+
+    world::Chunk* light_chunk(i32 x, i32 z) override {
+        const auto found = chunks.find({x, z});
+        return found == chunks.end() ? nullptr : found->second.get();
+    }
+};
+
+std::unique_ptr<RealChunks> load_real(const registry::BlockRegistry& blocks,
+                                      const std::filesystem::path& dir, i32 first, i32 side) {
+    std::vector<std::string_view> biome_names(blocks.biome_count());
+    for (u32 index = 0; index < blocks.biome_count(); ++index) {
+        biome_names[index] = blocks.biome_name(index);
+    }
+    world::ChunkCodecContext context;
+    context.blocks      = &blocks;
+    context.biome_names = biome_names;
+    context.air         = world::AirStates::from(blocks);
+    auto out            = std::make_unique<RealChunks>();
+    for (i32 cz = first; cz < first + side; ++cz) {
+        for (i32 cx = first; cx < first + side; ++cx) {
+            const ChunkPos pos{cx, cz};
+            const auto     region = nbt::RegionFile::open(
+                dir / "region" /
+                ("r." + std::to_string(pos.region_x()) + "." + std::to_string(pos.region_z()) +
+                 ".mca"));
+            if (!region || !region->has_chunk(pos)) {
+                continue;
+            }
+            const auto document = region->read_chunk(pos);
+            if (!document) {
+                continue;
+            }
+            if (auto chunk = world::from_nbt(*document, context)) {
+                out->chunks.emplace(std::pair{cx, cz},
+                                    std::make_unique<world::Chunk>(std::move(*chunk)));
+            }
+        }
+    }
+    return out->chunks.size() < 9 ? nullptr : std::move(out);
+}
+
+void print_percentiles(const char* what, std::vector<double>& micros) {
+    std::ranges::sort(micros);
+    const auto at = [&](double q) {
+        return micros[std::min(micros.size() - 1, static_cast<usize>(q * micros.size()))];
+    };
+    std::printf("  %-26s p50 %9.1f us  p99 %9.1f us  max %9.1f us  (%zu edits)\n", what, at(0.5),
+                at(0.99), micros.back(), micros.size());
+}
+
+}  // namespace
+
+TEST_CASE("relight cost per edit: 3x3 recompute against incremental, on real worlds",
+          "[.relight-bench-incremental]") {
+    const registry::BlockRegistry* blocks = registry_or_null();
+    if (blocks == nullptr) {
+        SKIP("registry.ovpack is not built");
+    }
+    const std::filesystem::path run = std::filesystem::path{OV_SOURCE_DIR} / "run";
+    const std::array<std::pair<const char*, std::filesystem::path>, 2> worlds{{
+        {"ov_lab bench world", run / "lab"},
+        {"real 1.20.1 world", run / "saves" / "New World"},
+    }};
+    const std::array<registry::BlockStateId, 5> palette{
+        world::AirStates::from(*blocks).air, world::AirStates::from(*blocks).air,
+        blocks->default_state(*blocks->find_block("minecraft:stone")),
+        blocks->default_state(*blocks->find_block("minecraft:torch")),
+        blocks->default_state(*blocks->find_block("minecraft:glowstone"))};
+    constexpr i32   kFirst = -2;
+    constexpr i32   kSide  = 5;
+    constexpr usize kEdits = 300;
+
+    for (const auto& [name, dir] : worlds) {
+        auto before = load_real(*blocks, dir, kFirst, kSide);
+        auto after  = load_real(*blocks, dir, kFirst, kSide);
+        if (!before || !after) {
+            std::printf("%s: not under run/\n", name);
+            continue;
+        }
+        world::LightEngine    engine{*blocks, kOverworldLight};
+        std::vector<ChunkPos> positions;
+        for (const auto& [pos, chunk] : after->chunks) {
+            positions.emplace_back(pos.first, pos.second);
+        }
+        engine.light_region(*after, positions);
+        const ChunkLookup lookup = [&](i32 x, i32 z) { return before->light_chunk(x, z); };
+
+        std::mt19937        random{23};
+        std::vector<double> old_us;
+        std::vector<double> new_us;
+        for (usize edit = 0; edit < kEdits; ++edit) {
+            // Inside the middle 3x3, so that the old pass has its whole
+            // neighbourhood — the case it was built for.
+            const i32 cx = kFirst + 1 + static_cast<i32>(random() % 3);
+            const i32 cz = kFirst + 1 + static_cast<i32>(random() % 3);
+            world::Chunk* old_chunk = before->light_chunk(cx, cz);
+            world::Chunk* new_chunk = after->light_chunk(cx, cz);
+            if (old_chunk == nullptr || new_chunk == nullptr) {
+                continue;
+            }
+            const usize lx      = random() % 16;
+            const usize lz      = random() % 16;
+            const i32   surface = new_chunk->heightmap(world::HeightmapType::WorldSurface)
+                                    .first_free(lx, lz);
+            const i32   y       = std::clamp(surface - 3 + static_cast<i32>(random() % 4),
+                                             new_chunk->shape().min_y, new_chunk->shape().max_y());
+            const auto  state   = palette[random() % palette.size()];
+            old_chunk->set_block(lx, y, lz, state);
+            new_chunk->set_block(lx, y, lz, state);
+
+            auto started = std::chrono::steady_clock::now();
+            relight_after_edit(lookup, cx, cz, blocks);
+            old_us.push_back(std::chrono::duration<double, std::micro>(
+                                 std::chrono::steady_clock::now() - started)
+                                 .count());
+
+            started = std::chrono::steady_clock::now();
+            engine.block_changed(BlockPos{cx * 16 + static_cast<i32>(lx), y,
+                                          cz * 16 + static_cast<i32>(lz)});
+            (void)engine.propagate(*after);
+            new_us.push_back(std::chrono::duration<double, std::micro>(
+                                 std::chrono::steady_clock::now() - started)
+                                 .count());
+        }
+        std::printf("%s, %zu chunks:\n", name, after->chunks.size());
+        print_percentiles("3x3 recompute (before)", old_us);
+        print_percentiles("incremental (after)", new_us);
+    }
     SUCCEED();
 }

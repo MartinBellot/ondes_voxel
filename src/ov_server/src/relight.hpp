@@ -25,13 +25,58 @@
 #include "ov/base/types.hpp"
 #include "ov/registry/block_states.hpp"
 #include "ov/world/chunk.hpp"
+#include "ov/world/chunk_map.hpp"
+#include "ov/world/light_engine.hpp"
 
 #include <functional>
 
 namespace ov::server {
 
+// ── light ── The incremental engine (ov/world/light_engine.hpp) is what the
+// Overworld uses now: a chunk is lit alone and stitched to its neighbours when
+// it arrives, and an edit repairs the light around itself. The passes below
+// stay for the Nether and the End, for the superflat generator, and as the
+// "before" of the benches in tests/test_relight.cpp.
+
+/// The server's chunk map as the light engine sees it: resident chunks only.
+class MapLightSource final : public world::LightChunkSource {
+public:
+    explicit MapLightSource(world::ChunkMap& map) : map_{map} {}
+
+    world::Chunk* light_chunk(i32 chunk_x, i32 chunk_z) override {
+        return map_.find(ChunkPos{chunk_x, chunk_z});
+    }
+
+private:
+    world::ChunkMap& map_;
+};
+
+/// The Overworld's light rules. See docs/provenance/incremental-light.md for
+/// why light-filtering blocks are set the way they are.
+inline constexpr world::LightRules kOverworldLight{true, false};
+// ── end light ──
+
 /// Finds a loaded chunk by chunk coordinates, or nullptr. Never loads one.
 using ChunkLookup = std::function<world::Chunk*(i32, i32)>;
+
+// ── light ── Any lookup as the light engine's source: the Nether's and the
+// End's maps live inside `NetherWorld`. The engine caches what it finds, so the
+// function is called once per chunk per call, not once per cell.
+class LookupLightSource final : public world::LightChunkSource {
+public:
+    explicit LookupLightSource(ChunkLookup lookup) : lookup_{std::move(lookup)} {}
+
+    world::Chunk* light_chunk(i32 chunk_x, i32 chunk_z) override {
+        return lookup_(chunk_x, chunk_z);
+    }
+
+private:
+    ChunkLookup lookup_;
+};
+
+/// The Nether's and the End's rules: no sky, block light only.
+inline constexpr world::LightRules kNoSkyLight{false, false};
+// ── end light ──
 
 /// Does sky light stop at this block?
 ///

@@ -163,7 +163,12 @@ public:
     /// chunk again regenerates it and re-runs the neighbours' decoration into
     /// the new copy, so a caller that keeps chunks — the server does — must
     /// consult its own store first.
-    [[nodiscard]] world::Chunk take(i32 chunk_x, i32 chunk_z);
+    ///
+    /// ── worldgen-3 ── `fluid_wakeups`, when given, receives the fluids the
+    /// aquifer marked in this chunk — the game's `PostProcessing` marks —
+    /// for the server to wake once the chunk is part of the world.
+    [[nodiscard]] world::Chunk take(i32 chunk_x, i32 chunk_z,
+                                    std::vector<BlockPos>* fluid_wakeups = nullptr);
 
     /// Give the pipeline the structure placer, and the view of the world its
     /// biome filter needs.

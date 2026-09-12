@@ -67,6 +67,9 @@ struct FeatureResolver {
     std::function<std::expected<std::shared_ptr<const PlacedFeature>, FeatureError>(
         std::string_view)>
         placed;
+    /// ── worldgen-3 ── The generated data root, for a feature that names a
+    /// file of another registry — the fossil's processor lists.
+    std::filesystem::path data_root;
 };
 
 /// One configured feature, by its `type` and `config`. Recursive: a selector

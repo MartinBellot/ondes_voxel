@@ -30,7 +30,10 @@ TEST_CASE("the status JSON carries every field a client reads", "[protocol][stat
     REQUIRE(json.find(R"("max":20)") != std::string::npos);
     REQUIRE(json.find(R"("online":3)") != std::string::npos);
     REQUIRE(json.find(R"("text":"Ondes VOXEL")") != std::string::npos);
-    REQUIRE(json.find(R"("enforcesSecureChat":false)") != std::string::npos);
+    // Left out at its default, false, as the 1.20.1 jar leaves it out; and
+    // no empty sample either.
+    REQUIRE(json.find("enforcesSecureChat") == std::string::npos);
+    REQUIRE(json.find("sample") == std::string::npos);
     REQUIRE(json.front() == '{');
     REQUIRE(json.back() == '}');
 }

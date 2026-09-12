@@ -771,10 +771,12 @@ PlayerRecord capture_player(const PlayerPose& pose, i32 game_type,
             ++*overflow;
         }
     };
+    // The cursor first, then the grid: the order measured when the screen
+    // closes (scripts/measure_window0.py).
+    give_back(carried);
     for (usize w = 1; w <= 4 && w < count; ++w) {
         give_back(inventory[w]);
     }
-    give_back(carried);
     record.selected_slot = std::clamp<i32>(held_slot, 0, 8);
 
     record.effects    = effects.effects;

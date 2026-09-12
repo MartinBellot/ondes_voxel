@@ -282,13 +282,26 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [x] Lumière du ciel : sunlight direct + propagation par flood fill *(intra-chunk)*
 - [x] Propagation de lumière inter-chunks *(voisinage 3×3 chargé)*
 - [x] Lumière de bloc : émission mesurée par état, propagation depuis les sources
-- [ ] Suppression incrémentale de la lumière (aujourd'hui le voisinage est refait en entier)
-      *(**2026-09-11** : le recalcul n'est plus fait sur le thread réseau avant
-      chaque Block Update mais sur le tick, une fois par chunk touché — un bloc
-      cassé coûtait ~11-88 ms au thread qui écrit tous les paquets, ~10-40 µs
-      maintenant ; casser un bloc sur un monde généré en Release passe de 5,2 s
-      à **62 ms au p99**. Le voisinage est toujours refait en entier : ce qui
-      manque ici reste l'incrémental. Voir `docs/provenance/performance-tick.md`)*
+- [x] Suppression incrémentale de la lumière (aujourd'hui le voisinage est refait en entier)
+      *(**2026-09-11** : `ov_world::LightEngine` — augmentation en largeur,
+      suppression à deux files, chunk éclairé seul puis cousu à son arrivée.
+      **0 différence** contre un recalcul complet indépendant après 8 000 lots
+      de gestes aléatoires sur `ov_lab` et un vrai monde 1.20.1 (et 1 200 sur
+      terrain plat, comparés à chaque lot) ; le témoin sans passe de
+      suppression est faux. Un geste coûte p50 40,6 ms → **30 µs** (Debug), la
+      phase `relight` du tick 4,2-4,7 s → 16-23 ms par minute de jeu (p99
+      ~35 ms → < 1 ms) ; le p99 du tick entier, fait par les autres phases, ne
+      bouge pas. Les chunks générés arrivent éclairés, la lumière de bloc
+      traverse les frontières, le Nether et l'End passent au même moteur, et le
+      client `ov_voxel` éclaire ses propres gestes. Contre le vrai serveur :
+      lumière de bloc **1 497/1 497** cases changées par 515 gestes identiques et
+      99,87 % du stocké, ciel 98,9 % du stocké ; le jeu ne filtre pas l'eau et
+      les feuilles au premier éclairage d'un chunk mais les filtre ensuite
+      (ciel après un geste 844/1 241, 1 182 en filtrant) — deux régimes, un seul
+      point fixe ici, réglé sur le terrain naturel. Un chunk lu est rééclairé en
+      entier : vanilla ne stocke le ciel que dans 297 sections sur 1 536.
+      Restent les formes directionnelles (dalles, escaliers). Voir
+      `docs/provenance/incremental-light.md`)*
 - [x] Tableaux de lumière nullables à valeur uniforme (divise l'empreinte par 2)
 - [x] Heightmaps : stockage, packing 9 bits, sémantique vérifiée sur monde réel
 - [x] `WORLD_SURFACE` calculé et maintenu incrémentalement *(air suffit)*
@@ -794,8 +807,11 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       d'un cheval et de ses poulains à la règle 1.20 (écarts-types à 12 % près
       sur 120 poulains ; la mule hérite sa vitesse) ; tempérament +5 par chute ;
       un cheval dompté, sellé et conduit par `Move Vehicle` de bout en bout, et
-      revenu de `entities/` — dans trois exécutions sur six : dans deux, le
-      cheval monté ne décide pas (ouvert, journalisé). Lapin, renard, tortue,
+      revenu de `entities/`. Un cheval monté qui semblait décider trop tard
+      révélait en fait l'horloge du serveur (le temps du jeu sautait du retard
+      pendant qu'un seul tick tournait) : corrigée, le cheval décide en 43
+      ticks exécutés en moyenne sur 22 montées, pour 50 attendus et 43,8
+      chez vanilla (86 montées chronométrées au tick). Lapin, renard, tortue,
       abeille, chèvre, dromadaire
       et renifleur vivent, se nourrissent, se reproduisent et gardent leur type
       à la sauvegarde. Restent le vol et l'épaule du perroquet, la ruche, la
@@ -973,9 +989,11 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       appariement nommées ; **2885 grilles posées, 2885 identiques** au vrai
       serveur — dont 120 arrangements qui doivent ne rien produire, le groupe
       qu'un apparieur trop gourmand rate. 248 combustibles mesurés sur 1254 ;
-      trois tables de cuisson et non une avec un diviseur. Restent la fenêtre
-      2×2 du joueur, les écrans de forge et de pierre de taille,
-      `Place Recipe`, et un four qui ne tourne que pendant qu'on le regarde)*
+      trois tables de cuisson et non une avec un diviseur. La fenêtre 2×2 du
+      joueur est mesurée (13 cas) et alignée. Restent les écrans de forge et
+      de pierre de taille, et `Place Recipe`. Les fours tournent comme bloc-entités, regardés ou
+      non, dans les trois dimensions ; `RecipesUsed` est payé en orbes à
+      l'extraction)*
 - [~] **Agriculture et élevage** : toutes les cultures, terre labourée,
       hydratation, os, composteur, abeilles et pollinisation, mode amour,
       croissance, croisement de chevaux et lamas, apprivoisement, tonte, traite,
@@ -1255,9 +1273,24 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
 - [ ] Fonctions `.mcfunction`, `/function`, tags de fonction
 - [ ] Loot tables : tous les prédicats, fonctions et conditions
 - [ ] Prédicats, item modifiers
-- [ ] Serveur dédié : `server.properties`, whitelist, ops, bans, RCON, query,
+- [~] Serveur dédié : `server.properties`, whitelist, ops, bans, RCON, query,
       MOTD et icône, permissions, sauvegarde automatique, arrêt propre,
       watchdog, console et complétion
+      *(**2026-09-11** : `server.properties` écrit comme le jar — les 56 clés
+      de 1.20.1, l'ordre de sa propre table au démarrage (**57/57** lignes,
+      tranché par OpenJDK 17) et celui d'une copie quand une commande le
+      réécrit (**57/57**), les clés inconnues gardées ; `online-mode=true`
+      refusé (hors ligne seulement). Les quatre listes au format de vanilla,
+      la porte dans son ordre et ses mots, ban/ban-ip/banlist/pardon/
+      pardon-ip/whitelist/setidletimeout/save-on/save-off/debug, RCON, Query,
+      icône, Set Compression, chien de garde, arrêt propre, sauvegarde toutes
+      les 6000 ticks, complétion à la console. Contre le vrai serveur sur la
+      même campagne : commandes **64/64**, console **26/26**, connexions et
+      renvois **11/11**, RCON **14/14**, Query **5/5**. Deux bugs de
+      l'écouteur trouvés par la mesure et corrigés. Restent, nommés :
+      `debug function`, `perf`, `jfr`, `publish` (refusé), l'icône ré-encodée
+      par ImageIO, `usercache.json`, `pvp`. Voir
+      `docs/provenance/serveur-dedie.md`)*
 
 ---
 
