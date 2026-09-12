@@ -159,6 +159,12 @@ public:
     [[nodiscard]] const client::GameOptions& options() const noexcept { return options_; }
     /// True once after the options changed; main() applies them.
     [[nodiscard]] bool take_options_changed() noexcept;
+    /// ── sound ── True once after a button was pressed: main() plays the click.
+    [[nodiscard]] bool take_click() noexcept {
+        const bool was = clicked_;
+        clicked_       = false;
+        return was;
+    }
     [[nodiscard]] u32  gui_scale(u32 framebuffer_width, u32 framebuffer_height) const noexcept;
 
     // ── F3 ──────────────────────────────────────────────────────────────────
@@ -221,6 +227,7 @@ private:
     client::GameOptions options_;
     client::OptionsFile options_file_;
     bool                options_changed_{false};
+    bool                clicked_{false};  // ── sound ──
 
     // Death
     std::string death_cause_;

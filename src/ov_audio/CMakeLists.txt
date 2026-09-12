@@ -36,6 +36,16 @@ ov_add_test(test_ov_audio
         tests/test_sound_catalog.cpp
         tests/test_sound_engine.cpp
         tests/test_music.cpp
+        tests/test_music_situation.cpp
+        tests/test_sound_space.cpp
     DEPS ov_audio
     LABELS unit
+)
+
+# What 200 sounds a frame cost, with the voice cap and without (ctest -L bench).
+ov_add_test(bench_ov_audio
+    SOURCES
+        tests/bench_sound_engine.cpp
+    DEPS ov_audio
+    LABELS bench
 )

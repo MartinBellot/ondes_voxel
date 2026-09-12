@@ -380,6 +380,8 @@ GameOptions GameOptions::from(const OptionsFile& file, std::vector<std::string>*
     real("gamma", options.gamma, 0.0, 1.0);
     flag("pauseOnLostFocus", options.pause_on_lost_focus);
     flag("operatorItemsTab", options.operator_items_tab);  // ── allow-commands ──
+    flag("showSubtitles", options.show_subtitles);         // ── sound ──
+    real("notificationDisplayTime", options.notification_display_time, 0.5, 10.0);
     if (const auto value = file.get("lang")) {
         options.language = std::string(unquote(*value));
     }
@@ -412,6 +414,8 @@ void GameOptions::store(OptionsFile& file) const {
     file.set("gamma", java_double(gamma));
     file.set("pauseOnLostFocus", pause_on_lost_focus ? "true" : "false");
     file.set("operatorItemsTab", operator_items_tab ? "true" : "false");  // ── allow-commands ──
+    file.set("showSubtitles", show_subtitles ? "true" : "false");         // ── sound ──
+    file.set("notificationDisplayTime", java_double(notification_display_time));
     file.set("lang", language);
     for (const KeyBinding& key : keys) {
         file.set("key_" + std::string(key.name), key_name(key.code));
