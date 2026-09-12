@@ -38,6 +38,21 @@ public:
     }
 
     [[nodiscard]] i32 surface_height(i32 x, i32 z) const override {
+        // ── jigsaw ── WORLD_SURFACE_WG is the block the noise stage would
+        // write, aquifer included: a dry pocket below the sea level is air.
+        // Measured on the jigsaw joints (docs/provenance/jigsaw.md § 3.1): the
+        // taiga village of reference-987654321 starts at 57, not at the 62 the
+        // global sea gives, and reference-1234567890 goes from 16/18 to 18/18.
+        if (generator_->aquifer_active()) {
+            worldgen::AquiferSampler aquifer{*generator_->aquifer()};
+            for (i32 y = high_; y >= low_; --y) {
+                if (aquifer.compute(x, y, z, generator_->density_at(x, y, z)).substance !=
+                    worldgen::Substance::Air) {
+                    return y + 1;
+                }
+            }
+            return low_;
+        }
         const i32 sea = generator_->sea_level();
         for (i32 y = high_; y >= low_; --y) {
             if (y < sea || generator_->is_solid(x, y, z)) {

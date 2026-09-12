@@ -480,10 +480,13 @@ std::expected<JigsawLibrary, TemplateError> JigsawLibrary::load(
         auto list = ProcessorList::parse_json(body, blocks, &tags, &why);
         return list && !list->processors.empty() ? list->processors.front() : nullptr;
     };
+    // A structure void is never placed: the position keeps what was there
+    // (minecraft.wiki "Structure Void"). The village templates carry them; level
+    // A wrote 186 where the game has air before this rule.
     library.impl_->ignore_structure_block = common(
-        R"({"processors":[{"processor_type":"minecraft:block_ignore","blocks":[{"Name":"minecraft:structure_block"}]}]})");
+        R"({"processors":[{"processor_type":"minecraft:block_ignore","blocks":[{"Name":"minecraft:structure_block"},{"Name":"minecraft:structure_void"}]}]})");
     library.impl_->ignore_structure_and_air = common(
-        R"({"processors":[{"processor_type":"minecraft:block_ignore","blocks":[{"Name":"minecraft:structure_block"},{"Name":"minecraft:air"}]}]})");
+        R"({"processors":[{"processor_type":"minecraft:block_ignore","blocks":[{"Name":"minecraft:structure_block"},{"Name":"minecraft:structure_void"},{"Name":"minecraft:air"}]}]})");
     library.impl_->jigsaw_replacement =
         common(R"({"processors":[{"processor_type":"minecraft:jigsaw_replacement"}]})");
     library.impl_->gravity = common(

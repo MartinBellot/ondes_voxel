@@ -169,6 +169,32 @@ le village de savane du même monde, généré normalement, casse.
 Retenu : l'expansion telle qu'une génération ordinaire la fait. Le chemin `/locate` n'est pas
 modélisé ; il est nommé ici, avec le seul fait mesuré qui le distingue.
 
+## 5. Niveau A — les pièces du jeu, posées par notre code
+
+`tools/ov_structblocks --level=a` (même harnais que `structures.md` § 16) : les pièces stockées
+dans les départs `full`, posées chunk par chunk par `JigsawLibrary::place`, comparées état complet
+aux blocs du jeu. Témoin : chaque pièce un quart de tour à côté.
+
+| départ | blocs identiques | témoin | coffres posés / table / graine |
+|---|---:|---:|---:|
+| village des plaines (3006, 10) | 3 573 / 4 005 — 89,213 % | 336 / 3 831 — 8,771 % | 5 / 5 / 4 |
+| village des plaines (18, 124) | 3 002 / 3 529 — 85,067 % | — | 2 / 2 / 2 |
+| avant-poste (−84, 105) | 1 495 / 1 501 — **99,600 %** | — | 1 / 1 / 1 |
+
+Les écarts, nommés :
+
+* **`structure_void` écrit là où le jeu a de l'air** (186 et 218 blocs) : un vide de structure
+  n'est jamais posé, la position garde ce qu'elle avait (minecraft.wiki, *Structure Void*). Corrigé
+  après cette mesure (les éléments ignorent `structure_void`).
+* **`dirt_path` au lieu de planches, feuilles, herbe** : artefact du niveau A. Sa hauteur
+  `WORLD_SURFACE_WG` est lue sur la carte de hauteurs du monde **fini**, qui contient déjà les
+  maisons et les arbres ; la gravité des routes (`terrain_matching`) les pose donc dessus. Le niveau
+  qui compte est l'export du serveur (§ 6), où la hauteur vient du bruit.
+* **Les éléments `feature`** (`oak`, `flower_plain`, `pile_hay`…) ne sont pas posés : ils demandent
+  le registre des features, que le constructeur de structures n'a pas. Nommés au journal.
+* Avant-poste : 6 connexions de clôtures de chêne noir, la mise à jour de forme à la frontière des
+  pièces.
+
 ## 7. Rejouer
 
 ```bash
