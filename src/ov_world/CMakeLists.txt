@@ -28,6 +28,7 @@ ov_add_test(test_ov_world
         tests/test_chunk.cpp
         tests/test_chunk_map.cpp
         tests/test_chunk_section.cpp
+        tests/test_chunk_snapshot.cpp
         tests/test_chunk_storage.cpp
         tests/test_heightmap.cpp
         tests/test_level_dat.cpp
