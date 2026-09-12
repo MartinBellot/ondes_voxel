@@ -15,6 +15,7 @@ ov_add_library(ov_world
         src/heightmap.cpp
         src/level_dat.cpp
         src/light_array.cpp
+        src/light_engine.cpp
         src/paletted_container.cpp
     DEPS
         ov_nbt
@@ -32,6 +33,7 @@ ov_add_test(test_ov_world
         tests/test_chunk_storage.cpp
         tests/test_heightmap.cpp
         tests/test_level_dat.cpp
+        tests/test_light_engine.cpp
         tests/test_paletted_container.cpp
     DEPS ov_world
     LABELS unit

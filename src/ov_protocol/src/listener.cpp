@@ -65,7 +65,7 @@ public:
 
     void set_compression_threshold(i32 threshold) override {
         decoder_.set_compression_threshold(threshold);
-        write_threshold_ = threshold;
+        write_threshold_.store(threshold, std::memory_order_release);
     }
 
 private:
@@ -73,6 +73,9 @@ private:
     void write_next();
     void arm_timeout();
     void finish();
+    /// Tell the listener once, on the connection's executor, whichever side
+    /// closed it.
+    void notify_closed();
 
     asio::ip::tcp::socket       socket_;
     AsioListener&               listener_;
@@ -81,11 +84,18 @@ private:
     FrameDecoder                decoder_;
     std::deque<std::vector<u8>> write_queue_;
     bool                        writing_{false};
-    /// Atomic: `send` and `close` are called from the server's tick thread,
-    /// `finish` from the event loop. A plain bool here is a data race the
-    /// moment packets are handled off the loop (ThreadSanitizer names it).
-    std::atomic<bool> closed_{false};
-    i32                         write_threshold_{kNoCompression};
+    /// Set by close() — which the tick thread calls (a kick, a timeout) — and
+    /// read by send() on any thread: atomic.
+    std::atomic<bool>           closed_{false};
+    /// Only touched on the executor.
+    bool                        notified_{false};
+    /// close() was asked while packets were still queued: the socket is shut
+    /// once they are written. Only touched on the executor.
+    bool                        close_when_drained_{false};
+    /// Read by send() on whichever thread calls it: a packet takes the
+    /// threshold in force when it was sent, so Set Compression itself leaves
+    /// uncompressed and everything after it compressed.
+    std::atomic<i32>            write_threshold_{kNoCompression};
 };
 
 class AsioListener final : public Listener {
@@ -238,7 +248,20 @@ void AsioConnection::send(std::span<const u8> bytes) {
     // Posted rather than written directly: send() may be called from a handler
     // running on the loop, and queueing keeps the ordering obvious.
     auto payload = std::make_shared<std::vector<u8>>(bytes.begin(), bytes.end());
-    asio::post(socket_.get_executor(), [self = shared_from_this(), payload] {
+    const i32 threshold = write_threshold_.load(std::memory_order_acquire);
+    asio::post(socket_.get_executor(), [self = shared_from_this(), payload, threshold] {
+        if (threshold >= 0) {
+            // Compressed here, on the connection's thread, never on the
+            // caller's: the tick thread sends chunks and must not deflate them.
+            auto framed = compress_frames(*payload, threshold);
+            if (!framed) {
+                OV_LOG_WARN("{}: unframed bytes sent on a compressed connection, closing",
+                            self->peer_address());
+                self->close();
+                return;
+            }
+            *payload = std::move(*framed);
+        }
         self->write_queue_.push_back(std::move(*payload));
         if (!self->writing_) {
             self->write_next();
@@ -254,9 +277,14 @@ void AsioConnection::send_chunk(std::shared_ptr<const world::Chunk> chunk) {
     // queued around it; encoded in the handler, so the tick thread only paid
     // for the snapshot. The snapshot is released here, on the loop, once the
     // bytes exist — that is the moment the tick's sections stop being shared.
-    asio::post(socket_.get_executor(), [self = shared_from_this(), chunk = std::move(chunk)] {
+    // The threshold in force now, as send() takes it: a chunk queued after Set
+    // Compression goes out compressed, like every packet around it.
+    const i32 threshold = write_threshold_.load(std::memory_order_acquire);
+    asio::post(socket_.get_executor(),
+               [self = shared_from_this(), chunk = std::move(chunk), threshold] {
         const auto payload = encode_chunk_data(*chunk);
-        auto       framed  = encode_packet(clientbound::kChunkDataAndLight, payload);
+        auto       framed  = encode_packet(clientbound::kChunkDataAndLight, payload,
+                                           threshold >= 0 ? threshold : kNoCompression);
         if (!framed) {
             OV_LOG_WARN("{}: chunk ({}, {}) not sent: {}", self->peer_address(),
                         chunk->position().x, chunk->position().z, to_string(framed.error()));
@@ -272,6 +300,14 @@ void AsioConnection::send_chunk(std::shared_ptr<const world::Chunk> chunk) {
 void AsioConnection::write_next() {
     if (write_queue_.empty()) {
         writing_ = false;
+        if (close_when_drained_) {
+            // The last packet before a close — a kick's Disconnect — is out.
+            std::error_code ec;
+            timer_.cancel();
+            socket_.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+            socket_.close(ec);
+            notify_closed();
+        }
         return;
     }
     writing_ = true;
@@ -291,22 +327,44 @@ void AsioConnection::close() {
         return;
     }
     asio::post(socket_.get_executor(), [self = shared_from_this()] {
+        // Every send() made before this close() has been posted before it,
+        // so its bytes are in the queue now. Shut the socket only once they
+        // have been written: a kick sends a line and a Disconnect, then
+        // closes, and shutting down at once dropped everything behind the
+        // packet already being written — measured, the probe of a
+        // `ban-ip <player>` got the success line and neither the "affects"
+        // line nor its own Disconnect.
+        if (self->writing_ || !self->write_queue_.empty()) {
+            self->close_when_drained_ = true;
+            return;
+        }
         std::error_code ec;
         self->timer_.cancel();
-        // shutdown before close so anything already queued reaches the peer;
-        // closing outright can discard it.
         self->socket_.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
         self->socket_.close(ec);
+        // A close the server asked for (a kick, a timeout, a refused packet)
+        // is a disconnect too. Before this, only a peer that went away was
+        // reported: the read that follows a close lands in finish(), which
+        // saw closed_ already set and returned — and the server kept the
+        // player in its table, unsaved and counted against max-players.
+        self->notify_closed();
     });
 }
 
 void AsioConnection::finish() {
-    if (closed_.exchange(true)) {
+    if (!closed_.exchange(true)) {
+        std::error_code ec;
+        timer_.cancel();
+        socket_.close(ec);
+    }
+    notify_closed();
+}
+
+void AsioConnection::notify_closed() {
+    if (notified_) {
         return;
     }
-    std::error_code ec;
-    timer_.cancel();
-    socket_.close(ec);
+    notified_ = true;
     listener_.connection_closed(shared_from_this());
 }
 

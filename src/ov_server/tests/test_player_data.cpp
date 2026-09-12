@@ -449,10 +449,11 @@ TEST_CASE("the live state goes to a file and comes back", "[player_data]") {
                    .on_ground = true},
         0, inventory, carried, 4, survival, effects, &overflow);
     CHECK(overflow == 0);
-    // The grid and the cursor went back into the first free slots, hotbar
-    // first: 37 and 38, since 36 is taken.
-    CHECK(record.inventory[37].item_id == item("minecraft:oak_planks"));
-    CHECK(record.inventory[38].item_id == item("minecraft:apple"));
+    // The cursor and then the grid went back into the first free slots,
+    // hotbar first: 37 and 38, since 36 is taken. Cursor first is the order
+    // measured when the screen closes (scripts/measure_window0.py).
+    CHECK(record.inventory[37].item_id == item("minecraft:apple"));
+    CHECK(record.inventory[38].item_id == item("minecraft:oak_planks"));
 
     const nbt::Tag root = write_player(record, nullptr, kBot, names());
     CHECK(root.find("DataVersion")->as_i64() == 3465);

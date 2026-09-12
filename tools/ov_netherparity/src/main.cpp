@@ -745,8 +745,10 @@ int compare_full(const Options& options, const registry::BlockRegistry& blocks,
         }
     }
     if (placer && builder && !options.no_structures) {
-        stage = std::make_unique<worldgen::StructureStage>(*placer, *builder, &sampler, blocks,
-                                                           nullptr, options.seed);
+        // ── great pyramid ── a parity instrument: vanilla structures only.
+        stage = std::make_unique<worldgen::StructureStage>(
+            *placer, *builder, &sampler, blocks, nullptr, options.seed,
+            worldgen::OriginalStructures::vanilla_parity());
         pipeline.set_structures(&*placer, &sampler);
         pipeline.set_structure_stage(stage.get());
     }

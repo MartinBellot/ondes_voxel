@@ -90,7 +90,8 @@ struct Harness {
     Harness()
         : service{ServiceConfig{packs().blocks ? &*packs().blocks : nullptr,
                                 packs().registries ? &*packs().registries : nullptr,
-                                {}, {}, false, 4, "Ondes VOXEL", {}}} {
+                                {}, {}, false, 4, "Ondes VOXEL", {},
+                                nullptr, 4, true, true}} {
         add_player("ovprobe", 4);
         host.for_each_player = [this](const std::function<void(PlayerRef&)>& visit) {
             for (auto& fp : players) {

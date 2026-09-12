@@ -294,3 +294,46 @@ n'importe quel nom.** C'est le comportement attendu d'un serveur hors-ligne, et
 c'est adapté à un usage local ou en réseau de confiance ; ça ne l'est pas pour
 un serveur public. Si cela change un jour, l'authentification s'ajoute dans la
 phase de login sans toucher au reste du protocole.
+
+## 9. Décisions produit
+
+### 9.1 La Grande Pyramide — une structure originale, ajoutée à vanilla (2026-09-11)
+
+**Ce que c'est.** À la demande de l'utilisateur, le générateur ajoute une structure **qui n'existe
+pas dans Minecraft** : `ondes_voxel:great_pyramid`, une pyramide à degrés de 101 × 101 blocs et
+51 assises dans le désert, avec entrée monumentale, salle hypostyle, grande galerie, chambres de la
+Reine et du Pharaon, labyrinthe, crypte, pièges et tables de butin **à nous**
+(`data/ondes_voxel/loot_tables/`). Tout est sous l'espace de noms `ondes_voxel:` — la structure, son
+ensemble (`ondes_voxel:great_pyramids`), ses pièces, ses tables — et elle n'est jamais présentée
+comme du contenu officiel. La pyramide du désert vanilla (`minecraft:desert_pyramid`) reste
+exactement celle de 1.20.1. Détail et mesures : `docs/provenance/grande-pyramide.md`.
+
+**Pourquoi.** C'est un choix de produit, pas de parité : l'utilisateur veut un monument à découvrir
+qui soit propre au projet. Il l'a voulu **toujours actif** dans les mondes générés, plutôt
+qu'optionnel.
+
+**L'interrupteur.** Une seule exception, et elle est au niveau du **générateur**, pas une option de
+joueur : `worldgen::OriginalStructures` (`great_pyramid.hpp`). `StructureStage` l'active par défaut ;
+les instruments de parité le coupent explicitement (`OriginalStructures::vanilla_parity()` dans
+`ov_structblocks`, `ov_netherparity` et les tests de parité des structures), et
+`OV_ORIGINAL_STRUCTURES=0` le coupe dans `GeneratedWorld` (donc `ov_gendet --export` et
+`ov_dedicated`) pour produire un monde purement vanilla à comparer au jeu. Le serveur et le jeu le
+laissent allumé. Coupé, le code emprunte exactement le chemin d'avant (aucune pyramide n'est
+construite, aucun tirage n'est fait) : les mesures de parité existantes restent valables.
+
+**Conséquences pour la compatibilité vanilla.**
+- *Réseau* : aucune. La pyramide n'est faite que de blocs et d'entités de bloc vanilla (grès,
+  terre cuite, or, lanternes, coffres, distributeurs, pistons, sable suspect, générateur de husks) ;
+  le client vanilla n'y voit que des blocs.
+- *Sauvegarde* : le chunk de départ porte `structures.starts."ondes_voxel:great_pyramid"` et les
+  chunks traversés une entrée `References` — au format du jeu. Un serveur vanilla qui ouvre le monde
+  **ignore** ces entrées (identifiant de structure inconnu, journalisé et abandonné) et garde les
+  blocs, qui sont des blocs ordinaires. Il ne régénère rien et ne sait pas que c'est une structure :
+  pas de `/locate`, pas de carte au trésor.
+- *Butin* : les coffres portent `LootTable: "ondes_voxel:chests/great_pyramid/…"`. Un serveur
+  vanilla sans notre datapack les ouvre **vides** ; avec `data/ondes_voxel/` installé comme datapack,
+  il les remplit. Les tables n'imitent aucune table de Mojang.
+- *Graine* : une même graine ne donne plus le même monde que vanilla là où une pyramide se pose
+  (≈ 1 site pour quelques dizaines de milliers de chunks², voir la provenance). Ailleurs, le terrain
+  et les structures vanilla sont inchangés : la pyramide refuse tout site où une structure vanilla
+  pourrait démarrer, et n'en déplace aucune.

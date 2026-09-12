@@ -17,6 +17,21 @@ namespace {
     return world >> 4;
 }
 
+/// ── light ── The replica's chunks as the light engine sees them.
+class ReplicaLight final : public world::LightChunkSource {
+public:
+    explicit ReplicaLight(std::map<std::pair<i32, i32>, std::unique_ptr<world::Chunk>>& chunks)
+        : chunks_{chunks} {}
+
+    world::Chunk* light_chunk(i32 chunk_x, i32 chunk_z) override {
+        const auto found = chunks_.find({chunk_x, chunk_z});
+        return found == chunks_.end() ? nullptr : found->second.get();
+    }
+
+private:
+    std::map<std::pair<i32, i32>, std::unique_ptr<world::Chunk>>& chunks_;
+};
+
 }  // namespace
 
 Session::Session(const registry::BlockRegistry& blocks, render::BlockModelCache& models,
@@ -27,7 +42,8 @@ Session::Session(const registry::BlockRegistry& blocks, render::BlockModelCache&
       models_(&models),
       atlas_(&atlas),
       tints_(&tints),
-      terrain_(&terrain) {
+      terrain_(&terrain),
+      light_(std::make_unique<world::LightEngine>(blocks)) {
     // Resolved once. A name comparison per cell would put a string compare
     // inside the physics tick, which runs over the player's whole box every
     // twentieth of a second.
@@ -205,6 +221,7 @@ void Session::apply(netclient::ClientEvents& events) {
         }
         chunk->set_block(static_cast<usize>(change.x & 15), change.y,
                          static_cast<usize>(change.z & 15), change.state);
+        light_->block_changed(BlockPos{change.x, change.y, change.z});  // ── light ──
 
         const i32 section = (change.y - chunk->shape().min_y) / 16;
         mark_dirty(chunk_x, chunk_z, section);
@@ -228,6 +245,28 @@ void Session::apply(netclient::ClientEvents& events) {
         }
         if ((change.z & 15) == 15) {
             mark_dirty(chunk_x, chunk_z + 1, section);
+        }
+    }
+
+    // ── light ── Repair the light around this frame's edits, then mesh again
+    // every section it wrote and the six around each: smooth lighting reads
+    // across a section's faces.
+    if (light_->pending() > 0) {
+        ReplicaLight source{chunks_};
+        (void)light_->propagate(source);
+        for (const SectionPos at : light_->changed_sections()) {
+            const world::Chunk* chunk = chunk_at(at.x, at.z);
+            if (chunk == nullptr) {
+                continue;
+            }
+            const i32 section = at.y - chunk->shape().min_section();
+            mark_dirty(at.x, at.z, section);
+            mark_dirty(at.x, at.z, section - 1);
+            mark_dirty(at.x, at.z, section + 1);
+            mark_dirty(at.x - 1, at.z, section);
+            mark_dirty(at.x + 1, at.z, section);
+            mark_dirty(at.x, at.z - 1, section);
+            mark_dirty(at.x, at.z + 1, section);
         }
     }
 }

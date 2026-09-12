@@ -155,6 +155,139 @@ mesuré plutôt qu'un de moins.
 La progression perdue vaut deux ticks par tick éteint, ce qui empêche de cuire
 quoi que ce soit avec une poignée de bâtons donnés un par un.
 
+### Le four que personne ne regarde
+
+Un four est un bloc-entité tické : il cuit, que quelqu'un le regarde ou non.
+`src/ov_server/src/furnace_entity.cpp` fait tourner à chaque tick tous les fours
+des chunks chargés, dans chaque dimension : une passe par dimension (overworld,
+Nether, End), chacune sur ses propres chunks. Chaque passe tient un index
+reconstruit une fois par seconde ; un four qu'on ouvre ou qu'on clique y entre
+aussitôt. Le NBT du
+bloc-entité est **la seule copie** du four : `Items`, `BurnTime`, `CookTime` et
+`CookTimeTotal` (des shorts, écrits sur place), plus `RecipesUsed`. L'écran d'un
+four ne fait plus rien tourner : il relit le bloc-entité avant chaque clic et à
+chaque rafraîchissement.
+
+Trois bugs de la version précédente, trouvés à la lecture et épinglés par
+`src/ov_server/tests/test_furnace_entity.cpp` :
+
+* la passe ne parcourait que l'overworld, et l'écran d'un four lisait
+  l'overworld aux mêmes coordonnées : un four du Nether ou de l'End ne cuisait
+  pas et ne s'ouvrait même pas. Chaque dimension a maintenant sa passe (c'est
+  ce que le test épingle) et l'écran lit la dimension du joueur ;
+
+* la passe des fours non regardés n'écrivait les compteurs que quand une case
+  changeait. Elle relisait donc à chaque tick un `BurnTime` et un `CookTime`
+  périmés : un four fermé brûlait sans fin et ne finissait jamais un objet ;
+* l'écran allumait son four par `Chunk::set_block`, qui efface le bloc-entité
+  de la position écrite. Un four qui s'allumait pendant qu'on regardait son
+  écran perdait son minerai, son combustible et son expérience.
+  `relight_furnace_block` change la propriété `lit` en gardant le bloc-entité.
+
+L'expérience suit le format de vanilla : un compte par recette dans
+`RecipesUsed`. À l'extraction, chaque recette donne `nombre × expérience` en
+simple précision : la partie entière, plus un point avec une probabilité égale
+à la partie fractionnaire. Le tout est versé en orbes aux pieds du joueur.
+L'ancien champ `ovExperience`, propre à ce projet, est effacé à la première
+écriture.
+
+Mesuré sur le vrai serveur par `scripts/measure_furnaces.py` (campagnes `xp`
+et `xp-iron`), avec une sonde qui vide la sortie au shift-clic :
+
+| Cas | Vanilla |
+|---|---|
+| 10 lingots de fer, `RecipesUsed` = 10 (10 × 0,7 = 7) | **7 points, 6 fois sur 6** |
+| 5 pierres, `RecipesUsed` = 5 (5 × 0,1 = 0,5) | **1 point 18 fois sur 40**, 0 sinon |
+| Sortie vidée par un joueur | `RecipesUsed: {}` |
+| Sortie vidée par un entonnoir dessous | les 3 lingots dans l'entonnoir, `RecipesUsed` **gardé** (3) |
+| Un lingot lancé depuis la sortie (mode 4, bouton 0) | 2 lingots restent, `RecipesUsed` **vidé**, 2 points (3 × 0,7) |
+| La pile lancée depuis la sortie (mode 4, bouton 1) | sortie vide, `RecipesUsed` vidé, 2 points |
+| Touche numérique vers une case vide de la barre (mode 2) | la pile y va, `RecipesUsed` vidé, 2 points |
+| Touche numérique vers une case occupée (un pavé) | rien ne bouge, `RecipesUsed` gardé, 0 point |
+
+Lancer un seul objet paie donc **tout** `RecipesUsed`, comme prendre la pile.
+
+La touche numérique vers une case de la barre qui tient **déjà le même objet**
+(un lingot) a été mesurée une fois : rien ne bouge, `RecipesUsed` reste à 3, et
+la sonde relève pourtant 2 points. Ce n'est pas expliqué, donc pas repris : ce
+serveur n'y déplace rien et ne paie rien.
+
+### Le piège du niveau
+
+`xp query … points` ne compte que les points **dans le niveau courant**. Sept
+points font exactement le niveau 1 et s'y lisent 0 : la première campagne a lu
+0, 7, 0, 0 pour dix lingots de fer. La sonde additionne maintenant les niveaux,
+les points et les orbes encore au sol. Deux autres pièges du même relevé :
+`setblock` sur un four identique répond « Could not set the block » et
+n'applique pas le NBT (chaque four est donc posé sur de l'air), et une sonde
+qui flotte un bloc au-dessus du sol est expulsée au bout de quatre secondes.
+
+### Douze fours sans joueur
+
+`scripts/measure_furnaces.py ticks` pose douze fours par `/setblock`, avec leur
+NBT et `CookTimeTotal`, sans aucun joueur connecté, et les relit à dt = 22,
+153, 603, 1202, 1702 et 2503 ticks. dt est exact : pose et lecture partent dans
+le même lot qu'un `time query gametime`. `BurnTime`, `CookTime`,
+`CookTimeTotal` et les trois cases, à chaque date, sont repris tels quels par
+le test de parité de `src/ov_server/tests/test_furnace_entity.cpp`. Ce que la
+table fixe :
+
+* un charbon cuit exactement 8 objets, dans un four comme dans un haut-fourneau
+  ou un fumoir (100 ticks par objet, 800 de combustible) ; un bloc d'algues
+  séchées fait 20 lingots dans un haut-fourneau ;
+* un bâton seul (100 ticks) ne cuit rien, deux bâtons cuisent une pierre : le
+  second s'allume au tick même où le premier s'éteint, et la cuisson ne perd
+  rien (`CookTime` 153, `BurnTime` 48 à dt = 153) ;
+* une sortie qui ne peut rien recevoir (un lingot d'or devant du fer) n'allume
+  jamais le four ; une sortie qui arrive à 64 **laisse brûler** le combustible
+  déjà allumé sans plus rien cuire ;
+* un four qui ne peut pas cuire **garde** son `CookTimeTotal` (200 ou 100). Ce
+  serveur le remettait à 0 : corrigé dans `gameplay::furnace_tick` ;
+* le seau de lave laisse un seau dans la case de combustible.
+
+### Le piège du `CookTimeTotal` manquant
+
+La première campagne a posé ses fours sans `CookTimeTotal` : aucun n'a rien
+produit en 2500 ticks. Le témoin de la seconde le confirme : il brûle son
+charbon et compte `CookTime` jusqu'à 1202 sans jamais finir un objet. Vanilla
+ne recalcule donc pas le total à chaque tick, et un objet ne sort qu'à
+l'égalité exacte des deux compteurs.
+
+Ce serveur fait maintenant de même, sans que chaque écrivain de la case
+d'entrée (clic, entonnoir, commande) ait à le signaler. La passe des fours
+garde, pour chaque four, l'entrée telle que son dernier tick l'a laissée :
+l'objet et ses tags, pas le nombre. Au tick suivant, une entrée différente est
+un changement venu d'ailleurs : `CookTime` repart de 0 et `CookTimeTotal` est
+relu sur la recette. Sinon le total stocké sert tel quel, 0 compris. La passe
+retrouve les fours à chaque tick et tourne avant les entonnoirs et les joueurs,
+pour voir un four posé, chargé ou écrit par une commande avant quiconque.
+
+Mesuré sur le vrai serveur (`scripts/measure_furnaces.py changes`) : huit fours
+avec 8 minerais de fer et un charbon, leur entrée changée par
+`item replace … container.0` au tick 52, relus 251 ticks plus tard.
+
+| Changement | Juste après | 251 ticks plus tard |
+|---|---|---|
+| du sable à la place du minerai | `CookTime` 0, total 200 | 1 verre, `CookTime` 51 |
+| de la terre (rien à cuire) | 0, total **200 gardé** | rien, le feu brûle |
+| l'entrée retirée | 0, total 200 gardé | rien |
+| le même minerai, 3 au lieu de 8 | **52, pas de remise à zéro** | 1 lingot, `CookTime` 103 |
+| le même minerai avec un tag (`display.Name`) | 0 | 1 lingot, `CookTime` 51 |
+| retiré puis remis dans le même tick | **0** | 1 lingot, `CookTime` 51 |
+| témoin sans total, le même minerai (7) | 52, total 0 | **toujours bloqué**, `CookTime` 303 |
+| témoin sans total, du fer brut | 0, total 200 | 1 lingot, `CookTime` 51 |
+
+Le test `an input changed by someone else…` de `test_furnace_entity.cpp`
+rejoue ces cas, sauf le retrait et la remise dans le même tick. Restent :
+
+* **l'écart résiduel, mesuré** : le même objet retiré puis remis dans un seul
+  tick fait deux changements pour vanilla, qui remet la progression à 0, et
+  aucun pour une comparaison faite une fois par tick. Ce serveur garde la
+  progression ;
+* **non distingué** : pour une entrée qui ne cuit pas, ou vide, vanilla lit un
+  total de 200 là où il y avait 200. Ce serveur garde le total stocké. Un
+  haut-fourneau (100) dont l'entrée devient de la terre n'a pas été mesuré.
+
 ---
 
 ## 5. L'oracle d'appariement — 2885 grilles, 2885 identiques
@@ -288,14 +421,99 @@ s'automatise pas ici. C'est un client qui envoie exactement les mêmes paquets,
 dans le même ordre ; ce que le test prouve, c'est que le serveur y répond
 correctement.
 
+## 7 bis. La fenêtre 0 du joueur et sa grille 2×2
+
+`scripts/measure_window0.py` fait cliquer une sonde en survie dans la fenêtre 0
+d'un vrai serveur 1.20.1. Cette fenêtre n'a pas d'`Open Screen` ; elle compte
+46 cases : 0 le résultat, 1 à 4 la grille, 5 à 8 l'armure, 9 à 35 le sac, 36 à
+44 la barre, 45 la main secondaire. La sonde relit la fenêtre, le curseur,
+l'inventaire (`data get entity`) et le sol. Quatre bûches de chêne dans la
+grille :
+
+| Clic sur le résultat | Vanilla |
+|---|---|
+| clic gauche ou droit | une fabrication (4 planches) sur le curseur |
+| shift-clic | toutes les fabrications, l'inventaire rempli **par la fin** : 16 planches dans la dernière case de la barre |
+| touche numérique vers une case vide | une fabrication dans cette case |
+| touche numérique vers une case occupée | rien : ni déplacé, ni fabriqué |
+| lancer, un bouton ou l'autre | **une** fabrication, lancée entière (4 planches) |
+
+| Autre cas | Vanilla |
+|---|---|
+| fermer, la grille et le curseur pleins | le curseur revient d'abord (barre 0), puis la grille (barre 1) |
+| shift-clic sur un casque de fer du sac | la case de la tête |
+| shift-clic sur un bouclier du sac | la main secondaire |
+| double clic, 10 terres au curseur, 5 et 3 ailleurs | 18 au curseur |
+| 2 bouteilles de miel, un clic | 3 sucres au curseur ; la bouteille vide en barre 0, la case tenant encore du miel |
+| 2 bouteilles de miel, shift-clic | 6 sucres en fin de barre, une bouteille vide en barre 0, la dernière dans la case vidée |
+
+Ce serveur rendait la touche numérique et le lancer comme un clic (sur le
+curseur), remplissait le sac d'abord, ne rendait rien à la fermeture,
+n'équipait rien au shift-clic, ignorait le double clic et rangeait les restes
+au sac d'abord. Tout est aligné et rejoué par `test_player_inventory.cpp`. La
+sauvegarde range désormais le curseur avant la grille, dans l'ordre de la
+fermeture.
+
+Non mesuré : la fusion avec une pile existante à la fermeture (l'inventaire
+mesuré était vide ; ce serveur fusionne d'abord, comme `Inventory.add`) ;
+l'ordre du double clic entre piles pleines et non pleines ; les autres objets
+portables (élytres, citrouille, têtes, d'après la liste du wiki) ; la touche
+numérique vers une case qui tient déjà le même objet.
+
+## 7 ter. La table de forge — mesurée sur le fil
+
+`scripts/measure_smithing.py` : une sonde en survie ouvre une table de forge sur
+un vrai serveur 1.20.1 et relit `Open Screen`, `Set Container Content` (NBT
+décodé) et l'inventaire une fois l'objet pris.
+
+* **Le menu** : type **20** (`minecraft:smithing`), titre
+  `{"translate":"container.upgrade"}`, **40 cases** : 0 le gabarit, 1 la base,
+  2 l'ajout, 3 le résultat, puis les 27 cases du sac et les 9 de la barre.
+* **Une garniture** (gabarit côte, lingot d'or, plastron de fer) : le résultat
+  est la base, avec `Trim: {material: "minecraft:gold", pattern:
+  "minecraft:coast"}` ajouté à son tag. Le reste du tag est gardé : `Damage`,
+  et la couleur `display.color` d'un plastron de cuir teint. La **même**
+  garniture une seconde fois ne donne rien ; un autre matériau remplace le
+  `Trim`. Le matériau vient de l'ajout (`trim_material/*.json`, `ingredient`),
+  le motif du gabarit (`trim_pattern/*.json`, `template_item`).
+* **L'amélioration en netherite** (épée de diamant usée de 10, tranchant II,
+  renommée) : l'objet change, le tag passe **entier** : usure, enchantements,
+  nom.
+* Une combinaison qu'aucune recette n'accepte (gabarit de garniture, épée,
+  or) : rien.
+* **La prise** coûte un de chaque entrée : deux gabarits et deux lingots en
+  laissent un de chaque. Le **shift-clic** sur le résultat remplit par la fin
+  (la dernière case de la barre). Depuis le sac, le shift-clic envoie le
+  gabarit en 0, l'armure en 1, le lingot en 2.
+* À la fermeture, les entrées reviennent à l'inventaire (barre 0, 1, 2).
+
+L'ordre des clés d'un compound NBT sur le fil suit une table de hachage chez
+vanilla : il ne porte aucun sens et n'est pas reproduit.
+
+## 7 quater. Le tailleur de pierre — l'ordre des boutons
+
+`scripts/measure_stonecutter.py` : le client choisit une coupe par son
+**indice** (`Click Container Button`, 0x0A) dans une liste qu'il calcule
+lui-même ; le serveur doit calculer la même, dans le même ordre. La sonde clique
+chaque indice et lit la case de résultat.
+
+* **Le menu** : type **23** (`minecraft:stonecutter`), titre
+  `{"translate":"container.stonecutter"}`, **38 cases** : 0 l'entrée,
+  1 le résultat, puis 27 + 9.
+* **L'ordre** : par nom de l'objet produit. Pour la pierre : briques de pierre
+  sculptées, dalle de briques, escalier de briques, muret de briques, briques,
+  dalle, escalier. Andésite, grès, bloc de cuivre, pavé, briques de boue et
+  pierre noire (12 coupes) suivent la même règle. Tous les produits du tailleur
+  sont des blocs : trier par nom ou par clé de traduction revient au même.
+* La propriété de fenêtre 0 renvoie l'indice choisi ; un indice au-delà de la
+  liste ne change rien (ni propriété, ni résultat).
+* Une prise coûte une entrée et **garde** le choix ; le shift-clic taille toute
+  l'entrée ; un autre objet dans l'entrée **efface** le choix.
+
 ## 8. Ce qui n'est pas fait
 
 Nommé plutôt que caché :
 
-* **La grille 2×2 de l'inventaire du joueur** est appariée par `ov_gameplay` et
-  testée, mais le serveur ne câble pas encore l'écran de la fenêtre 0 : le code
-  de fenêtre existant y répond pour le coffre, et le partager demandait une
-  refonte de `server.cpp` que la parallélisation en cours interdit.
 * **La table de forge et la pierre de taille** ont leur appariement
   (`match_smithing`, `stonecutting_options`) et leurs tests, mais pas leur
   fenêtre.
@@ -303,14 +521,6 @@ Nommé plutôt que caché :
   sont ci-dessus.
 * **Le placement automatique depuis le livre de recettes** (`Place Recipe`)
   n'est pas implémenté ; le déverrouillage l'est.
-* **Un four ne tourne que pendant que quelqu'un le regarde.** La file de ticks
-  de blocs arrivée avec les fluides (`ov_world/block_ticks.hpp`) porte des
-  positions, pas des bloc-entités ; brancher les fours dessus demande de leur
-  donner un état persistant côté monde, et c'est un chantier à part. En
-  attendant, un four que personne n'a ouvert ne cuit pas — dit ici plutôt que
-  découvert au retour.
-* **L'expérience** est accumulée et remise à zéro à la récupération, mais rien
-  ne la matérialise : les orbes appartiennent à un autre jalon.
 * Le code de clic générique vit dans `src/ov_server/src/workbench.cpp`. Le
   chemin du coffre dans `server.cpp` devrait y être ramené une fois la vague de
   travail parallèle atterrie ; l'y ramener maintenant aurait rendu la fusion
