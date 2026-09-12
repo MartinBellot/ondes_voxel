@@ -18,6 +18,9 @@ cmd clear @s
 cmd item replace entity @s hotbar.0 with minecraft:diamond_sword
 cmd item replace entity @s hotbar.1 with minecraft:cobblestone 37
 cmd item replace entity @s inventory.0 with minecraft:oak_log 12
+# Stand on the scenes' spot first: our client's first run clicked before the
+# teleport of the first scene had reached it, and its hopper never opened.
+cmd tp @s 0.5 -60 0.5 0 90
 wait 40
 
 cmd setblock 0 -61 0 minecraft:hopper

@@ -38,10 +38,17 @@ GUI_W, GUI_H = 854, 480
 
 # Zones, en pixels d'interface, pour 854×480. cx = 427.
 REGIONS = {
-    "cœurs":        (334, 400, 94, 44),    # 336..417, rangées au-dessus de h-39
-    "faim":         (434, 420, 86, 22),
-    "air":          (434, 400, 86, 20),
-    "xp":           (334, 440, 186, 18),   # barre h-29, niveau h-35
+    # Left column: hearts at h-39 = 441 (nine rows to 449) and the rows
+    # stacked above them (absorption, armour) up to y 395.
+    "cœurs":        (334, 395, 84, 56),
+    # Right column: haunches or a mount's hearts at 441, bubbles and a mount's
+    # upper rows above.
+    "faim":         (434, 438, 86, 13),
+    "air":          (434, 428, 86, 12),    # the bubbles sit at h-49 = 431
+    "monture":      (434, 418, 86, 33),
+    # The bar at h-29 = 451, five rows; the level's digits between the columns.
+    "xp":           (334, 450, 186, 8),
+    "niveau":       (418, 442, 16, 10),
     "barre":        (330, 454, 196, 26),   # la barre d'action (hotbar)
     "effets":       (600, 0, 254, 60),
     "boss":         (240, 0, 374, 110),
@@ -56,7 +63,7 @@ REGIONS = {
 
 SHOT_REGIONS = {
     "01-plain": ["cœurs", "faim", "xp", "barre"],
-    "02-xp": ["cœurs", "faim", "xp"],
+    "02-xp": ["cœurs", "faim", "xp", "niveau"],
     "03-hurt-blink": ["cœurs"],
     "04-hurt": ["cœurs"],
     "05-armour": ["cœurs", "barre"],
@@ -69,7 +76,7 @@ SHOT_REGIONS = {
     "11-effects-d": ["effets"],
     "12-frozen": ["cœurs"],
     "13-air": ["air"],
-    "14-mount": ["faim", "xp"],
+    "14-mount": ["monture", "xp"],
     "15-bossbars": ["boss"],
     "16-title-in": ["titre"], "16-title-stay": ["titre"], "16-title-out": ["titre"],
     "17-actionbar": ["action"], "17-actionbar-fade": ["action"],
@@ -268,6 +275,11 @@ def cmd_compare(args):
             opath = os.path.join(odir, shot + ".ppm")
         if not os.path.exists(vpath) or not os.path.exists(opath):
             print("%-20s absente (%s)" % (shot, "vanilla" if not os.path.exists(vpath) else "nôtre"))
+            continue
+        empty = [p for p in (vpath, nohud_of(vpath), opath, nohud_of(opath))
+                 if os.path.exists(p) and os.path.getsize(p) == 0]
+        if empty:
+            print("%-20s capture vide, sautée : %s" % (shot, os.path.basename(empty[0])))
             continue
         v, vb = Image(vpath), Image(nohud_of(vpath))
         o, ob = Image(opath), Image(nohud_of(opath))
