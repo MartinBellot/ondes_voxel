@@ -119,6 +119,7 @@ ov_add_test(test_ov_server
         tests/test_mobs3_server.cpp  # ── mobs-3 ──
         tests/test_tame_server.cpp  # ── tame ──
         tests/test_world_structures.cpp  # ── structures ──
+        tests/test_great_pyramid_traps.cpp  # ── great pyramid ──
     DEPS ov_server
     LABELS unit
 )

@@ -33,6 +33,7 @@ chiffres et — c'est le plus utile — **ce qu'il n'a pas réussi à établir**
 | [`features.md`](provenance/features.md) | L'ensemencement de la décoration, et pourquoi `WorldgenRandom` n'est pas la source qu'il enveloppe |
 | [`pipeline-de-chunks.md`](provenance/pipeline-de-chunks.md) | La couche qui possède neuf chunks : 27,97 % des écritures franchissent une frontière |
 | [`structures.md`](provenance/structures.md) | Le placement des 19 `structure_set`, exact au chunk près — et le mineshaft comme oracle pur des réducteurs ; § 20 : les structures posées par le serveur, `structures.starts` et `References` au format du jeu |
+| [`grande-pyramide.md`](provenance/grande-pyramide.md) | **Structure originale, pas du contenu Minecraft** : la Grande Pyramide `ondes_voxel:great_pyramid` (101 × 101), son placement, son plan, ses pièges, son butin, l'interrupteur de parité et ses mesures |
 | [`chunkmap.md`](provenance/chunkmap.md) | Tickets, pool de jobs, génération hors du thread de tick, déterminisme sous TSan |
 | **Jeu** | |
 | [`fluides.md`](provenance/fluides.md) | Écoulement, recherche du trou, mélanges : 3172/3172 positions |
@@ -158,6 +159,7 @@ Une ligne par système non trivial, ajoutée au moment de son implémentation.
 | VarInt / VarLong | `ov_protocol` | archive protocole 763, *Data types* | ≤ 5 et ≤ 10 octets. Un négatif occupe **toujours** la taille maximale (complément à deux). |
 | Chaînes du protocole | `ov_protocol` | archive protocole 763, *Data types* | Préfixe VarInt en **octets** ; la limite déclarée est en unités UTF-16, donc la borne en octets vaut 3×. |
 | Registres et blockstates | `ov_datagen` | data generator officiel, `server.jar` 1.20.1 (SHA-1 `84194a2f286ef7c14ed7ce0090dba59902951553`) | Voir les deux pièges ci-dessous. |
+| Grande Pyramide (structure originale) | `ov_worldgen`, `ov_server` | aucune : conçue ici, à la demande de l'utilisateur ; l'agencement évoque Khéops (connaissance générale) | Pas du contenu Minecraft, espace de noms `ondes_voxel:`. Tables de butin écrites ici, aucune copiée. Voir `provenance/grande-pyramide.md` et `ARCHITECTURE.md` § 9.1. |
 | Musique, disques, sous-titres du client | `ov_audio`, `ov_client` | wiki *Music*, *Subtitles*, *Jukebox* ; archive protocole 763 (World Event, Boss Bar, Login, Respawn) ; mesure sur le vrai serveur (`scripts/measure_jukebox_events.py`) | 1010 = id d'objet du disque, 1011 = arrêt (éjection et casse), reçus par l'acteur aussi. Durées de fondu et de sous-titre, volume du clic, priorité des voix : les nôtres. Voir `docs/provenance/son-client.md`. |
 
 ---
