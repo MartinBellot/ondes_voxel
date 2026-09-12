@@ -261,10 +261,52 @@ buts tournent. Sur les trois exécutions qui passent, **15 montées : 116, 159, 
 Ce que le journal écarte : la sonde n'est jamais descendue avant la décision ; le cerveau du
 cheval tourne à chaque tick du serveur (149 ticks portés au tick 400, 160 ticks après la montée,
 sous surcharge) ; le but `tantrum` tourne à chaque relevé ; et aucune décision ne se perd — chaque
-chute ajoute exactement 5 au tempérament, jamais sans chute. **Ce qu'il n'explique pas** : le même
-tirage de 1 sur 50 par tick donne 50 ticks en moyenne sur 40 chevaux dans `test_tame.cpp`, et 90,5
-sur notre serveur (3,1 écarts-types au-dessus) ; vanilla, lu à 20 ticks près, est à 78. Cet écart,
-et les deux exécutions qui calent, sont ouverts (§ 9).
+chute ajoute exactement 5 au tempérament, jamais sans chute.
+
+**La cause était l'horloge du serveur, pas le cheval.** Le journal de chaque tirage (valeur, rang,
+tick) le montre : le but tire exactement une fois par tick où le cheval tourne (57 tirages pour 57
+ticks portés, 28 pour 28), les valeurs sont uniformes (χ² 56,4 pour 49 degrés), et les décisions
+tombent après 85, 15, 58, 29 et 25 tirages — le 1 sur 50 attendu. Mais les numéros de tick du
+serveur couraient plus vite que ses ticks : une montée du tick 420 au tick 489 (69) pour 58
+tirages. `TickClock::advance()` ajoutait au compteur tous les ticks dus, jusqu'à 10 après un tick
+de plus de 50 ms, alors que le corps de la boucle ne s'exécutait qu'une fois par passage (la seule
+boucle par tick était vide) : le temps du jeu sautait du retard de l'horloge murale. Les 90,5 ticks
+étaient donc des ticks de compteur, gonflés. Les deux calages, sur des versions d'avant la
+concurrence, avaient une cause de plus : le bloc des entités prenait le verrou des joueurs en
+`try_to_lock`, et sautait tous les mobs chaque fois que le fil réseau le tenait.
+
+C'est corrigé (commit « run catch-up ticks back to back, and count only the ticks that ran »),
+comme chez vanilla : les ticks dus s'exécutent l'un après l'autre, chacun complet, et le compteur
+que lit la logique ne compte que ceux qui ont tourné. La nouvelle mesure, en ticks exécutés, est
+au paragraphe suivant.
+
+**Remesuré en ticks exécutés**, après le correctif : trois exécutions de bout en bout complètes,
+**22 décisions** — 0, 8, 8, 13, 16, 20, 22, 26, 26, 31, 31, 34, 38, 46, 56, 59, 71, 72, 87, 87, 87
+et 107 ticks, moyenne 43,0, médiane 32,5 — et **aucun tick sans tirage** dans aucune montée. Les
+exécutions ne sont pas tout à fait indépendantes : notre serveur est déterministe, et le cheval de
+`--mobs` reçoit le même identifiant, donc la même graine, dans chaque monde neuf ; la première
+montée dure 87 ticks les trois fois, la deuxième 31 deux fois. Sans ces trois répétitions : **19
+décisions distinctes, moyenne 38,9, z = −0,97** contre les 50 d'un tirage de 1 sur 50 par tick.
+Les valeurs tirées sont uniformes exécution par exécution (χ² 47,3, 56,1 et 56,5 pour 49 degrés ;
+mises en commun, les répétitions font monter le χ² à 128,6 sans rien dire de la règle).
+**Vanilla, chronométré au tick près** (`measure_tame.py ride_timing` : le temps du jeu demandé au
+serveur dès que la sonde est en selle, puis dès la chute — là où `temper` lisait la copie de la
+sonde, envoyée une fois par seconde, et datait donc chaque bout d'une montée à 19 ticks près) :
+trente premières montées de chevaux neufs, **moyenne 72,0, médiane 39,5**, et une traîne — cinq
+montées de 197 à 294 ticks. Sans ces cinq, les vingt-cinq autres font **39,0** en moyenne, ce que
+font nos 19 montées distinctes (38,9). Mais ces trente montées ont lieu dans l'enclos de verre de
+l'ancienne campagne, dont le sol fait 3 × 3 : un cheval de 1,4 bloc de large y court à peine, et
+son emportement, tel qu'on le comprend, ne tire que pendant qu'il court vers un point — la traîne
+ressemble à cela. Nos montées ont lieu en terrain ouvert.
+
+**En terrain ouvert** (`ride_timing_open`, puis `ride_timing_open60` : sans l'enclos, les mêmes
+premières montées chronométrées au tick), **86 montées : moyenne 43,8, médiane 30,5**, la plus
+longue 198 ticks. La loi qui les ajuste le mieux est **un tirage sur 44 par tick**. **Un sur 50
+tient** (χ² 6,0 pour 7 degrés sur des classes de délai) ; **un sur 25 est rejeté** (χ² 61,1, et le
+rapport de vraisemblance donne 32,7 en faveur d'un sur 50). Les vingt-sept premières montées,
+seules, avaient donné 31,6 et fait douter de la constante : un tirage bas, que les soixante
+suivantes (49,4) ont corrigé. **Nos 19 montées distinctes (38,9) sont dans l'écart de vanilla** :
+`kTantrumOdds` reste à 50. Le seul défaut du cheval était l'horloge du serveur.
 
 ### 8.2 Le zoo du vrai serveur, relu par le nôtre
 
@@ -297,6 +339,24 @@ fermé. Deux faux départs de la mesure elle-même, corrigés et gardés dans l'
 place tuait tout le zoo avant de le lire, et sa première recherche par position ne trouvait que
 les mobs assis, les autres ayant marché (§ 9, `NoAI`).
 
+### 8.3 `NoAI`, mesuré sur le vrai serveur
+
+Le zoo relu a montré que notre serveur ne respecte pas `NoAI` (§ 9). Avant de le corriger, la
+règle est mesurée (`measure_tame.py noai`, trois vaches — pas des zombies : le banc de mesure est
+en paisible, où le vrai serveur supprime un mob hostile dès qu'il apparaît) :
+
+| cas | vu par `data get` |
+|---|---|
+| vache `NoAI` invoquée six blocs en l'air | reste à y = −54 pendant 85 ticks, `Motion` à **exactement 0** : aucune gravité, pas même dans la vitesse stockée |
+| vache `NoAI` avec `Motion:[0.5,0,0]` | ne bouge pas (x = 44,5 du début à la fin) ; `Motion` x = 0,49 puis 0,3619 quinze ticks plus tard, **0,49 × 0,98¹⁵** exactement |
+| vache sans `NoAI` | **aucune clé `NoAI`** dans ses données : vanilla ne l'écrit que vraie |
+
+C'est ce que `explosions.md` (§ 4) avait vu sur des zombies repoussés, et ce que la métrique
+`entity_gravity` de `PROGRESS.json` appelle « NoAI coupe la physique d'un Mob » : ni cerveau, ni
+déplacement, ni gravité — la vitesse est seulement multipliée par 0,98 à chaque tick. Ce qui,
+lui, continue : l'âge et la ponte (`elevage.md`), et le décompte de la colère d'un loup (§ 2 : 400,
+399, 398… sur un loup `NoAI`).
+
 ---
 
 ## 9. Ce qui n'est pas fait, ou pas mesuré
@@ -327,11 +387,15 @@ les mobs assis, les autres ayant marché (§ 9, `NoAI`).
   **la chèvre** ne charge pas et ne perd pas ses cornes ; **le renifleur** ne creuse pas.
   Tous vivent, se nourrissent, se reproduisent et gardent leur type ou leur drapeau à la sauvegarde.
 * **Le crachat du lama** (le projectile `llama_spit`) et les **caravanes** (la laisse) : non faits.
-* **`NoAI` n'est pas respecté par notre serveur**, pour aucun mob : le drapeau est relu et
-  réécrit tel quel, mais le cerveau tourne. Vu sur le zoo relu (§ 8.2) : pendant les 45 s où
-  `ov_dedicated` l'avait chargé, les mobs debout ont quitté leur place, et seuls le loup, le chat
-  et le perroquet assis y étaient encore. C'est un manque de tous les mobs, pas de
-  l'apprivoisement ; il n'est pas corrigé ici.
+* **`NoAI` était ignoré par notre serveur**, pour tous les mobs : le drapeau était relu et réécrit
+  tel quel, mais le cerveau tournait. Vu sur le zoo relu (§ 8.2) : pendant les 45 s où
+  `ov_dedicated` l'avait chargé, les mobs debout avaient quitté leur place, et seuls le loup, le
+  chat et le perroquet assis y étaient encore. **C'est corrigé**, d'après la mesure du § 8.3 : un
+  mob `NoAI` n'a plus ni cerveau ni physique (position figée, aucune gravité, vitesse × 0,98 par
+  tick), tandis que l'âge, l'amour, la ponte et la colère d'un loup continuent. La clé est lue
+  à `NoAI` et écrite seulement quand elle est vraie, comme vanilla. Tests :
+  `test_mob_logic.cpp` (`[noai]`) et `test_tame_server.cpp` (aller-retour par `entities/`, et
+  les quinze mobs du zoo vanilla relus `NoAI`).
 
 **Non mesuré, et appliqué d'après la documentation.**
 
@@ -347,10 +411,12 @@ les mobs assis, les autres ayant marché (§ 9, `NoAI`).
 
 **Mesuré, et pas tout à fait conforme.**
 
-* **Le délai de décision d'un cheval monté, sur notre serveur** : 90,5 ticks en moyenne sur 15
-  montées de bout en bout, contre 50 pour la même règle dans `test_tame.cpp` et 78 chez vanilla
-  (§ 5.3 et § 8.1) ; deux exécutions sur six calent au-delà de 279 et 506 ticks. Rider perdu, cerveau
-  affamé, but bloqué et décision perdue sont écartés par le journal ; la cause ne l'est pas. La
-  prochaine étape est de journaliser chaque tirage du but.
+* **Le délai de décision d'un cheval monté, sur notre serveur** : mesuré d'abord à 90,5 ticks sur
+  15 montées, avec deux exécutions sur six calées au-delà de 279 et 506 ticks. **Ce n'était pas le
+  cheval** : le journal de chaque tirage montre la règle juste, une fois par tick exécuté ; c'était
+  le compteur de ticks du serveur, qui sautait du retard de l'horloge murale pendant qu'un seul tick
+  était simulé, plus, avant la concurrence, un bloc des entités sauté quand le fil réseau tenait
+  le verrou des joueurs (§ 8.1). Corrigé dans la boucle du serveur ; la mesure refaite en ticks
+  exécutés est au § 8.1.
 * **La santé d'un cheval apparu** : 22,13 sur 480 animaux pour 22,5 attendus (z ≈ −2,3, § 5.1).
 * **La force d'un lama** : ajustée sur la mesure, pas lue dans une règle (§ 5.1).
