@@ -298,8 +298,11 @@ void put(nbt::Tag& compound, std::string name, nbt::Tag value) {
 
 RandomSpreadPlacement great_pyramid_placement() noexcept {
     RandomSpreadPlacement placement;
-    placement.spacing    = 48;
-    placement.separation = 24;
+    // 24 / 12, measured against 48 / 24 and 32 / 16 (grande-pyramide.md § 4):
+    // the smallest of the three, and still two starts are never closer than
+    // 13 chunks — wider than a pyramid with its causeway.
+    placement.spacing    = 24;
+    placement.separation = 12;
     placement.spread     = SpreadType::Linear;
     placement.salt       = 20260911;
     placement.frequency  = 1.0F;
@@ -385,6 +388,13 @@ PyramidDecision GreatPyramid::decide(i64 level_seed, i32 chunk_x, i32 chunk_z,
     if (!great_pyramid_placement().is_candidate_chunk(level_seed, chunk_x, chunk_z)) {
         return PyramidDecision::NotCandidate;
     }
+    return decide_site(level_seed, chunk_x, chunk_z, sampler, placer, out);
+}
+
+PyramidDecision GreatPyramid::decide_site(i64 level_seed, i32 chunk_x, i32 chunk_z,
+                                          const StructureWorldSampler* sampler,
+                                          const StructurePlacer*       placer,
+                                          GreatPyramidLayout*          out) const {
     if (sampler == nullptr) {
         return PyramidDecision::NoSampler;
     }
@@ -403,7 +413,9 @@ PyramidDecision GreatPyramid::decide(i64 level_seed, i32 chunk_x, i32 chunk_z,
             desert += sampler->biome_at(x0 + a * 25, centre, z0 + b * 25) == kDesert ? 1 : 0;
         }
     }
-    if (desert < 22) {
+    // "Mostly desert": 18 of 25. At 22 the gate refused more than half of the
+    // desert-centred sites of the measured square (grande-pyramide.md § 4).
+    if (desert < 18) {
         return PyramidDecision::NotDesert;
     }
 
@@ -429,6 +441,9 @@ PyramidDecision GreatPyramid::decide(i64 level_seed, i32 chunk_x, i32 chunk_z,
     }
     const auto [low, high] = std::minmax_element(samples.begin(), samples.end());
     if (*high - *low > kMaxSpread) {
+        if (out != nullptr) {
+            out->samples = samples;
+        }
         return PyramidDecision::TooSteep;
     }
     std::array<i32, 13> sorted = samples;

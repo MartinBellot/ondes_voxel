@@ -10,8 +10,8 @@
   ],
   "placement": {
     "type": "minecraft:random_spread",
-    "spacing": 48,
-    "separation": 24,
+    "spacing": 24,
+    "separation": 12,
     "spread_type": "minecraft:linear",
     "salt": 20260911
   },
@@ -20,8 +20,8 @@
     "base": 101,
     "layers": 51,
     "plinth": 105,
-    "desert_samples_required": "22 of 25",
-    "max_terrain_spread": 14
+    "desert_samples_required": "18 of 25",
+    "max_terrain_spread": 20
   },
   "exclusion": {
     "minecraft:villages": 10,

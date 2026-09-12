@@ -18,7 +18,7 @@ inline constexpr i32 kPlinthHalf  = 52;  // 105 x 105
 inline constexpr i32 kFeather     = 6;   // sand feathered this far past the plinth
 inline constexpr i32 kMaxCauseway = 14;
 inline constexpr i32 kFillDepth   = 48;  // the fill under the plinth stops here
-inline constexpr i32 kClearAbove  = 16;  // terrain above the plinth cleared up to this y
+inline constexpr i32 kClearAbove  = 24;  // terrain above the plinth cleared up to this y
 
 /// A canonical box, inclusive.
 struct CBox {

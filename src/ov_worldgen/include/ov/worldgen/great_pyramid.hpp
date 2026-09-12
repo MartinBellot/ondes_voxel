@@ -167,6 +167,14 @@ public:
                                          const StructurePlacer*       placer,
                                          GreatPyramidLayout*          out) const;
 
+    /// `decide` without the grid: would this chunk take a pyramid if the grid
+    /// picked it? For measuring other spacings. On `TooSteep`, `out->samples`
+    /// holds the terrain samples that refused it.
+    [[nodiscard]] PyramidDecision decide_site(i64 level_seed, i32 chunk_x, i32 chunk_z,
+                                              const StructureWorldSampler* sampler,
+                                              const StructurePlacer*       placer,
+                                              GreatPyramidLayout*          out) const;
+
     /// Write the part of the pyramid inside `clip` (a chunk column). Reads
     /// only inside `clip` too. Returns the blocks written.
     u64 place(StructureLevel& level, const GreatPyramidLayout& layout,
@@ -176,8 +184,12 @@ public:
     /// references, Children}`, one child per room.
     [[nodiscard]] static nbt::Tag start_to_nbt(const GreatPyramidLayout& layout);
 
-    /// The largest spread between terrain samples a site may have.
-    static constexpr i32 kMaxSpread = 14;
+    /// The largest spread between terrain samples a site may have. Measured,
+    /// not guessed: at 14 the gate refused 17 of the 25 desert sites of a
+    /// 3.7 M chunks² square, a third of them by one or two blocks
+    /// (docs/provenance/grande-pyramide.md § 4). The fill under the plinth and
+    /// the clearing above it take up to 24 blocks either way.
+    static constexpr i32 kMaxSpread = 20;
     /// How far, in chunks, a start's blocks reach from its start chunk.
     static constexpr i32 kReach = 5;
 

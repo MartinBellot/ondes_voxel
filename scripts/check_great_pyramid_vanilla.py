@@ -78,10 +78,15 @@ def blocks_of(root: dict) -> dict[int, list[str]]:
 
 
 def read(region_dir: Path) -> dict[tuple[int, int], dict]:
+    """Every chunk of a region directory, by its own absolute position.
+
+    `anvil_read.chunks` yields the slot inside the region (0..31), not the
+    chunk's position: keyed by that, the chunks of four regions collide.
+    """
     found = {}
     for path in sorted(region_dir.glob("r.*.mca")):
-        for cx, cz, root in chunks(str(path)):
-            found[(cx, cz)] = root
+        for _, _, root in chunks(str(path)):
+            found[(root["xPos"], root["zPos"])] = root
     return found
 
 
@@ -91,23 +96,35 @@ def main() -> int:
     parser.add_argument("--chunks", required=True, help="x0,z0,x1,z1 inclusive")
     parser.add_argument("--port", type=int, default=25618)
     parser.add_argument("--keep", action="store_true")
+    # Generation is CPU, the real server is java: run them in their own lanes.
+    #   ovlane.sh build python3 … --phase=export
+    #   ovlane.sh java  python3 … --phase=vanilla
+    parser.add_argument("--phase", choices=["all", "export", "vanilla"], default="all")
     args = parser.parse_args()
     x0, z0, x1, z1 = (int(v) for v in args.chunks.split(","))
 
-    shutil.rmtree(RUN, ignore_errors=True)
     region = RUN / "world" / "region"
-    region.mkdir(parents=True)
     report: dict = {"seed": args.seed, "chunks": [x0, z0, x1, z1]}
 
     # 1. Ours.
-    env = dict(os.environ)
-    env.pop("OV_ORIGINAL_STRUCTURES", None)  # the switch stays on: this is the product
-    started = time.monotonic()
-    subprocess.run([str(GENDET), f"--seed={args.seed}", f"--export={region}",
-                    f"--chunks={x0},{z0},{x1},{z1}"], cwd=ROOT, env=env, check=True,
-                   stdout=open(RUN / "gendet.log", "w"), stderr=subprocess.STDOUT)
-    report["export_seconds"] = round(time.monotonic() - started, 1)
-    ours = read(region)
+    if args.phase in ("all", "export"):
+        shutil.rmtree(RUN, ignore_errors=True)
+        region.mkdir(parents=True)
+        env = dict(os.environ)
+        env.pop("OV_ORIGINAL_STRUCTURES", None)  # the switch stays on: this is the product
+        started = time.monotonic()
+        subprocess.run([str(GENDET), f"--seed={args.seed}", f"--export={region}",
+                        f"--chunks={x0},{z0},{x1},{z1}"], cwd=ROOT, env=env, check=True,
+                       stdout=open(RUN / "gendet.log", "w"), stderr=subprocess.STDOUT)
+        (RUN / "export_seconds").write_text(str(round(time.monotonic() - started, 1)))
+        shutil.copytree(region, RUN / "exported-region")
+        if args.phase == "export":
+            print(f"exported {len(read(region))} chunks to {region}")
+            return 0
+    if not (RUN / "exported-region").is_dir():
+        raise SystemExit("run --phase=export first")
+    report["export_seconds"] = float((RUN / "export_seconds").read_text())
+    ours = read(RUN / "exported-region")
     report["exported"] = len(ours)
     ours_blocks = {key: blocks_of(root) for key, root in ours.items()}
     starts = [key for key, root in ours.items()

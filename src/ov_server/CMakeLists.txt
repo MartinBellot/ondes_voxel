@@ -149,6 +149,7 @@ ov_add_test(test_ov_server
         tests/test_fluid_wakeups.cpp  # ── worldgen-3 ──
         tests/test_furnace_entity.cpp  # ── workstations ──
         tests/test_great_pyramid_traps.cpp  # ── great pyramid ──
+        tests/test_great_pyramid_world.cpp  # ── great pyramid ── [.slow]: run by name
     DEPS ov_server
     LABELS unit
 )

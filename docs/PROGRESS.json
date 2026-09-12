@@ -68,8 +68,8 @@
     "M6": {
       "name": "Contenu complet",
       "status": "in_progress",
-      "done": 18,
-      "total": 80,
+      "done": 19,
+      "total": 81,
       "exit_criterion": "Une batterie world_test par sous-système ; parité statistique worldgen sur 1000 seeds ; matrice protocole à 100 %.",
       "blocked": [],
       "notes": "Vague d'agents parallèles du 2026-09-09 : carvers, règles de surface, départage des biomes (100,000 %), ordre des étages, fluides, redstone, survie, et le cadre des features. Le blocage unique de l'étage des features est la formule d'ensemencement de la décoration : tout le reste est mesuré et en place, et l'étage est exposé sans être câblé plutôt qu'allumé faux."
@@ -93,6 +93,7 @@
     "worker_threads": 4,
     "clean_build_seconds": 6.5,
     "incremental_rebuild_seconds": 5.33,
+    "great_pyramid": "structure originale ondes_voxel:great_pyramid (pas du contenu Minecraft) : grille 24/12, 14 posées sur 6 400 candidats d'un carré de 3,7 M chunks² (1,3 pour 10 000 chunks² de désert), 27 à moins de 94 chunks de l'origine sur 300 graines ; graine 138 = pyramide à 120 blocs du spawn ; 3 ordres de chunks identiques ; pièges déclenchés par notre redstone",
     "nbt_roundtrip": "2900/2900 chunks, 795277 tags, octet-identiques (monde réel)",
     "zip_extraction": "20953/20953 entrées du jar client 1.20.1, 41 Mo",
     "assets_imported": "8671 fichiers (3398 Faithful 32x, 5131 jar client, 142 langues)",
