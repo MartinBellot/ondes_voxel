@@ -121,7 +121,53 @@ cités antiques échouent ; avec, 6/6.
 
 ## 3. Résultats
 
-*(complété par `ov_jigsawparity`, § 7)*
+`tools/ov_jigsawparity`, pièces tirées de la graine et de **notre** bruit, contre les départs
+stockés. « Identiques » : toutes les pièces égales (élément, position, rotation, boîte, décalage,
+jonctions) ; « NBT » : la liste `Children` que notre serveur écrirait, égale tag pour tag, types
+compris ; « placés » : notre placeur démarre bien cette structure dans ce chunk (ancre jigsaw).
+
+| monde | départs | identiques | NBT | placés | pièces |
+|---|---:|---:|---:|---:|---:|
+| `reference-nether-987654321` (bastions) | 9 | **9** | **9** | 9 | **985 / 985** |
+| — témoin graine + 1 | 9 | 0 | 0 | — | 0 / 985 |
+| `reference-1234567890` | 18 | **18** | **18** | 18 | **1 427 / 1 427** |
+| `reference-987654321` | 2 | **2** | **2** | 2 | **72 / 72** |
+| `struct-locate-1234567890` | 4 | 2 | 2 | 4 | voir § 4 |
+
+Détail de `reference-1234567890` : cités antiques 5/5 (438 pièces), avant-postes 3/3, ruines de
+sentier 2/2, villages du désert 2/2 (270 pièces), villages des plaines 6/6 (647 pièces).
+
+### 3.1 La hauteur des joints : `WORLD_SURFACE_WG` passe par l'aquifère
+
+Les pièces `terrain_matching` et le départ projeté lisent `WORLD_SURFACE_WG` sur le bruit. La
+première version reprenait la règle de l'échantillonneur du placement (`structures.md` § 5) :
+« premier bloc solide, ou la mer globale sous le niveau de la mer ». Mesuré, dans un seul binaire
+(`--aquifer-surface`) :
+
+| règle | `reference-1234567890` | village de taïga (1895, −1859) |
+|---|---:|---:|
+| mer globale sous y = 63 | 16/18 | 0/1 — départ à y 62 contre 57 |
+| **ce que l'aquifère pose** (air, eau, lave, solide) | **18/18** | **1/1** |
+
+Le village de taïga est dans une poche **sèche sous le niveau de la mer** : le jeu y trouve la
+surface à 58, la règle globale la noyait jusqu'à 63. Même chose, d'un bloc, pour une jonction du
+village de (3006, 10). La hauteur de colonne du jeu est donc celle des blocs que l'étage de bruit
+écrirait, aquifère compris.
+
+## 4. Les deux départs de `/locate` : sans « expansion hack »
+
+Les deux désaccords de `struct-locate-1234567890` — le village des plaines de (18, 124) et
+l'avant-poste de (−84, 105) — ont un point commun que le journal du serveur de ce monde révèle :
+ce sont **exactement les deux départs jigsaw à expansion qu'un `/locate` a fait générer** dans la
+première session (`The nearest minecraft:village_plains is at [288, ~, 1984]`,
+`... pillager_outpost is at [-1344, ~, 1680]`). Aucune de leurs pièces n'a de boîte agrandie
+(0 sur 108 et 0 sur 17), alors que chaque autre départ en porte (17 à 40 par village, 3 par
+avant-poste), exactement là où nous les mettons. Avec l'expansion coupée
+(`OV_JIGSAW_EXPANSION_HACK=0`, instrument de mesure), l'avant-poste redevient identique (17/17) et
+le village de savane du même monde, généré normalement, casse.
+
+Retenu : l'expansion telle qu'une génération ordinaire la fait. Le chemin `/locate` n'est pas
+modélisé ; il est nommé ici, avec le seul fait mesuré qui le distingue.
 
 ## 7. Rejouer
 
