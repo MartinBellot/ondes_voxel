@@ -24,6 +24,9 @@ ClaimedFeature parse_overworld_feature(std::string_view kind, Json config,
     if (auto claimed = parse_terrain_feature(kind, config, blocks, tags)) {
         return claimed;
     }
+    if (auto claimed = parse_fossil_feature(kind, config, blocks, tags, resolve)) {  // worldgen-3
+        return claimed;
+    }
     return std::nullopt;
 }
 

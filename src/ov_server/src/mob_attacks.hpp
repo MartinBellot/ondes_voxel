@@ -43,6 +43,10 @@ struct MobAttackHost {
     std::function<void(i32 player, Vec3d attacker_feet)> knock_player;
     /// Give a player an effect (a husk's Hunger, a cave spider's Poison).
     std::function<void(i32 player, const gameplay::EffectInstance& effect)> give_effect;
+    /// ── mobs-4 ── The attacker's `attack_damage` after its own effects —
+    /// Strength adds, Weakness takes away (effects.hpp's modifiers). Nullopt,
+    /// or no hook: the attribute's base, as before.
+    std::function<std::optional<f64>(i32 attacker)> attack_damage;
 };
 
 /// A mob one of this tick's swings killed. The body is already marked removed

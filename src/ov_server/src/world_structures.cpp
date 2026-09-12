@@ -131,6 +131,8 @@ std::unique_ptr<WorldStructures> WorldStructures::load(const std::filesystem::pa
         return nullptr;
     }
     impl->builder.emplace(std::move(*builder));
+    // ── jigsaw ── the biome of a jigsaw start is read where its piece lands
+    impl->placer->set_jigsaw(impl->builder->jigsaw());
     return std::unique_ptr<WorldStructures>(new WorldStructures(std::move(impl)));
 }
 

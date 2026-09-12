@@ -93,8 +93,12 @@ public:
     ///
     /// Safe to call from any thread as long as no two threads share a
     /// `stack_index`. Nothing in the returned chunks is aliased.
+    ///
+    /// ── worldgen-3 ── `fluid_wakeups`, when given, receives the fluids the
+    /// aquifer marked in the square's chunks, in world positions.
     void generate_square(usize stack_index, i32 origin_x, i32 origin_z, i32 side,
-                         std::vector<std::pair<ChunkPos, world::Chunk>>& out);
+                         std::vector<std::pair<ChunkPos, world::Chunk>>& out,
+                         std::vector<BlockPos>* fluid_wakeups = nullptr);
 
     /// Rewrite a chunk's biome cells from block-registry indices into the ids
     /// the chunk packet carries. Already done by `generate` and

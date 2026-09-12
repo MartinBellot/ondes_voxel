@@ -120,7 +120,11 @@ struct Options {
 [[nodiscard]] bool in_scope(std::string_view name) {
     return name == "minecraft:igloo" || name.starts_with("minecraft:shipwreck") ||
            name.starts_with("minecraft:ocean_ruin") ||
-           name.starts_with("minecraft:ruined_portal") || name == "minecraft:buried_treasure";
+           name.starts_with("minecraft:ruined_portal") || name == "minecraft:buried_treasure" ||
+           // ── jigsaw ──
+           name.starts_with("minecraft:village_") || name == "minecraft:pillager_outpost" ||
+           name == "minecraft:bastion_remnant" || name == "minecraft:ancient_city" ||
+           name == "minecraft:trail_ruins";
 }
 
 [[nodiscard]] std::string label(const registry::BlockRegistry& blocks,

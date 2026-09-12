@@ -3,6 +3,7 @@
 #include "ov/base/log.hpp"
 #include "ov/math/block_pos.hpp"
 #include "ov/math/random.hpp"
+#include "ov/worldgen/jigsaw.hpp"  // ── jigsaw ──
 
 #include <simdjson.h>
 
@@ -72,6 +73,8 @@ std::string_view to_string(PlacementDecision decision) noexcept {
             return "unsupported";
         case PlacementDecision::OtherDimension:
             return "other-dimension";
+        case PlacementDecision::StartRefused:  // ── jigsaw ──
+            return "start-refused";
     }
     return "?";
 }
@@ -240,7 +243,14 @@ struct StructurePlacer::Impl {
     /// Set names the dimension cannot produce. Empty means no restriction was
     /// asked for, which is not the same as "every set is impossible".
     std::set<std::string> foreign;
+    /// ── jigsaw ── Where the jigsaw structures' start pieces land.
+    const JigsawLibrary* jigsaw{nullptr};
 };
+
+// ── jigsaw ──
+void StructurePlacer::set_jigsaw(const JigsawLibrary* library) noexcept {
+    impl_->jigsaw = library;
+}
 
 namespace {
 
@@ -576,6 +586,35 @@ StructurePlacementResult StructurePlacer::decide_set(const StructureSet& set, i6
         if (sampler == nullptr) {
             result.decision = PlacementDecision::BiomeUnknown;
             return result;
+        }
+
+        // ── jigsaw ── A jigsaw structure reads its biome where its start piece
+        // lands: the middle of the piece's box, at the projected height — and
+        // a start pool that draws nothing starts nothing, which the set treats
+        // as it treats a wrong biome (docs/provenance/jigsaw.md).
+        if (definition->kind == StructureKind::Jigsaw && impl_->jigsaw != nullptr) {
+            const JigsawConfig* config = impl_->jigsaw->config(definition->name);
+            const auto point = config != nullptr ? impl_->jigsaw->start_point(
+                                                       *config, level_seed, chunk_x, chunk_z, sampler)
+                                                 : std::nullopt;
+            if (point) {
+                result.anchor_y = point->anchor.y;
+                result.biome    = sampler->biome_at(point->anchor.x, point->anchor.y, point->anchor.z);
+                if (result.biome.empty()) {
+                    result.decision = PlacementDecision::BiomeUnknown;
+                    return result;
+                }
+                if (biome_allowed(impl_->tags, definition->biomes, result.biome)) {
+                    result.decision = PlacementDecision::PlacedByPlacement;
+                    return result;
+                }
+                last = PlacementDecision::BiomeRejected;
+            } else {
+                last = PlacementDecision::StartRefused;
+            }
+            total -= entry->weight;
+            remaining.erase(remaining.begin() + static_cast<std::ptrdiff_t>(index));
+            continue;
         }
 
         // The column the biome is read from: the chunk's middle for the

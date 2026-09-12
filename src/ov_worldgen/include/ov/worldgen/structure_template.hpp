@@ -238,6 +238,10 @@ struct ProcessorContext {
     BlockPos                       pivot;
     Rotation                       rotation{Rotation::None};
     Mirror                         mirror{Mirror::None};
+    /// ── worldgen-3 ── The placement's own random, when the caller gave one
+    /// (`StructurePlaceSettings.setRandom`): `block_rot` then draws from it, in
+    /// block order, instead of from the block's position. The fossils do this.
+    FeatureRandom* shared_random{nullptr};
 };
 
 /// A `structure_processor`. Returns nothing to drop the block.
@@ -306,6 +310,9 @@ struct PlaceSettings {
     /// that is what moves the loot seed of the data-marker chests placed after.
     /// Null draws nothing.
     FeatureRandom* random{nullptr};
+    /// ── worldgen-3 ── See `ProcessorContext::shared_random`. Null keeps the
+    /// position-seeded draws every structure piece uses.
+    FeatureRandom* processor_random{nullptr};
 };
 
 /// A structure block in DATA mode, left for the piece to interpret — the

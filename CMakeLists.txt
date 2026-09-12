@@ -152,6 +152,7 @@ add_subdirectory(tools/ov_netherparity)
 add_subdirectory(tools/ov_endparity)  # ── end ──
 add_subdirectory(tools/ov_structparity)
 add_subdirectory(tools/ov_structblocks)  # ── structures-gabarits ──
+add_subdirectory(tools/ov_jigsawparity)  # ── jigsaw ──
 add_subdirectory(tools/ov_pyramid)  # ── great pyramid ──
 add_subdirectory(tools/ov_caveedge)
 add_subdirectory(tools/ov_lab)
