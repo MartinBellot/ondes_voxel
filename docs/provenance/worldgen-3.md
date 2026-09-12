@@ -72,9 +72,28 @@ place. Le témoin décalé ne tombe sur aucun pilier : l'échantillon ne compte 
 (trois chunks d'océan gelé), trop peu pour qu'un décalage retombe dans une zone de piliers ; il est
 donné tel quel et il ne prouve rien de plus que « le motif n'est pas partout ».
 
-Reste un excès : 1 986 cellules de glace chez nous que le jeu n'a pas. Le diagnostic (au-dessus
-ou au-dessous de la mer, sommet ou fond de colonne décalé) est ajouté au harnais et sa mesure est
-en cours ; tant qu'il ne l'est pas, cet excès n'est **pas** expliqué.
+Reste un excès : 1 986 cellules de glace chez nous que le jeu n'a pas. Le diagnostic ajouté au
+harnais le localise : 934 au-dessus de la mer, 1 016 au-dessous, et surtout **54 colonnes où nous
+seuls gelons** — là où les deux côtés ont de la glace, notre sommet est celui du jeu dans 182
+colonnes sur 190. Le zoom des biomes (§ 1.1) n'en retire que trois (54 → 51) : ce n'est donc
+**pas** un effet de bord de biome, et l'excès reste **non expliqué**.
+
+### 1.1 Les règles de surface à travers le zoom
+
+Le contexte des règles de surface lit lui aussi son biome à travers `BiomeManager` dans le jeu.
+`ZoomedQueries` le fait maintenant pour les règles et pour les deux passes ; une cellule d'un
+voisin, que le zoom atteint au bord du chunk, est répondue par la source de biomes (exacte à la
+cellule près) — dans le générateur comme dans `ov_surfparity`. `OV_BIOME_ZOOM=0` pour l'avant,
+même binaire, 250 chunks :
+
+| | blocs | colonnes entières | erreurs au bord d'une cellule de biome |
+|---|---:|---:|---:|
+| sans zoom | 429 999 / 439 111 (97,925 %) | 58 489 / 64 000 (91,389 %) | 2 224 |
+| **avec zoom** | **431 596 / 439 241 (98,259 %)** | **59 052 / 64 000 (92,269 %)** | **1 015** |
+
+Le passage sans zoom reproduit au bloc près la mesure d'avant ce changement. Les erreurs au
+bord d'une cellule de biome — 22,9 % du reste dans `surface-rules.md` § 5 — sont plus que
+divisées par deux.
 
 ## 2. Les features construites
 
@@ -233,6 +252,174 @@ sont donc justes à la précision près des chevauchements entre chunks voisins.
 d'avant mesuraient le **récif** : des dizaines de coraux par chunk qui se recouvrent, dont
 l'ordre de pose entre chunks voisins décide lequel tient. Ce n'est pas corrigé ici, et ce n'est
 plus attribué aux formes.
+
+### 2.7 La veine de sculk : mesurée, puis refusée
+
+La veine est une `multiface_growth` dont l'étalement suit la règle de la veine (jamais contre du
+sculk, un catalyseur ou un piston en mouvement ; jamais autour d'un coin qu'une face pleine
+ferme ; jamais dans la lave, l'eau qui coule ou le feu ; tout `#replaceable` en plus de l'air,
+des veines et des sources d'eau). Monde sonde `probe-vein` (graine 1234, la placed de vanilla à
+l'étape 7), 200 chunks :
+
+| | la bonne graine | témoin décalé |
+|---|---:|---:|
+| veines du jeu / les nôtres | 977 / **2 241** | 977 / 2 282 |
+| veines en commun | 340 (34,8 % des siennes) | 28 |
+| chunks identiques | 26 / 151 | 0 / 166 |
+
+Le motif est pour une part le bon (340 contre 28), mais nous posons **2,3 fois** trop de veines.
+Ce n'est pas une approximation acceptable : la feature est **refusée** comme avant, avec ces
+chiffres dans son message, et la règle d'étalement reste dans `lush_feature.cpp` comme point de
+départ. Pistes non vérifiées : la condition de pose d'origine, `canBeReplaced` de la veine
+elle-même, et le marquage `PostProcessing` que le jeu fait à chaque pose.
+
+### 2.8 Icebergs et glace bleue sur le vrai océan
+
+Le monde sonde refait avec le script corrigé (la zone océanique de la référence, x −105 120,
+z 6 960), les trois features ensemble — c'est la seule mesure qui compte, la glace bleue et
+les icebergs bleus se posant dans et contre les autres :
+
+| | la bonne graine | témoin décalé |
+|---|---:|---:|
+| blocs changés par le jeu / par nous | 78 481 / 77 918 | 78 481 / 76 368 |
+| **même bloc** | **75 206 (95,827 %)** | 2 630 (3,351 %) |
+| chunks identiques | 86 / 155 | 0 / 189 |
+
+(Un passage avec `iceberg_packed` seul contre ce monde à trois features donnait 56,8 % : la glace
+compactée y était à 97,0 %, et les 29 970 blocs de glace bleue non rejoués comptaient contre
+nous. Le protocole, pas l'iceberg.)
+
+### 2.9 Dripstone et cerisier : où ils en sont
+
+Mesurés, **pas** corrigés ici (graine 1234, étape 9, 200 chunks chacun, chaque placed de vanilla
+seule dans son monde) :
+
+| feature | même bloc | témoin décalé | chunks identiques |
+|---|---:|---:|---:|
+| `large_dripstone` | **86,0 %** (15 208 / 17 675) | 16,0 % | 41 / 75 |
+| `dripstone_cluster` | 59,8 % (39 780 / 66 494) | 21,0 % | 39 / 144 |
+| `pointed_dripstone` | 20,2 % (3 173 / 15 718) | 6,4 % | 5 / 172 |
+
+Le grand spéléothème est presque juste ; l'amas l'est à moitié ; la pointe isolée est loin, et
+c'est elle qui compte le plus de blocs dans le monde (13 890 dans le recensement). C'est la
+prochaine cible.
+
+Cerisier (`probe-cherry`, 300 chunks, 208 arbres de notre chunk central) : troncs au bon endroit
+**200 / 208 (96,2 %)**, bois 51 403 / 55 512 (**92,6 %**), témoin décalé 11,9 % ; **aucun arbre
+entier identique** — ce sont les feuilles et les branches. `ROADMAP` disait « cerisier 0 % » : ce
+chiffre ne décrivait plus le code.
+
+### 2.10 La couche gelée : les chiffres et ses témoins
+
+`ov_features --freeze`, 260 chunks de `run/reference-1234567890` (le harnais corrigé : `snowy`
+compté sous une couche de neige seulement) :
+
+| | glace | neige en couche | `snowy` |
+|---|---:|---:|---:|
+| jeu / nous / les deux | 1 394 / 1 393 / 1 393 | 2 455 / 2 472 / 2 386 | 1 168 / 1 120 / 1 103 |
+| **rappel / précision** | **99,93 % / 100 %** | **97,19 % / 96,52 %** | 94,44 % / 98,48 % |
+| témoin climat plat (`OV_CLIMATE_FLAT=1`) | 99,93 % / **86,15 %** | 97,19 % / 95,67 % | inchangé |
+| témoin sans zoom (`OV_BIOME_ZOOM=0`) | **98,49 % / 97,58 %** | 97,19 % / 96,44 % | inchangé |
+
+Les deux témoins font ce qu'on attend d'eux : sans les plaques gelées, 224 glaces de trop sur
+l'océan gelé ; sans le zoom, la glace se trompe de biome au bord des cellules. L'océan gelé
+(42/42 couches de neige) et la rivière gelée (5/5) sont exacts ; le reste de la neige
+(68 manquées, 85 de trop) est dans la taïga enneigée, sous et sur les arbres, et n'est pas
+attribué.
+
+### 2.11 Déterminisme
+
+`ov_gendet --side=1 --workers=4` : **1 572 864 cellules de blocs et 24 576 de biomes comparées,
+0 écart** — le monde parallèle est le monde série, fossiles, icebergs et couche gelée compris.
+
+### 2.12 L'End : le zoom referme le chorus et la passerelle en trop
+
+`end.md` laissait le chorus à 92 % et une passerelle de retour de trop, avec pour hypothèse
+l'ordre de décoration des chunks. La croissance du chorus a été relue pas à pas contre la règle
+documentée (`generatePlant`, `growTreeRecursive` : tronc, branches à moins de 8 de l'origine,
+fleur d'âge 5) : elle est juste. Les deux placed features en cause, `chorus_plant` et
+`end_gateway_return`, se terminent par le filtre `biome` — `end_highlands` seul les liste — et le
+biome de l'End change **par chunk** : là où le jeu lit le biome à travers le zoom, une position
+proche du bord d'un chunk lit parfois le voisin.
+
+`ov_endparity --full=120 --interesting`, même binaire, `OV_BIOME_ZOOM=0` pour l'avant :
+
+| | `chorus_plant` | `chorus_flower` | blocs des chunks finis | passerelle en trop |
+|---|---:|---:|---:|---|
+| sans zoom | 4 388 / 4 650 (94,37 %) | 540 / 571 (94,57 %) | 99,9909 % | une, en (−1918, 64, 1824) |
+| **avec zoom** | **4 612 / 4 650 (99,18 %)** | **565 / 571 (98,95 %)** | **99,9986 %** | **aucune** |
+
+(Les 92 % d'`end.md` et les 94,37 % ici diffèrent parce que le monde de référence de l'End a été
+régénéré — même graine, même serveur ; la mesure « sans zoom » est celle qui compte, faite sur le
+même monde et le même binaire.) Restent 38 + 56 blocs de chorus au bord des chunks, que l'ordre
+de décoration peut encore expliquer, et les 50 blocs de chorus des chunks encore non finis du
+jeu (étage d'avant les features), qui sont hors de la comparaison.
+
+### 2.13 L'ordre d'un `HashSet` Java, cases arborescentes comprises
+
+Les arbres (décorateurs, feuillage) et les patchs de végétation des grottes luxuriantes
+parcourent un `java.util.HashSet<BlockPos>` et tirent une fois par élément : l'ordre
+d'itération fait partie de la graine (`java_hash_order`). Le modèle ne faisait pas les **cases
+arborescentes** de `HashMap`, et le disait au journal — au niveau ERROR, depuis chaque worker de
+génération, des centaines de fois par minute. Premier correctif, livré seul : un compteur
+partagé, dit en WARN une fois par minute au plus avec le total.
+
+Second correctif, la parité. Ce que la documentation de `HashMap` fixe, et qui est maintenant
+modélisé (`JavaHashSet`, `tree_feature.cpp`) :
+
+* une case en liste que l'insertion porte à **neuf** entrées (huit déjà là) devient un arbre —
+  ou, tant que la table a moins de 64 cases, la table double à la place. L'ancien modèle
+  doublait **une entrée trop tôt** (à huit) : une seconde divergence, corrigée du même coup ;
+* l'arbre est un rouge-noir construit dans l'ordre de la liste, rangé par le hachage (comparé
+  comme l'`int` signé de Java) ; sa **racine passe en tête** de la liste de la case ;
+* une insertion dans une case arborescente place le nouveau nœud **juste après son parent**
+  dans la liste, rééquilibre, et remet la racine en tête ;
+* au doublement, une case arborescente se coupe en ses moitiés basse et haute dans l'ordre de la
+  liste : une moitié de six entrées ou moins redevient une liste, une moitié qui a tout gardé
+  garde son arbre, sinon chaque moitié est replantée.
+
+Deux positions de **même hachage complet** seraient départagées par l'`identityHashCode` de la
+JVM, que rien hors d'elle ne peut connaître ; parmi les quelques centaines de positions d'un
+arbre, cela n'arrive pas (le hachage de `BlockPos` est injectif sur de si petites étendues).
+
+Le test `a HashSet bin of nine in a table of 64 iterates as Java's treeified bin` fixe un cas
+calculé **à la main** depuis ces règles, pas depuis le code : trente positions dans les cases
+1 à 30 font monter la table à 64, neuf de hachages 0, 64 … 512 tombent dans la case 0 et la
+neuvième la change en arbre ; neuf clés croissantes font de la quatrième la racine, d'où
+l'ordre 192, 0, 64, 128, 256, … 512 puis le reste. Vert. `OV_HASHMAP=legacy` rend l'ancien
+modèle, depuis le même binaire, pour la mesure.
+
+**Mesure, premier échantillon** — `ov_features --trees`, 300 chunks de
+`run/reference-1234567890` (forêts de bouleaux et de chênes, jungle), même binaire :
+
+| | troncs au bon endroit | formes identiques (sur un tronc du jeu) | blocs de bois et de feuilles |
+|---|---:|---:|---:|
+| ancien modèle (`OV_HASHMAP=legacy`) | 239 (44,26 %) | 112 (46,86 %) | 15 851 (44,86 %) |
+| modèle arborescent | 239 (44,26 %) | 112 (46,86 %) | 15 851 (44,86 %) |
+| témoin, mauvaise graine | 16 (2,96 %) | 0 | 5 359 (15,17 %) |
+
+**Identiques** : cet échantillon ne remplit jamais une case de neuf dans une table de 64 — il
+ne dit donc rien du correctif, dans un sens ni dans l'autre. D'où un compteur de cases
+arborescentes (`java_hash_treeified_bins`, imprimé par le rapport des arbres), et la même mesure
+sur le monde hors échantillon 987654321, qui a la forêt noire et la vieille taïga d'épicéas, les
+grands arbres.
+
+**Mesure, monde hors échantillon** — 300 chunks de `run/reference-987654321`, même binaire :
+
+| | cases arborescentes | troncs au bon endroit | formes identiques (sur un tronc du jeu) | blocs |
+|---|---:|---:|---:|---:|
+| ancien modèle | 0 | 537 (35,42 %) | 113 (37,17 %) | 33 335 (42,75 %) |
+| modèle arborescent | **54** | 537 (35,42 %) | 113 (37,17 %) | 33 335 (42,75 %) |
+
+Ce monde **exerce** le correctif — 54 cases deviennent des arbres — et la parité des arbres est
+**identique au bloc près**, ligne par ligne (forêt noire 10/109, vieille taïga 14/58, bouleaux
+71/93 des deux côtés). Ce que cela dit : les ensembles qui atteignent neuf entrées dans une case
+ne sont pas ceux dont l'ordre tire. En 1.20.1 le chêne noir n'a pas de décorateur qui parcoure
+ses feuilles, et le décorateur de podzol de l'épicéa géant parcourt de petits ensembles. Le
+correctif n'apporte donc **aucun gain mesurable** aux arbres — il ne coûte rien non plus, et le
+journal n'est plus inondé. Le seul autre appelant, les patchs de végétation des grottes
+luxuriantes (des ensembles de sol jusqu'à ~225 positions), est l'endroit où l'ordre arborescent
+peut encore compter ; il n'est **pas** mesuré ici.
 
 ## 3. Les fluides à réveiller
 

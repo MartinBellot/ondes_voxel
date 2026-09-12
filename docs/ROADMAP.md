@@ -552,6 +552,15 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       blocs individuels 64,92 % → **97,67 %** ; plancher de bedrock **320000/320000**.
       Restent les icebergs des océans gelés et les piliers des badlands érodées,
       qui sont des passes séparées et non des règles)*
+      *(**2026-09-12 — worldgen-3** : les deux passes écrites. Icebergs des océans
+      gelés : **2 347 / 2 347** cellules de glace du jeu reproduites au bloc près
+      (0 passe coupée), avec 1 986 de trop concentrées sur 54 colonnes où seul
+      notre biome dit « océan gelé » ; `frozen_ocean` 65 → 92,2 % une fois la glace
+      retirée du terrain comparé. Piliers des badlands érodées : pas d'oracle —
+      48 colonnes dans la référence, notre bruit n'y lève aucun pilier. Règles
+      de surface à travers le zoom flou des biomes : blocs 97,93 → **98,26 %**,
+      colonnes 91,39 → 92,27 %, erreurs au bord d'une cellule de biome 2 224 →
+      1 015 (même binaire). Voir `docs/provenance/worldgen-3.md` §§ 1, 1.1)*
 - [x] Carvers : grottes et ravins
       *(**masques bit-exacts : 1200/1200 chunks, 1 615 858 cellules**, aucune
       chez nous seule, aucune chez le jeu seul. L'oracle est un chunk que le
@@ -582,6 +591,13 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       qui n'en ont pas, et vidait la mer de lave du Nether : lave retrouvée
       25,2 → **99,99 %**, Nether 98,12 → **99,65 %** sur 200 chunks `carvers`,
       `docs/provenance/nether.md` § 1.6)*
+      *(**2026-09-12 — worldgen-3** : les fluides à réveiller sont **livrés** — le
+      pipeline les rend avec le chunk, le thread de tick réveille chacun à la
+      publication comme le ferait un voisin : une cascade générée **coule**
+      (test de bout en bout sur terrain généré, témoin non réveillé immobile).
+      Un délai de fluide plus tard que le jeu, qui les fait couler à la
+      promotion ; le chemin synchrone de secours n'en réveille pas.
+      `docs/provenance/worldgen-3.md` § 3)*
 - [x] Minerais par couche, distributions triangulaires
       *(**99,509 % des positions au bloc près** en rejouant sur le terrain du
       jeu, et **82,406 % sur notre propre terrain généré de bout en bout** —
@@ -625,6 +641,19 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       troncs au bon endroit 67 → 164 sur 364. Restent coraux (37–53 %),
       dripstone (59 %), cerisier, et `monster_room`, fossiles, icebergs, sculk.
       Voir `docs/provenance/features.md`)*
+      *(**2026-09-12 — worldgen-3** : **183/194** configurées, 213 placed. Contre
+      des sondes du vrai serveur, témoins décalés entre parenthèses : icebergs et
+      glace bleue sur l'océan **95,8 %** (3,4 %), fossiles tirés des gabarits du
+      jar **99,93 %** des blocs (1,1 %), couche gelée glace **99,93 % / 100 %**
+      et neige 97,2 % sur la référence (sans les plaques gelées la précision de
+      la glace tombe à 86 %), coraux mesurés seuls **97,97 %** (3,9 %) — les
+      37–53 % d'avant mesuraient le récif, pas les formes. Zoom flou des biomes
+      (SHA-256) dans le filtre `biome`. Mesurés sans correction : grand
+      spéléothème 86 %, amas 60 %, pointe isolée **20 %**, cerisier troncs
+      96,2 % et bois 92,6 %. Veine de sculk écrite, mesurée (2,3 fois trop de
+      veines) et **refusée** ; `sculk_patch`, `monster_room` restent.
+      Déterminisme parallèle/série : 0 écart sur 1 572 864 cellules.
+      Voir `docs/provenance/worldgen-3.md`)*
 - [~] **Placement** des structures : les 19 `structure_set`, grille, spreads,
       réducteurs, tirage pondéré, tags de biome, filtre de dimension
       *(**rappel 36/36, 5/5 et 17/17** sur trois mondes de référence, et zéro
@@ -718,6 +747,11 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       portail de l'End ouvert au 12ᵉ œil, arrivée (100,5 ; 49 ; 0,5) mesurée.
       Restent le chorus à 92 % et une passerelle en trop, et la sortie par le
       portail non mesurée. Voir `docs/provenance/end.md`)*
+      *(**2026-09-12 — worldgen-3** : c'était le zoom flou des biomes — le filtre
+      `biome` des deux placed features lit un chunk voisin au bord. Même binaire :
+      chorus 94,37 → **99,18 %**, fleurs 94,57 → **98,95 %**, blocs des chunks
+      finis 99,9909 → **99,9986 %**, et la **passerelle en trop disparaît**.
+      Voir `docs/provenance/worldgen-3.md` § 2.12)*
 
 ### Entités et IA
 - [x] Physique d'entité : gravité, traînée, collision par la boîte mesurée

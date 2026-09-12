@@ -32,6 +32,7 @@
 #include "ov/worldgen/density.hpp"
 #include "ov/worldgen/feature.hpp"
 #include "ov/worldgen/structure_template.hpp"
+#include "ov/worldgen/tree_feature.hpp"  // ── worldgen-3 ── the treeified bins' count
 
 #include <fmt/format.h>
 
@@ -2152,6 +2153,9 @@ int main(int argc, char** argv) {
         }
 
         fmt::print("\nseed {}, {} chunks compared\n", options.seed, done);
+        // ── worldgen-3 ── whether this run exercised Java's treeified bins at all
+        fmt::print("HashSet bins treeified during the run: {}\n",
+                   worldgen::java_hash_treeified_bins());
         fmt::print("{} of {} configured features built, {} placed features\n",
                    features->configured_count(), 194, features->placed_count());
         fmt::print("\ntrunk bases in the game's world   {}\n", their_trunks);

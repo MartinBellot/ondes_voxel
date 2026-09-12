@@ -9,6 +9,7 @@
 
 #include "ov/worldgen/biome_zoom.hpp"
 #include "ov/worldgen/feature.hpp"
+#include "ov/worldgen/tree_feature.hpp"
 #include "ov/worldgen/structure_template.hpp"
 #include "ov/worldgen/surface_system.hpp"
 
@@ -117,6 +118,37 @@ private:
 
 }  // namespace
 
+TEST_CASE("a HashSet bin of nine in a table of 64 iterates as Java's treeified bin",
+          "[worldgen][tree][worldgen3]") {
+    // Thirty positions in buckets 1…30 (their hashes are 1…30) grow the table
+    // to 64 buckets. Then nine whose hashes are 0, 64, …, 512 — bucket 0 of 64
+    // for all nine: the ninth treeifies it.
+    std::vector<BlockPos> inserted;
+    for (i32 x = 1; x <= 30; ++x) {
+        inserted.push_back({x, 0, 0});
+    }
+    for (i32 k = 0; k < 9; ++k) {
+        inserted.push_back({64 * k, 0, 0});
+    }
+    const auto order = java_hash_order(inserted);
+    REQUIRE(order.size() == inserted.size());
+    // Worked by hand from the documented rules, not from this code: nine keys
+    // inserted in ascending order make the fourth the red-black root, and the
+    // root is moved to the front of the bin's list; the rest keep list order.
+    const std::array<i32, 9> bucket_zero{192, 0, 64, 128, 256, 320, 384, 448, 512};
+    for (usize i = 0; i < bucket_zero.size(); ++i) {
+        INFO(i);
+        CHECK(order[i] == BlockPos{bucket_zero[i], 0, 0});
+    }
+    for (i32 x = 1; x <= 30; ++x) {
+        CHECK(order[static_cast<usize>(8 + x)] == BlockPos{x, 0, 0});
+    }
+    // A set: a repeat changes nothing.
+    auto twice = inserted;
+    twice.insert(twice.end(), inserted.begin(), inserted.end());
+    CHECK(java_hash_order(twice) == order);
+}
+
 TEST_CASE("SHA-256 gives the standard's own digests", "[worldgen][biome][worldgen3]") {
     // FIPS 180-4, appendix B: "abc", and the empty message.
     const std::array<u8, 3> abc{'a', 'b', 'c'};
@@ -176,13 +208,13 @@ TEST_CASE("icebergs, blue ice and fossils load", "[worldgen][feature][worldgen3]
     REQUIRE(registry.has_value());
     for (const std::string_view name :
          {"minecraft:iceberg_packed", "minecraft:iceberg_blue", "minecraft:blue_ice",
-          "minecraft:fossil_coal", "minecraft:fossil_diamonds", "minecraft:sculk_vein"}) {
+          "minecraft:fossil_coal", "minecraft:fossil_diamonds"}) {
         INFO(name);
         CHECK(registry->configured(name) != nullptr);
     }
     for (const std::string_view name : {"minecraft:iceberg_packed", "minecraft:iceberg_blue",
                                         "minecraft:blue_ice", "minecraft:fossil_upper",
-                                        "minecraft:fossil_lower", "minecraft:sculk_vein"}) {
+                                        "minecraft:fossil_lower"}) {
         INFO(name);
         CHECK(registry->placed(name) != nullptr);
     }
