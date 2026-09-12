@@ -106,19 +106,27 @@ l'eau, pas dedans).
 
 ## 6. Parité de rendu
 
-Deux scènes nouvelles dans `scripts/render_parity_scenes.txt` :
+Une scène nouvelle dans `scripts/render_parity_scenes.txt`, `aquatic` : un
+bassin creusé dans une plateforme de pierre à y 119 au-dessus du spawn —
+herbes marines dans la case de surface (sur un gradin), grande herbe marine,
+deux colonnes de kelp, une colonne de bulles sur du sable des âmes, éventail
+de corail, corail et cornichons de mer engorgés, conduit et escalier engorgés,
+éventail mort et cornichons au sec sur le bord, cinq nénuphars. La caméra est
+sur un pilier d'un bloc (notre client ne vole pas seul), tangage 55°.
 
-* `aquatic` — un bassin de pierre sur la plateforme des plaines : herbes
-  marines dans la case de surface (sur un gradin), grande herbe marine, deux
-  colonnes de kelp, une colonne de bulles sur du sable des âmes, éventail de
-  corail, corail et cornichons de mer engorgés, conduit et escalier engorgés,
-  éventail mort et cornichons au sec sur le bord, cinq nénuphars ;
-* `lilypads` — un bassin au-dessus de l'océan tiède du spawn : un autre biome,
-  une autre couleur d'eau sous la même couleur de nénuphar.
+**Pourquoi au spawn.** Une première version bâtissait le bassin près de la
+plateforme des plaines (x 48 100) et un second bassin au-dessus de l'océan du
+spawn (x 58–68) : sur une machine chargée, notre serveur n'avait envoyé que
+26 chunks deux minutes après la téléportation, et presque toutes les commandes
+ont répondu « That position is not loaded » — nénuphars flottant sans bassin,
+scène vide. La zone de spawn (chunks −1..1, x et z −16..31) est résidente avant
+que quiconque puisse rejoindre : tout y est bâti, sans téléportation.
 
-Les deux clients rejoignent le même serveur (`measure_render_parity.py`) ; les
-commandes d'une scène éloignée suivent la scène précédente, pour que notre
-client les envoie en se tenant à côté.
+Les deux clients rejoignent le même serveur (`measure_render_parity.py`, qui
+attend désormais « players may join » avant de lancer un client : sinon le
+client vanilla, refusé pendant la préparation du spawn, attendait un joueur qui
+ne venait jamais) ; les commandes d'une scène qui suit une autre sont envoyées
+par la propre exécution de cette scène.
 
 RESULTS_PLACEHOLDER
 
@@ -129,3 +137,7 @@ RESULTS_PLACEHOLDER
   mesurer sur le vrai client.
 * Seau et colonne de bulles : non documenté, non mesuré.
 * Auto-occultation de l'eau par le bloc engorgé qui la tient (§ 4).
+* Nénuphars dans **un seul** biome à l'écran : le second bassin, dans un autre
+  biome, était hors de la zone résidente (§ 6). La teinte ne lit pas le biome
+  (`TintChannel::LilyPad`, constante ; test `the lily pad takes its own
+  constant`), mais ce n'est pas mesuré sur le vrai client dans un second biome.
