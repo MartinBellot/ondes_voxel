@@ -40,6 +40,17 @@ struct Node {
     return kind == kSky ? section.sky_light() : section.block_light();
 }
 
+[[nodiscard]] const LightArray& array_of(const ChunkSection& section, u8 kind) noexcept {
+    return kind == kSky ? section.sky_light() : section.block_light();
+}
+
+/// Reads go through the const chunk: a chunk whose sections are shared
+/// copy-on-write hands out a writable section only by copying it, and a flood
+/// reads a great many more cells than it writes.
+[[nodiscard]] const ChunkSection* read_section(const Chunk& chunk, i32 y) noexcept {
+    return chunk.section_for_y(y);
+}
+
 /// A source that holds one chunk: what `light_chunk` floods inside.
 class SingleChunk final : public LightChunkSource {
 public:
@@ -90,11 +101,15 @@ struct LightEngine::Impl {
     std::array<CacheEntry, 64> cache{};
     LightChunkSource*          source{nullptr};
 
+    /// A located cell. `section` is for reading only; a write asks the chunk
+    /// for a writable section at that moment (`set`).
     struct Cell {
-        ChunkSection* section{nullptr};
-        usize         index{0};
-        i32           max_y{0};
-        SectionPos    where{};
+        Chunk*              chunk{nullptr};
+        const ChunkSection* section{nullptr};
+        usize               index{0};
+        i32                 y{0};
+        i32                 max_y{0};
+        SectionPos          where{};
     };
 
     void begin(LightChunkSource& chunks) {
@@ -118,11 +133,13 @@ struct LightEngine::Impl {
         if (chunk == nullptr) {
             return false;
         }
-        ChunkSection* section = chunk->section_for_y(y);
+        const ChunkSection* section = read_section(*chunk, y);
         if (section == nullptr) {
             return false;
         }
+        out.chunk   = chunk;
         out.section = section;
+        out.y       = y;
         out.index   = section_index(static_cast<usize>(x & 15), static_cast<usize>(y & 15),
                                     static_cast<usize>(z & 15));
         out.max_y   = chunk->shape().max_y();
@@ -143,9 +160,10 @@ struct LightEngine::Impl {
     }
 
     void set(const Cell& cell, u8 kind, u8 value) {
-        array_of(*cell.section, kind).set(cell.index, value);
-        if (touched.empty() || touched.back().section != cell.section) {
-            touched.push_back(Touched{cell.section, cell.where});
+        ChunkSection* writable = cell.chunk->section_for_y(cell.y);
+        array_of(*writable, kind).set(cell.index, value);
+        if (touched.empty() || touched.back().section != writable) {
+            touched.push_back(Touched{writable, cell.where});
         }
     }
 
@@ -472,8 +490,8 @@ struct LightEngine::Impl {
                     continue;
                 }
                 for (i32 y = shape.min_y; y <= shape.max_y(); ++y) {
-                    ChunkSection* mine   = centre->section_for_y(y);
-                    ChunkSection* theirs = other->section_for_y(y);
+                    const ChunkSection* mine   = read_section(*centre, y);
+                    const ChunkSection* theirs = read_section(*other, y);
                     if (mine == nullptr || theirs == nullptr) {
                         continue;
                     }
