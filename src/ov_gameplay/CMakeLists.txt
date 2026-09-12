@@ -63,6 +63,12 @@ ov_add_library(ov_gameplay
         src/sleep.cpp
         src/villager.cpp
         src/trading.cpp
+        src/brain/memory.cpp  # ── brains ──
+        src/brain/gossip.cpp
+        src/brain/brain.cpp
+        src/brain/villager_brain.cpp
+        src/village_mobs.cpp
+        src/wandering_trader.cpp
     DEPS
         ov_world
         ov_entity
@@ -127,6 +133,9 @@ ov_add_test(test_ov_gameplay
         tests/test_end_portal.cpp
         tests/test_villager.cpp
         tests/test_trading.cpp
+        tests/test_brain.cpp  # ── brains ──
+        tests/test_villager_life.cpp
+        tests/test_wandering_trader.cpp
     DEPS ov_gameplay simdjson::simdjson
     LABELS unit
 )

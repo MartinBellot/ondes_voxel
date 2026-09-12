@@ -9,6 +9,7 @@
 #pragma once
 
 #include "ov/base/types.hpp"
+#include "ov/gameplay/brain/gossip.hpp"  // ── brains ──
 #include "ov/gameplay/enchanting.hpp"
 #include "ov/math/block_pos.hpp"
 #include "ov/math/random.hpp"
@@ -92,6 +93,9 @@ struct VillagerClaims {
     std::optional<BlockPos> potential_job_site;
     std::optional<BlockPos> job_site;
     std::optional<BlockPos> home;
+    /// ── brains ── the bell: a meeting point is shared (32 tickets), never
+    /// "claimed" against another villager.
+    std::optional<BlockPos> meeting_point;
 };
 
 /// The incremental scan for free job blocks and beds. A full sphere of 48 is
@@ -106,6 +110,8 @@ struct VillagerScan {
     i64                     best_job_distance{0};
     std::optional<BlockPos> best_bed;
     i64                     best_bed_distance{0};
+    std::optional<BlockPos> best_bell;  // ── brains ──
+    i64                     best_bell_distance{0};
     /// No new scan before this tick.
     i64 next_scan_tick{0};
 };
@@ -158,6 +164,30 @@ struct VillagerState {
     /// reason every mob has its own: a shared one makes the world depend on
     /// the order villagers were ticked in.
     math::LegacyRandomSource random{0};
+
+    // ── brains ── gossip, its day, the villager's pockets
+    brain::Gossips gossips;
+    /// `LastGossipDecay`: 0 until the first check sets it (measured).
+    i64 last_gossip_decay{0};
+    /// The last time this villager gossiped: at most once in 1200 ticks.
+    /// Not saved (vanilla does not either).
+    i64 last_gossip_time{-1};
+    /// `Inventory`: eight slots, an item by registry name (static strings:
+    /// only what a villager picks up or harvests) and a count.
+    struct Slot {
+        std::string_view item;
+        i32              count{0};
+    };
+    std::array<Slot, 8> inventory{};
+    /// `FoodLevel`: food already eaten towards breeding.
+    i32 food_level{0};
+    /// A wandering trader: trades, but has no VillagerData, no level, no job.
+    bool wandering{false};
+    /// The type was decided (read from disk, kept through a cure, drawn at a
+    /// birth). A villager without one takes its biome's (measured, 53 biomes).
+    bool typed{false};
+    /// `DespawnDelay` of a wandering trader: ticks left, 0 for never.
+    i32 despawn_delay{0};
 };
 
 }  // namespace ov::gameplay

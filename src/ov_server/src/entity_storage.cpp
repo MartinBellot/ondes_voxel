@@ -361,7 +361,118 @@ void put_villager(nbt::Tag& out, const registry::Registries& registries,
         (void)offers.put("Recipes", std::move(recipes));
         (void)out.put("Offers", std::move(offers));
     }
-    default_to(out, "Gossips", nbt::Tag::make_list(nbt::TagType::Compound));
+    // ── brains ── gossip, as the real server writes it: {Type, Target:[I;…],
+    // Value}, the type without its namespace (read off `data get … Gossips`)
+    nbt::Tag gossips = nbt::Tag::make_list(nbt::TagType::Compound);
+    for (const gameplay::brain::GossipEntry& g : v.gossips.entries()) {
+        nbt::Tag entry = nbt::Tag::make_compound();
+        (void)entry.put("Type", nbt::Tag{std::string{gameplay::brain::gossip_info(g.type).name}});
+        (void)entry.put("Target", uuid_tag(g.target));
+        (void)entry.put("Value", nbt::Tag{g.value});
+        (void)gossips.push(std::move(entry));
+    }
+    (void)out.put("Gossips", std::move(gossips));
+}
+
+/// ── brains ── A brain's saved memories, as vanilla's `Brain.memories`:
+/// `{"minecraft:home": {value: {pos: [I; x, y, z], dimension: "…"}}, …}`, a
+/// time as a long, a flag as a byte; an expiring one carries its `ttl`.
+[[nodiscard]] nbt::Tag brain_tag(const gameplay::brain::Memories& m) {
+    namespace b       = gameplay::brain;
+    nbt::Tag memories = nbt::Tag::make_compound();
+    for (usize i = 0; i < b::kMemoryCount; ++i) {
+        const auto            type  = static_cast<b::MemoryType>(i);
+        const b::MemoryInfo&  info  = b::memory_info(type);
+        const b::MemoryValue* value = m.get(type);
+        if (!info.saved || value == nullptr) {
+            continue;
+        }
+        nbt::Tag entry = nbt::Tag::make_compound();
+        if (info.kind == b::MemoryKind::Pos) {
+            nbt::Tag at = nbt::Tag::make_compound();
+            (void)at.put("pos", nbt::Tag{nbt::Tag::IntArray{value->pos.x, value->pos.y, value->pos.z}});
+            (void)at.put("dimension", nbt::Tag{std::string{b::dimension_name(value->dimension)}});
+            (void)entry.put("value", std::move(at));
+        } else if (info.kind == b::MemoryKind::Number) {
+            (void)entry.put("value", nbt::Tag{value->number});
+        } else {
+            (void)entry.put("value", nbt::Tag::make_bool(true));
+        }
+        if (m.ttl(type) != b::kForever) {
+            (void)entry.put("ttl", nbt::Tag{m.ttl(type)});
+        }
+        (void)memories.put(std::string{info.name}, std::move(entry));
+    }
+    nbt::Tag brain = nbt::Tag::make_compound();
+    (void)brain.put("memories", std::move(memories));
+    return brain;
+}
+
+/// ── brains ── The pockets, the food eaten, the day of forgetting and the
+/// memories of a villager read from disk; the remembered places become the
+/// claims the scan keeps.
+void read_villager_life(const nbt::Tag& in, gameplay::MobBrain& brain) {
+    namespace b                = gameplay::brain;
+    gameplay::VillagerState& v = brain.villager;
+    if (const nbt::Tag* inventory = in.find("Inventory");
+        inventory != nullptr && inventory->list() != nullptr) {
+        v.inventory = {};
+        usize slot  = 0;
+        for (const nbt::Tag& stack : *inventory->list()) {
+            const nbt::Tag* id    = stack.find("id");
+            const nbt::Tag* count = stack.find("Count");
+            if (id == nullptr || count == nullptr) {
+                continue;
+            }
+            const std::string_view name = b::wanted_item_name(id->as_string());
+            if (name.empty()) {
+                OV_LOG_DEBUG("entities: a villager's {} is not something it keeps; dropped",
+                             id->as_string());
+                continue;
+            }
+            if (slot < v.inventory.size()) {
+                v.inventory[slot++] = {name, static_cast<i32>(count->as_i64())};
+            }
+        }
+    }
+    if (const nbt::Tag* food = in.find("FoodLevel")) {
+        v.food_level = static_cast<i32>(food->as_i64());
+    }
+    if (const nbt::Tag* last = in.find("LastGossipDecay")) {
+        v.last_gossip_decay = last->as_i64();
+    }
+    const nbt::Tag* brain_compound = in.find("Brain");
+    const nbt::Tag* memories = brain_compound != nullptr ? brain_compound->find("memories") : nullptr;
+    if (memories != nullptr && memories->compound() != nullptr) {
+        for (const nbt::CompoundEntry& e : *memories->compound()) {
+            const auto      type  = b::memory_from_name(e.name);
+            const nbt::Tag* value = e.value.find("value");
+            if (!type || value == nullptr) {
+                continue;
+            }
+            b::MemoryValue mv;
+            if (b::memory_info(*type).kind == b::MemoryKind::Pos) {
+                const nbt::Tag* pos  = value->find("pos");
+                const auto*     ints = pos != nullptr ? pos->get_if<nbt::Tag::IntArray>() : nullptr;
+                if (ints == nullptr || ints->size() != 3) {
+                    continue;
+                }
+                const nbt::Tag* dim = value->find("dimension");
+                mv = b::MemoryValue::of_pos(
+                    BlockPos{(*ints)[0], (*ints)[1], (*ints)[2]},
+                    dim != nullptr ? b::dimension_from_name(dim->as_string()).value_or(b::Dimension::Overworld)
+                                   : b::Dimension::Overworld);
+            } else if (b::memory_info(*type).kind == b::MemoryKind::Number) {
+                mv = b::MemoryValue::of_number(value->as_i64());
+            }
+            const nbt::Tag* ttl = e.value.find("ttl");
+            brain.memories.set(*type, mv, ttl != nullptr ? ttl->as_i64() : b::kForever);
+        }
+    }
+    v.claims.home               = brain.memories.pos(b::MemoryType::Home);
+    v.claims.job_site           = brain.memories.pos(b::MemoryType::JobSite);
+    v.claims.potential_job_site = brain.memories.pos(b::MemoryType::PotentialJobSite);
+    v.claims.meeting_point      = brain.memories.pos(b::MemoryType::MeetingPoint);
 }
 
 void read_villager(const nbt::Tag& in, const registry::Registries& registries,
@@ -422,6 +533,26 @@ void read_villager(const nbt::Tag& in, const registry::Registries& registries,
     }
     if (const nbt::Tag* last = in.find("LastRestock")) {
         v.last_restock = last->as_i64();
+    }
+    // ── brains ── gossip, and a type that was decided (not drawn again)
+    if (const nbt::Tag* gossips = in.find("Gossips");
+        gossips != nullptr && gossips->list() != nullptr) {
+        v.gossips.clear();
+        for (const nbt::Tag& e : *gossips->list()) {
+            const nbt::Tag* type  = e.find("Type");
+            const nbt::Tag* value = e.find("Value");
+            const auto known =
+                type != nullptr ? gameplay::brain::gossip_type_from_name(type->as_string())
+                                : std::nullopt;
+            if (!known || value == nullptr) {
+                continue;
+            }
+            v.gossips.put(gameplay::brain::GossipEntry{uuid_from(e.find("Target")), *known,
+                                                       static_cast<i32>(value->as_i64())});
+        }
+    }
+    if (in.find("VillagerData") != nullptr) {
+        v.typed = true;
     }
 }
 
@@ -506,13 +637,32 @@ nbt::Tag EntityStorage::encode(entity::EntityWorld& world, entity::EntityHandle 
             (void)out.put("EggLayTime", nbt::Tag{brain.animal.egg_time});
             default_to(out, "IsChickenJockey", nbt::Tag::make_bool(false));
         }
-        if (brain.villager.active) {
+        if (brain.villager.wandering) {  // ── brains ── a trader: its offers, its time left
+            put_villager(out, *registries_, items_, brain.villager);
+            (void)out.erase("VillagerData");
+            (void)out.erase("Xp");
+            (void)out.erase("Gossips");
+            (void)out.put("DespawnDelay", nbt::Tag{brain.villager.despawn_delay});
+        } else if (brain.villager.active) {
             put_villager(out, *registries_, items_, brain.villager);
             (void)out.put("RestocksToday", nbt::Tag{brain.villager.restocks_today});
             (void)out.put("LastRestock", nbt::Tag{std::max<i64>(brain.villager.last_restock, 0)});
-            default_to(out, "Inventory", nbt::Tag::make_list(nbt::TagType::Compound));
-            default_to(out, "FoodLevel", nbt::Tag{i8{0}});
-            default_to(out, "LastGossipDecay", nbt::Tag{i64{0}});
+            // ── brains ── the pockets, the food eaten, the day of forgetting,
+            // the memories (the claims are among them)
+            nbt::Tag inventory = nbt::Tag::make_list(nbt::TagType::Compound);
+            for (const gameplay::VillagerState::Slot& slot : brain.villager.inventory) {
+                if (slot.count <= 0 || slot.item.empty()) {
+                    continue;
+                }
+                nbt::Tag stack = nbt::Tag::make_compound();
+                (void)stack.put("id", nbt::Tag{std::string{slot.item}});
+                (void)stack.put("Count", nbt::Tag{static_cast<i8>(slot.count)});
+                (void)inventory.push(std::move(stack));
+            }
+            (void)out.put("Inventory", std::move(inventory));
+            (void)out.put("FoodLevel", nbt::Tag{static_cast<i8>(brain.villager.food_level)});
+            (void)out.put("LastGossipDecay", nbt::Tag{brain.villager.last_gossip_decay});
+            (void)out.put("Brain", brain_tag(brain.memories));
         }
     }
     if (is_zombie_family(type)) {
@@ -619,6 +769,10 @@ std::optional<entity::EntityHandle> EntityStorage::decode(const nbt::Tag& compou
         }
         if (brain.villager.active) {
             read_villager(compound, *registries_, items_, brain.villager);
+            read_villager_life(compound, brain);  // ── brains ──
+            if (const nbt::Tag* delay = compound.find("DespawnDelay")) {  // a trader's
+                brain.villager.despawn_delay = static_cast<i32>(delay->as_i64());
+            }
             ++brain.villager.revision;
         }
     }

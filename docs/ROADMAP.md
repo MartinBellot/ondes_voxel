@@ -765,6 +765,12 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       figés — trouvé en lançant le vrai serveur, pas par les tests)*
 - [ ] Système de **brains / activities / memories** (villageois, piglins,
       axolotls, grenouilles, warden)
+      *(**2026-09-12 — cerveaux** : le cadre générique est fait — mémoires à
+      durée de vie, capteurs à intervalle, activités par horaire (porte de 20
+      ticks) ou forcées, comportements à conditions de mémoire, sans
+      allocation par tick — et **implémenté pour le villageois** ; piglins,
+      axolotls, grenouilles et warden restent. Voir
+      `docs/provenance/cerveaux.md`)*
 - [~] Règles de spawn : lumière, biome, hauteur, plafond, densité, structure
       *(**branché** : une boîte scellée et non éclairée rassemble 20 monstres en
       trois minutes, les vaches n'apparaissent que dehors sur l'herbe éclairée.
@@ -1087,6 +1093,17 @@ irrattrapable, à ne pas repousser · ⭐ critère de sortie du jalon.
       0..2400 ticks, accélérée par barreaux et lits, le même villageois au bout.
       La remise de prix n'est pas faite : pas de réputation. Villageois
       **sauvés** avec leurs offres. Voir `docs/provenance/mobs-3.md`)*
+      *(**2026-09-12 — cerveaux** : le villageois mené par un **cerveau**
+      (mémoires, capteurs, activités) ; **ragots et réputation** — 90/90 prix
+      spéciaux mesurés (Héros du village compris), oubli quotidien et seuil,
+      transmission à la cloche ; horaire (coucher, réveil, travail, cloche) ;
+      **reproduction** (12 points de nourriture, lit libre, témoins compris) ;
+      récolte des fermiers ; **golems invoqués** (panique à 3, bavardage à 5,
+      7/7 cellules) qui défendent le village ; **type par biome** (53/53) ;
+      ragots, mémoires et poches **sauvés** aux clés vanilla ; le **marchand
+      ambulant** et ses 70 offres mesurées (apparition selon le wiki, lamas
+      sans laisse). Restent la cloche qui sonne et les raids. Voir
+      `docs/provenance/cerveaux.md`)*
 - [ ] **Raids** : mauvais présage, vagues, capitaines pillards, ravageurs,
       récompense héros du village
 - [ ] **Structures interactives** : balise (pyramide, effets), conduit, table de

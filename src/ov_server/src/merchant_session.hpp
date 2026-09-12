@@ -84,7 +84,17 @@ struct MerchantPlayer {
     /// A packet to this player only.
     std::function<void(i32 id, std::span<const u8> payload)> send;
     std::function<void(const net::ItemStack&)>               drop;
+    // ── brains ── who they are to a villager's gossip, and Hero of the
+    // Village's amplifier (-1: none), for the prices
+    net::Uuid uuid{};
+    i32       hero_amplifier{-1};
 };
+
+/// ── brains ── The special price of every offer for this player: reputation
+/// (`-floor(rep × multiplier)`) plus Hero of the Village (`-max(1,
+/// floor((0.3 + 0.0625 a) × base))`). Measured: 90 offers of 18 villagers,
+/// every one equal (docs/provenance/cerveaux.md).
+void apply_special_prices(gameplay::VillagerState& v, const net::Uuid& player, i32 hero_amplifier);
 
 struct VillagerHost {
     /// Lend a connected player. False when the player is gone.
@@ -151,6 +161,10 @@ public:
     void spawn_metadata(entity::EntityWorld& world, const entity::EntityState& state,
                         net::MetadataWriter& fields) const;
 
+    /// ── brains ── What the entity tick hands every villager: the time, the
+    /// hostiles, and (set by the villager-life module) the event sink.
+    [[nodiscard]] gameplay::VillagerWorld& world() noexcept { return world_; }
+
 private:
     enum class ActionKind : u8 { Interact, Select, Click, Close };
     struct Action {
@@ -171,6 +185,7 @@ private:
         i32                           state_id{1};
         /// The offer the result slot shows, or -1.
         i32 active{-1};
+        net::Uuid player_uuid{};  // ── brains ── a trade is gossip about them
     };
 
     void interact(entity::EntityWorld& world, const Action& a, const VillagerHost& host,

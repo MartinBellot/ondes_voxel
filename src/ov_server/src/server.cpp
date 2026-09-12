@@ -113,6 +113,7 @@
 #include "mob_despawn.hpp"       // ── mobs-3 ──
 #include "entity_storage.hpp"    // ── mobs-3 ──
 #include "zombie_villagers.hpp"  // ── mobs-3 ──
+#include "villager_life.hpp"     // ── brains ──
 #include "dimension_entities.hpp"  // ── persistence ──
 #include "ground_entities.hpp"     // ── persistence ── ItemEntity, GroundOrb
 
@@ -2508,6 +2509,10 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     std::vector<i32>               mobs3_unloaded;  // mobs a chunk took to disk, to remove
     // ── villagers ──
     std::optional<Villagers> villagers;
+    // ── brains ── births, golems, harvests, types, gossip (villager_life.hpp)
+    std::optional<VillagerLife>                    villager_life;
+    std::vector<gameplay::ReputationSubject>       village_players;
+    std::vector<i32>                               golem_quarries;
 
     /// The packets that make one mob appear.
     ///
@@ -3152,6 +3157,30 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         entity_storage->add_loose(*brewing);
         // ── villagers ──
         villagers.emplace(*registries, *blocks);
+        // ── brains ── the event sink and the types the brains need; the
+        // enemies an iron golem hits on sight (every `Enemy` but the creeper)
+        villager_life.emplace(*registries, 0x5649'4C4C'4147'4552ULL);
+        villager_life->attach(villagers->world());
+        if (const auto entity_types = registries->find("minecraft:entity_type")) {
+            for (const std::string_view enemy :
+                 {"minecraft:blaze", "minecraft:cave_spider", "minecraft:drowned",
+                  "minecraft:elder_guardian", "minecraft:enderman", "minecraft:endermite",
+                  "minecraft:evoker", "minecraft:ghast", "minecraft:giant", "minecraft:guardian",
+                  "minecraft:hoglin", "minecraft:husk", "minecraft:illusioner",
+                  "minecraft:magma_cube", "minecraft:phantom", "minecraft:piglin",
+                  "minecraft:piglin_brute", "minecraft:pillager", "minecraft:ravager",
+                  "minecraft:shulker", "minecraft:silverfish", "minecraft:skeleton",
+                  "minecraft:slime", "minecraft:spider", "minecraft:stray", "minecraft:vex",
+                  "minecraft:vindicator", "minecraft:warden", "minecraft:witch",
+                  "minecraft:wither", "minecraft:wither_skeleton", "minecraft:zoglin",
+                  "minecraft:zombie", "minecraft:zombie_villager", "minecraft:zombified_piglin"}) {
+                if (const auto id = registries->protocol_id(*entity_types, enemy)) {
+                    golem_quarries.push_back(static_cast<i32>(*id));
+                }
+            }
+        }
+        villagers->world().golem_quarries = golem_quarries;
+        village_players.reserve(16);
         tick_broadcasts.reserve(4096);
     } else {
         OV_LOG_WARN("no block registry — fluids and redstone stay inert");
@@ -4103,6 +4132,13 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         if (auto* hit = dynamic_cast<gameplay::Mob*>(mobs->logic(handle)); hit != nullptr) {
             constexpr i32 kLastHurtByMemoryTicks = 100;
             hit->frighten(kLastHurtByMemoryTicks);
+        }
+        if (villager_life) {  // ── brains ── a hit villager remembers who (minor_negative 25)
+            villager_life->on_player_hurt(*mobs, target_id, attacker.uuid);
+            if (result.killed) {  // and those who saw a killing (major_negative 25)
+                villager_life->on_player_killed(*mobs, state->position, state->network_id,
+                                                attacker.uuid);
+            }
         }
         if (taming) {  // ── tame ── a wolf pack's anger, a pet standing up, an owner's fight
             taming->on_player_hit(*mobs, attacker.entity_id, target_id,
@@ -8305,6 +8341,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
     };
     ZombieVillagerHost zombie_villager_host;
     zombie_villager_host.create_mob = husbandry_host.create_mob;
+    zombie_villager_host.on_cured   = [&](i32 villager, i32 player) {  // ── brains ──
+        for (const auto& [key, who] : players) {
+            if (who.entity_id == player && villager_life && mobs) {
+                villager_life->on_cured(*mobs, villager, who.uuid);
+                return;
+            }
+        }
+    };
     zombie_villager_host.announce   = mobs3_announce;
     zombie_villager_host.held       = [&](i32 id) -> std::string_view {
         const Player* who = projectile_player(id);
@@ -8481,6 +8525,9 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
             lent.eyes      = Vec3d{who.x, who.y + 1.62, who.z};
             lent.inventory = who.inventory;
             lent.carried   = &who.carried;
+            lent.uuid      = who.uuid;  // ── brains ── gossip and Hero of the Village
+            lent.hero_amplifier =
+                who.effects.effects.amplifier(gameplay::Effect::HeroOfTheVillage);
             lent.send      = [&who](i32 packet, std::span<const u8> payload) {
                 if (const auto framed = net::encode_packet(packet, payload);
                     framed && who.connection) {
@@ -8498,6 +8545,52 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
         return false;
     };
     villager_host.spawn_orb = projectile_host.spawn_orb;
+    // ── brains ── what a villager's brain asks for past a LevelView. Runs in
+    // the entity block, players_mutex and chunk_mutex held.
+    VillagerLifeHost villager_life_host;
+    villager_life_host.create_mob   = husbandry_host.create_mob;
+    villager_life_host.announce     = husbandry_host.announce;
+    villager_life_host.entity_event = [&](i32 id, i8 status) {
+        broadcast(nullptr, net::clientbound::kEntityEvent, net::encode_entity_event(id, status));
+    };
+    villager_life_host.biome_at = [&](BlockPos pos) -> std::string_view {
+        const world::Chunk* chunk = chunk_if_resident(pos.x >> 4, pos.z >> 4);
+        if (chunk == nullptr || !blocks || !world::WorldShape::overworld().contains_y(pos.y)) {
+            return {};
+        }
+        return blocks->biome_name(chunk->get_biome(static_cast<usize>(pos.x & 15), pos.y,
+                                                   static_cast<usize>(pos.z & 15)));
+    };
+    villager_life_host.harvest = [&](BlockPos pos,
+                                     std::vector<std::pair<std::string_view, i32>>& out) {
+        if (!level || !blocks || !loot_tables || !registries || !item_registry) {
+            return;
+        }
+        const registry::BlockStateId state = level->block_at(pos);
+        std::vector<gameplay::Drop>  drops;
+        loot_tables->drops(state, gameplay::Held{}, plant_loot_random, drops);
+        for (const gameplay::Drop& drop : drops) {
+            out.emplace_back(registries->entry_of(*item_registry, static_cast<i32>(drop.item)),
+                             drop.count);
+        }
+        level->set_block(pos, registry::kAirState);
+    };
+    villager_life_host.surface = [&](i32 x, i32 z) -> std::optional<i32> {
+        const world::Chunk* chunk = chunk_if_resident(x >> 4, z >> 4);
+        if (chunk == nullptr) {
+            return std::nullopt;
+        }
+        return chunk->heightmap(world::HeightmapType::MotionBlocking)
+            .first_free(static_cast<usize>(x & 15), static_cast<usize>(z & 15));
+    };
+    villager_life_host.place = [&](BlockPos pos, std::string_view block) {
+        if (!level || !blocks) {
+            return;
+        }
+        if (const auto id = blocks->find_block(block)) {
+            level->set_block(pos, blocks->default_state(*id));
+        }
+    };
     // ── end villagers ───────────────────────────────────────────────────────
 
     // ── weather ─────────────────────────────────────────────────────────────
@@ -10447,6 +10540,23 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                                               : static_cast<i64>(clock.tick_count());
                     (void)villagers->before_entity_tick(*mobs, mob_context, villager_host,
                                                         husbandry_deliver, day, game);
+                    if (villager_life) {  // ── brains ── players for the golems, types, forgetting
+                        village_players.clear();
+                        for (const auto& [brains_key, who] : players) {
+                            if (who.connection && who.confirmed && who.game_mode != 3 &&
+                                who.dimension == DimensionId::Overworld) {
+                                village_players.push_back(gameplay::ReputationSubject{
+                                    who.entity_id, who.uuid, Vec3d{who.x, who.y, who.z}});
+                            }
+                        }
+                        villagers->world().players = village_players;
+                        (void)villager_life->before_entity_tick(*mobs, game, villager_life_host);
+                        // The wandering trader's day (the `doTraderSpawning` gamerule).
+                        (void)villager_life->tick_trader_spawner(
+                            *mobs, mobs3_players,
+                            commands != nullptr && commands->world().rules.flag("doTraderSpawning"),
+                            villager_life_host);
+                    }
                 }
                 // ── husbandry: clicks and tempters before, births and eggs after ──
                 if (husbandry) {
@@ -10548,6 +10658,14 @@ int ov::server::run(int argc, char** argv, const std::atomic<bool>* external_sto
                 // ── villagers: what changed on a villager, told ──
                 if (villagers) {
                     (void)villagers->after_entity_tick(*mobs, husbandry_deliver);
+                }
+                if (villager_life) {  // ── brains ── births, golems, harvests, plantings
+                    const VillagerLifeStats life =
+                        villager_life->after_entity_tick(*mobs, villager_life_host);
+                    if (life.births + life.golems + life.no_bed > 0) {
+                        OV_LOG_INFO("villagers: {} born, {} without a bed, {} golems summoned",
+                                    life.births, life.no_bed, life.golems);
+                    }
                 }
                 // ── mobs-3: the swings, finished; a mob they killed is told dead ──
                 if (mob_attacks) {

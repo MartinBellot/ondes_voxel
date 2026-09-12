@@ -46,6 +46,7 @@ ov_add_library(ov_server
         src/ground_entities.cpp  # ── persistence ──
         src/dimension_entities.cpp  # ── persistence ──
         src/zombie_villagers.cpp  # ── mobs-3 ──
+        src/villager_life.cpp  # ── brains ──
         src/player_level.cpp
         src/player_data.cpp
         src/projectiles.cpp
@@ -122,6 +123,7 @@ ov_add_test(test_ov_server
         tests/test_block_container.cpp
         tests/test_enchant_session.cpp
         tests/test_merchant_session.cpp
+        tests/test_villager_life_server.cpp  # ── brains ──
         tests/test_player_inventory.cpp
         tests/test_player_level.cpp
         tests/test_player_data.cpp
